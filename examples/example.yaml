@@ -21,18 +21,10 @@ prompts:
 
   - name: login
     expect:
-      - '(?:L|l)ogin:'
-      - 'username:'
+      - ['(?:L|l)ogin:', '(?:P|p)assword:']
     send:
       each: vars.creds
-      fields: [username]
-
-  - name: password
-    expect:
-      - '(?:P|p)assword:'
-    send:
-      each: vars.creds
-      fields: [password]
+      fields: [username, password]
 
 attach:
   spawn: ssh jmather-home
@@ -63,20 +55,34 @@ script:
 
   - call: is_system_running
   
-  - cmd: show version
-    assert: "SONiC Software Version: SONiC.branch.202511-ars"
+  - cmd: show version | grep Version
+    # assert: "SONiC Software Version: SONiC.branch.202511-ars"
+    assert: "SONiC Software Version: SONiC.branch.202605"
 
   - call: is_system_running
 
-  - block:
-    name: Install SONiC
-    script:
-      # - cmd: consutil connect 0
-      - call: is_system_running
-      - cmd: sudo config dns nameserver add 172.22.22.10
-      - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-      - cmd: sudo reboot now
+  # - block:
+  #     name: Install SONiC
+  #     script:
+  #       # - cmd: consutil connect 0
+  #       - call: is_system_running
+  #       - cmd: sudo config dns nameserver add 172.22.22.10
+  #       - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+  #       - cmd: sudo reboot now
+  - cmd: sudo reboot now
 
+  - block:
+      name: Check aboot
+      script:
+        - control: c
+          when: 'Press Control-C now to enter Aboot shell'
+        - cmd: uname -a
+          when: '(?:A|a)boot#'
+      breakout:
+        script:
+          - cmd: exit
+            when: '(?:A|a)boot#'
+      
   - call: is_system_running
 
   - cmd: show version

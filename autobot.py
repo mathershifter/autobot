@@ -122,41 +122,11 @@ class Breakout(pydantic.BaseModel):
     script: list[Step] = []
 
 
-class ContextBody(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    name: str
-    breakout: Breakout | None = None
-
-
-class ContextStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    context: ContextBody
-
-    @pydantic.model_validator(mode="before")
-    @classmethod
-    def normalize_indent(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("context") is None and "name" in data:
-            data = dict(data)
-            ctx: dict[str, Any] = {"name": data.pop("name")}
-            if "breakout" in data:
-                ctx["breakout"] = data.pop("breakout")
-            data["context"] = ctx
-        return data
-
-
-class ExitStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    exit: str
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
-
-
 class BlockBody(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
     script: list[Step] = []
+    breakout: Breakout | None = None
 
 
 class BlockStep(pydantic.BaseModel):
@@ -172,7 +142,10 @@ class BlockStep(pydantic.BaseModel):
     def normalize_indent(cls, data: Any) -> Any:
         if isinstance(data, dict) and data.get("block") is None and "name" in data:
             data = dict(data)
-            data["block"] = {"name": data.pop("name"), "script": data.pop("script", [])}
+            block: dict[str, Any] = {"name": data.pop("name"), "script": data.pop("script", [])}
+            if "breakout" in data:
+                block["breakout"] = data.pop("breakout")
+            data["block"] = block
         return data
 
 
@@ -207,8 +180,6 @@ def _step_discriminator(v: Any) -> str:
             "cmd",
             "sleep",
             "call",
-            "context",
-            "exit",
             "block",
             "line",
             "return",
@@ -223,8 +194,6 @@ Step = Annotated[
     Annotated[CmdStep, pydantic.Tag("cmd")]
     | Annotated[SleepStep, pydantic.Tag("sleep")]
     | Annotated[CallStep, pydantic.Tag("call")]
-    | Annotated[ContextStep, pydantic.Tag("context")]
-    | Annotated[ExitStep, pydantic.Tag("exit")]
     | Annotated[BlockStep, pydantic.Tag("block")]
     | Annotated[LineStep, pydantic.Tag("line")]
     | Annotated[ReturnStep, pydantic.Tag("return")]
@@ -396,7 +365,6 @@ class ScriptRunner:
     def __init__(self, config: ScriptConfig, cli_args: dict[str, str]):
         self._config = config
         self._cli_args = cli_args
-        self._contexts: dict[str, list[Step]] = {}
         self._default_timeout = 300
         self._session = Session(config.prompts, self._render, self._resolve)
 
@@ -475,10 +443,6 @@ class ScriptRunner:
             self._step_sleep(step)
         elif isinstance(step, CallStep):
             self._step_call(step, timeout)
-        elif isinstance(step, ContextStep):
-            self._step_context(step)
-        elif isinstance(step, ExitStep):
-            self._step_exit(step)
         elif isinstance(step, BlockStep):
             self._step_block(step)
         elif isinstance(step, LineStep):
@@ -518,21 +482,12 @@ class ScriptRunner:
         self._run_steps(fn.script)
         print(f">> called {step.call}")
 
-    def _step_context(self, step: ContextStep):
-        ctx = step.context
-        breakout_steps = ctx.breakout.script if ctx.breakout else []
-        self._contexts[ctx.name] = breakout_steps
-        print(f">> context pushed: {ctx.name}")
-
-    def _step_exit(self, step: ExitStep):
-        breakout = self._contexts.pop(step.exit, None)
-        if breakout is None:
-            raise ValueError(f"no such context: {step.exit}")
-        self._run_steps(breakout)
-        print(f">> context popped: {step.exit}")
-
     def _step_block(self, step: BlockStep):
+        print(f">> block running: {step.block.name}")
         self._run_steps(step.block.script)
+        if step.block.breakout:
+            print(f">> block breakout: {step.block.name}")
+            self._run_steps(step.block.breakout.script)
         print(f">> block completed: {step.block.name}")
 
     def _step_line(self, step: LineStep):
@@ -562,7 +517,7 @@ def main():
     )
     args = parser.parse_args()
 
-    with open(args.script) as f:
+    with open(str(args.script)) as f:
         config_dict = yaml.safe_load(f)
 
     try:

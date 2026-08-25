@@ -96,8 +96,6 @@
         { "$ref": "#/$defs/cmdStep" },
         { "$ref": "#/$defs/sleepStep" },
         { "$ref": "#/$defs/callStep" },
-        { "$ref": "#/$defs/contextStep" },
-        { "$ref": "#/$defs/exitStep" },
         { "$ref": "#/$defs/blockStep" },
         { "$ref": "#/$defs/lineStep" },
         { "$ref": "#/$defs/returnStep" },
@@ -137,43 +135,6 @@
         "timeout": { "$ref": "#/$defs/duration" }
       }
     },
-    "contextStep": {
-      "type": "object",
-      "required": ["context"],
-      "additionalProperties": false,
-      "properties": {
-        "context": {
-          "type": "object",
-          "required": ["name"],
-          "additionalProperties": false,
-          "properties": {
-            "name": { "type": "string" },
-            "breakout": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "script": {
-                  "type": "array",
-                  "items": { "$ref": "#/$defs/step" }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "exitStep": {
-      "type": "object",
-      "required": ["exit"],
-      "additionalProperties": false,
-      "properties": {
-        "exit": { "type": "string" },
-        "when": { "type": "string" },
-        "delay_before": { "$ref": "#/$defs/duration" },
-        "delay_after": { "$ref": "#/$defs/duration" },
-        "timeout": { "$ref": "#/$defs/duration" }
-      }
-    },
     "blockStep": {
       "type": "object",
       "required": ["block"],
@@ -185,13 +146,23 @@
         "timeout": { "$ref": "#/$defs/duration" },
         "block": {
           "type": "object",
-          "required": ["name", "script"],
+          "required": ["name"],
           "additionalProperties": false,
           "properties": {
             "name": { "type": "string" },
             "script": {
               "type": "array",
               "items": { "$ref": "#/$defs/step" }
+            },
+            "breakout": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "script": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/step" }
+                }
+              }
             }
           }
         }

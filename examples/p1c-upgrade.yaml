@@ -1,0 +1,115 @@
+version: 0.1.0
+
+env:
+  BMC_UPGRADE_SCRIPT: http://10.49.254.2:8001/stlmP1cBmcUbootUpgradeV2.sh
+  BMC_PROVISION_SCRIPT: http://10.49.254.2:8001/stlmP1cBmcSonicProvision.sh
+  UBOOT_ALT_IMAGE: http://10.49.254.2:8001/flash-arista2700-202601.1.0-Jul22-EFT
+  SONIC_BMC_IMAGE: http://10.49.254.2:8001/sonic.bin
+  SONIC_HOST_IMAGE: http://10.49.254.2:8001/sonic-aboot-broadcom.7060XE7-factory-20260500.03.swi
+  DAC_SCRIPT_URL: http://10.49.254.2:8001/updateDAC.sh
+
+vars:
+  creds:
+    # SONiC and SONiC-BMC
+    - username: admin
+      password: password
+    # OpenBMC
+    - username: root
+      password: 0penBmc
+
+prompts:
+  - name: cli
+    expect:
+      - '\w+@[\w\-\.]+:[^\$]+'
+      - '(arista-)?bmc-boot=>'
+  
+  - name: login
+    expect:
+      - ['(?:L|l)ogin:', '(?:P|p)assword:']
+    send:
+      each: vars.creds
+      fields: [username, password]
+
+
+fn:
+  is_system_running:
+    script:
+      - cmd: systemctl is-system-running --wait
+        assert:
+          - running
+          - degraded
+
+attach:
+  spawn: telnet {{ args.console_host }} {{ args.console_port }}
+  timeout: 300s
+  breakout:
+    script:
+      - line: [""]
+      - control: "]"
+      - line: q
+
+script:
+  - cmd: wget -P /tmp {{ env.UBOOT_ALT_IMAGE }}
+  - cmd: wget -P /tmp {{ env.BMC_UPGRADE_SCRIPT }}
+  - cmd: bash /tmp/stlmP1cBmcUbootUpgradeV2.sh -y
+
+  - cmd: s
+    when: "Hit any key to stop autoboot:"
+  
+  - cmd: env default -f -a
+    when: '(arista-)?bmc-boot=>'
+    delay_after: 2s
+  - cmd: saveenv
+    when: '(arista-)?bmc-boot=>'
+    delay_after: 2s
+  - cmd: reset
+    when: '(arista-)?bmc-boot=>'
+  
+  # wait for reboot
+  - sleep: 60s
+
+  - cmd: wget -P /tmp {{ env.SONIC_BMC_IMAGE }}
+  - cmd: wget -P /tmp {{ env.BMC_PROVISION_SCRIPT }}
+  - cmd: bash /tmp/stlmP1cBmcSonicProvision.sh -y
+    delay_after: 60s
+    delay_before: 2s
+    timeout: 120s
+
+  - call: is_system_running
+  
+  - cmd: show version
+    assert: "SONiC Software Version: SONiC.20260800.03"
+  - cmd: |
+      sudo bash -c 'sync && i2cset -y 14 0x28 0x1f 0x00 && sleep 1 && i2cset -y 14 0x28 0x1f 0x3f && sleep 0.010 && i2cset -y 14 0x28 0x1f 0x00'
+  
+  - sleep: 60s
+
+  - call: is_system_running
+
+  - block:
+    name: Reset BMC
+    script:
+      - cmd: sudo i2cset -y 12 0x43 0x7c 0x07 && sleep 2 && sudo i2cset -y 12 0x43 0x72 0x1
+
+  - block:
+    name: Install SONiC
+    script:
+      - cmd: consutil connect 0
+      - call: is_system_running
+      - cmd: sudo sonic-installer install -y {{ env.SONIC_HOST_IMAGE }}
+      - cmd: sudo reboot now
+
+  - block:
+    name: Upgrade DAC
+    script:
+      - cmd: curl --output-dir /home/admin -O {{ env.DAC_SCRIPT_URL }}
+      - cmd: sudo bash /home/admin/updateDAC.sh --update
+      - cmd: sudo reboot now
+      - sleep: 60s
+
+  - block:
+    name: Verify
+    script:
+      - cmd: sudo bash /home/admin/updateDAC.sh --verify
+  
+
