@@ -551,8 +551,9 @@ class ScriptRunner:
 
 def main():
     parser = argparse.ArgumentParser(description="Execute an autobot script.")
-    parser.add_argument("script", help="Path to the YAML script file")
+    parser.add_argument("script", type=str, help="Path to the YAML script file")
     parser.add_argument(
+        "-a",
         "--arg",
         action="append",
         default=[],

@@ -1,5 +1,8 @@
 version: 0.1.0
 
+env:
+  SONIC_IMAGE: http://artifacts/sonic/202605/sonic-aboot-broadcom.swi
+
 vars:
   creds:
     # SONiC and SONiC-BMC
@@ -57,14 +60,24 @@ fn:
       - cmd: sudo reboot now
         delay_after: 10s
 script:
-  # - cmd: show version
-  - cmd: ip addr show dev eth0
+
   - call: is_system_running
-  - call: reboot
-  - control: c
-    when: "enter Aboot shell"
-    delay_after: 2s
-  - cmd: reboot
-    when: "Aboot#"
-    delay_after: 5s
+  
+  - cmd: show version
+    assert: "SONiC Software Version: SONiC.branch.202511-ars"
+
   - call: is_system_running
+
+  - block:
+    name: Install SONiC
+    script:
+      # - cmd: consutil connect 0
+      - call: is_system_running
+      - cmd: sudo config dns nameserver add 172.22.22.10
+      - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+      - cmd: sudo reboot now
+
+  - call: is_system_running
+
+  - cmd: show version
+    assert: "SONiC Software Version: SONiC.branch.202605"
