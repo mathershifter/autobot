@@ -11,7 +11,7 @@ pipx install git+https://github.com/mathershifter/autobot.git
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uvx --from git+https://github.com/mathershifter/autobot.git autobot script.yaml
+uv tool install git+https://github.com/mathershifter/autobot.git
 ```
 
 ## Quick Start
