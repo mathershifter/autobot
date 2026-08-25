@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "p1c-upgrade.schema.json",
+  "title": "P1C Upgrade Script",
+  "type": "object",
+  "required": ["version", "attach", "script"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "vars": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "prompts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/prompt" }
+    },
+    "fn": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/function" }
+    },
+    "attach": { "$ref": "#/$defs/attach" },
+    "script": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "prompt": {
+      "type": "object",
+      "required": ["name", "expect"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "expect": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "return": { "type": "boolean", "default": false },
+        "send": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+            { "$ref": "#/$defs/sendEach" }
+          ]
+        }
+      }
+    },
+    "function": {
+      "type": "object",
+      "required": ["script"],
+      "additionalProperties": false,
+      "properties": {
+        "script": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+    "attach": {
+      "type": "object",
+      "required": ["spawn"],
+      "additionalProperties": false,
+      "properties": {
+        "spawn": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "script": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "breakout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "script": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/step" }
+            }
+          }
+        }
+      }
+    },
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/cmdStep" },
+        { "$ref": "#/$defs/sleepStep" },
+        { "$ref": "#/$defs/callStep" },
+        { "$ref": "#/$defs/contextStep" },
+        { "$ref": "#/$defs/exitStep" },
+        { "$ref": "#/$defs/blockStep" },
+        { "$ref": "#/$defs/lineStep" },
+        { "$ref": "#/$defs/returnStep" },
+        { "$ref": "#/$defs/controlStep" }
+      ]
+    },
+    "cmdStep": {
+      "type": "object",
+      "required": ["cmd"],
+      "additionalProperties": false,
+      "properties": {
+        "cmd": { "$ref": "#/$defs/stringOrArray" },
+        "when": { "type": "string" },
+        "assert": { "$ref": "#/$defs/stringOrArray" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "sleepStep": {
+      "type": "object",
+      "required": ["sleep"],
+      "additionalProperties": false,
+      "properties": {
+        "sleep": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "callStep": {
+      "type": "object",
+      "required": ["call"],
+      "additionalProperties": false,
+      "properties": {
+        "call": { "type": "string" },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "contextStep": {
+      "type": "object",
+      "required": ["context"],
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "breakout": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "script": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/step" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "exitStep": {
+      "type": "object",
+      "required": ["exit"],
+      "additionalProperties": false,
+      "properties": {
+        "exit": { "type": "string" },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "blockStep": {
+      "type": "object",
+      "required": ["block"],
+      "additionalProperties": false,
+      "properties": {
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "block": {
+          "type": "object",
+          "required": ["name", "script"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "script": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/step" }
+            }
+          }
+        }
+      }
+    },
+    "lineStep": {
+      "type": "object",
+      "required": ["line"],
+      "additionalProperties": false,
+      "properties": {
+        "line": { "$ref": "#/$defs/stringOrArray" },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "returnStep": {
+      "type": "object",
+      "required": ["return"],
+      "additionalProperties": false,
+      "properties": {
+        "return": { "type": "integer", "minimum": 1, "default": 1 },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "controlStep": {
+      "type": "object",
+      "required": ["control"],
+      "additionalProperties": false,
+      "properties": {
+        "control": { "$ref": "#/$defs/stringOrArray" },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "sendEach": {
+      "type": "object",
+      "required": ["each"],
+      "additionalProperties": false,
+      "properties": {
+        "each": { "type": "string" },
+        "fields": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "duration": {
+      "oneOf": [
+        { "type": "number", "minimum": 0 },
+        { "type": "string", "pattern": "^\\d+(\\.\\d+)?(ms|s|m|h)$" }
+      ]
+    },
+    "stringOrArray": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    }
+  }
+}

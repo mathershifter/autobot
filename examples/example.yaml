@@ -1,0 +1,70 @@
+version: 0.1.0
+
+vars:
+  creds:
+    # SONiC and SONiC-BMC
+    - username: admin
+      password: password
+    # 
+    - username: root
+      password: 0penBmc
+
+prompts:
+  - name: cli
+    expect:
+      - '\w+@[\w\-\.]+:[^\$]+'
+      - '(arista-)?bmc-boot=>'
+    return: true
+
+  - name: login
+    expect:
+      - '(?:L|l)ogin:'
+      - 'username:'
+    send:
+      each: vars.creds
+      fields: [username]
+
+  - name: password
+    expect:
+      - '(?:P|p)assword:'
+    send:
+      each: vars.creds
+      fields: [password]
+
+attach:
+  spawn: ssh jmather-home
+  script:
+    # - line: a dut grab -sf -p labtracker ldp448
+    - line: a dut attach ldp448
+    - return: 1
+      when: "attached to"
+  timeout: 300s
+  breakout:
+    script:
+      - line: logout
+      - control: "]"
+      - line: logout
+
+fn:
+  is_system_running:
+    script:
+      - cmd: systemctl is-system-running --wait
+        assert:
+          - running
+
+  reboot:
+    script:
+      - cmd: sudo reboot now
+        delay_after: 10s
+script:
+  # - cmd: show version
+  - cmd: ip addr show dev eth0
+  - call: is_system_running
+  - call: reboot
+  - control: c
+    when: "enter Aboot shell"
+    delay_after: 2s
+  - cmd: reboot
+    when: "Aboot#"
+    delay_after: 5s
+  - call: is_system_running
