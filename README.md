@@ -5,13 +5,13 @@ A YAML-driven console robot for automating interactive sessions over SSH, telnet
 ## Install
 
 ```bash
-pip install pexpect pyyaml pydantic jinja2
+pipx install git+https://github.com/mathershifter/autobot.git
 ```
 
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv run ./autobot.py script.yaml
+uvx --from git+https://github.com/mathershifter/autobot.git autobot script.yaml
 ```
 
 ## Quick Start

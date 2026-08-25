@@ -16,8 +16,6 @@ import yaml
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
-TEMPLATE_RE = re.compile(r"\{\{(.+?)\}\}")
-
 _jinja_env = jinja2.Environment(undefined=jinja2.StrictUndefined)
 
 
@@ -35,20 +33,20 @@ def parse_duration(value: Any) -> float:
 Duration = Annotated[float, pydantic.BeforeValidator(parse_duration)]
 StringOrArray = str | list[str]
 
+
 class CleanWriter:
-    # _CTRL_STRIP_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
     def __init__(self, stream):
         self._stream = stream
 
     def write(self, data):
         data = ANSI_ESCAPE_RE.sub("", data)
-        # data = self._CTRL_STRIP_RE.sub("", data)
         if data:
             self._stream.write(data)
             self._stream.flush()
 
     def flush(self):
         self._stream.flush()
+
 
 def render(template: Any, ctx: dict) -> str:
     if not isinstance(template, str):
@@ -78,7 +76,7 @@ class Prompt(pydantic.BaseModel):
     name: str
     expect: list[str | list[str]]
     send: list[str] | list[list[str]] | SendEach | None = None
-    is_cli: bool = pydantic.Field(False, alias="return")
+    is_shell_prompt: bool = pydantic.Field(False, alias="return")
 
 
 class Function(pydantic.BaseModel):
@@ -188,7 +186,7 @@ class LineStep(pydantic.BaseModel):
 
 class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    send_return: int = pydantic.Field(1, alias="return")
+    newline_count: int = pydantic.Field(1, alias="return")
     when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
@@ -257,7 +255,7 @@ class PromptHandler:
 
     def __init__(self, prompt: Prompt, start: int, render_fn, resolve_fn):
         self.prompt = prompt
-        self.is_return = prompt.is_cli or prompt.send is None
+        self.is_return = prompt.is_shell_prompt or prompt.send is None
         self.patterns: list[str] = []
         for entry in prompt.expect:
             if isinstance(entry, list):
@@ -293,6 +291,10 @@ class PromptHandler:
         self._idx += 1
         return response
 
+    @property
+    def is_fresh(self) -> bool:
+        return self._idx == 0
+
     def reset(self):
         self._idx = 0
 
@@ -327,8 +329,9 @@ class Session:
             self._cld.close()
             self._cld = None
 
-    def get_prompt(self, timeout: int = 300):
-        assert self._cld, "not attached"
+    def get_prompt(self, timeout: float = 300):
+        if not self._cld:
+            raise RuntimeError("not attached")
         for h in self._handlers:
             h.reset()
         deadline = time.monotonic() + timeout
@@ -341,7 +344,7 @@ class Session:
             if i == 0 or i == 1:
                 continue
             if i == len(self._patterns) - 2:
-                if not solicited and all(h._idx == 0 for h in self._handlers):
+                if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
                 continue
@@ -368,20 +371,24 @@ class Session:
         for h in self._handlers:
             h.reset()
 
-    def expect(self, patterns: list, timeout: int = 300) -> int:
-        assert self._cld, "not attached"
+    def expect(self, patterns: list, timeout: float = 300) -> int:
+        if not self._cld:
+            raise RuntimeError("not attached")
         return self._cld.expect(patterns, timeout=timeout)
 
     def sendline(self, line: str = ""):
-        assert self._cld, "not attached"
+        if not self._cld:
+            raise RuntimeError("not attached")
         self._cld.sendline(line)
 
     def sendcontrol(self, char: str):
-        assert self._cld, "not attached"
+        if not self._cld:
+            raise RuntimeError("not attached")
         self._cld.sendcontrol(char)
 
     def sleep(self, seconds: float):
-        assert self._cld, "not attached"
+        if not self._cld:
+            raise RuntimeError("not attached")
         self._cld.expect(pexpect.TIMEOUT, timeout=seconds)
 
 
@@ -456,7 +463,7 @@ class ScriptRunner:
 
         when = getattr(step, "when", None)
         if when:
-            self._session.expect([self._render(when)], timeout=int(timeout))
+            self._session.expect([self._render(when)], timeout=timeout)
 
         delay_before = getattr(step, "delay_before", None)
         if delay_before:
@@ -490,18 +497,15 @@ class ScriptRunner:
         for line in lines:
             cmd = self._render(line)
             if not step.when:
-                self._session.get_prompt(timeout=int(timeout))
+                self._session.get_prompt(timeout=timeout)
 
             self._session.sendline(cmd)
             print(f">> cmd: {cmd}")
         assertions = ensure_list(step.assert_)
         if assertions:
             self._session.expect(
-                [self._render(a) for a in assertions], timeout=int(timeout)
+                [self._render(a) for a in assertions], timeout=timeout
             )
-
-        # self._session.get_prompt(timeout=int(timeout))
-        # self._session.sendline()
 
     def _step_sleep(self, step: SleepStep):
         print(f">> sleep: {step.sleep}s")
@@ -536,14 +540,13 @@ class ScriptRunner:
             self._session.sendline(self._render(line))
 
     def _step_return(self, step: ReturnStep):
-        for _ in range(step.send_return):
+        for _ in range(step.newline_count):
             self._session.sendline("")
 
     def _step_control(self, step: ControlStep):
         for char in ensure_list(step.control):
             self._session.sendcontrol(char)
             print(f">> control sent: ^{char.upper()}")
-
 
 
 def main():
