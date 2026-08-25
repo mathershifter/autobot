@@ -279,4 +279,4 @@ Catches:
 
 ## Schema
 
-The full JSON Schema is in [`autobot.schema.json`](autobot.schema.json). See [`SPEC.md`](SPEC.md) for the complete specification.
+The full JSON Schema is in [`autobot.schema.json`](autobot.schema.json).
