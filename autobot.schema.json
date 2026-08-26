@@ -22,6 +22,10 @@
       "type": "array",
       "items": { "$ref": "#/$defs/prompt" }
     },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "fn": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/function" }
@@ -110,6 +114,7 @@
         "cmd": { "$ref": "#/$defs/stringOrArray" },
         "when": { "type": "string" },
         "assert": { "$ref": "#/$defs/stringOrArray" },
+        "ignore_error": { "type": "boolean", "default": false },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }

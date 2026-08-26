@@ -55,7 +55,7 @@ def render(template: Any, ctx: dict) -> str:
     try:
         return _jinja_env.from_string(template).render(ctx)
     except jinja2.UndefinedError as e:
-        raise ValueError(f"template error: {e}")
+        raise ValueError(f"template error: {e}") from e
 
 
 def ensure_list(value: StringOrArray | None) -> list[str]:
@@ -99,6 +99,7 @@ class CmdStep(pydantic.BaseModel):
     cmd: StringOrArray
     when: str | None = None
     assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
+    ignore_error: bool = False
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
@@ -216,6 +217,7 @@ class ScriptConfig(pydantic.BaseModel):
     vars: dict[str, Any] = {}
     prompts: list[Prompt] = []
     fn: dict[str, Function] = {}
+    errors: list[str] = []
     attach: AttachConfig
     script: list[Step] = []
 
@@ -246,7 +248,7 @@ class PromptHandler:
             if send.fields:
                 return [str(item[f]) for item in items for f in send.fields]
             return [str(item) for item in items]
-        if send and isinstance(send[0], list):
+        if isinstance(send[0], list):
             return [render_fn(s) for attempt in send for s in attempt]
         return [render_fn(s) for s in send]
 
@@ -282,8 +284,9 @@ class Session:
             self._patterns.extend(h.patterns)
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
+        self._at_prompt = False
 
-    def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: int = 300):
+    def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -299,9 +302,22 @@ class Session:
             self._cld.close()
             self._cld = None
 
-    def get_prompt(self, timeout: float = 300):
+    def get_prompt(
+        self, timeout: float = 300, errors: list[str] | None = None
+    ):
+        if self._at_prompt:
+            return
         if not self._cld:
             raise RuntimeError("not attached")
+
+        if errors:
+            patterns = self._patterns[:-2] + errors + self._patterns[-2:]
+            error_start = len(self._patterns) - 2
+            error_end = error_start + len(errors)
+        else:
+            patterns = self._patterns
+            error_start = error_end = 0
+
         for h in self._handlers:
             h.reset()
         deadline = time.monotonic() + timeout
@@ -310,20 +326,24 @@ class Session:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("timed out waiting for prompt")
-            i = self._cld.expect(self._patterns, timeout=min(5, remaining))
+            i = self._cld.expect(patterns, timeout=min(5, remaining))
             if i == 0 or i == 1:
                 continue
-            if i == len(self._patterns) - 2:
+            if i == len(patterns) - 2:
                 if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
                 continue
-            if i == len(self._patterns) - 1:
+            if i == len(patterns) - 1:
                 raise EOFError("connection closed")
+            if error_start <= i < error_end:
+                raise RuntimeError(
+                    f"command error: {self._cld.after.strip()}"
+                )
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
-                        print(">> got prompt...")
+                        self._at_prompt = True
                         return
                     if h.exhausted:
                         raise RuntimeError(
@@ -349,11 +369,22 @@ class Session:
     def sendline(self, line: str = ""):
         if not self._cld:
             raise RuntimeError("not attached")
+        self._at_prompt = False
         self._cld.sendline(line)
+
+    def check_rc(self, timeout: float = 300) -> int:
+        if not self._cld:
+            raise RuntimeError("not attached")
+        self.sendline("echo __AUTOBOT_RC=$?")
+        self._cld.expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
+        rc = int(self._cld.match.group(1))
+        self.get_prompt(timeout=timeout)
+        return rc
 
     def sendcontrol(self, char: str):
         if not self._cld:
             raise RuntimeError("not attached")
+        self._at_prompt = False
         self._cld.sendcontrol(char)
 
     def sleep(self, seconds: float):
@@ -420,8 +451,6 @@ class ScriptRunner:
             if attach.script:
                 self._run_steps(attach.script)
             self._run_steps(self._config.script)
-            if self._config.script:
-                self._session.get_prompt()
         finally:
             if attach.breakout and attach.breakout.script:
                 print(">> breakout: detaching")
@@ -478,7 +507,6 @@ class ScriptRunner:
             cmd = self._render(line)
             if not step.when:
                 self._session.get_prompt(timeout=timeout)
-
             self._session.sendline(cmd)
             print(f">> cmd: {cmd}")
         assertions = ensure_list(step.assert_)
@@ -486,6 +514,17 @@ class ScriptRunner:
             self._session.expect(
                 [self._render(a) for a in assertions], timeout=timeout
             )
+        errors = self._config.errors or None
+        try:
+            self._session.get_prompt(timeout=timeout, errors=errors)
+            if not errors:
+                rc = self._session.check_rc(timeout=timeout)
+                if rc != 0:
+                    raise RuntimeError(f"command returned exit code {rc}")
+        except RuntimeError:
+            if not step.ignore_error:
+                raise
+            print(">> error ignored", file=sys.stderr)
 
     def _step_sleep(self, step: SleepStep):
         print(f">> sleep: {step.sleep}s")
@@ -522,7 +561,7 @@ class ScriptRunner:
 
 def main():
     parser = argparse.ArgumentParser(description="Execute an autobot script.")
-    parser.add_argument("script", type=str, help="Path to the YAML script file")
+    parser.add_argument("script", help="Path to the YAML script file")
     parser.add_argument(
         "-a",
         "--arg",
@@ -533,7 +572,7 @@ def main():
     )
     args = parser.parse_args()
 
-    with open(str(args.script)) as f:
+    with open(args.script) as f:
         config_dict = yaml.safe_load(f)
 
     try:
