@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -366,12 +367,27 @@ class ScriptRunner:
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
+        self._env = self._resolve_env(config.env)
         self._session = Session(config.prompts, self._render, self._resolve)
+
+    def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
+        env = {k: os.environ.get(k, v) for k, v in defaults.items()}
+        ctx = {"env": env, "vars": self._config.vars, "args": self._cli_args}
+        for _ in range(10):
+            changed = False
+            for k, v in env.items():
+                rendered = render(v, ctx)
+                if rendered != v:
+                    env[k] = rendered
+                    changed = True
+            if not changed:
+                break
+        return env
 
     @property
     def _ctx(self) -> dict:
         return {
-            "env": self._config.env,
+            "env": self._env,
             "vars": self._config.vars,
             "args": self._cli_args,
         }

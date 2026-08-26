@@ -1,7 +1,9 @@
 version: 0.1.0
 
 env:
-  SONIC_IMAGE: http://artifacts/sonic/202605/sonic-aboot-broadcom.swi
+  ARTIFACTORY: https://ci.corp.io
+  SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/202605/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
+  NAMESERVER: 1.2.3.4
 
 vars:
   creds:
@@ -51,39 +53,44 @@ fn:
     script:
       - cmd: sudo reboot now
         delay_after: 10s
-script:
 
+script:
   - call: is_system_running
   
   - cmd: show version | grep Version
-    # assert: "SONiC Software Version: SONiC.branch.202511-ars"
+    assert: "SONiC Software Version: SONiC.branch.202511-ars"
     assert: "SONiC Software Version: SONiC.branch.202605"
 
   - call: is_system_running
 
-  # - block:
-  #     name: Install SONiC
-  #     script:
-  #       # - cmd: consutil connect 0
-  #       - call: is_system_running
-  #       - cmd: sudo config dns nameserver add 172.22.22.10
-  #       - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-  #       - cmd: sudo reboot now
-  - cmd: sudo reboot now
-
   - block:
-      name: Check aboot
+      name: Install SONiC
       script:
-        - control: c
-          when: 'Press Control-C now to enter Aboot shell'
-        - cmd: uname -a
-          when: '(?:A|a)boot#'
-      breakout:
-        script:
-          - cmd: exit
-            when: '(?:A|a)boot#'
+        # - cmd: consutil connect 0
+        - call: is_system_running
+        - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+        - cmd: curl -s -o /dev/null -w "%{http_code}\n" https://artifactory.infra.corp.arista.io
+        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+
+      
+        
+        # - cmd: sudo reboot now
+  
+  # - cmd: sudo reboot now
+
+  # - block:
+  #     name: Check aboot
+  #     script:
+  #       - control: c
+  #         when: 'Press Control-C now to enter Aboot shell'
+  #       - line: uname -a
+  #         when: '(?:A|a)boot#'
+  #     breakout:
+  #       script:
+  #         - line: exit
+  #           when: '(?:A|a)boot#'
       
   - call: is_system_running
 
-  - cmd: show version
+  - cmd: show version | grep 'Software Version'
     assert: "SONiC Software Version: SONiC.branch.202605"
