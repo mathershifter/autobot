@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from typing import Annotated, Any
 
 import jinja2
@@ -87,6 +90,7 @@ class Function(pydantic.BaseModel):
 
 class AttachConfig(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
+    prepare: str | None = None
     spawn: str
     timeout: Duration | None = None
     env: dict[str, str] | None = None
@@ -380,9 +384,6 @@ class Session:
         self.sendline("echo __AUTOBOT_RC=$?")
         self._cld.expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
 
-        if self._cld.match is not re.Match[str]:
-            raise RuntimeError("failed to determine status code")
-
         rc = int(self._cld.match.group(1)) # type: ignore
         self.get_prompt(timeout=timeout)
         return rc
@@ -445,11 +446,33 @@ class ScriptRunner:
             ctx = {**ctx, **extra_ctx}
         return render(template, ctx)
 
+    @staticmethod
+    def _run_prepare(script: str):
+        print(">> prepare: running local script")
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix="_autobot_", suffix=".sh", delete=False
+        ) as f:
+            f.write(script)
+            tmp = f.name
+        try:
+            os.chmod(tmp, 0o700)
+            result = subprocess.run([tmp], check=False)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"prepare script failed with exit code {result.returncode}"
+                )
+        finally:
+            os.unlink(tmp)
+        print(">> prepare: done")
+
     def run(self):
         attach = self._config.attach
         spawn = self._render(attach.spawn)
         timeout = int(attach.timeout) if attach.timeout else self._default_timeout
         env = attach.env or {"TERM": "dumb", "NO_COLOR": "1"}
+
+        if attach.prepare:
+            self._run_prepare(self._render(attach.prepare))
 
         print(f">> attach: {spawn}")
         self._session.attach(spawn, env=env, timeout=timeout)
@@ -508,6 +531,9 @@ class ScriptRunner:
             self._session.sleep(delay_after)
 
     def _step_cmd(self, step: CmdStep, timeout: float):
+        if isinstance(step.cmd, str) and step.cmd.startswith("#!"):
+            self._step_cmd_script(step, timeout)
+            return
         lines = ensure_list(step.cmd)
         for line in lines:
             cmd = self._render(line)
@@ -531,6 +557,43 @@ class ScriptRunner:
             if not step.ignore_error:
                 raise
             print(">> error ignored", file=sys.stderr)
+
+    def _step_cmd_script(self, step: CmdStep, timeout: float):
+        script = self._render(str(step.cmd))
+        tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
+        eof_marker = "AUTOBOT_SCRIPT_EOF"
+        print(f">> script: writing to {tmp}")
+        if not step.when:
+            self._session.get_prompt(timeout=timeout)
+        self._session.sendline(f"cat > {tmp} << '{eof_marker}'")
+        for script_line in script.splitlines():
+            self._session.sendline(script_line)
+        self._session.sendline(eof_marker)
+        self._session.get_prompt(timeout=timeout)
+        self._session.sendline(f"chmod +x {tmp}")
+        self._session.get_prompt(timeout=timeout)
+        print(f">> script: executing {tmp}")
+        self._session.sendline(tmp)
+        assertions = ensure_list(step.assert_)
+        if assertions:
+            self._session.expect(
+                [self._render(a) for a in assertions], timeout=timeout
+            )
+        errors = self._config.errors or None
+        try:
+            self._session.get_prompt(timeout=timeout, errors=errors)
+            if not errors:
+                rc = self._session.check_rc(timeout=timeout)
+                if rc != 0:
+                    raise RuntimeError(f"command returned exit code {rc}")
+        except RuntimeError:
+            if not step.ignore_error:
+                raise
+            print(">> error ignored", file=sys.stderr)
+        finally:
+            self._session.get_prompt(timeout=timeout)
+            self._session.sendline(f"rm -f {tmp}")
+            print(f">> script: cleaned up {tmp}")
 
     def _step_sleep(self, step: SleepStep):
         print(f">> sleep: {step.sleep}s")

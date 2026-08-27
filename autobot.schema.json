@@ -73,6 +73,7 @@
       "required": ["spawn"],
       "additionalProperties": false,
       "properties": {
+        "prepare": { "type": "string" },
         "spawn": { "type": "string" },
         "timeout": { "$ref": "#/$defs/duration" },
         "env": {

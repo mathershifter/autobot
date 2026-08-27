@@ -29,6 +29,9 @@ prompts:
       fields: [username, password]
 
 attach:
+  prepare: |
+    #!/bin/sh
+    arista-ssh check-auth || arista-ssh login
   spawn: ssh jmather-home
   script:
     # - line: a dut grab -sf -p labtracker ldp448
@@ -62,14 +65,14 @@ script:
 
   - call: is_system_running
 
-  - block:
-      name: Install SONiC
-      script:
-        - call: is_system_running
-        - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
-          ignore_error: true
-        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-        - cmd: sudo reboot now
+  # - block:
+  #     name: Install SONiC
+  #     script:
+  #       - call: is_system_running
+  #       - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+  #         ignore_error: true
+  #       - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+  #       - cmd: sudo reboot now
   
   # - cmd: sudo reboot now
 
