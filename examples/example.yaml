@@ -58,7 +58,6 @@ script:
   - call: is_system_running
   
   - cmd: show version | grep Version
-    assert: "SONiC Software Version: SONiC.branch.202511-ars"
     assert: "SONiC Software Version: SONiC.branch.202605"
 
   - call: is_system_running
@@ -69,12 +68,10 @@ script:
         # - cmd: consutil connect 0
         - call: is_system_running
         - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+          ignore_error: true
         - cmd: curl -s -o /dev/null -w "%{http_code}\n" https://artifactory.infra.corp.arista.io
         - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-
-      
-        
-        # - cmd: sudo reboot now
+        - cmd: sudo reboot now
   
   # - cmd: sudo reboot now
 

@@ -1,0 +1,47 @@
+version: 0.1.0
+
+vars:
+  creds:
+    # SONiC and SONiC-BMC
+    - username: admin
+      password: ""
+    # 
+    - username: admin
+      password: none
+
+prompts:
+  - name: cli
+    expect:
+      - '[\w+\-\.:\/\[\]]+(?:\([^\)]+\)){,3}(?:>|#) ?$'
+      - '\-?(?:bash)?(?:\-\d\.\d)? ?[>#\$] ?$'
+    return: true
+
+  - name: login
+    expect:
+      - ['(?:L|l)ogin:', '(?:P|p)assword:']
+    send:
+      each: vars.creds
+      fields: [username, password]
+
+attach:
+  spawn: ssh jmather-home
+  script:
+    # - line: a dut grab -sf -p labtracker ldp448
+    - line: a dut attach mrdp360
+    - return: 1
+      when: "attached to"
+  timeout: 300s
+  breakout:
+    script:
+      - line: logout
+      - control: "]"
+      - line: logout
+
+errors:
+  - '% .*'
+
+script:
+  - cmd: show version
+  - cmd: show bogus
+    ignore_error: true
+

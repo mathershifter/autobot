@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "p1c-upgrade.schema.json",
-  "title": "P1C Upgrade Script",
+  "$id": "autobot.schema.json",
+  "title": "Autobot Script",
   "type": "object",
   "required": ["version", "attach", "script"],
   "additionalProperties": false,
