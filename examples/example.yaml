@@ -65,11 +65,9 @@ script:
   - block:
       name: Install SONiC
       script:
-        # - cmd: consutil connect 0
         - call: is_system_running
         - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
           ignore_error: true
-        - cmd: curl -s -o /dev/null -w "%{http_code}\n" https://artifactory.infra.corp.arista.io
         - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
         - cmd: sudo reboot now
   
