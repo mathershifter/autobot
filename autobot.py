@@ -309,6 +309,7 @@ class Session:
             return
         if not self._cld:
             raise RuntimeError("not attached")
+        # cld = self._cld
 
         if errors:
             patterns = self._patterns[:-2] + errors + self._patterns[-2:]
@@ -338,7 +339,7 @@ class Session:
                 raise EOFError("connection closed")
             if error_start <= i < error_end:
                 raise RuntimeError(
-                    f"command error: {self._cld.after.strip()}"
+                    f"command error: {self._cld.after}".strip()
                 )
             for h in self._handlers:
                 if h.start <= i < h.end:
@@ -375,9 +376,14 @@ class Session:
     def check_rc(self, timeout: float = 300) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
+        
         self.sendline("echo __AUTOBOT_RC=$?")
         self._cld.expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
-        rc = int(self._cld.match.group(1))
+
+        if self._cld.match is not re.Match[str]:
+            raise RuntimeError("failed to determine status code")
+
+        rc = int(self._cld.match.group(1)) # type: ignore
         self.get_prompt(timeout=timeout)
         return rc
 
