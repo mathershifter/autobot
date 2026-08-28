@@ -2,7 +2,8 @@ version: 0.1.0
 
 env:
   ARTIFACTORY: https://ci.corp.io
-  SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/202605/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
+  SONIC_VERSION: "202605"
+  SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/{{ env.SONIC_VERSION }}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
   NAMESERVER: 172.22.22.10
 
 vars:
@@ -18,7 +19,6 @@ prompts:
   - name: cli
     expect:
       - '\w+@[\w\-\.]+:[^\$]+'
-      - '(arista-)?bmc-boot=>'
     return: true
 
   - name: login
@@ -57,25 +57,30 @@ fn:
       - cmd: sudo reboot now
         delay_after: 10s
 
+  reboot:
+    script:
+      - line: sudo reboot now
+        delay_after: 10s
+
 script:
   - call: is_system_running
   
   - cmd: show version | grep Version
-    assert: "SONiC Software Version: SONiC.branch.202605"
+    assert: "{{ env.SONIC_VERSION }}"
 
   - call: is_system_running
 
   - block:
-      name: Install SONiC
+      name: Update SONiC
       script:
         - call: is_system_running
         - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
           ignore_error: true
         - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-        - cmd: sudo reboot now
+        - call: reboot
   
   - block:
-      name: Check aboot
+      name: Check Aboot
       script:
         - control: c
           when: 'Press Control-C now to enter Aboot shell'
@@ -89,4 +94,4 @@ script:
   - call: is_system_running
 
   - cmd: show version | grep 'Software Version'
-    assert: "SONiC Software Version: SONiC.branch.202605"
+    assert: assert: "{{ env.SONIC_VERSION }}"
