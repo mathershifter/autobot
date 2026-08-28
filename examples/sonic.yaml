@@ -3,7 +3,7 @@ version: 0.1.0
 env:
   ARTIFACTORY: https://ci.corp.io
   SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/202605/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
-  NAMESERVER: 1.2.3.4
+  NAMESERVER: 172.22.22.10
 
 vars:
   creds:
@@ -65,28 +65,26 @@ script:
 
   - call: is_system_running
 
-  # - block:
-  #     name: Install SONiC
-  #     script:
-  #       - call: is_system_running
-  #       - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
-  #         ignore_error: true
-  #       - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-  #       - cmd: sudo reboot now
+  - block:
+      name: Install SONiC
+      script:
+        - call: is_system_running
+        - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+          ignore_error: true
+        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+        - cmd: sudo reboot now
   
-  # - cmd: sudo reboot now
-
-  # - block:
-  #     name: Check aboot
-  #     script:
-  #       - control: c
-  #         when: 'Press Control-C now to enter Aboot shell'
-  #       - line: uname -a
-  #         when: '(?:A|a)boot#'
-  #     breakout:
-  #       script:
-  #         - line: exit
-  #           when: '(?:A|a)boot#'
+  - block:
+      name: Check aboot
+      script:
+        - control: c
+          when: 'Press Control-C now to enter Aboot shell'
+        - line: uname -a
+          when: '(?:A|a)boot#'
+      breakout:
+        script:
+          - line: exit
+            when: '(?:A|a)boot#'
       
   - call: is_system_running
 
