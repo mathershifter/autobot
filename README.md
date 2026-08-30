@@ -5,75 +5,36 @@ A YAML-driven console robot for automating interactive sessions over SSH, telnet
 ## Install
 
 ```bash
-pipx install git+https://github.com/mathershifter/autobot.git
-```
-
-Or with [uv](https://docs.astral.sh/uv/):
-
-```bash
 uv tool install git+https://github.com/mathershifter/autobot.git
 ```
 
-## Quick Start
-
-Create a script file `example.yaml`:
-
-```yaml
-version: 0.1.0
-
-vars:
-  creds:
-    - username: admin
-      password: password
-
-prompts:
-  - name: cli
-    expect:
-      - '\w+@[\w\-\.]+:[^\$]+'
-  - name: login
-    retry: "{{ len(vars.creds) }}"
-    expect:
-      - 'login:'
-      - '(?:P|p)assword:'
-    send:
-      - "{{ vars.creds[i].username }}"
-      - "{{ vars.creds[i].password }}"
-
-attach:
-  spawn: ssh {{ args.host }}
-  timeout: 60s
-
-script:
-  - cmd: show version
-  - cmd: show interfaces status
-```
-
-Run it:
+Or with pipx:
 
 ```bash
-./autobot.py example.yaml --arg host=myswitch.local
+pipx install git+https://github.com/mathershifter/autobot.git
 ```
 
 ## Usage
 
 ```
-autobot.py <script.yaml> [--arg KEY=VALUE ...] [--validate-only]
+autobot <script.yaml> [--arg KEY=VALUE ...]
 ```
 
-| Flag | Description |
-|------|-------------|
+| Flag             | Description                                                 |
+|------------------|-------------------------------------------------------------|
 | `--arg KEY=VALUE` | Pass arguments accessible as `{{ args.KEY }}` in templates |
-| `--validate-only` | Validate the YAML and report issues without executing |
 
 ## Script Structure
+
+A script is a YAML file with the following top-level fields:
 
 ```yaml
 version: 0.1.0
 
-env:                    # string key-value pairs for {{ env.KEY }}
+env:                    # string key-value defaults (overridden by OS env vars)
   IMAGE_URL: https://...
 
-vars:                   # arbitrary data for {{ vars.KEY }}
+vars:                   # arbitrary data accessible as {{ vars.KEY }}
   creds:
     - username: admin
       password: secret
@@ -81,132 +42,297 @@ vars:                   # arbitrary data for {{ vars.KEY }}
 prompts:                # interactive prompt handlers
   - name: cli
     expect: ['\w+@\w+:.+']
-  - name: login
-    expect: ['login:', '(?:P|p)assword:']
-    send: ['{{ vars.creds[i].username }}', '{{ vars.creds[i].password }}']
-    retry: "{{ len(vars.creds) }}"
+    return: true
 
-fn:                     # reusable functions
-  wait_for_boot:
-    cmd: systemctl is-system-running --wait
-    assert: [running, degraded]
-
-attach:                 # session lifecycle
-  spawn: ssh jumphost
-  script:               # post-connect setup
-    - line: connect-to-device
-    - return: 1
-  breakout:             # cleanup (runs in finally)
+fn:                     # reusable step sequences
+  check_boot:
     script:
-      - cmd: logout
-      - control: "]"
-  timeout: 300s
+      - cmd: systemctl is-system-running --wait
+        assert: [running, degraded]
 
-script:                 # main steps
+attach:                 # session spawn and lifecycle
+  spawn: ssh jumphost
+  script:
+    - line: connect-to-device
+  breakout:
+    script:
+      - control: "]"
+      - line: q
+
+script:                 # main steps to execute
   - cmd: show version
-  - call: wait_for_boot
+  - call: check_boot
 ```
+
+| Field     | Required | Description                                                                                                                  |
+|-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
+| `version` | yes      | Semver string (e.g. `0.1.0`)                                                                                                 |
+| `env`     | no       | String key-value defaults, overridden by OS env vars. Supports nesting: `{{ env.OTHER_KEY }}`. Accessible as `{{ env.KEY }}` |
+| `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
+| `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
+| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking                         |
+| `fn`      | no       | Named functions (reusable step sequences)                                                                                    |
+| `attach`  | yes      | Session spawn and lifecycle config                                                                                           |
+| `script`  | yes      | Ordered list of steps to execute                                                                                             |
+
+## Attach
+
+The `attach` block controls how autobot connects to the remote console.
+
+| Field      | Required | Description                                                                                                                         |
+|------------|----------|-------------------------------------------------------------------------------------------------------------------------------------|
+| `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Uses the shebang for the interpreter. Aborts on non-zero exit        |
+| `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`)                                                                  |
+| `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
+| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1` |
+| `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
+| `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
+
+### Lifecycle
+
+1. `attach.prepare` runs locally (if defined) — aborts on failure
+2. `pexpect.spawn(attach.spawn)` — waits for initial output
+3. `attach.script` steps execute (e.g. jump-host commands)
+4. Main `script` steps execute
+5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
+6. Session closed
+
+### Example
+
+```yaml
+attach:
+  prepare: |
+    #!/bin/sh
+    arista-ssh check-auth || arista-ssh login
+  spawn: ssh jumphost
+  script:
+    - line: a dut attach ldp448
+    - return: 1
+      when: "attached to"
+  timeout: 300s
+  breakout:
+    script:
+      - line: logout
+      - control: "]"
+      - line: logout
+```
+
+## Prompts
+
+Prompts define how autobot recognizes and responds to interactive patterns in the session output.
+
+A prompt with `return: true` (or no `send` field) is a **shell prompt** — when matched, autobot knows the previous command finished and the next one can be sent:
+
+```yaml
+- name: cli
+  expect:
+    - '\w+@[\w\-\.]+:[^\$]+'
+    - '(arista-)?bmc-boot=>'
+  return: true
+```
+
+A prompt with `send` is an **interactive prompt** — autobot responds automatically:
+
+```yaml
+- name: login
+  expect:
+    - ['(?:L|l)ogin:', '(?:P|p)assword:']
+  send:
+    each: vars.creds
+    fields: [username, password]
+```
+
+The `expect` field is a list of patterns. Each entry can be a string or a list of strings (grouped alternatives). Grouped entries are matched together — when the first pattern in a group matches, autobot sends the first response; when the second matches, it sends the second, and so on.
+
+### Send forms
+
+The `send` field accepts three forms:
+
+**Flat list** — responses sent in order as patterns match:
+
+```yaml
+send: ["admin", "password"]
+```
+
+**List of lists** — grouped attempts (credential cycling):
+
+```yaml
+send:
+  - ["admin", "password1"]
+  - ["admin", "password2"]
+```
+
+**sendEach** — data-driven responses from `vars`:
+
+```yaml
+send:
+  each: vars.creds
+  fields: [username, password]
+```
+
+This resolves `vars.creds`, and for each item emits the named fields in order.
 
 ## Step Types
 
-### cmd
+### `cmd` — Send command(s) to the shell
 
-Send one or more commands. Waits for a prompt before each line.
+Waits for a prompt, sends the command, waits for the next prompt, and checks the result.
 
 ```yaml
 - cmd: show version
-- cmd: show version
   assert: "SONiC Software Version"
   timeout: 30s
+```
+
+`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
+
+After the last command line, the step:
+1. Waits for a shell prompt (confirming the command finished)
+2. Checks the return code via `echo $?` — raises on non-zero
+3. If top-level `errors` patterns are defined, checks command output against those patterns instead of `$?`
+
+Set `ignore_error: true` to continue on failure:
+
+```yaml
+- cmd: show bogus
+  ignore_error: true
+```
+
+**Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead.
+
+#### Multi-line commands
+
+As a list (each entry sent separately):
+
+```yaml
 - cmd:
     - configure terminal
     - interface Ethernet1
     - shutdown
 ```
 
-### sleep
+Or as a multiline string (split on newlines automatically):
 
-Pause execution.
+```yaml
+- cmd: |
+    configure terminal
+    interface Ethernet1
+    shutdown
+```
+
+#### Embedded scripts
+
+If `cmd` is a string starting with `#!`, it is treated as an embedded script. The shebang determines the interpreter. The script is written to a temp file on the remote, made executable, executed, and cleaned up automatically.
+
+```yaml
+- cmd: |
+    #!/bin/bash
+    echo "hello"
+    if [ -f /tmp/foo ]; then
+      rm /tmp/foo
+    fi
+```
+
+```yaml
+- cmd: |
+    #!/usr/bin/env python3
+    import json
+    with open("/tmp/out.json") as f:
+        data = json.load(f)
+    print(data["version"])
+```
+
+Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
+
+### `sleep` — Pause execution
 
 ```yaml
 - sleep: 60s
 ```
 
-### call
-
-Invoke a named function from `fn`.
+### `call` — Invoke a named function
 
 ```yaml
-- call: wait_for_boot
+- call: is_system_running
 ```
 
-### line
+### `block` — Named group of steps
 
-Send raw text without waiting for a prompt.
+Groups steps under a label with an optional `enter` (setup) and `breakout` (cleanup), similar to `attach`.
 
-```yaml
-- line: a dut attach device01
-```
+| Field      | Required | Description                                                            |
+|------------|----------|------------------------------------------------------------------------|
+| `name`     | yes      | Label for the block                                                    |
+| `enter`    | no       | Steps to run before the main script (setup)                            |
+| `script`   | no       | Main steps to execute                                                  |
+| `breakout` | no       | Steps to run in `finally` after the main script (cleanup, best-effort) |
 
-### return
-
-Send empty newline(s).
-
-```yaml
-- return: 1
-- return: 3
-```
-
-### control
-
-Send control characters.
-
-```yaml
-- control: "]"           # Ctrl+]
-- control: [a, x]        # Ctrl+A, Ctrl+X
-```
-
-### context / exit
-
-Push a named context with a breakout script. Calling `exit` runs the breakout.
-
-```yaml
-- context:
-    name: host-console
-    breakout:
-      script:
-        - cmd: logout
-        - control: [a, x]
-# ... work inside context ...
-- exit: host-console
-```
-
-### block
-
-Group steps under a label.
+The block lifecycle:
+1. `enter` steps execute (if defined)
+2. `script` steps execute
+3. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
 
 ```yaml
 - block:
-    name: Upgrade firmware
+    name: Install SONiC
     script:
-      - cmd: firmware-upgrade --apply
-      - sleep: 30s
-      - cmd: show firmware
+      - cmd: sonic-installer install -y image.swi
 ```
 
-## Common Step Options
-
-Most steps support these optional fields:
+With enter and breakout:
 
 ```yaml
-- cmd: risky-command
-  when: "Are you sure?"     # wait for this pattern first
-  delay_before: 2s          # pause before executing
-  delay_after: 5s           # pause after executing
-  timeout: 120s             # override default timeout
+- block:
+    name: Host Console
+    enter:
+      - cmd: consutil connect 0
+    script:
+      - call: is_system_running
+      - cmd: show version
+    breakout:
+      script:
+        - line: exit
 ```
 
+### `line` — Raw send (no prompt wait)
+
+Sends text without waiting for a prompt before or after. Use for commands that won't produce a standard prompt response (e.g. `reboot`, interactive sub-sessions).
+
+```yaml
+- line: sudo reboot now
+  delay_after: 10s
+```
+
+### `return` — Send empty newline(s)
+
+```yaml
+- return: 1       # send one newline
+- return: 3       # send three
+```
+
+### `control` — Send control character(s)
+
+```yaml
+- control: "]"           # Ctrl+]
+- control: [a, x]        # Ctrl+A then Ctrl+X
+```
+
+## Common Step Properties
+
+All step types except `sleep` support these optional fields:
+
+| Field          | Description                                                    |
+|----------------|----------------------------------------------------------------|
+| `when`         | Regex pattern — wait for this to appear in output before executing |
+| `delay_before` | Duration to wait before the step                               |
+| `delay_after`  | Duration to wait after the step                                |
+| `timeout`      | Override default timeout for this step                         |
+
+`line` and `return` steps do not support `timeout`.
+
 ## Duration Format
+
+Durations accept a bare number (seconds) or a string with a unit suffix:
 
 ```
 5       # 5 seconds (bare number)
@@ -216,67 +342,76 @@ Most steps support these optional fields:
 1h      # hours
 ```
 
-## Prompts
-
-Prompts define how autobot recognizes and responds to interactive patterns.
-
-A prompt with no `send` field is a **shell prompt** -- when matched, the pending command is sent:
-
-```yaml
-- name: cli
-  expect:
-    - '\w+@[\w\-\.]+:[^\$]+'
-    - '(arista-)?bmc-boot=>'
-```
-
-A prompt with `send` is an **interactive prompt** -- autobot responds automatically:
-
-```yaml
-- name: login
-  retry: "{{ len(vars.creds) }}"
-  expect:
-    - 'login:'
-    - '(?:P|p)assword:'
-  send:
-    - "{{ vars.creds[i].username }}"
-    - "{{ vars.creds[i].password }}"
-```
-
-The variable `i` is the retry index. With `retry: 2` and two credential sets, autobot tries the first pair, and if the login prompt reappears, tries the second.
-
 ## Templating
 
 All string values support [Jinja2](https://jinja.palletsprojects.com/) templates:
 
 ```yaml
-- cmd: wget -P /tmp {{ env.IMAGE_URL }}
-- cmd: echo {{ args.message }}
+env:
+  BASE_URL: https://artifacts.example.com
+  IMAGE: '{{ env.BASE_URL }}/sonic-broadcom.swi'
+
+script:
+  - cmd: wget -P /tmp {{ env.IMAGE }}
+  - cmd: echo {{ args.message }}
 ```
 
 Available context:
 
-| Variable | Source |
-|----------|--------|
-| `env.*` | `env` section |
-| `vars.*` | `vars` section |
-| `args.*` | `--arg` CLI flags |
+| Variable | Source                                  |
+|----------|-----------------------------------------|
+| `env.*`  | `env` section (merged with OS env vars) |
+| `vars.*` | `vars` section                          |
+| `args.*` | CLI `--arg` flags                       |
 
-Built-in functions: `len`, `range`, `int`, `str`.
+## Error Handling
 
-## Validation
+By default, `cmd` steps check the return code via `echo $?` and raise on non-zero. You can change this behavior in two ways:
 
-Check a script for structural and lint errors without executing:
+**Per-step:** Set `ignore_error: true` to log and continue:
 
-```bash
-./autobot.py script.yaml --validate-only
+```yaml
+- cmd: show bogus
+  ignore_error: true
 ```
 
-Catches:
-- Missing or misspelled `env` references
-- YAML indentation issues with `block`/`context`
-- Empty commands, trailing quotes
-- Common typos
+**Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
+
+```yaml
+errors:
+  - '% .*'
+
+script:
+  - cmd: show bogus    # raises because output matches '% .*'
+```
+
+## Functions
+
+Define reusable step sequences in `fn` and invoke them with `call`:
+
+```yaml
+fn:
+  is_system_running:
+    script:
+      - cmd: systemctl is-system-running --wait
+        assert:
+          - running
+          - degraded
+
+  reboot:
+    script:
+      - line: sudo reboot now
+        delay_after: 10s
+
+script:
+  - call: is_system_running
+  - cmd: sonic-installer install -y image.swi
+  - call: reboot
+  - call: is_system_running
+```
 
 ## Schema
 
 The full JSON Schema is in [`autobot.schema.json`](autobot.schema.json).
+
+For the detailed specification, see [`SPEC.md`](SPEC.md).
