@@ -94,4 +94,4 @@ script:
   - call: is_system_running
 
   - cmd: show version | grep 'Software Version'
-    assert: assert: "{{ env.SONIC_VERSION }}"
+    assert: "{{ env.SONIC_VERSION }}"
