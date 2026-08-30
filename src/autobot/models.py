@@ -66,31 +66,21 @@ class Breakout(pydantic.BaseModel):
     script: list[Step] = []
 
 
-class BlockBody(pydantic.BaseModel):
+class Block(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
+    enter: list[Step] = []
     script: list[Step] = []
     breakout: Breakout | None = None
 
 
 class BlockStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    block: BlockBody
+    block: Block
     when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
-
-    @pydantic.model_validator(mode="before")
-    @classmethod
-    def normalize_indent(cls, data: Any) -> Any:
-        if isinstance(data, dict) and data.get("block") is None and "name" in data:
-            data = dict(data)
-            block: dict[str, Any] = {"name": data.pop("name"), "script": data.pop("script", [])}
-            if "breakout" in data:
-                block["breakout"] = data.pop("breakout")
-            data["block"] = block
-        return data
 
 
 class LineStep(pydantic.BaseModel):
@@ -147,7 +137,7 @@ Step = Annotated[
 
 AttachConfig.model_rebuild()
 Breakout.model_rebuild()
-BlockBody.model_rebuild()
+Block.model_rebuild()
 Function.model_rebuild()
 
 

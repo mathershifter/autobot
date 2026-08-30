@@ -156,7 +156,10 @@ class ScriptRunner:
         if isinstance(step.cmd, str) and step.cmd.startswith("#!"):
             self._step_cmd_script(step, timeout)
             return
-        lines = ensure_list(step.cmd)
+        if isinstance(step.cmd, str) and "\n" in step.cmd:
+            lines = [l for l in step.cmd.splitlines() if l.strip()]
+        else:
+            lines = ensure_list(step.cmd)
         for line in lines:
             cmd = self._render(line)
             if not step.when:
@@ -229,11 +232,22 @@ class ScriptRunner:
         print(f">> called {step.call}")
 
     def _step_block(self, step: BlockStep):
-        print(f">> block running: {step.block.name}")
-        self._run_steps(step.block.script)
-        if step.block.breakout:
-            print(f">> block breakout: {step.block.name}")
-            self._run_steps(step.block.breakout.script)
+        print(f">> block enter: {step.block.name}")
+        if step.block.enter:
+            self._run_steps(step.block.enter)
+        try:
+            self._run_steps(step.block.script)
+        finally:
+            if step.block.breakout and step.block.breakout.script:
+                print(f">> block breakout: {step.block.name}")
+                self._session.reset_handlers()
+                try:
+                    self._run_steps(step.block.breakout.script)
+                except (TimeoutError, EOFError, RuntimeError, OSError) as e:
+                    print(
+                        f">> block breakout error ({type(e).__name__}): {e}",
+                        file=sys.stderr,
+                    )
         print(f">> block completed: {step.block.name}")
 
     def _step_line(self, step: LineStep):

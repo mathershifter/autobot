@@ -156,6 +156,10 @@
           "additionalProperties": false,
           "properties": {
             "name": { "type": "string" },
+            "enter": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/step" }
+            },
             "script": {
               "type": "array",
               "items": { "$ref": "#/$defs/step" }
