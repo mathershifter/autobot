@@ -1,6 +1,6 @@
 # Autobot
 
-A YAML-driven console robot for automating interactive sessions over SSH, telnet, and serial consoles. Autobot handles prompt detection, credential cycling, multi-hop connections, and session cleanup.
+A console robot for automating interactive sessions over SSH, telnet, and serial consoles. Autobot handles prompt detection, credential cycling, multi-hop connections, and session cleanup.
 
 ## Install
 
@@ -29,7 +29,7 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 A script is a YAML file with the following top-level fields:
 
 ```yaml
-version: 0.1.0
+autobot: 2026-08
 
 env:                    # string key-value defaults (overridden by OS env vars)
   IMAGE_URL: https://...
@@ -66,7 +66,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `version` | yes      | Semver string (e.g. `0.1.0`)                                                                                                 |
+| `autobot` | yes      | Semver string (e.g. `20206-08`)                                                                                                 |
 | `env`     | no       | String key-value defaults, overridden by OS env vars. Supports nesting: `{{ env.OTHER_KEY }}`. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |

@@ -1,4 +1,4 @@
-version: 0.1.0
+autobot: 2026-08
 
 env:
   ARTIFACTORY: https://ci.corp.io
@@ -55,11 +55,6 @@ fn:
   reboot:
     script:
       - cmd: sudo reboot now
-        delay_after: 10s
-
-  reboot:
-    script:
-      - line: sudo reboot now
         delay_after: 10s
 
 script:

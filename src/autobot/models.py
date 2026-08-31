@@ -143,7 +143,7 @@ Function.model_rebuild()
 
 class ScriptConfig(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    version: str
+    autobot: str
     env: dict[str, str] = {}
     vars: dict[str, Any] = {}
     prompts: list[Prompt] = []

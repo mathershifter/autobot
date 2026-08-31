@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "autobot.schema.json",
+  "$id": "schemas/autobot.2026-08.json",
   "title": "Autobot Script",
   "type": "object",
-  "required": ["version", "attach", "script"],
+  "required": ["autobot", "attach", "script"],
   "additionalProperties": false,
   "properties": {
-    "version": {
+    "autobot": {
       "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+      "pattern": "^\\d{4}-\\d{2}$"
     },
     "env": {
       "type": "object",
