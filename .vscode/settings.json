@@ -1,0 +1,19 @@
+{
+  "json.validate.enable": true,
+  "json.schemas": [
+    {
+      "fileMatch": [
+        "**/*.autobot.yaml",
+        "**/*.autobot.yml",
+        "**/*.autobot.json"
+      ],
+      "url": "./schemas/autobot.2026-08.json"
+    }
+  ],
+  "yaml.schemas": {
+    "./schemas/autobot.2026-08.json": [
+      "**/*.autobot.yaml",
+      "**/*.autobot.yml"
+    ]
+  }
+}

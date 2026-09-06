@@ -239,7 +239,7 @@ If `cmd` is a string starting with `#!`, it is treated as an embedded script. Th
     import json
     with open("/tmp/out.json") as f:
         data = json.load(f)
-    print(data["version"])
+    console.print(data["version"])
 ```
 
 Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
