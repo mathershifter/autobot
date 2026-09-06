@@ -5,10 +5,12 @@ import sys
 
 import pydantic
 import yaml
+from rich.console import Console
 
-from .models import ScriptConfig
-from .runner import ScriptRunner
+from .models import Config
+from .runner import Runner
 
+console = Console(stderr=True)
 
 def main():
     parser = argparse.ArgumentParser(description="Execute an autobot script.")
@@ -27,10 +29,11 @@ def main():
         config_dict = yaml.safe_load(f)
 
     try:
-        config = ScriptConfig(**config_dict)
+        config = Config(**config_dict)
     except pydantic.ValidationError as e:
-        print("Validation errors:", file=sys.stderr)
-        print(e, file=sys.stderr)
+        console.print("Validation errors:")
+        console.print(e.json(indent=2))
+
         sys.exit(1)
 
     cli_args = {}
@@ -40,7 +43,7 @@ def main():
         key, value = item.split("=", 1)
         cli_args[key] = value
 
-    runner = ScriptRunner(config, cli_args)
+    runner = Runner(config, cli_args)
     runner.run()
 
 

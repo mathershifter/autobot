@@ -44,8 +44,10 @@
       "properties": {
         "name": { "type": "string" },
         "expect": {
-          "type": "array",
-          "items": { "type": "string" }
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "array", "items": { "type": "array", "items": { "type": "string" } } }
+          ]
         },
         "return": { "type": "boolean", "default": false },
         "send": {
@@ -156,6 +158,10 @@
           "additionalProperties": false,
           "properties": {
             "name": { "type": "string" },
+            "prompts": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/prompt" }
+            },
             "enter": {
               "type": "array",
               "items": { "$ref": "#/$defs/step" }

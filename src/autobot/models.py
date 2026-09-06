@@ -26,7 +26,7 @@ class Function(pydantic.BaseModel):
     script: list[Step] = []
 
 
-class AttachConfig(pydantic.BaseModel):
+class Attach(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     prepare: str | None = None
     spawn: str
@@ -69,6 +69,7 @@ class Breakout(pydantic.BaseModel):
 class Block(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
+    prompts: list[Prompt] = []
     enter: list[Step] = []
     script: list[Step] = []
     breakout: Breakout | None = None
@@ -135,13 +136,13 @@ Step = Annotated[
     pydantic.Discriminator(_step_discriminator),
 ]
 
-AttachConfig.model_rebuild()
+Attach.model_rebuild()
 Breakout.model_rebuild()
 Block.model_rebuild()
 Function.model_rebuild()
 
 
-class ScriptConfig(pydantic.BaseModel):
+class Config(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     autobot: str
     env: dict[str, str] = {}
@@ -149,5 +150,5 @@ class ScriptConfig(pydantic.BaseModel):
     prompts: list[Prompt] = []
     fn: dict[str, Function] = {}
     errors: list[str] = []
-    attach: AttachConfig
+    attach: Attach
     script: list[Step] = []

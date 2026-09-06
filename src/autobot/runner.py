@@ -1,34 +1,63 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import uuid
 from typing import Any
 
+from rich.console import Console
+
 from .models import (
     BlockStep,
     CallStep,
     CmdStep,
+    Config,
     ControlStep,
     LineStep,
+    Prompt,
     ReturnStep,
-    ScriptConfig,
+    SendEach,
     SleepStep,
     Step,
 )
-from .session import Session
+from .session import PromptHandler, Session
 from .types import ensure_list, render
 
-
-class ScriptRunner:
-    def __init__(self, config: ScriptConfig, cli_args: dict[str, str]):
+console = Console(stderr=True)
+class Runner:
+    def __init__(self, config: Config, cli_args: dict[str, str]):
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
         self._env = self._resolve_env(config.env)
-        self._session = Session(config.prompts, self._render, self._resolve)
+        handlers = [self._build_handler(p) for p in config.prompts]
+        self._session = Session(handlers)
+
+    def _build_handler(self, prompt: Prompt) -> PromptHandler:
+        patterns: list[str] = []
+        for entry in prompt.expect:
+            if isinstance(entry, list):
+                patterns.extend(entry)
+            else:
+                patterns.append(entry)
+        responses = self._build_responses(prompt.send)
+        is_return = prompt.is_shell_prompt or prompt.send is None
+        return PromptHandler(prompt.name, patterns, responses, is_return)
+
+    def _build_responses(self, send) -> list[str]:
+        if not send:
+            return []
+        if isinstance(send, SendEach):
+            items = self._resolve(send.each)
+            if send.fields:
+                return [str(item[f]) for item in items for f in send.fields]
+            return [str(item) for item in items]
+        if isinstance(send[0], list):
+            return [self._render(s) for attempt in send for s in attempt]
+        return [self._render(s) for s in send]
 
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
         env = {k: os.environ.get(k, v) for k, v in defaults.items()}
@@ -70,7 +99,7 @@ class ScriptRunner:
 
     @staticmethod
     def _run_prepare(script: str):
-        print(">> prepare: running local script")
+        console.print(">> prepare: running local script")
         with tempfile.NamedTemporaryFile(
             mode="w", prefix="_autobot_", suffix=".sh", delete=False
         ) as f:
@@ -85,7 +114,7 @@ class ScriptRunner:
                 )
         finally:
             os.unlink(tmp)
-        print(">> prepare: done")
+        console.print(">> prepare: done")
 
     def run(self):
         attach = self._config.attach
@@ -96,7 +125,7 @@ class ScriptRunner:
         if attach.prepare:
             self._run_prepare(self._render(attach.prepare))
 
-        print(f">> attach: {spawn}")
+        console.print(f">> attach: {spawn}")
         self._session.attach(spawn, env=env, timeout=timeout)
         try:
             if attach.script:
@@ -104,14 +133,13 @@ class ScriptRunner:
             self._run_steps(self._config.script)
         finally:
             if attach.breakout and attach.breakout.script:
-                print(">> breakout: detaching")
+                console.print(">> breakout: detaching")
                 self._session.reset_handlers()
                 try:
                     self._run_steps(attach.breakout.script)
                 except (TimeoutError, EOFError, RuntimeError, OSError) as e:
-                    print(
-                        f">> breakout error ({type(e).__name__}): {e}", file=sys.stderr
-                    )
+                    console.print(
+                        f">> breakout error ({type(e).__name__}): {e}")
             self._session.detach()
 
     def _run_steps(self, steps: list[Step]):
@@ -165,29 +193,31 @@ class ScriptRunner:
             if not step.when:
                 self._session.get_prompt(timeout=timeout)
             self._session.sendline(cmd)
-            print(f">> cmd: {cmd}")
-        assertions = ensure_list(step.assert_)
-        if assertions:
-            self._session.expect(
-                [self._render(a) for a in assertions], timeout=timeout
-            )
+            console.print(f">> cmd: {cmd}")
         errors = self._config.errors or None
         try:
-            self._session.get_prompt(timeout=timeout, errors=errors)
-            if not errors:
+            output = self._session.get_prompt(timeout=timeout, errors=errors)
+            assertions = ensure_list(step.assert_)
+            if assertions:
+                rendered = [self._render(a) for a in assertions]
+                if not any(re.search(p, output) for p in rendered):
+                    raise RuntimeError(
+                        f"assertion failed: expected {rendered}"
+                    )
+            elif not errors:
                 rc = self._session.check_rc(timeout=timeout)
                 if rc != 0:
                     raise RuntimeError(f"command returned exit code {rc}")
         except RuntimeError:
             if not step.ignore_error:
                 raise
-            print(">> error ignored", file=sys.stderr)
+            console.print(">> error ignored")
 
     def _step_cmd_script(self, step: CmdStep, timeout: float):
         script = self._render(str(step.cmd))
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         eof_marker = "AUTOBOT_SCRIPT_EOF"
-        print(f">> script: writing to {tmp}")
+        console.print(f">> script: writing to {tmp}")
         if not step.when:
             self._session.get_prompt(timeout=timeout)
         self._session.sendline(f"cat > {tmp} << '{eof_marker}'")
@@ -197,31 +227,33 @@ class ScriptRunner:
         self._session.get_prompt(timeout=timeout)
         self._session.sendline(f"chmod +x {tmp}")
         self._session.get_prompt(timeout=timeout)
-        print(f">> script: executing {tmp}")
+        console.print(f">> script: executing {tmp}")
         self._session.sendline(tmp)
-        assertions = ensure_list(step.assert_)
-        if assertions:
-            self._session.expect(
-                [self._render(a) for a in assertions], timeout=timeout
-            )
         errors = self._config.errors or None
         try:
-            self._session.get_prompt(timeout=timeout, errors=errors)
-            if not errors:
+            output = self._session.get_prompt(timeout=timeout, errors=errors)
+            assertions = ensure_list(step.assert_)
+            if assertions:
+                rendered = [self._render(a) for a in assertions]
+                if not any(re.search(p, output) for p in rendered):
+                    raise RuntimeError(
+                        f"assertion failed: expected {rendered}"
+                    )
+            elif not errors:
                 rc = self._session.check_rc(timeout=timeout)
                 if rc != 0:
                     raise RuntimeError(f"command returned exit code {rc}")
         except RuntimeError:
             if not step.ignore_error:
                 raise
-            print(">> error ignored", file=sys.stderr)
+            console.print(">> error ignored")
         finally:
             self._session.get_prompt(timeout=timeout)
             self._session.sendline(f"rm -f {tmp}")
-            print(f">> script: cleaned up {tmp}")
+            console.print(f">> script: cleaned up {tmp}")
 
     def _step_sleep(self, step: SleepStep):
-        print(f">> sleep: {step.sleep}s")
+        console.print(f">> sleep: {step.sleep}s")
         self._session.sleep(step.sleep)
 
     def _step_call(self, step: CallStep, timeout: float):
@@ -229,26 +261,31 @@ class ScriptRunner:
         if not fn:
             raise ValueError(f"undefined function: {step.call}")
         self._run_steps(fn.script)
-        print(f">> called {step.call}")
+        console.print(f">> called {step.call}")
 
     def _step_block(self, step: BlockStep):
-        print(f">> block enter: {step.block.name}")
+        console.print(f">> block enter: {step.block.name}")
+        if step.block.prompts:
+            saved_handlers = self._session._handlers
+            block_handlers = [self._build_handler(p) for p in step.block.prompts]
+            self._session._set_handlers(block_handlers)
+        else:
+            saved_handlers = None
         if step.block.enter:
             self._run_steps(step.block.enter)
         try:
             self._run_steps(step.block.script)
         finally:
             if step.block.breakout and step.block.breakout.script:
-                print(f">> block breakout: {step.block.name}")
+                console.print(f">> block breakout: {step.block.name}")
                 self._session.reset_handlers()
                 try:
                     self._run_steps(step.block.breakout.script)
                 except (TimeoutError, EOFError, RuntimeError, OSError) as e:
-                    print(
-                        f">> block breakout error ({type(e).__name__}): {e}",
-                        file=sys.stderr,
-                    )
-        print(f">> block completed: {step.block.name}")
+                    console.print(f">> block breakout error ({type(e).__name__}): {e}")
+            if saved_handlers is not None:
+                self._session._set_handlers(saved_handlers)
+        console.print(f">> block completed: {step.block.name}")
 
     def _step_line(self, step: LineStep):
         for line in ensure_list(step.line):
@@ -261,4 +298,4 @@ class ScriptRunner:
     def _step_control(self, step: ControlStep):
         for char in ensure_list(step.control):
             self._session.sendcontrol(char)
-            print(f">> control sent: ^{char.upper()}")
+            console.print(f">> control sent: ^{char.upper()}")

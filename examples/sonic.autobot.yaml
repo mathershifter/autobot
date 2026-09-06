@@ -2,7 +2,7 @@ autobot: 2026-08
 
 env:
   ARTIFACTORY: https://ci.corp.io
-  SONIC_VERSION: "202605"
+  SONIC_VERSION: "202511"
   SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/{{ env.SONIC_VERSION }}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
   NAMESERVER: 172.22.22.10
 
@@ -29,13 +29,11 @@ prompts:
       fields: [username, password]
 
 attach:
-  prepare: |
-    #!/bin/sh
-    arista-ssh check-auth || arista-ssh login
+  
   spawn: ssh jmather-home
+  # script to run after spawning the session, before running any steps
   script:
-    # - line: a dut grab -sf -p labtracker ldp448
-    - line: a dut attach ldp448
+    - line: a dut attach {{ args.dut }}
     - return: 1
       when: "attached to"
   timeout: 300s
@@ -43,7 +41,6 @@ attach:
     script:
       - line: logout
       - control: "]"
-      - line: logout
 
 fn:
   is_system_running:
@@ -51,40 +48,43 @@ fn:
       - cmd: systemctl is-system-running --wait
         assert:
           - running
+          - degraded
 
   reboot:
     script:
-      - cmd: sudo reboot now
+      - line: sudo reboot now
         delay_after: 10s
+
+  update_sonic:
+    script:
+      - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+        ignore_error: true
+      - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}    
 
 script:
   - call: is_system_running
   
   - cmd: show version | grep Version
-    assert: "{{ env.SONIC_VERSION }}"
+  # assert: "{{ env.SONIC_VERSION }}"
 
-  - call: is_system_running
-
-  - block:
-      name: Update SONiC
-      script:
-        - call: is_system_running
-        - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
-          ignore_error: true
-        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-        - call: reboot
+  - call: update_sonic
   
+  - call: reboot
+
   - block:
       name: Check Aboot
+      prompts:
+        - name: aboot
+          expect:
+            - '(?:A|a)boot#'
+          return: true
       script:
         - control: c
           when: 'Press Control-C now to enter Aboot shell'
-        - line: uname -a
-          when: '(?:A|a)boot#'
+        - cmd: uname -a
       breakout:
         script:
           - line: exit
-            when: '(?:A|a)boot#'
       
   - call: is_system_running
 

@@ -5,7 +5,6 @@ import time
 
 import pexpect
 
-from .models import Prompt, SendEach
 from .types import ANSI_ESCAPE_RE
 
 
@@ -24,32 +23,16 @@ class CleanWriter:
 
 
 class PromptHandler:
-    def __init__(self, prompt: Prompt, start: int, render_fn, resolve_fn):
-        self.prompt = prompt
-        self.is_return = prompt.is_shell_prompt or prompt.send is None
-        self.patterns: list[str] = []
-        for entry in prompt.expect:
-            if isinstance(entry, list):
-                self.patterns.extend(entry)
-            else:
-                self.patterns.append(entry)
-        self.start = start
-        self.end = start + len(self.patterns)
-        self._responses = self._build_responses(prompt.send, render_fn, resolve_fn)
+    def __init__(
+        self, name: str, patterns: list[str], responses: list[str], is_return: bool
+    ):
+        self.name = name
+        self.is_return = is_return
+        self.patterns = patterns
+        self.start = 0
+        self.end = len(patterns)
+        self._responses = responses
         self._idx = 0
-
-    @staticmethod
-    def _build_responses(send, render_fn, resolve_fn) -> list[str]:
-        if not send:
-            return []
-        if isinstance(send, SendEach):
-            items = resolve_fn(send.each)
-            if send.fields:
-                return [str(item[f]) for item in items for f in send.fields]
-            return [str(item) for item in items]
-        if isinstance(send[0], list):
-            return [render_fn(s) for attempt in send for s in attempt]
-        return [render_fn(s) for s in send]
 
     @property
     def exhausted(self) -> bool:
@@ -71,15 +54,17 @@ class PromptHandler:
 
 
 class Session:
-    def __init__(self, prompts: list[Prompt], render_fn, resolve_fn):
+    def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
-        self._handlers: list[PromptHandler] = []
+        self._at_prompt = False
+        self._set_handlers(handlers)
+
+    def _set_handlers(self, handlers: list[PromptHandler]):
+        self._handlers = handlers
         self._patterns: list = [r"\r\n", ANSI_ESCAPE_RE]
-        for p in prompts:
-            h = PromptHandler(
-                p, start=len(self._patterns), render_fn=render_fn, resolve_fn=resolve_fn
-            )
-            self._handlers.append(h)
+        for h in handlers:
+            h.start = len(self._patterns)
+            h.end = h.start + len(h.patterns)
             self._patterns.extend(h.patterns)
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
@@ -103,9 +88,9 @@ class Session:
 
     def get_prompt(
         self, timeout: float = 300, errors: list[str] | None = None
-    ):
+    ) -> str:
         if self._at_prompt:
-            return
+            return ""
         if not self._cld:
             raise RuntimeError("not attached")
 
@@ -119,6 +104,7 @@ class Session:
 
         for h in self._handlers:
             h.reset()
+        output: list[str] = []
         deadline = time.monotonic() + timeout
         solicited = False
         while True:
@@ -126,6 +112,8 @@ class Session:
             if remaining <= 0:
                 raise TimeoutError("timed out waiting for prompt")
             i = self._cld.expect(patterns, timeout=min(5, remaining))
+            if self._cld.before:
+                output.append(str(self._cld.before))
             if i == 0 or i == 1:
                 continue
             if i == len(patterns) - 2:
@@ -143,15 +131,15 @@ class Session:
                 if h.start <= i < h.end:
                     if h.is_return:
                         self._at_prompt = True
-                        return
+                        return "".join(output)
                     if h.exhausted:
                         raise RuntimeError(
-                            f"prompt '{h.prompt.name}': responses exhausted"
+                            f"prompt '{h.name}': responses exhausted"
                         )
                     response = h.next_response()
                     if response is None:
                         raise RuntimeError(
-                            f"prompt '{h.prompt.name}': no response available"
+                            f"prompt '{h.name}': no response available"
                         )
                     self._cld.sendline(response)
                     break

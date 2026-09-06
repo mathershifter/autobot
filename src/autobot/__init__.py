@@ -1,5 +1,5 @@
 from .cli import main
-from .models import ScriptConfig
-from .runner import ScriptRunner
+from .models import Config
+from .runner import Runner
 
-__all__ = ["ScriptConfig", "ScriptRunner", "main"]
+__all__ = ["Config", "Runner", "main"]
