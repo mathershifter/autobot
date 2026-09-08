@@ -153,9 +153,9 @@ class Runner:
     def _run_step(self, step: Step):
         timeout = self._get_timeout(step)
 
-        when = getattr(step, "when", None)
-        if when:
-            self._session.expect([self._render(when)], timeout=timeout)
+        after = getattr(step, "after", None)
+        if after:
+            self._session.expect([self._render(after)], timeout=timeout)
 
         delay_before = getattr(step, "delay_before", None)
         if delay_before:
@@ -190,7 +190,7 @@ class Runner:
             lines = ensure_list(step.cmd)
         for line in lines:
             cmd = self._render(line)
-            if not step.when:
+            if not step.after:
                 self._session.get_prompt(timeout=timeout)
             self._session.sendline(cmd)
             console.print(f">> cmd: {cmd}")
@@ -218,7 +218,7 @@ class Runner:
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         eof_marker = "AUTOBOT_SCRIPT_EOF"
         console.print(f">> script: writing to {tmp}")
-        if not step.when:
+        if not step.after:
             self._session.get_prompt(timeout=timeout)
         self._session.sendline(f"cat > {tmp} << '{eof_marker}'")
         for script_line in script.splitlines():

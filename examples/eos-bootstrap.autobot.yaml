@@ -29,7 +29,7 @@ attach:
     # - line: a dut grab -sf -p labtracker ldp448
     - line: a dut attach mrdp360
     - return: 1
-      when: "attached to"
+      after: "attached to"
   timeout: 300s
   breakout:
     script:

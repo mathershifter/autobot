@@ -115,7 +115,7 @@
       "additionalProperties": false,
       "properties": {
         "cmd": { "$ref": "#/$defs/stringOrArray" },
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "assert": { "$ref": "#/$defs/stringOrArray" },
         "ignore_error": { "type": "boolean", "default": false },
         "delay_before": { "$ref": "#/$defs/duration" },
@@ -137,7 +137,7 @@
       "additionalProperties": false,
       "properties": {
         "call": { "type": "string" },
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }
@@ -148,7 +148,7 @@
       "required": ["block"],
       "additionalProperties": false,
       "properties": {
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" },
@@ -190,7 +190,7 @@
       "additionalProperties": false,
       "properties": {
         "line": { "$ref": "#/$defs/stringOrArray" },
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
       }
@@ -201,7 +201,7 @@
       "additionalProperties": false,
       "properties": {
         "return": { "type": "integer", "minimum": 1, "default": 1 },
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
       }
@@ -212,7 +212,7 @@
       "additionalProperties": false,
       "properties": {
         "control": { "$ref": "#/$defs/stringOrArray" },
-        "when": { "type": "string" },
+        "after": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }

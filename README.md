@@ -108,7 +108,7 @@ attach:
   script:
     - line: a dut attach ldp448
     - return: 1
-      when: "attached to"
+      after: "attached to"
   timeout: 300s
   breakout:
     script:
@@ -323,7 +323,7 @@ All step types except `sleep` support these optional fields:
 
 | Field          | Description                                                    |
 |----------------|----------------------------------------------------------------|
-| `when`         | Regex pattern — wait for this to appear in output before executing |
+| `after`         | Regex pattern — wait for this to appear in output before executing |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
 | `timeout`      | Override default timeout for this step                         |

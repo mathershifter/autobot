@@ -39,7 +39,7 @@ class Attach(pydantic.BaseModel):
 class CmdStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     cmd: StringOrArray
-    when: str | None = None
+    after: str | None = None
     assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
     ignore_error: bool = False
     delay_before: Duration | None = None
@@ -55,7 +55,7 @@ class SleepStep(pydantic.BaseModel):
 class CallStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     call: str
-    when: str | None = None
+    after: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
@@ -78,7 +78,7 @@ class Block(pydantic.BaseModel):
 class BlockStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     block: Block
-    when: str | None = None
+    after: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
@@ -87,7 +87,7 @@ class BlockStep(pydantic.BaseModel):
 class LineStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     line: StringOrArray
-    when: str | None = None
+    after: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
 
@@ -95,7 +95,7 @@ class LineStep(pydantic.BaseModel):
 class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     newline_count: int = pydantic.Field(1, alias="return")
-    when: str | None = None
+    after: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
 
@@ -103,7 +103,7 @@ class ReturnStep(pydantic.BaseModel):
 class ControlStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     control: StringOrArray
-    when: str | None = None
+    after: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None

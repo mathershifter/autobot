@@ -35,7 +35,7 @@ attach:
   script:
     - line: a dut attach {{ args.dut }}
     - return: 1
-      when: "attached to"
+      after: "attached to"
   timeout: 300s
   breakout:
     script:
@@ -67,8 +67,7 @@ script:
   - cmd: show version | grep Version
   # assert: "{{ env.SONIC_VERSION }}"
 
-  - call: update_sonic
-  
+  # - call: update_sonic
   - call: reboot
 
   - block:
@@ -80,7 +79,7 @@ script:
           return: true
       script:
         - control: c
-          when: 'Press Control-C now to enter Aboot shell'
+          after: 'Press Control-C now to enter Aboot shell'
         - cmd: uname -a
       breakout:
         script:
