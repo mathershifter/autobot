@@ -40,6 +40,7 @@ class CmdStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     cmd: StringOrArray
     after: str | None = None
+    when: str | None = None
     assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
     ignore_error: bool = False
     delay_before: Duration | None = None
@@ -56,6 +57,7 @@ class CallStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     call: str
     after: str | None = None
+    when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
@@ -79,6 +81,7 @@ class BlockStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     block: Block
     after: str | None = None
+    when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None
@@ -88,6 +91,7 @@ class LineStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     line: StringOrArray
     after: str | None = None
+    when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
 
@@ -96,6 +100,7 @@ class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     newline_count: int = pydantic.Field(1, alias="return")
     after: str | None = None
+    when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
 
@@ -104,6 +109,7 @@ class ControlStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     control: StringOrArray
     after: str | None = None
+    when: str | None = None
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None

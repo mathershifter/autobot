@@ -116,6 +116,7 @@
       "properties": {
         "cmd": { "$ref": "#/$defs/stringOrArray" },
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "assert": { "$ref": "#/$defs/stringOrArray" },
         "ignore_error": { "type": "boolean", "default": false },
         "delay_before": { "$ref": "#/$defs/duration" },
@@ -138,6 +139,7 @@
       "properties": {
         "call": { "type": "string" },
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }
@@ -149,6 +151,7 @@
       "additionalProperties": false,
       "properties": {
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" },
@@ -191,6 +194,7 @@
       "properties": {
         "line": { "$ref": "#/$defs/stringOrArray" },
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
       }
@@ -202,6 +206,7 @@
       "properties": {
         "return": { "type": "integer", "minimum": 1, "default": 1 },
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
       }
@@ -213,6 +218,7 @@
       "properties": {
         "control": { "$ref": "#/$defs/stringOrArray" },
         "after": { "type": "string" },
+        "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }

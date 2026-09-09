@@ -29,13 +29,13 @@ prompts:
       fields: [username, password]
 
 attach:
-  
   spawn: ssh jmather-home
   # script to run after spawning the session, before running any steps
   script:
     - line: a dut attach {{ args.dut }}
     - return: 1
       after: "attached to"
+    - control: c
   timeout: 300s
   breakout:
     script:
@@ -55,35 +55,34 @@ fn:
       - line: sudo reboot now
         delay_after: 10s
 
-  update_sonic:
-    script:
-      - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
-        ignore_error: true
-      - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}    
-
 script:
-  - call: is_system_running
-  
   - cmd: show version | grep Version
-  # assert: "{{ env.SONIC_VERSION }}"
 
-  # - call: update_sonic
-  - call: reboot
+  - cmd: sudo config dns nameserver add {{ env.NAMESERVER }}
+    ignore_error: true
 
   - block:
-      name: Check Aboot
-      prompts:
-        - name: aboot
-          expect:
-            - '(?:A|a)boot#'
-          return: true
+      name: Upgrade SONiC
       script:
-        - control: c
-          after: 'Press Control-C now to enter Aboot shell'
-        - cmd: uname -a
-      breakout:
-        script:
-          - line: exit
+        - cmd: sudo sonic-installer list | grep '{{ env.SONIC_VERSION }}'
+          ignore_error: true
+        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+          when: "{{ env.SONIC_VERSION not in session.before }}"
+        - call: reboot
+        - block:
+            name: Check Aboot
+            prompts:
+              - name: aboot
+                expect:
+                  - '(?:A|a)boot#'
+                return: true
+            script:
+              - control: c
+                after: 'Press Control-C now to enter Aboot shell'
+              - cmd: uname -a
+            breakout:
+              script:
+                - line: exit
       
   - call: is_system_running
 

@@ -10,6 +10,8 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
 _jinja_env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+_jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
+_jinja_env.filters["search"] = lambda s, pattern: bool(re.search(pattern, str(s)))
 
 
 def parse_duration(value: Any) -> float:

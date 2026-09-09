@@ -57,7 +57,12 @@ class Session:
     def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
         self._at_prompt = False
+        self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._set_handlers(handlers)
+
+    @property
+    def ctx(self) -> dict[str, str]:
+        return self._ctx
 
     def _set_handlers(self, handlers: list[PromptHandler]):
         self._handlers = handlers
@@ -131,7 +136,11 @@ class Session:
                 if h.start <= i < h.end:
                     if h.is_return:
                         self._at_prompt = True
-                        return "".join(output)
+                        result = "".join(output)
+                        if result.strip():
+                            self._ctx["before"] = result
+                            self._ctx["match"] = str(self._cld.after or "")
+                        return result
                     if h.exhausted:
                         raise RuntimeError(
                             f"prompt '{h.name}': responses exhausted"
@@ -151,7 +160,10 @@ class Session:
     def expect(self, patterns: list, timeout: float = 300) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
-        return self._cld.expect(patterns, timeout=timeout)
+        idx = self._cld.expect(patterns, timeout=timeout)
+        self._ctx["before"] = str(self._cld.before or "")
+        self._ctx["match"] = str(self._cld.after or "")
+        return idx
 
     def sendline(self, line: str = ""):
         if not self._cld:

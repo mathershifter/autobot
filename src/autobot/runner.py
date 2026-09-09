@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import uuid
 from typing import Any
@@ -33,8 +32,9 @@ class Runner:
         self._cli_args = cli_args
         self._default_timeout = 300
         self._env = self._resolve_env(config.env)
+        self._session = Session([])
         handlers = [self._build_handler(p) for p in config.prompts]
-        self._session = Session(handlers)
+        self._session._set_handlers(handlers)
 
     def _build_handler(self, prompt: Prompt) -> PromptHandler:
         patterns: list[str] = []
@@ -79,6 +79,7 @@ class Runner:
             "env": self._env,
             "vars": self._config.vars,
             "args": self._cli_args,
+            "session": self._session.ctx,
         }
 
     def _resolve(self, path: str) -> Any:
@@ -156,6 +157,12 @@ class Runner:
         after = getattr(step, "after", None)
         if after:
             self._session.expect([self._render(after)], timeout=timeout)
+
+        when = getattr(step, "when", None)
+        if when is not None:
+            result = self._render(when)
+            if result in ("", "false", "False", "0", "none"):
+                return
 
         delay_before = getattr(step, "delay_before", None)
         if delay_before:
