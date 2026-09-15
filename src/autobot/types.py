@@ -29,7 +29,7 @@ Duration = Annotated[float, pydantic.BeforeValidator(parse_duration)]
 StringOrArray = str | list[str]
 
 
-def render(template: Any, ctx: dict) -> str:
+def render(template: Any, ctx: dict) -> Any:
     if not isinstance(template, str):
         return template
     try:

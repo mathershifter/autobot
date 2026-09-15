@@ -66,23 +66,26 @@ script:
       script:
         - cmd: sudo sonic-installer list | grep '{{ env.SONIC_VERSION }}'
           ignore_error: true
-        - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-          when: "{{ env.SONIC_VERSION not in session.before }}"
-        - call: reboot
         - block:
-            name: Check Aboot
-            prompts:
-              - name: aboot
-                expect:
-                  - '(?:A|a)boot#'
-                return: true
+            name: Upgrade SONiC
             script:
-              - control: c
-                after: 'Press Control-C now to enter Aboot shell'
-              - cmd: uname -a
-            breakout:
-              script:
-                - line: exit
+              - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+              - call: reboot
+          when: "{{ env.SONIC_VERSION not in session.before }}"
+        # - block:
+        #     name: Check Aboot
+        #     prompts:
+        #       - name: aboot
+        #         expect:
+        #           - '(?:A|a)boot#'
+        #         return: true
+        #     script:
+        #       - control: c
+        #         after: 'Press Control-C now to enter Aboot shell'
+        #       - cmd: uname -a
+        #     breakout:
+        #       script:
+        #         - line: exit
       
   - call: is_system_running
 

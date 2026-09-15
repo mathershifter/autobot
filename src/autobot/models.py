@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
 import pydantic
@@ -151,10 +152,17 @@ Function.model_rebuild()
 class Config(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     autobot: str
+
+    @pydantic.field_validator("autobot")
+    @classmethod
+    def _validate_autobot(cls, v: str) -> str:
+        if not re.match(r"^\d{4}-\d{2}$", v):
+            raise ValueError(f"autobot must be YYYY-MM format, got: {v}")
+        return v
     env: dict[str, str] = {}
     vars: dict[str, Any] = {}
     prompts: list[Prompt] = []
     fn: dict[str, Function] = {}
     errors: list[str] = []
     attach: Attach
-    script: list[Step] = []
+    script: list[Step]

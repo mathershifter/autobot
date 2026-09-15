@@ -62,7 +62,7 @@ class Runner:
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
         env = {k: os.environ.get(k, v) for k, v in defaults.items()}
         ctx = {"env": env, "vars": self._config.vars, "args": self._cli_args}
-        for _ in range(10):
+        for iteration in range(10):
             changed = False
             for k, v in env.items():
                 rendered = render(v, ctx)
@@ -71,6 +71,12 @@ class Runner:
                     changed = True
             if not changed:
                 break
+        else:
+            unresolved = [k for k, v in env.items() if "{{" in str(v)]
+            if unresolved:
+                raise ValueError(
+                    f"env nesting too deep (>10 iterations), unresolved: {unresolved}"
+                )
         return env
 
     @property
@@ -195,9 +201,9 @@ class Runner:
             lines = [l for l in step.cmd.splitlines() if l.strip()]
         else:
             lines = ensure_list(step.cmd)
-        for line in lines:
+        for i, line in enumerate(lines):
             cmd = self._render(line)
-            if not step.after:
+            if i > 0 or not step.after:
                 self._session.get_prompt(timeout=timeout)
             self._session.sendline(cmd)
             console.print(f">> cmd: {cmd}")
@@ -255,9 +261,13 @@ class Runner:
                 raise
             console.print(">> error ignored")
         finally:
-            self._session.get_prompt(timeout=timeout)
-            self._session.sendline(f"rm -f {tmp}")
-            console.print(f">> script: cleaned up {tmp}")
+            try:
+                self._session.get_prompt(timeout=timeout)
+                self._session.sendline(f"rm -f {tmp}")
+                self._session.get_prompt(timeout=timeout)
+                console.print(f">> script: cleaned up {tmp}")
+            except (TimeoutError, EOFError, OSError) as e:
+                console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
 
     def _step_sleep(self, step: SleepStep):
         console.print(f">> sleep: {step.sleep}s")

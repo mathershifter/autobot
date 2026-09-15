@@ -66,7 +66,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `autobot` | yes      | Semver string (e.g. `20206-08`)                                                                                                 |
+| `autobot` | yes      | Schema version in `YYYY-MM` format (e.g. `2026-08`)                                                                             |
 | `env`     | no       | String key-value defaults, overridden by OS env vars. Supports nesting: `{{ env.OTHER_KEY }}`. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
@@ -188,8 +188,9 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
 
 After the last command line, the step:
 1. Waits for a shell prompt (confirming the command finished)
-2. Checks the return code via `echo $?` — raises on non-zero
-3. If top-level `errors` patterns are defined, checks command output against those patterns instead of `$?`
+2. If `assert` is defined, checks the captured output for a matching pattern — raises if none match
+3. If `assert` is not defined, checks the return code via `echo $?` — raises on non-zero
+4. If top-level `errors` patterns are defined, checks command output against those patterns instead of `$?`
 
 Set `ignore_error: true` to continue on failure:
 
@@ -263,14 +264,17 @@ Groups steps under a label with an optional `enter` (setup) and `breakout` (clea
 | Field      | Required | Description                                                            |
 |------------|----------|------------------------------------------------------------------------|
 | `name`     | yes      | Label for the block                                                    |
+| `prompts`  | no       | Prompt handlers scoped to this block. Replaces top-level prompts for the duration of the block (restored on exit) |
 | `enter`    | no       | Steps to run before the main script (setup)                            |
 | `script`   | no       | Main steps to execute                                                  |
 | `breakout` | no       | Steps to run in `finally` after the main script (cleanup, best-effort) |
 
 The block lifecycle:
-1. `enter` steps execute (if defined)
-2. `script` steps execute
-3. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
+1. If `prompts` is defined, swap session handlers to the block's prompts
+2. `enter` steps execute (if defined)
+3. `script` steps execute
+4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
+5. If `prompts` was defined, restore the previous session handlers
 
 ```yaml
 - block:
@@ -323,7 +327,8 @@ All step types except `sleep` support these optional fields:
 
 | Field          | Description                                                    |
 |----------------|----------------------------------------------------------------|
-| `after`         | Regex pattern — wait for this to appear in output before executing |
+| `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match` |
+| `when`         | Jinja2 conditional — step is skipped if the rendered result is falsy (`""`, `"false"`, `"False"`, `"0"`, `"none"`) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
 | `timeout`      | Override default timeout for this step                         |
@@ -358,11 +363,13 @@ script:
 
 Available context:
 
-| Variable | Source                                  |
-|----------|-----------------------------------------|
-| `env.*`  | `env` section (merged with OS env vars) |
-| `vars.*` | `vars` section                          |
-| `args.*` | CLI `--arg` flags                       |
+| Variable         | Source                                  |
+|------------------|-----------------------------------------|
+| `env.*`          | `env` section (merged with OS env vars) |
+| `vars.*`         | `vars` section                          |
+| `args.*`         | CLI `--arg` flags                       |
+| `session.before` | Text captured before the last prompt match (from `after` or `get_prompt`) |
+| `session.match`  | Text that matched the last prompt pattern |
 
 ## Error Handling
 
@@ -412,6 +419,6 @@ script:
 
 ## Schema
 
-The full JSON Schema is in [`autobot.schema.json`](autobot.schema.json).
+The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json).
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).
