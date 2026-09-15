@@ -208,6 +208,7 @@ class Runner:
             self._session.sendline(cmd)
             console.print(f">> cmd: {cmd}")
         errors = self._config.errors or None
+        output = ""
         try:
             output = self._session.get_prompt(timeout=timeout, errors=errors)
             assertions = ensure_list(step.assert_)
@@ -225,6 +226,9 @@ class Runner:
             if not step.ignore_error:
                 raise
             console.print(">> error ignored")
+        if step.register_:
+            self._config.vars[step.register_] = output.strip()
+            console.print(f">> register: vars.{step.register_}")
 
     def _step_cmd_script(self, step: CmdStep, timeout: float):
         script = self._render(str(step.cmd))
@@ -243,6 +247,7 @@ class Runner:
         console.print(f">> script: executing {tmp}")
         self._session.sendline(tmp)
         errors = self._config.errors or None
+        output = ""
         try:
             output = self._session.get_prompt(timeout=timeout, errors=errors)
             assertions = ensure_list(step.assert_)
@@ -268,6 +273,9 @@ class Runner:
                 console.print(f">> script: cleaned up {tmp}")
             except (TimeoutError, EOFError, OSError) as e:
                 console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
+        if step.register_:
+            self._config.vars[step.register_] = output.strip()
+            console.print(f">> register: vars.{step.register_}")
 
     def _step_sleep(self, step: SleepStep):
         console.print(f">> sleep: {step.sleep}s")

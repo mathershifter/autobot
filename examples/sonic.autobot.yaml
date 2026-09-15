@@ -64,14 +64,16 @@ script:
   - block:
       name: Upgrade SONiC
       script:
-        - cmd: sudo sonic-installer list | grep '{{ env.SONIC_VERSION }}'
+        - cmd: sudo sonic-installer list | grep -e 'Next:'
           ignore_error: true
-        - block:
-            name: Upgrade SONiC
-            script:
-              - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
-              - call: reboot
-          when: "{{ env.SONIC_VERSION not in session.before }}"
+          register: next_version
+        - cmd: "echo 'Next version: {{ vars.next_version }}'"
+        # - block:
+        #     name: Upgrade SONiC
+        #     script:
+        #       - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
+        #       - call: reboot
+        #   when: "{{ env.SONIC_VERSION not in vars.next_version }}"
         # - block:
         #     name: Check Aboot
         #     prompts:

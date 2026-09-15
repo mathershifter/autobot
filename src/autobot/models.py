@@ -44,6 +44,7 @@ class CmdStep(pydantic.BaseModel):
     when: str | None = None
     assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
     ignore_error: bool = False
+    register_: str | None = pydantic.Field(None, alias="register")
     delay_before: Duration | None = None
     delay_after: Duration | None = None
     timeout: Duration | None = None

@@ -119,6 +119,7 @@
         "when": { "type": "string" },
         "assert": { "$ref": "#/$defs/stringOrArray" },
         "ignore_error": { "type": "boolean", "default": false },
+        "register": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }

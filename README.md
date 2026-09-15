@@ -199,6 +199,19 @@ Set `ignore_error: true` to continue on failure:
   ignore_error: true
 ```
 
+#### Capturing output with `register`
+
+Set `register` to store the command's captured output into `vars.<name>`, making it available to subsequent steps via Jinja2 templates as `{{ vars.<name> }}`. The stored value is stripped of leading and trailing whitespace.
+
+```yaml
+- cmd: show version
+  register: version_output
+
+- cmd: "echo 'Version was: {{ vars.version_output }}'"
+```
+
+`register` works with all `cmd` forms: plain commands, command lists, multiline strings, and embedded scripts. Output is captured as long as execution continues past the step (i.e., no unignored error).
+
 **Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead.
 
 #### Multi-line commands
@@ -366,7 +379,7 @@ Available context:
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
 | `env.*`          | `env` section (merged with OS env vars) |
-| `vars.*`         | `vars` section                          |
+| `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text captured before the last prompt match (from `after` or `get_prompt`) |
 | `session.match`  | Text that matched the last prompt pattern |
