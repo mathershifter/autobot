@@ -106,7 +106,8 @@
         { "$ref": "#/$defs/blockStep" },
         { "$ref": "#/$defs/lineStep" },
         { "$ref": "#/$defs/returnStep" },
-        { "$ref": "#/$defs/controlStep" }
+        { "$ref": "#/$defs/controlStep" },
+        { "$ref": "#/$defs/pluginStep" }
       ]
     },
     "cmdStep": {
@@ -223,6 +224,21 @@
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+    "pluginStep": {
+      "type": "object",
+      "minProperties": 1,
+      "not": {
+        "anyOf": [
+          { "required": ["cmd"] },
+          { "required": ["sleep"] },
+          { "required": ["call"] },
+          { "required": ["block"] },
+          { "required": ["line"] },
+          { "required": ["return"] },
+          { "required": ["control"] }
+        ]
       }
     },
     "sendEach": {
