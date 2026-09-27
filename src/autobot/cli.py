@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.request
 from pathlib import Path
 
 import pydantic
@@ -41,8 +42,13 @@ def _cmd_run(args):
 def _cmd_schema():
     from .registry import registry
 
+    registry.discover()
     schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-08.json"
-    schema = json.loads(schema_path.read_text())
+    if schema_path.exists():
+        schema = json.loads(schema_path.read_text())
+    else:
+        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-08.json"
+        schema = json.loads(urllib.request.urlopen(url).read())
 
     plugins = registry.plugin_executors()
     for executor in plugins:

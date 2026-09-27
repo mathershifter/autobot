@@ -141,9 +141,9 @@ class BlockExecutor:
     def execute(self, step: BlockStep, ctx: RunnerContext, timeout: float) -> None:
         console.print(f">> block enter: {step.block.name}")
         if step.block.prompts:
-            saved_handlers = ctx.session._handlers
+            saved_handlers = ctx.session.save_handlers()
             block_handlers = [ctx.build_handler(p) for p in step.block.prompts]
-            ctx.session._set_handlers(block_handlers)
+            ctx.session.restore_handlers(block_handlers)
         else:
             saved_handlers = None
         if step.block.enter:
@@ -159,7 +159,7 @@ class BlockExecutor:
                 except (TimeoutError, EOFError, RuntimeError, OSError) as e:
                     console.print(f">> block breakout error ({type(e).__name__}): {e}")
             if saved_handlers is not None:
-                ctx.session._set_handlers(saved_handlers)
+                ctx.session.restore_handlers(saved_handlers)
         console.print(f">> block completed: {step.block.name}")
 
 

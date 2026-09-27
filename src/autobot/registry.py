@@ -31,11 +31,17 @@ class StepRegistry:
         step_type = type(step)
         if step_type in self._model_keys:
             return self._model_keys[step_type]
-        if hasattr(step, "model_extra") and step.model_extra:
-            for key in step.model_extra:
-                if key in self._executors:
-                    return key
+        if hasattr(step, "plugin_key_") and step.plugin_key_:
+            return step.plugin_key_
         raise ValueError(f"no executor for step: {step}")
+
+    def validate_plugin_step(self, step) -> Any:
+        key = step.plugin_key_
+        if not key:
+            raise ValueError(f"no plugin key on step: {step}")
+        executor = self.get(key)
+        raw = dict(step.model_extra) if step.model_extra else {}
+        return executor.model.model_validate(raw)
 
     def discover(self):
         for ep in importlib.metadata.entry_points(group="autobot.steps"):

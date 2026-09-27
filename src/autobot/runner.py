@@ -7,7 +7,7 @@ from typing import Any
 
 from rich.console import Console
 
-from .models import Config, Prompt, SendEach, Step
+from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
 from .session import PromptHandler, Session
 from .steps import register_builtins
@@ -16,18 +16,22 @@ from .types import render as render_template
 console = Console(stderr=True)
 
 register_builtins(registry)
-registry.discover()
 
 
 class Runner:
+    _plugins_discovered = False
+
     def __init__(self, config: Config, cli_args: dict[str, str]):
+        if not Runner._plugins_discovered:
+            registry.discover()
+            Runner._plugins_discovered = True
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
         self._env = self._resolve_env(config.env)
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
-        self._session._set_handlers(handlers)
+        self._session.restore_handlers(handlers)
 
     @property
     def session(self) -> Session:
@@ -177,6 +181,8 @@ class Runner:
 
         key = registry.key_for_step(step)
         executor = registry.get(key)
+        if isinstance(step, PluginStep):
+            step = registry.validate_plugin_step(step)
         executor.execute(step, self, timeout)
 
         delay_after = getattr(step, "delay_after", None)
