@@ -153,6 +153,12 @@ class Session:
                     self._cld.sendline(response)
                     break
 
+    def save_handlers(self) -> list[PromptHandler]:
+        return self._handlers
+
+    def restore_handlers(self, handlers: list[PromptHandler]):
+        self._set_handlers(handlers)
+
     def reset_handlers(self):
         for h in self._handlers:
             h.reset()

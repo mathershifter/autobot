@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import urllib.request
+from pathlib import Path
 
 import pydantic
 import yaml
@@ -12,19 +15,8 @@ from .runner import Runner
 
 console = Console(stderr=True)
 
-def main():
-    parser = argparse.ArgumentParser(description="Execute an autobot script.")
-    parser.add_argument("script", help="Path to the YAML script file")
-    parser.add_argument(
-        "-a",
-        "--arg",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
-    )
-    args = parser.parse_args()
 
+def _cmd_run(args):
     with open(args.script) as f:
         config_dict = yaml.safe_load(f)
 
@@ -33,18 +25,72 @@ def main():
     except pydantic.ValidationError as e:
         console.print("Validation errors:")
         console.print(e.json(indent=2))
-
         sys.exit(1)
 
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
-            parser.error(f"--arg requires KEY=VALUE format, got: {item}")
+            console.print(f"--arg requires KEY=VALUE format, got: {item}")
+            sys.exit(1)
         key, value = item.split("=", 1)
         cli_args[key] = value
 
     runner = Runner(config, cli_args)
     runner.run()
+
+
+def _cmd_schema():
+    from .registry import registry
+
+    registry.discover()
+    schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-08.json"
+    if schema_path.exists():
+        schema = json.loads(schema_path.read_text())
+    else:
+        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-08.json"
+        schema = json.loads(urllib.request.urlopen(url).read())
+
+    plugins = registry.plugin_executors()
+    for executor in plugins:
+        plugin_schema = executor.model.model_json_schema()
+        def_name = f"{executor.key}Step"
+        schema["$defs"][def_name] = plugin_schema
+        ref = {"$ref": f"#/$defs/{def_name}"}
+        step_oneof = schema["$defs"]["step"]["oneOf"]
+        step_oneof.insert(-1, ref)
+
+    print(json.dumps(schema, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Autobot console robot.")
+    subparsers = parser.add_subparsers(dest="command")
+
+    run_parser = subparsers.add_parser("run", help="Execute an autobot script")
+    run_parser.add_argument("script", help="Path to the YAML script file")
+    run_parser.add_argument(
+        "-a",
+        "--arg",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+    )
+
+    subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
+
+    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "schema", "-h", "--help"):
+        sys.argv.insert(1, "run")
+
+    args = parser.parse_args()
+
+    if args.command == "schema":
+        _cmd_schema()
+    elif args.command == "run":
+        _cmd_run(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

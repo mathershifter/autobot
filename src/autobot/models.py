@@ -117,19 +117,42 @@ class ControlStep(pydantic.BaseModel):
     timeout: Duration | None = None
 
 
+class PluginStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="allow")
+    plugin_key_: str | None = pydantic.Field(None, exclude=True)
+    after: str | None = None
+    when: str | None = None
+    delay_before: Duration | None = None
+    delay_after: Duration | None = None
+    timeout: Duration | None = None
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _capture_plugin_key(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            from .registry import registry
+
+            for key in data:
+                if key not in _COMMON_PROPS and registry.has(key):
+                    data["plugin_key_"] = key
+                    break
+        return data
+
+
+_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control")
+_COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
+
+
 def _step_discriminator(v: Any) -> str:
     if isinstance(v, dict):
-        for key in (
-            "cmd",
-            "sleep",
-            "call",
-            "block",
-            "line",
-            "return",
-            "control",
-        ):
+        for key in _BUILTIN_KEYS:
             if key in v:
                 return key
+        from .registry import registry
+
+        for key in v:
+            if key not in _COMMON_PROPS and registry.has(key):
+                return "plugin"
     raise ValueError(f"cannot determine step type: {v}")
 
 
@@ -140,7 +163,8 @@ Step = Annotated[
     | Annotated[BlockStep, pydantic.Tag("block")]
     | Annotated[LineStep, pydantic.Tag("line")]
     | Annotated[ReturnStep, pydantic.Tag("return")]
-    | Annotated[ControlStep, pydantic.Tag("control")],
+    | Annotated[ControlStep, pydantic.Tag("control")]
+    | Annotated[PluginStep, pydantic.Tag("plugin")],
     pydantic.Discriminator(_step_discriminator),
 ]
 
