@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -45,7 +45,7 @@ class StepRegistry:
 
     def discover(self):
         for ep in importlib.metadata.entry_points(group="autobot.steps"):
-            obj = ep.load()
+            obj: type[StepExecutor] = ep.load()
             executor = obj() if isinstance(obj, type) or callable(obj) else obj
             self.register(executor)
 

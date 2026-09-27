@@ -25,6 +25,8 @@ class RunnerContext(Protocol):
 
 class StepExecutor(Protocol):
     key: str
-    model: type[pydantic.BaseModel]
+
+    @property
+    def model(self) -> type[pydantic.BaseModel]: ...
 
     def execute(self, step: Any, ctx: RunnerContext, timeout: float) -> None: ...
