@@ -266,6 +266,8 @@ If `cmd` is a string starting with `#!`, it is treated as an embedded script. Th
 
 Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
 
+The script is uploaded base64-encoded, in lines of at most 512 base64 characters, to `/tmp/_autobot_<random>` (mode `700`, created under `umask 077`). The remote shell must be POSIX-compatible and provide `base64 -d`, `tee`, and `wc`. The upload is checked by comparing the decoded byte count to the script's length. The temp file is always removed, even if the upload or the script fails. Removal is best-effort: it waits at most 10 seconds (or the step timeout, if that's shorter) for the prompt, and a failed cleanup is logged without replacing the step's own error.
+
 ### `sleep` — Pause execution
 
 ```yaml
