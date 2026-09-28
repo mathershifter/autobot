@@ -15,6 +15,7 @@ from .models import (
     ReturnStep,
     SleepStep,
 )
+from .session import CommandError
 from .types import ensure_list
 
 if TYPE_CHECKING:
@@ -36,31 +37,39 @@ class CmdExecutor:
             lines = [l for l in step.cmd.splitlines() if l.strip()]
         else:
             lines = ensure_list(step.cmd)
-        for i, line in enumerate(lines):
-            cmd = ctx.render(line)
-            if i > 0 or not step.after:
-                ctx.session.get_prompt(timeout=timeout)
-            ctx.session.sendline(cmd)
-            console.print(f">> cmd: {cmd}")
         errors = ctx.config.errors or None
-        output = ""
+        output: list[str] = []
+        if not step.after:
+            ctx.session.get_prompt(timeout=timeout)
         try:
-            output = ctx.session.get_prompt(timeout=timeout, errors=errors)
-            assertions = ensure_list(step.assert_)
-            if assertions:
-                rendered = [ctx.render(a) for a in assertions]
-                if not any(re.search(p, output) for p in rendered):
-                    raise RuntimeError(
-                        f"assertion failed: expected {rendered}"
-                    )
-            elif not errors:
-                rc = ctx.session.check_rc(timeout=timeout)
-                if rc != 0:
-                    raise RuntimeError(f"command returned exit code {rc}")
-        except RuntimeError:
+            for i, line in enumerate(lines):
+                cmd = ctx.render(line)
+                if i > 0:
+                    output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
+                ctx.session.sendline(cmd)
+                console.print(f">> cmd: {cmd}")
+            output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
+            self._check(step, ctx, "".join(output), timeout)
+        except RuntimeError as e:
+            if isinstance(e, CommandError):
+                output.append(e.output)
             if not step.ignore_error:
                 raise
-            console.print(">> error ignored")
+            console.print(f">> error ignored: {e}")
+        self._register(step, ctx, "".join(output))
+
+    def _check(self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float) -> None:
+        assertions = ensure_list(step.assert_)
+        if assertions:
+            rendered = [ctx.render(a) for a in assertions]
+            if not any(re.search(p, output) for p in rendered):
+                raise RuntimeError(f"assertion failed: expected {rendered}")
+        elif not ctx.config.errors:
+            rc = ctx.session.check_rc(timeout=timeout)
+            if rc != 0:
+                raise RuntimeError(f"command returned exit code {rc}")
+
+    def _register(self, step: CmdStep, ctx: RunnerContext, output: str) -> None:
         if step.register_:
             ctx.config.vars[step.register_] = output.strip()
             console.print(f">> register: vars.{step.register_}")
@@ -81,25 +90,16 @@ class CmdExecutor:
         ctx.session.get_prompt(timeout=timeout)
         console.print(f">> script: executing {tmp}")
         ctx.session.sendline(tmp)
-        errors = ctx.config.errors or None
         output = ""
         try:
-            output = ctx.session.get_prompt(timeout=timeout, errors=errors)
-            assertions = ensure_list(step.assert_)
-            if assertions:
-                rendered = [ctx.render(a) for a in assertions]
-                if not any(re.search(p, output) for p in rendered):
-                    raise RuntimeError(
-                        f"assertion failed: expected {rendered}"
-                    )
-            elif not errors:
-                rc = ctx.session.check_rc(timeout=timeout)
-                if rc != 0:
-                    raise RuntimeError(f"command returned exit code {rc}")
-        except RuntimeError:
+            output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
+            self._check(step, ctx, output, timeout)
+        except RuntimeError as e:
+            if isinstance(e, CommandError):
+                output = e.output
             if not step.ignore_error:
                 raise
-            console.print(">> error ignored")
+            console.print(f">> error ignored: {e}")
         finally:
             try:
                 ctx.session.get_prompt(timeout=timeout)
@@ -108,9 +108,7 @@ class CmdExecutor:
                 console.print(f">> script: cleaned up {tmp}")
             except (TimeoutError, EOFError, OSError) as e:
                 console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
-        if step.register_:
-            ctx.config.vars[step.register_] = output.strip()
-            console.print(f">> register: vars.{step.register_}")
+        self._register(step, ctx, output)
 
 
 class SleepExecutor:

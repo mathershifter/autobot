@@ -186,11 +186,11 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
 
 `cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
 
+After each command line, the step waits for a shell prompt and, if top-level `errors` patterns are defined, checks that line's output against them — raising (and sending no further lines) on a match.
+
 After the last command line, the step:
-1. Waits for a shell prompt (confirming the command finished)
-2. If `assert` is defined, checks the captured output for a matching pattern — raises if none match
-3. If `assert` is not defined, checks the return code via `echo $?` — raises on non-zero
-4. If top-level `errors` patterns are defined, checks command output against those patterns instead of `$?`
+1. If `assert` is defined, checks the captured output of all lines for a matching pattern — raises if none match
+2. Otherwise, if no top-level `errors` are defined, checks the return code of the last line via `echo $?` — raises on non-zero
 
 Set `ignore_error: true` to continue on failure:
 
@@ -210,7 +210,15 @@ Set `register` to store the command's captured output into `vars.<name>`, making
 - cmd: "echo 'Version was: {{ vars.version_output }}'"
 ```
 
-`register` works with all `cmd` forms: plain commands, command lists, multiline strings, and embedded scripts. Output is captured as long as execution continues past the step (i.e., no unignored error).
+`register` works with all `cmd` forms: plain commands, command lists, multiline strings, and embedded scripts. For lists and multiline strings, the output of every line is concatenated. Output is captured as long as execution continues past the step (i.e., no unignored error); when an error is ignored, `register` stores the output captured up to the failure.
+
+#### What counts as output
+
+Captured output (used by `register`, `assert`, `errors`, and `session.before`) is what the command printed:
+
+- The terminal echo of the sent command is removed. If the echo doesn't match the sent line (e.g. echo disabled with `stty -echo`), the output is left as is.
+- Line breaks are preserved as `\n`.
+- The prompt line is excluded. Because of that, any text printed without a trailing newline (it shares a line with the next prompt) is not captured — e.g. `printf 'x\ny'` captures `x`.
 
 **Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead.
 
@@ -381,7 +389,7 @@ Available context:
 | `env.*`          | `env` section (merged with OS env vars) |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
-| `session.before` | Text captured before the last prompt match (from `after` or `get_prompt`) |
+| `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |
 | `session.match`  | Text that matched the last prompt pattern |
 
 ## Error Handling
@@ -404,6 +412,8 @@ errors:
 script:
   - cmd: show bogus    # raises because output matches '% .*'
 ```
+
+Patterns are matched per line (`re.MULTILINE`, so `.` doesn't cross line breaks) against the captured output once the prompt returns. The echoed command itself is never matched, so a comment like `! note` in a command doesn't trigger `'! .*'`.
 
 ## Functions
 
