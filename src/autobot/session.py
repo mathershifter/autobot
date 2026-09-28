@@ -162,14 +162,15 @@ class Session:
             if i == 0:
                 output.append(before.rstrip("\r") + "\n")
                 continue
-            if before:
-                output.append(before)
-            if i == 1:
-                continue
             if i == len(self._patterns) - 2:
+                # unmatched text stays buffered; it comes back with the next match
                 if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
+                continue
+            if before:
+                output.append(before)
+            if i == 1:
                 continue
             if i == len(self._patterns) - 1:
                 raise EOFError("connection closed")
