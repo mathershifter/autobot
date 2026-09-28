@@ -420,7 +420,6 @@ def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
 # -- P5: attach spawn arguments ---------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #2")
 @pytest.mark.parametrize(("value", "expected"), [("500ms", 0.5), ("1.5s", 1.5)])
 def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected: float):
     """SPEC.md:74, 307-313: attach.timeout is a duration and is not truncated."""

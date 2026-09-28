@@ -127,7 +127,7 @@ class Runner:
     def run(self):
         attach = self._config.attach
         spawn = self.render(attach.spawn)
-        timeout = int(attach.timeout) if attach.timeout else self._default_timeout
+        timeout = self._get_timeout(attach)
         env = attach.env or {"TERM": "dumb", "NO_COLOR": "1"}
 
         if attach.prepare:
