@@ -235,6 +235,28 @@ pip-selfcheck.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,macos,linux,venv
 
-SPEC.md
-
 examples/_*
+
+# =========================================================================
+# AI Agents & Assistants (Local state, logs, and generated sessions)
+# =========================================================================
+.agent/
+.agents/
+.claude/
+.codex/
+.gemini/
+.goose/
+.kiro/
+.opencode/
+.abstra/
+
+# AI-Generated Skills / Tools
+.*/skills/
+skills-lock.json
+
+# AI-Powered IDEs & Coding Editors (Caches, indexes, and settings)
+.cursor/
+.cursorignore
+.cursorindexingignore
+.windsurf/
+.trae/
