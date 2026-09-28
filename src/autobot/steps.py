@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import uuid
 from typing import TYPE_CHECKING
@@ -23,6 +24,12 @@ if TYPE_CHECKING:
     from .registry import StepRegistry
 
 console = Console(stderr=True)
+
+# base64 chars per upload line; keeps each line (~600 chars) under the
+# smallest common canonical-mode line limit (MAX_CANON 1024 on BSD/macOS,
+# 4095 on Linux) and small enough for slow serial/terminal-server consoles.
+SCRIPT_CHUNK = 512
+SCRIPT_CLEANUP_TIMEOUT = 10.0
 
 
 class CmdExecutor:
@@ -76,22 +83,17 @@ class CmdExecutor:
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
         script = ctx.render(str(step.cmd))
+        if not script.endswith("\n"):
+            script += "\n"  # jinja drops the trailing newline
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
-        eof_marker = "AUTOBOT_SCRIPT_EOF"
-        console.print(f">> script: writing to {tmp}")
+        output = ""
         if not step.after:
             ctx.session.get_prompt(timeout=timeout)
-        ctx.session.sendline(f"cat > {tmp} << '{eof_marker}'")
-        for script_line in script.splitlines():
-            ctx.session.sendline(script_line)
-        ctx.session.sendline(eof_marker)
-        ctx.session.get_prompt(timeout=timeout)
-        ctx.session.sendline(f"chmod +x {tmp}")
-        ctx.session.get_prompt(timeout=timeout)
-        console.print(f">> script: executing {tmp}")
-        ctx.session.sendline(tmp)
-        output = ""
         try:
+            console.print(f">> script: writing to {tmp}")
+            self._upload(ctx, script.encode(), tmp, timeout)
+            console.print(f">> script: executing {tmp}")
+            ctx.session.sendline(tmp)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
             self._check(step, ctx, output, timeout)
         except RuntimeError as e:
@@ -101,14 +103,37 @@ class CmdExecutor:
                 raise
             console.print(f">> error ignored: {e}")
         finally:
-            try:
-                ctx.session.get_prompt(timeout=timeout)
-                ctx.session.sendline(f"rm -f {tmp}")
-                ctx.session.get_prompt(timeout=timeout)
-                console.print(f">> script: cleaned up {tmp}")
-            except (TimeoutError, EOFError, OSError) as e:
-                console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
+            self._cleanup(ctx, tmp, min(timeout, SCRIPT_CLEANUP_TIMEOUT))
         self._register(step, ctx, output)
+
+    @staticmethod
+    def _upload(ctx: RunnerContext, script: bytes, tmp: str, timeout: float) -> None:
+        # One line per chunk, no heredoc: nothing triggers PS2, and the base64
+        # alphabet needs no quoting and contains none of '>', '#', '$', which
+        # prompt regexes commonly end with.
+        b64 = base64.b64encode(script).decode()
+        for i in range(0, len(b64), SCRIPT_CHUNK):
+            ctx.session.sendline(
+                f"(umask 077; printf %s {b64[i : i + SCRIPT_CHUNK]} | tee -a {tmp}.b64 | wc -c)"
+            )
+            ctx.session.get_prompt(timeout=timeout)
+        ctx.session.sendline(
+            f"(umask 077; base64 -d {tmp}.b64 | tee {tmp} | wc -c) && chmod 700 {tmp}"
+            " && echo __AUTOBOT_UPLOAD_OK"
+        )
+        out = ctx.session.get_prompt(timeout=timeout)
+        if not re.search(rf"(?m)^\s*{len(script)}\s*\n\s*__AUTOBOT_UPLOAD_OK\s*$", out):
+            raise RuntimeError(f"script upload to {tmp} failed: {out.strip()}")
+
+    @staticmethod
+    def _cleanup(ctx: RunnerContext, tmp: str, timeout: float) -> None:
+        try:
+            ctx.session.get_prompt(timeout=timeout)
+            ctx.session.sendline(f"rm -f {tmp} {tmp}.b64")
+            ctx.session.get_prompt(timeout=timeout)
+            console.print(f">> script: cleaned up {tmp}")
+        except Exception as e:  # noqa: BLE001 - best-effort, must not mask the step error
+            console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
 
 
 class SleepExecutor:
