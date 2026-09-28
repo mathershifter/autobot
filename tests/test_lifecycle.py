@@ -13,7 +13,6 @@ import pexpect
 import pytest
 from conftest import (
     BASH,
-    KICK,
     SHELL_ENV,
     AttachRecorded,
     ProbeExecutor,
@@ -178,7 +177,7 @@ def test_p5_01_attach_lifecycle_order(
     run_script(
         [{"cmd": f"echo main >> {log}"}],
         prepare=f"#!/bin/sh\necho prepare >> {log}\n",
-        attach_script=[*KICK, {"cmd": f"echo attach >> {log}", "timeout": "5s"}],
+        attach_script=[{"cmd": f"echo attach >> {log}", "timeout": "5s"}],
         breakout=[{"cmd": f"echo breakout >> {log}", "timeout": "5s"}],
     )
     assert log.read_text().split() == ["prepare", "attach", "main", "breakout"]
@@ -244,7 +243,7 @@ def test_p5_07_attach_breakout_runs_after_attach_script_failure(tmp_path: Path, 
     with pytest.raises(RuntimeError, match="exit code 1"):
         run_script(
             [{"cmd": "echo MAIN_STEP"}],
-            attach_script=[*KICK, {"cmd": "false", "timeout": "5s"}],
+            attach_script=[{"cmd": "false", "timeout": "5s"}],
             breakout=[{"cmd": f"touch {bo}", "timeout": "5s"}],
         )
     assert "echo MAIN_STEP" not in sent.lines()
@@ -420,7 +419,6 @@ def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
 # -- P5: attach spawn arguments ---------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #2")
 @pytest.mark.parametrize(("value", "expected"), [("500ms", 0.5), ("1.5s", 1.5)])
 def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected: float):
     """SPEC.md:74, 307-313: attach.timeout is a duration and is not truncated."""

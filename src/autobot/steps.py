@@ -130,7 +130,7 @@ class CmdExecutor:
         try:
             ctx.session.get_prompt(timeout=timeout)
             ctx.session.sendline(f"rm -f {tmp} {tmp}.b64")
-            ctx.session.get_prompt(timeout=timeout)
+            ctx.session.get_prompt(timeout=timeout, capture=False)
             console.print(f">> script: cleaned up {tmp}")
         except Exception as e:  # noqa: BLE001 - best-effort, must not mask the step error
             console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")

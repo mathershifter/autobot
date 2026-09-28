@@ -19,15 +19,15 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 
 | Priority | Area | pass | xfail | decision | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
-| P1 | `cmd` success semantics, register, ignore_error | 17 | 2 | 3 | 22 | 1 |
+| P1 | `cmd` success semantics, register, ignore_error | 19 | 0 | 3 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 14 | 1 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 16 | 0 | 2 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 16 | 3 | 1 | 20 | 4 |
-| P5 | attach / block lifecycles, env | 22 | 1 | 2 | 25 | 0 |
-| P6 | model / schema / example / CLI parity | 17 | 3 | 4 | 24 | 0 |
+| P4 | `get_prompt`, prompts, credential cycling | 18 | 1 | 1 | 20 | 4 |
+| P5 | attach / block lifecycles, env | 23 | 0 | 2 | 25 | 0 |
+| P6 | model / schema / example / CLI parity | 18 | 2 | 4 | 24 | 0 |
 | P7 | registry and plugins | 7 | 0 | 2 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps | 13 | 1 | 0 | 14 | 0 |
-| **Total** | | **122** | **11** | **14** | **147** | **5** |
+| **Total** | | **128** | **5** | **14** | **147** | **5** |
 
 A parametrized test counts as one test.
 
@@ -45,10 +45,10 @@ markers = ["slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'
 ### F1: real local shell (`tests/conftest.py`)
 
 - Constants: `BASH = "bash --norc --noprofile -i"`, `SHELL_ENV = {"TERM": "dumb", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]}`, `SHELL_PROMPT = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}`.
-- `make_config(script, *, prompts=[SHELL_PROMPT], errors=None, vars=None, env=None, fn=None, spawn=BASH, attach_env=SHELL_ENV, attach_script=[{"return": 1}], breakout=None, prepare=None, timeout=5) -> Config`. It also sets `timeout: "5s"` on every top-level step that allows `timeout` and doesn't set one.
-  - The default `attach_script=[{"return": 1}]` works around finding #3: bash's first prompt is swallowed by the initial attach wait. The workaround stops each test from paying the 5 s solicit wait, and that wait is most of today's ~70 s runtime. `test_lifecycle.make_runner` has no workaround, so it pays the wait. Tests that exercise #3 itself pass `attach_script=[]`.
+- `make_config(script, *, prompts=[SHELL_PROMPT], errors=None, vars=None, env=None, fn=None, spawn=BASH, attach_env=SHELL_ENV, attach_script=None, breakout=None, prepare=None, timeout=5) -> Config`. It also sets `timeout: "5s"` on every top-level step that allows `timeout` and doesn't set one.
+  - There is no default `attach_script`. Until #3 was fixed it defaulted to a `[{"return": 1}]` kick, because the initial attach wait swallowed bash's first prompt. Now that prompt stays pending, and a kick would produce a second prompt that shifts every command's captured output by one.
 - `run_script(script, **kw) -> Runner`: builds the config, calls `Runner(cfg, {}).run()`, and returns the runner. Registered values are in `runner.config.vars`.
-- `attached_runner` fixture (a factory): builds a `Runner`, calls `session.attach(BASH, env=SHELL_ENV, timeout=5)`, sends one `""` and returns the runner, so tests can call `run_steps()` directly. Teardown calls `session.detach()`.
+- `attached_runner` fixture (a factory): builds a `Runner`, calls `session.attach(BASH, env=SHELL_ENV, timeout=5)` and returns the runner with bash's first prompt pending, so tests can call `run_steps()` directly. Teardown calls `session.detach()`.
 - `shell_session` fixture: a raw `Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])` attached to bash. Teardown detaches it.
 - `steps(list_of_dicts) -> list[Step]`: validates steps through `Config` (replaces `test_lifecycle._steps`).
 - `children` fixture: moved from `test_lifecycle.py` without changes. It records every child passed to `Session.detach`.
@@ -159,11 +159,11 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-15 | `test_ignored_assert_failure_registers_output` | 138 | F1 | `echo nope`, `assert: yes`, `ignore_error`, `register` → `nope`; next step runs | pass |
 | P1-16 | `test_ignored_error_in_list_stops_at_failing_line` | 138 | F1, `errors: ['% .*']` | `cmd: ["echo a", "echo '% b'", "echo c"]` + ignore + register → `a\n% b`, and `c` never sent (F4). Covers the per-line stop with F4 evidence, which the existing test lacks. | pass |
 | P1-17 | `test_session_before_not_clobbered_by_rc_probe` | 324 | F1 | `cmd: echo MARKX`, then `cmd: echo ran`, `register: r`, `when: "{{ session.before \| contains('MARKX') }}"` → `vars.r == "ran"`. Guards a naive fix of #5. | pass |
-| P1-18 | `test_output_spanning_idle_poll_not_duplicated` | 111-114 | F1, `slow` | `cmd: "printf abc; sleep 6; echo def"`, register → `abcdef` | xfail #1 |
-| P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | xfail #5 |
+| P1-18 | `test_output_spanning_idle_poll_not_duplicated` | 111-114 | F1, `slow` | `cmd: "printf abc; sleep 6; echo def"`, register → `abc\ndef` | pass (was xfail #1) |
+| P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | pass (was xfail #5) |
 | P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 for timeout (`sleep 5`, `timeout: 1`); F3 for EOF/ValueError | per decision #10: either continue to next step (and the step registers partial output), or the exception propagates | decision #10 (x3) |
 
-Totals: 17 pass (P1-01..17), 2 xfail (P1-18, 19), 3 decision (P1-20). Slow: P1-18.
+Totals: 19 pass (P1-01..19), 3 decision (P1-20). Slow: P1-18.
 
 ## P2: `cmd` forms and embedded scripts
 
@@ -221,7 +221,7 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 
 | ID | Test | SPEC | Setup | Assertion | Status |
 |----|------|------|-------|-----------|--------|
-| P4-01 | `test_get_prompt_never_sends_command` | 338 | F1 `shell_session`, F4 | after `sendline("")` and `sent.clear()`, `get_prompt()` returns and `sent.lines() == []` | pass |
+| P4-01 | `test_get_prompt_never_sends_command` | 338 | F1 `shell_session`, F4 | after reaching the first prompt, `sendline("echo hi")` and `sent.clear()`, `get_prompt()` returns and `sent.lines() == []` | pass |
 | P4-02 | `test_shell_prompt_forms` (parametrized: `return: true` with `send`; no `send`) | 38, 341 | F2 `--wait-enter --then prompt`, F4 | returns at `PROMPT$ ` with nothing sent after the kick | pass |
 | P4-03 | `test_empty_send_raises_no_response` | 341-342 | F2 login prompt, `send: []` | `RuntimeError` matching `no response available` | pass |
 | P4-04 | `test_solicit_newline_after_idle` | 343 | F2 `--wait-enter`, F4, `slow` | no manual kick; `get_prompt(timeout=15)` returns; `sent.lines() == [""]`; elapsed ≥ 5 s | pass |
@@ -238,13 +238,13 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-15 | `test_handlers_reset_per_get_prompt` | 342 | F2 `--repeat 2 --accept admin:secret`, send `[admin, secret]` | two consecutive `get_prompt` calls (with `sendline("again")` between) both succeed; log has two `LOGIN=admin` | pass |
 | P4-16 | `test_grouped_expect_login_first` | 37, README:147 | F2 `--order login,password`, expect `[['login:', 'Password:']]`, send `[admin, secret]` | log `LOGIN=admin`, `PASSWORD=secret` (same result under both mappings) | pass |
 | P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | positional: `PASSWORD=secret`, `LOGIN=admin`; sequential: `PASSWORD=admin` | decision #4 |
-| P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | xfail #3 |
-| P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | xfail #3 |
+| P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | pass (was xfail #3) |
+| P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
 | P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | xfail #7 |
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-Totals: 16 pass (P4-01..16), 3 xfail (P4-18, 19, 20), 1 decision (P4-17). Slow: P4-04, 05, 06, 18.
+Totals: 18 pass (P4-01..16, 18, 19), 1 xfail (P4-20), 1 decision (P4-17). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
 
 ## P5: attach and block lifecycles, env
 
@@ -274,10 +274,10 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-20 | `test_env_nesting` | 25 | `env: {A: a, B: "{{ env.A }}-b", C: "{{ env.B }}-c"}` | `env.C == "a-b-c"` | pass |
 | P5-21 | `test_env_nesting_uses_os_override` | 25 | `setenv("A", "os")`, same env | `env.C == "os-b-c"` | pass |
 | P5-22 | `test_env_cycle_too_deep` | 25 | `env: {A: "{{ env.B }}x", B: "{{ env.A }}"}` | `Runner(...)` raises `ValueError` matching `nesting too deep` | pass |
-| P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | xfail #2 |
+| P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | pass (was xfail #2) |
 | P5-24 | `test_attach_timeout_default_and_spawn_templated` | 73-74, 317 | F5 recorder, `spawn: "{{ env.SH }}"`, no `timeout` | recorded spawn is the rendered string; `timeout == 300` | pass |
 
-Totals: 22 pass, 1 xfail (P5-23), 2 decision (P5-05).
+Totals: 23 pass, 2 decision (P5-05).
 
 ## P6: model, schema, example and CLI parity
 
@@ -308,9 +308,9 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-21 | `test_cli_arg_passed_to_templates` | 351-355 | CLI subprocess, F1 script, `--arg msg=hi` | `cmd: "echo got-{{ args.msg }}"` → `got-hi` in stdout, rc 0 | pass |
 | P6-22 | `test_cli_arg_value_may_contain_equals` | 355 | as P6-21, `--arg k=a=b` | `got-a=b` | pass |
 | P6-23 | `test_cli_arg_without_equals_is_clean_error` | 355 | CLI, `--arg bad` | rc 1; stderr `--arg requires KEY=VALUE`; no `Traceback` | pass |
-| P6-24 | `test_cli_non_mapping_yaml_is_clean_error` (parametrized: empty file, top-level list) | 12, 18 | CLI | rc 1; stderr mentions validation; no `Traceback` | xfail #18 |
+| P6-24 | `test_cli_non_mapping_yaml_is_clean_error` (parametrized: empty file, top-level list) | 12, 18 | CLI | rc 1; stderr mentions validation; no `Traceback` | pass (was xfail #18) |
 
-Totals: 17 pass, 3 xfail (P6-13, 14, 24), 4 decision (P6-15..18).
+Totals: 18 pass, 2 xfail (P6-13, 14), 4 decision (P6-15..18).
 
 P6-13 and P6-14 are part of #11, but SPEC already settles them: SPEC.md:37 allows mixed entries, and SPEC.md:24 requires `YYYY-MM`. So they are xfail now, not decisions.
 
@@ -362,19 +362,21 @@ The `pass` and `xfail` rows above are implemented (branch `test/impl-p1-p8`). Th
 
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
-| P1 | 17 | 2 | 1 | `test_cmd_semantics.py` |
+| P1 | 19 | 0 | 1 | `test_cmd_semantics.py` |
 | P2 | 14 | 1 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 16 | 0 | 0 | `test_common_props.py` |
-| P4 | 16 | 3 | 4 | `test_get_prompt.py` |
-| P5 | 22 | 1 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 17 | 3 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P4 | 18 | 1 | 4 | `test_get_prompt.py` |
+| P5 | 23 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P6 | 18 | 2 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 7 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
 | P8 | 13 | 1 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **122** | **11** | **5** | |
+| **Total** | **128** | **5** | **5** | |
+
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`.
 
 Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to the existing `test_strip_echo` table.
 
-Runtime on the reference machine: full suite about 115 s (303 passed, 13 xfailed), `-m "not slow"` about 82 s. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
+Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
 ### Deviations from the plan
 
@@ -386,21 +388,21 @@ Fixtures:
 
 Tests:
 - P1-09: the pattern is `^ERR.*`, so the message is `command error: ERR x`. `^ERR` alone would produce `command error: ERR`.
-- P1-18: expects `abc\ndef`, not `abcdef`. The solicit newline's tty echo is printed between the two parts, and SPEC.md:111 defines captured output as what the session prints. Today's value is `abcabc\ndef`.
+- P1-18: expects `abc\ndef`, not `abcdef`. The solicit newline's tty echo is printed between the two parts, and SPEC.md:111 defines captured output as what the session prints. Before the #1 fix the value was `abcabc\ndef`.
 - P1-19: asserts `session.before == ""` right after `true`, so the failure points at the cause (stale `MARKX\n`) rather than the consequence.
 - P2-04, P3-01: the `after` marker is assembled by `printf`, so the echoed command can't match it.
 - P3-09: uses the F6 probe to snapshot `session.before`/`match` during the step, and `printf '%sion: V%s\n' Vers 42`, so neither `Version` nor `V\d+` appears in the echo.
-- P4-01: sends `echo hi` instead of `""`. With empty output, `session.ctx` isn't updated (#5), so the folded `match` check would be testing #5.
-- P4-02, P4-04, P4-19: use `--order none`. P4-06 and P4-15 use `--wait-enter` plus a kick to avoid the #3 race. P4-15 uses `--then prompt`.
-- P4-19: `get_prompt(timeout=3)` must return; today it raises `TimeoutError` (converted to an assertion). The test doesn't time an elapsed < 4 s.
+- P4-01: sends `echo hi` instead of `""` (written while #5 left `session.ctx` stale on empty output). It first calls `get_prompt()` to reach bash's first prompt, which is no longer swallowed at attach (#3), then clears the send log.
+- P4-02, P4-04, P4-19: use `--order none`. The fake-device tests that kick (P4-06, P4-15 and others) use `--wait-enter`, where the device blocks until it reads that Enter; the kick is part of the device protocol, not a #3 workaround, and stays after the #3 fix. P4-15 uses `--then prompt`.
+- P4-19: `get_prompt(timeout=3)` must return; before the #3 fix it raised `TimeoutError` (converted to an assertion). The test doesn't time an elapsed < 4 s.
 - P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail is pinned to #7.
 - P5-10: `enter` uses `line: "PS1='BL''K$ '"`. A `cmd` would first wait for the new prompt, which isn't printed yet. The quoting keeps the echo from matching `BLK\$ `.
-- P5-11: no extra kick is needed; the pending prompt from the `attached_runner` kick serves the first `get_prompt`.
+- P5-11: no kick is needed; bash's first prompt, still pending after `attached_runner` attaches, serves the first `get_prompt`.
 - P6-07, P6-09, P8-01 and P8-11 are split into two functions each (accept/reject, recorded/real). They still count as one plan row.
 - P6-14: asserts only the model side. Python's `jsonschema` evaluates `pattern` with `re.search`, where `$` also matches before a trailing newline, so the Python validator accepts `"2026-08\n"` too. An ECMA-262 validator would reject it.
-- P8-07: synchronizes on the device's `RAW> ` / `RAW=<hex>` markers with `after`.
+- P8-07: synchronizes on the device's `RAW> ` / `RAW=<hex>` markers with `after`. It passes `attach_script=[{"return": 1}]` explicitly: its `--wait-enter` device needs that Enter, which it used to get from the F1 default.
 
-No new product findings came up during implementation. #18 (P6-24) reproduces as planned: `TypeError: ... argument after ** must be a mapping` with a traceback.
+No new product findings came up during implementation. #18 (P6-24) reproduced as planned (`TypeError: ... argument after ** must be a mapping` with a traceback) and is now fixed.
 
 ## Open spec decisions
 
@@ -507,7 +509,7 @@ These are not in the list of blocking decisions. None of them is tested in this 
 
 ## New findings from planning
 
-- **#18** (cli.py:24): an empty YAML file or a top-level list reaches `Config(**config_dict)` and crashes with `TypeError: ... argument after ** must be a mapping` and a traceback. The schema requires a top-level object, so this is a validation failure and should be reported the way other validation errors are. It's covered by xfail P6-24. It needs reviewer confirmation before it goes to autobot-coder.
+- **#18** (cli.py:24): an empty YAML file or a top-level list reaches `Config(**config_dict)` and crashes with `TypeError: ... argument after ** must be a mapping` and a traceback. The schema requires a top-level object, so this is a validation failure and should be reported the way other validation errors are. It's covered by P6-24. Fixed: the CLI now uses `Config.model_validate`, and SPEC.md's CLI section documents the error report.
 - **#19** (cli.py:20-21): a missing file or a YAML syntax error prints a traceback. SPEC is silent about this, so it's listed as a spec question, not a test.
 
 ## Implementation order

@@ -119,7 +119,8 @@ class Session:
         )
         self._cld.logfile_read = CleanWriter(sys.stdout)
         try:
-            self._expect(r".+", timeout=timeout)
+            # zero-width: wait for output but leave it buffered for get_prompt
+            self._expect(r"(?=.)", timeout=timeout)
         except BaseException:
             self.detach()
             raise
@@ -140,7 +141,10 @@ class Session:
             self._cld = None
 
     def get_prompt(
-        self, timeout: float = 300, errors: list[str] | None = None
+        self,
+        timeout: float = 300,
+        errors: list[str] | None = None,
+        capture: bool = True,
     ) -> str:
         if self._at_prompt:
             return ""
@@ -162,21 +166,22 @@ class Session:
             if i == 0:
                 output.append(before.rstrip("\r") + "\n")
                 continue
-            if before:
-                output.append(before)
-            if i == 1:
-                continue
             if i == len(self._patterns) - 2:
+                # unmatched text stays buffered; it comes back with the next match
                 if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
+                continue
+            if before:
+                output.append(before)
+            if i == 1:
                 continue
             if i == len(self._patterns) - 1:
                 raise EOFError("connection closed")
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
-                        return self._finish(output, sent, errors)
+                        return self._finish(output, sent, errors, capture)
                     if h.exhausted:
                         raise RuntimeError(
                             f"prompt '{h.name}': responses exhausted"
@@ -190,14 +195,14 @@ class Session:
                     break
 
     def _finish(
-        self, output: list[str], sent: str | None, errors: list[str] | None
+        self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool
     ) -> str:
         self._at_prompt = True
         text = "".join(output)
         text = text[: text.rfind("\n") + 1]
         if sent:
             text = strip_echo(text, sent)
-        if text.strip():
+        if capture:
             self._ctx["before"] = text
             self._ctx["match"] = str(self._cld.after or "") if self._cld else ""
         for pattern in errors or []:
@@ -239,7 +244,7 @@ class Session:
         self._expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
 
         rc = int(self._cld.match.group(1))  # type: ignore
-        self.get_prompt(timeout=timeout)
+        self.get_prompt(timeout=timeout, capture=False)
         return rc
 
     def sendcontrol(self, char: str):

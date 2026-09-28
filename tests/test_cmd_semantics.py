@@ -151,7 +151,6 @@ def test_p1_17_session_before_not_clobbered_by_rc_probe():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #1")
 def test_p1_18_output_spanning_idle_poll_not_duplicated():
     """SPEC.md:111-114: output printed across a 5s idle poll is captured once.
 
@@ -162,7 +161,6 @@ def test_p1_18_output_spanning_idle_poll_not_duplicated():
     assert out["out"] == "abc\ndef"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #5")
 def test_p1_19_session_before_cleared_by_empty_output(attached_runner: Callable[..., Runner]):
     """SPEC.md:324: session.before is the last command's (empty) output."""
     r = attached_runner(errors=PCT_ERR)

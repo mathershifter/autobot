@@ -58,6 +58,7 @@ def log_of(path: Path) -> list[str]:
 
 def test_p4_01_get_prompt_never_sends_command(shell_session: Session, sent: SentLog):
     """SPEC.md:338 (and 294): get_prompt only waits; it sends nothing itself."""
+    shell_session.get_prompt(timeout=5)
     shell_session.sendline("echo hi")
     sent.clear()
     assert shell_session.get_prompt(timeout=5) == "hi\n"
@@ -221,7 +222,6 @@ def test_p4_16_grouped_expect_login_first(device):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #3")
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
     """SPEC.md:81, 341: a login prompt that arrives with the banner is answered."""
     r, log = device([SHELL_PROMPT, LOGIN_FLAT], "--same-chunk", "--order", "login,password",
@@ -234,7 +234,6 @@ def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
     assert "" not in sent.lines()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #3")
 def test_p4_19_shell_prompt_in_same_chunk_as_banner(device):
     """SPEC.md:81, 341: a shell prompt that arrives with the banner is detected."""
     r, _ = device([SHELL_PROMPT], "--same-chunk", "--order", "none", "--then", "prompt", kick=False)

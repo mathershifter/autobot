@@ -78,7 +78,7 @@ fn:
 
 The attach lifecycle:
 1. `attach.prepare` runs locally (if defined) — aborts on failure
-2. `pexpect.spawn(attach.spawn)` — waits for initial output
+2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
 5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
@@ -321,7 +321,7 @@ All string values in `cmd`, `assert`, `attach.spawn`, `when`, and prompt `send` 
 | `env` | `env` section of the YAML |
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
 | `args` | CLI `--arg KEY=VALUE` arguments |
-| `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached |
+| `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check and embedded-script cleanup don't change it. |
 | `session.match` | Text that matched the last `after` pattern (pexpect `after`) |
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
@@ -353,3 +353,5 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 
 - `script` — path to the YAML script file
 - `--arg` — pass arguments accessible as `{{ args.KEY }}`
+
+A script that fails validation, including an empty file or a document that isn't a mapping, is reported on stderr as `Validation errors:` followed by the details, and the CLI exits with status 1.

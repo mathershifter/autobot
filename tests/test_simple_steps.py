@@ -37,6 +37,7 @@ def test_p8_07_control_bracket_is_ctrl_bracket(fake_device: FakeDevice):
             {"return": 1, "after": "RAW=\\w+"},
         ],
         spawn=spawn,
+        attach_script=[{"return": 1}],  # the Enter --wait-enter blocks on
     )
     assert "RAW=1d" in FakeDevice.read(log)
 
