@@ -17,7 +17,12 @@ autobot = "autobot.cli:main"
 requires = ["uv_build>=0.11.13,<0.12.0"]
 build-backend = "uv_build"
 
+[tool.pytest.ini_options]
+markers = ["slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'"]
+
 [dependency-groups]
 dev = [
+    "jsonschema>=4.26.0",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
 ]
