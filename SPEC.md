@@ -78,7 +78,7 @@ fn:
 
 The attach lifecycle:
 1. `attach.prepare` runs locally (if defined) — aborts on failure
-2. `pexpect.spawn(attach.spawn)` — waits for initial output
+2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
 5. `attach.breakout.script` executes (best-effort, errors logged to stderr)

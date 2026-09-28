@@ -13,7 +13,6 @@ import pexpect
 import pytest
 from conftest import (
     BASH,
-    KICK,
     SHELL_ENV,
     AttachRecorded,
     ProbeExecutor,
@@ -178,7 +177,7 @@ def test_p5_01_attach_lifecycle_order(
     run_script(
         [{"cmd": f"echo main >> {log}"}],
         prepare=f"#!/bin/sh\necho prepare >> {log}\n",
-        attach_script=[*KICK, {"cmd": f"echo attach >> {log}", "timeout": "5s"}],
+        attach_script=[{"cmd": f"echo attach >> {log}", "timeout": "5s"}],
         breakout=[{"cmd": f"echo breakout >> {log}", "timeout": "5s"}],
     )
     assert log.read_text().split() == ["prepare", "attach", "main", "breakout"]
@@ -244,7 +243,7 @@ def test_p5_07_attach_breakout_runs_after_attach_script_failure(tmp_path: Path, 
     with pytest.raises(RuntimeError, match="exit code 1"):
         run_script(
             [{"cmd": "echo MAIN_STEP"}],
-            attach_script=[*KICK, {"cmd": "false", "timeout": "5s"}],
+            attach_script=[{"cmd": "false", "timeout": "5s"}],
             breakout=[{"cmd": f"touch {bo}", "timeout": "5s"}],
         )
     assert "echo MAIN_STEP" not in sent.lines()

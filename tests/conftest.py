@@ -45,10 +45,6 @@ SHELL_ENV = {"TERM": "dumb", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]}
 SHELL_PROMPT = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
 RC_PROBE = "echo __AUTOBOT_RC=$?"
 
-# Workaround for finding #3: the initial attach wait swallows bash's first
-# prompt, so without a kick every test would pay the 5s solicit wait.
-KICK = [{"return": 1}]
-
 _TIMEOUT_STEPS = ("cmd", "call", "block", "control")
 _DEFAULT = object()
 
@@ -63,7 +59,7 @@ def make_doc(
     fn: dict[str, Any] | None = None,
     spawn: str = BASH,
     attach_env: Any = _DEFAULT,
-    attach_script: Any = _DEFAULT,
+    attach_script: list[dict[str, Any]] | None = None,
     breakout: list[dict[str, Any]] | None = None,
     prepare: str | None = None,
     timeout: Any = 5,
@@ -82,7 +78,6 @@ def make_doc(
         attach["env"] = dict(SHELL_ENV)
     elif attach_env is not None:
         attach["env"] = attach_env
-    attach_script = KICK if attach_script is _DEFAULT else attach_script
     if attach_script:
         attach["script"] = copy.deepcopy(attach_script)
     if breakout is not None:
@@ -143,14 +138,13 @@ def handler_names(runner_or_session: Runner | Session) -> list[str]:
 
 @pytest.fixture
 def attached_runner() -> Iterator[Callable[..., Runner]]:
-    """Factory: a Runner attached to local bash, sitting just after a kick."""
+    """Factory: a Runner attached to local bash, its first prompt pending."""
     runners: list[Runner] = []
 
     def factory(**kw: Any) -> Runner:
         runner = make_runner([], **kw)
         runners.append(runner)
         runner.session.attach(BASH, env=dict(SHELL_ENV), timeout=5)
-        runner.session.sendline("")
         return runner
 
     yield factory

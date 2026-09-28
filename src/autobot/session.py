@@ -119,7 +119,8 @@ class Session:
         )
         self._cld.logfile_read = CleanWriter(sys.stdout)
         try:
-            self._expect(r".+", timeout=timeout)
+            # zero-width: wait for output but leave it buffered for get_prompt
+            self._expect(r"(?=.)", timeout=timeout)
         except BaseException:
             self.detach()
             raise
