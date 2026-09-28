@@ -1,11 +1,44 @@
 from __future__ import annotations
 
+import re
 import sys
 import time
 
 import pexpect
 
 from .types import ANSI_ESCAPE_RE
+
+
+class CommandError(RuntimeError):
+    def __init__(self, message: str, output: str = ""):
+        super().__init__(message)
+        self.output = output
+
+
+def _norm(text: str) -> str:
+    return "".join(text.split())
+
+
+def strip_echo(text: str, sent: str) -> str:
+    target = _norm(sent)
+    if not target:
+        return text
+    lines = text.split("\n")
+    seen = ""
+    for k, line in enumerate(lines):
+        # readline horizontal-scroll mode (e.g. TERM=dumb) redraws only the
+        # visible tail of a long line, prefixed with '<'
+        tail = line.rsplit("\r", 1)[-1].lstrip()
+        if not seen and tail.startswith("<"):
+            shown = _norm(tail[1:])
+            if shown and target.endswith(shown):
+                return "\n".join(lines[k + 1 :])
+        seen += _norm(line)
+        if seen == target:
+            return "\n".join(lines[k + 1 :])
+        if not target.startswith(seen):
+            break
+    return text
 
 
 class CleanWriter:
@@ -57,6 +90,7 @@ class Session:
     def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
         self._at_prompt = False
+        self._sent: str | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._set_handlers(handlers)
 
@@ -99,14 +133,7 @@ class Session:
         if not self._cld:
             raise RuntimeError("not attached")
 
-        if errors:
-            patterns = self._patterns[:-2] + errors + self._patterns[-2:]
-            error_start = len(self._patterns) - 2
-            error_end = error_start + len(errors)
-        else:
-            patterns = self._patterns
-            error_start = error_end = 0
-
+        sent, self._sent = self._sent, None
         for h in self._handlers:
             h.reset()
         output: list[str] = []
@@ -116,31 +143,26 @@ class Session:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("timed out waiting for prompt")
-            i = self._cld.expect(patterns, timeout=min(5, remaining))
-            if self._cld.before:
-                output.append(str(self._cld.before))
-            if i == 0 or i == 1:
+            i = self._cld.expect(self._patterns, timeout=min(5, remaining))
+            before = str(self._cld.before or "")
+            if i == 0:
+                output.append(before.rstrip("\r") + "\n")
                 continue
-            if i == len(patterns) - 2:
+            if before:
+                output.append(before)
+            if i == 1:
+                continue
+            if i == len(self._patterns) - 2:
                 if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
                 continue
-            if i == len(patterns) - 1:
+            if i == len(self._patterns) - 1:
                 raise EOFError("connection closed")
-            if error_start <= i < error_end:
-                raise RuntimeError(
-                    f"command error: {self._cld.after}".strip()
-                )
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
-                        self._at_prompt = True
-                        result = "".join(output)
-                        if result.strip():
-                            self._ctx["before"] = result
-                            self._ctx["match"] = str(self._cld.after or "")
-                        return result
+                        return self._finish(output, sent, errors)
                     if h.exhausted:
                         raise RuntimeError(
                             f"prompt '{h.name}': responses exhausted"
@@ -152,6 +174,23 @@ class Session:
                         )
                     self._cld.sendline(response)
                     break
+
+    def _finish(
+        self, output: list[str], sent: str | None, errors: list[str] | None
+    ) -> str:
+        self._at_prompt = True
+        text = "".join(output)
+        text = text[: text.rfind("\n") + 1]
+        if sent:
+            text = strip_echo(text, sent)
+        if text.strip():
+            self._ctx["before"] = text
+            self._ctx["match"] = str(self._cld.after or "") if self._cld else ""
+        for pattern in errors or []:
+            m = re.search(pattern, text, re.MULTILINE)
+            if m:
+                raise CommandError(f"command error: {m.group(0)}".strip(), text)
+        return text
 
     def save_handlers(self) -> list[PromptHandler]:
         return self._handlers
@@ -175,6 +214,7 @@ class Session:
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
+        self._sent = line
         self._cld.sendline(line)
 
     def check_rc(self, timeout: float = 300) -> int:
