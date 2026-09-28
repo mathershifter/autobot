@@ -353,3 +353,5 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 
 - `script` — path to the YAML script file
 - `--arg` — pass arguments accessible as `{{ args.KEY }}`
+
+A script that fails validation, including an empty file or a document that isn't a mapping, is reported on stderr as `Validation errors:` followed by the details, and the CLI exits with status 1.

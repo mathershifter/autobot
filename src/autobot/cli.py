@@ -21,7 +21,7 @@ def _cmd_run(args):
         config_dict = yaml.safe_load(f)
 
     try:
-        config = Config(**config_dict)
+        config = Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
         console.print("Validation errors:")
         console.print(e.json(indent=2))
