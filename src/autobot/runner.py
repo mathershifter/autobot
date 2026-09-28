@@ -138,20 +138,24 @@ class Runner:
             self._run_prepare(self.render(attach.prepare))
 
         console.print(f">> attach: {spawn}")
-        self._session.attach(spawn, env=env, timeout=timeout)
         try:
-            if attach.script:
-                self.run_steps(attach.script)
-            self.run_steps(self._config.script)
+            self._session.attach(spawn, env=env, timeout=timeout)
+            try:
+                if attach.script:
+                    self.run_steps(attach.script)
+                self.run_steps(self._config.script)
+            finally:
+                if attach.breakout and attach.breakout.script:
+                    console.print(">> breakout: detaching")
+                    try:
+                        self._session.reset_handlers()
+                        self.run_steps(attach.breakout.script)
+                    except Exception as e:  # noqa: BLE001 - breakout is best-effort
+                        console.print(
+                            f">> breakout error ({type(e).__name__}): {e}",
+                            markup=False,
+                        )
         finally:
-            if attach.breakout and attach.breakout.script:
-                console.print(">> breakout: detaching")
-                self._session.reset_handlers()
-                try:
-                    self.run_steps(attach.breakout.script)
-                except (TimeoutError, EOFError, RuntimeError, OSError) as e:
-                    console.print(
-                        f">> breakout error ({type(e).__name__}): {e}")
             self._session.detach()
 
     def run_steps(self, steps: list[Step]):

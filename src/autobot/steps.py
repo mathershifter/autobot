@@ -169,18 +169,23 @@ class BlockExecutor:
             ctx.session.restore_handlers(block_handlers)
         else:
             saved_handlers = None
-        if step.block.enter:
-            ctx.run_steps(step.block.enter)
         try:
-            ctx.run_steps(step.block.script)
+            try:
+                if step.block.enter:
+                    ctx.run_steps(step.block.enter)
+                ctx.run_steps(step.block.script)
+            finally:
+                if step.block.breakout and step.block.breakout.script:
+                    console.print(f">> block breakout: {step.block.name}")
+                    try:
+                        ctx.session.reset_handlers()
+                        ctx.run_steps(step.block.breakout.script)
+                    except Exception as e:  # noqa: BLE001 - breakout is best-effort
+                        console.print(
+                            f">> block breakout error ({type(e).__name__}): {e}",
+                            markup=False,
+                        )
         finally:
-            if step.block.breakout and step.block.breakout.script:
-                console.print(f">> block breakout: {step.block.name}")
-                ctx.session.reset_handlers()
-                try:
-                    ctx.run_steps(step.block.breakout.script)
-                except (TimeoutError, EOFError, RuntimeError, OSError) as e:
-                    console.print(f">> block breakout error ({type(e).__name__}): {e}")
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)
         console.print(f">> block completed: {step.block.name}")
