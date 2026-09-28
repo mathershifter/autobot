@@ -321,7 +321,7 @@ All string values in `cmd`, `assert`, `attach.spawn`, `when`, and prompt `send` 
 | `env` | `env` section of the YAML |
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
 | `args` | CLI `--arg KEY=VALUE` arguments |
-| `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached |
+| `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check and embedded-script cleanup don't change it. |
 | `session.match` | Text that matched the last `after` pattern (pexpect `after`) |
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).

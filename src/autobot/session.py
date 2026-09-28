@@ -140,7 +140,10 @@ class Session:
             self._cld = None
 
     def get_prompt(
-        self, timeout: float = 300, errors: list[str] | None = None
+        self,
+        timeout: float = 300,
+        errors: list[str] | None = None,
+        capture: bool = True,
     ) -> str:
         if self._at_prompt:
             return ""
@@ -177,7 +180,7 @@ class Session:
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
-                        return self._finish(output, sent, errors)
+                        return self._finish(output, sent, errors, capture)
                     if h.exhausted:
                         raise RuntimeError(
                             f"prompt '{h.name}': responses exhausted"
@@ -191,14 +194,14 @@ class Session:
                     break
 
     def _finish(
-        self, output: list[str], sent: str | None, errors: list[str] | None
+        self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool
     ) -> str:
         self._at_prompt = True
         text = "".join(output)
         text = text[: text.rfind("\n") + 1]
         if sent:
             text = strip_echo(text, sent)
-        if text.strip():
+        if capture:
             self._ctx["before"] = text
             self._ctx["match"] = str(self._cld.after or "") if self._cld else ""
         for pattern in errors or []:
@@ -240,7 +243,7 @@ class Session:
         self._expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
 
         rc = int(self._cld.match.group(1))  # type: ignore
-        self.get_prompt(timeout=timeout)
+        self.get_prompt(timeout=timeout, capture=False)
         return rc
 
     def sendcontrol(self, char: str):
