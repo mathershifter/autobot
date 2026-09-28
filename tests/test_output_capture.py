@@ -1,40 +1,9 @@
 from __future__ import annotations
 
-import os
-from typing import Any
-
 import pytest
+from conftest import run_vars as run
 
-from autobot.models import Config
-from autobot.runner import Runner
 from autobot.session import strip_echo
-
-BASH = "bash --norc --noprofile -i"
-
-
-def run(
-    script: list[dict[str, Any]],
-    errors: list[str] | None = None,
-    spawn: str = BASH,
-) -> dict[str, Any]:
-    for step in script:
-        step.setdefault("timeout", "10s")
-    cfg = Config.model_validate(
-        {
-            "autobot": "2026-08",
-            "prompts": [{"name": "sh", "expect": [r"PROMPT\$ "]}],
-            "errors": errors or [],
-            "attach": {
-                "spawn": spawn,
-                "timeout": 10,
-                "env": {"TERM": "dumb", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]},
-                "script": [{"return": 1}],
-            },
-            "script": script,
-        }
-    )
-    Runner(cfg, {}).run()
-    return cfg.vars
 
 
 def test_newlines_preserved():
@@ -156,7 +125,20 @@ def test_no_trailing_newline_output_dropped():
         ("\r<9 word10\nout\n", "echo word9 word10", "out\n"),
         ("real\n", "printf 'real\\n'", "real\n"),
         ("hi\n", "", "hi\n"),
+        # P8-05 (SPEC.md:112): echo wrapped mid-word
+        ("echo ab\ncd\nout\n", "echo abcd", "out\n"),
+        # P8-05: a mismatched echo leaves the output unchanged
+        ("echo xyz\nout\n", "echo abc", "echo xyz\nout\n"),
+        # P8-05: only a prefix of the echo, then nothing: unchanged
+        ("echo a\n", "echo abc", "echo a\n"),
+        # P8-05: scroll form whose tail doesn't match: unchanged
+        ("\r<zzz\nout\n", "echo word9 word10", "\r<zzz\nout\n"),
+        # P8-05: output identical to the command keeps the second copy
+        ("echo hi\necho hi\n", "echo hi", "echo hi\n"),
+        # P8-05: whitespace-only sent: unchanged
+        ("  hi\n", "   ", "  hi\n"),
     ],
 )
 def test_strip_echo(text: str, sent: str, expected: str):
+    """SPEC.md:112 (P8-05 extends the table)."""
     assert strip_echo(text, sent) == expected

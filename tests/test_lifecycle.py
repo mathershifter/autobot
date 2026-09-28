@@ -1,62 +1,45 @@
+"""Attach and block lifecycles (SPEC.md:68-85, 186-204).
+
+Tests prefixed ``test_p5_NN_`` map to test plan rows P5-NN.
+"""
+
 from __future__ import annotations
 
-import os
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pexpect
 import pytest
+from conftest import (
+    BASH,
+    KICK,
+    SHELL_ENV,
+    AttachRecorded,
+    ProbeExecutor,
+    SentLog,
+    Timeline,
+    handler_names,
+    make_runner,
+    run_script,
+    steps,
+)
 
-from autobot.models import Config
 from autobot.runner import Runner
 from autobot.session import Session
 
-SHELL = "bash --norc --noprofile -i"
-ENV = {"PS1": "PROMPT$ ", "TERM": "dumb", "NO_COLOR": "1", "PATH": os.environ["PATH"]}
 TOP_PROMPTS = [{"name": "top", "expect": [r"PROMPT\$ "], "return": True}]
 BLOCK_PROMPTS = [{"name": "blk", "expect": [r"PROMPT\$ "], "return": True}]
 STUCK = {"cmd": "true", "after": "NEVER_APPEARS", "timeout": 1}
 
 
-def make_runner(script: list, breakout: list | None = None, **attach: Any) -> Runner:
-    cfg: dict[str, Any] = {
-        "autobot": "2026-08",
-        "prompts": TOP_PROMPTS,
-        "attach": {"spawn": SHELL, "env": ENV, "timeout": 5, **attach},
-        "script": script,
-    }
-    if breakout is not None:
-        cfg["attach"]["breakout"] = {"script": breakout}
-    return Runner(Config.model_validate(cfg), {})
+def top_runner(script: list, breakout: list | None = None, **kw: Any) -> Runner:
+    return make_runner(script, prompts=TOP_PROMPTS, breakout=breakout, **kw)
 
 
 @pytest.fixture
-def children(monkeypatch) -> list[pexpect.spawn]:
-    """Record every child the session detaches, so tests can check it is dead."""
-    seen: list[pexpect.spawn] = []
-    orig = Session.detach
-
-    def detach(self):
-        if self._cld is not None:
-            seen.append(self._cld)
-        orig(self)
-
-    monkeypatch.setattr(Session, "detach", detach)
-    return seen
-
-
-def handler_names(runner: Runner) -> list[str]:
-    return [h.name for h in runner.session.save_handlers()]
-
-
-def attached(runner: Runner) -> Runner:
-    runner.session.attach(SHELL, env=ENV, timeout=5)
-    return runner
-
-
-def _steps(steps: list) -> list:
-    return Config.model_validate(
-        {"autobot": "2026-08", "attach": {"spawn": SHELL}, "script": steps}
-    ).script
+def attached(attached_runner: Callable[..., Runner]) -> Callable[[], Runner]:
+    return lambda: attached_runner(prompts=TOP_PROMPTS)
 
 
 def block(**kw: Any) -> dict:
@@ -68,7 +51,7 @@ def block(**kw: Any) -> dict:
 
 def test_expect_timeout_is_builtin_timeout():
     s = Session([])
-    s.attach(SHELL, env=ENV, timeout=5)
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
     try:
         with pytest.raises(TimeoutError) as ei:
             s.expect(["NEVER_APPEARS"], timeout=0.5)
@@ -79,7 +62,7 @@ def test_expect_timeout_is_builtin_timeout():
 
 def test_sleep_and_check_rc_eof_is_builtin_eof():
     s = Session([])
-    s.attach(SHELL, env=ENV, timeout=5)
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
     try:
         s.sendline("exit")
         with pytest.raises(EOFError) as ei:
@@ -94,24 +77,24 @@ def test_sleep_and_check_rc_eof_is_builtin_eof():
 # -- block lifecycle --------------------------------------------------------
 
 
-def test_block_breakout_after_timeout_restores_handlers(capsys):
-    r = attached(make_runner([]))
+def test_block_breakout_after_timeout_restores_handlers(attached, capsys):
+    r = attached()
     try:
-        r.run_steps(_steps([block(script=[{"cmd": "true"}], breakout={"script": [STUCK]})]))
+        r.run_steps(steps([block(script=[{"cmd": "true"}], breakout={"script": [STUCK]})]))
         assert handler_names(r) == ["top"]
         # session still usable with the restored top-level prompts
-        r.run_steps(_steps([{"cmd": "true"}]))
+        r.run_steps(steps([{"cmd": "true"}]))
     finally:
         r.session.detach()
     assert "block breakout error (TimeoutError)" in capsys.readouterr().err
 
 
-def test_block_failing_enter_runs_breakout_and_restores(capsys):
-    r = attached(make_runner([]))
+def test_block_failing_enter_runs_breakout_and_restores(attached, capsys):
+    r = attached()
     try:
         with pytest.raises(RuntimeError, match="exit code 1"):
             r.run_steps(
-                _steps([block(
+                steps([block(
                     enter=[{"cmd": "false"}],
                     script=[{"cmd": "echo SHOULD_NOT_RUN"}],
                     breakout={"script": [{"cmd": "echo BREAKOUT_RAN"}]},
@@ -126,21 +109,21 @@ def test_block_failing_enter_runs_breakout_and_restores(capsys):
     assert "SHOULD_NOT_RUN" not in out.err
 
 
-def test_block_original_error_preserved_when_breakout_fails():
-    r = attached(make_runner([]))
+def test_block_original_error_preserved_when_breakout_fails(attached):
+    r = attached()
     try:
         with pytest.raises(RuntimeError, match="exit code 1"):
-            r.run_steps(_steps([block(script=[{"cmd": "false"}], breakout={"script": [STUCK]})]))
+            r.run_steps(steps([block(script=[{"cmd": "false"}], breakout={"script": [STUCK]})]))
         assert handler_names(r) == ["top"]
     finally:
         r.session.detach()
 
 
-def test_block_breakout_template_error_is_best_effort(capsys):
-    r = attached(make_runner([]))
+def test_block_breakout_template_error_is_best_effort(attached, capsys):
+    r = attached()
     try:
         r.run_steps(
-            _steps([block(script=[{"cmd": "true"}], breakout={"script": [{"line": "{{ oops("}]})])
+            steps([block(script=[{"cmd": "true"}], breakout={"script": [{"line": "{{ oops("}]})])
         )
         assert handler_names(r) == ["top"]
     finally:
@@ -152,7 +135,7 @@ def test_block_breakout_template_error_is_best_effort(capsys):
 
 
 def test_attach_breakout_failure_still_detaches(children, capsys):
-    r = make_runner([{"cmd": "true"}], breakout=[STUCK])
+    r = top_runner([{"cmd": "true"}], breakout=[STUCK])
     r.run()
     assert len(children) == 1
     assert not children[0].isalive()
@@ -161,7 +144,7 @@ def test_attach_breakout_failure_still_detaches(children, capsys):
 
 
 def test_attach_original_error_preserved_when_breakout_fails(children):
-    r = make_runner([{"cmd": "false"}], breakout=[STUCK])
+    r = top_runner([{"cmd": "false"}], breakout=[STUCK])
     with pytest.raises(RuntimeError, match="exit code 1"):
         r.run()
     assert len(children) == 1
@@ -169,8 +152,296 @@ def test_attach_original_error_preserved_when_breakout_fails(children):
 
 
 def test_attach_initial_timeout_closes_child(children):
-    r = make_runner([{"cmd": "true"}], spawn="sleep 30", timeout=1)
+    r = top_runner([{"cmd": "true"}], spawn="sleep 30", timeout=1)
     with pytest.raises(TimeoutError):
         r.run()
     assert len(children) == 1
     assert not children[0].isalive()
+
+
+# -- P5: attach lifecycle (SPEC.md:68-85) -----------------------------------
+
+
+def test_p5_01_attach_lifecycle_order(
+    tmp_path: Path, timeline: Timeline, children, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC.md:79-85: prepare -> spawn -> attach.script -> script -> breakout -> close."""
+    log = tmp_path / "log"
+    at_attach: list[str] = []
+    recorded_attach = Session.attach
+
+    def attach(self, *a, **k):
+        at_attach.append(log.read_text() if log.exists() else "")
+        return recorded_attach(self, *a, **k)
+
+    monkeypatch.setattr(Session, "attach", attach)
+    run_script(
+        [{"cmd": f"echo main >> {log}"}],
+        prepare=f"#!/bin/sh\necho prepare >> {log}\n",
+        attach_script=[*KICK, {"cmd": f"echo attach >> {log}", "timeout": "5s"}],
+        breakout=[{"cmd": f"echo breakout >> {log}", "timeout": "5s"}],
+    )
+    assert log.read_text().split() == ["prepare", "attach", "main", "breakout"]
+    assert at_attach == ["prepare\n"]
+    assert timeline.names().count("attach") == 1
+    assert len(children) == 1
+    assert not children[0].isalive()
+
+
+def test_p5_02_prepare_nonzero_aborts_before_spawn(timeline: Timeline, children):
+    """SPEC.md:72, 80: prepare failing aborts before spawn."""
+    r = make_runner([{"cmd": "true"}], prepare="#!/bin/sh\nexit 3\n")
+    with pytest.raises(RuntimeError, match="prepare script failed with exit code 3"):
+        r.run()
+    assert "attach" not in timeline.names()
+    assert children == []
+
+
+@pytest.mark.parametrize("rc", [0, 3], ids=["success", "failure"])
+def test_p5_03_prepare_temp_file_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int):
+    """SPEC.md:72: the local prepare script leaves no temp file behind."""
+    import tempfile
+
+    tdir = tmp_path / "tmp"
+    tdir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tdir))
+    r = make_runner([], prepare=f"#!/bin/sh\nexit {rc}\n")
+    if rc:
+        with pytest.raises(RuntimeError):
+            r.run()
+    else:
+        r.run()
+    assert list(tdir.glob("_autobot_*")) == []
+
+
+def test_p5_04_prepare_without_shebang_fails_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeline: Timeline, children
+):
+    """SPEC.md:72: prepare uses the shebang; without one it fails before spawn."""
+    import tempfile
+
+    tdir = tmp_path / "tmp"
+    tdir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tdir))
+    with pytest.raises((OSError, RuntimeError)):
+        make_runner([], prepare="echo hi\n").run()
+    assert list(tdir.glob("_autobot_*")) == []
+    assert "attach" not in timeline.names()
+    assert children == []
+
+
+def test_p5_06_attach_breakout_runs_after_script_failure(tmp_path: Path):
+    """SPEC.md:77, 84: breakout runs in finally after the main script fails."""
+    bo = tmp_path / "bo"
+    with pytest.raises(RuntimeError, match="exit code 1"):
+        run_script([{"cmd": "false"}], breakout=[{"cmd": f"touch {bo}", "timeout": "5s"}])
+    assert bo.exists()
+
+
+def test_p5_07_attach_breakout_runs_after_attach_script_failure(tmp_path: Path, sent: SentLog):
+    """SPEC.md:76-84: attach.script failure skips the main script, runs breakout."""
+    bo = tmp_path / "bo"
+    with pytest.raises(RuntimeError, match="exit code 1"):
+        run_script(
+            [{"cmd": "echo MAIN_STEP"}],
+            attach_script=[*KICK, {"cmd": "false", "timeout": "5s"}],
+            breakout=[{"cmd": f"touch {bo}", "timeout": "5s"}],
+        )
+    assert "echo MAIN_STEP" not in sent.lines()
+    assert bo.exists()
+
+
+def test_p5_08_attach_breakout_resets_handlers_first(timeline: Timeline):
+    """SPEC.md:84: handlers are reset before the attach breakout runs."""
+    run_script([{"cmd": "echo main"}], breakout=[{"cmd": "echo bo", "timeout": "5s"}])
+    main = timeline.index_of(("sendline", "echo main"))
+    reset = timeline.index_of(("reset_handlers",), main)
+    assert timeline.index_of(("sendline", "echo bo"), main) > reset
+
+
+def test_p5_09_attach_breakout_error_logged(capsys):
+    """SPEC.md:84: breakout is best-effort; errors are logged to stderr."""
+    run_script([{"cmd": "true"}], breakout=[{"cmd": "false", "timeout": "5s"}])
+    assert "breakout error (RuntimeError)" in capsys.readouterr().err
+
+
+# -- P5: block lifecycle (SPEC.md:186-204) ----------------------------------
+
+
+def test_p5_10_block_prompts_active_inside_block(probe: ProbeExecutor):
+    """SPEC.md:193, 199: block prompts replace top-level prompts inside the block."""
+    runner = run_script(
+        [
+            {
+                "block": {
+                    "name": "b",
+                    "prompts": [{"name": "blk", "expect": [r"BLK\$ "], "return": True}],
+                    # quoted so the echoed command itself never matches a prompt
+                    "enter": [{"line": "PS1='BL''K$ '"}],
+                    "script": [
+                        {"probe": "inside"},
+                        {"cmd": "echo x", "register": "x", "timeout": "5s"},
+                    ],
+                    "breakout": {"script": [{"line": "PS1='PROM''PT$ '"}]},
+                },
+                "timeout": "5s",
+            },
+            {"probe": "after"},
+            {"cmd": "echo y", "register": "y"},
+        ]
+    )
+    assert probe.by_name("inside")["handlers"] == ["blk"]
+    assert runner.config.vars["x"] == "x"
+    assert probe.by_name("after")["handlers"] == ["sh"]
+    assert runner.config.vars["y"] == "y"
+
+
+@pytest.mark.parametrize("with_breakout", [False, True], ids=["no-breakout", "breakout"])
+@pytest.mark.parametrize("phase", ["enter", "script"])
+def test_p5_11_block_prompts_restored_on_failure(attached, phase: str, with_breakout: bool):
+    """SPEC.md:203, README:304: previous handlers restored on every failure path."""
+    blk: dict[str, Any] = {"name": "b", "prompts": BLOCK_PROMPTS}
+    fail = [{"cmd": "false", "timeout": "5s"}]
+    if phase == "enter":
+        blk["enter"] = fail
+        blk["script"] = [{"line": "echo SHOULD_NOT_RUN"}]
+    else:
+        blk["script"] = fail
+    if with_breakout:
+        blk["breakout"] = {"script": [{"line": "true"}]}
+    r = attached()
+    with pytest.raises(RuntimeError, match="exit code 1"):
+        r.run_steps(steps([{"block": blk}]))
+    assert handler_names(r) == ["top"]
+
+
+@pytest.mark.parametrize("inner_fails", [False, True], ids=["ok", "inner-fails"])
+def test_p5_12_nested_block_restore(probe: ProbeExecutor, inner_fails: bool):
+    """SPEC.md:193, 203: nested blocks restore their parent's handlers."""
+    shell = [r"PROMPT\$ "]
+    inner_script: list[dict[str, Any]] = [{"probe": "in_inner"}]
+    if inner_fails:
+        inner_script.append({"cmd": "false", "timeout": "5s"})
+    inner = {
+        "block": {
+            "name": "inner",
+            "prompts": [{"name": "i", "expect": shell, "return": True}],
+            "script": inner_script,
+        }
+    }
+    outer = {
+        "block": {
+            "name": "outer",
+            "prompts": [{"name": "o", "expect": shell, "return": True}],
+            "script": [inner, {"probe": "after_inner"}],
+            "breakout": {"script": [{"probe": "outer_breakout"}]},
+        }
+    }
+    runner = make_runner([outer, {"probe": "top"}])
+    if inner_fails:
+        with pytest.raises(RuntimeError, match="exit code 1"):
+            runner.run()
+    else:
+        runner.run()
+    assert probe.by_name("in_inner")["handlers"] == ["i"]
+    assert probe.by_name("outer_breakout")["handlers"] == ["o"]
+    assert handler_names(runner) == ["sh"]
+    ran = [r["step"].probe for r in probe.records]
+    if inner_fails:
+        assert ran == ["in_inner", "outer_breakout"]
+    else:
+        assert ran == ["in_inner", "after_inner", "outer_breakout", "top"]
+        assert probe.by_name("after_inner")["handlers"] == ["o"]
+        assert probe.by_name("top")["handlers"] == ["sh"]
+
+
+def test_p5_13_block_without_prompts_leaves_handlers_untouched(
+    probe: ProbeExecutor, timeline: Timeline
+):
+    """SPEC.md:199, 203: without prompts the block never swaps handlers."""
+    run_script([{"probe": "top"}, {"block": {"name": "b", "script": [{"probe": "inner"}]}}])
+    assert probe.by_name("inner")["handlers_id"] == probe.by_name("top")["handlers_id"]
+    assert "restore_handlers" not in [e[0] for e in timeline.since("attach")]
+
+
+def test_p5_14_block_breakout_resets_handlers_first(timeline: Timeline):
+    """SPEC.md:202: handlers are reset before the block breakout runs."""
+    run_script(
+        [
+            {
+                "block": {
+                    "name": "b",
+                    "script": [{"line": "echo s"}],
+                    "breakout": {"script": [{"line": "echo bo"}]},
+                }
+            }
+        ]
+    )
+    assert timeline.has_subsequence(
+        [("sendline", "echo s"), ("reset_handlers",), ("sendline", "echo bo")]
+    )
+
+
+def test_p5_15_block_step_order(tmp_path: Path):
+    """SPEC.md:198-203: enter -> script -> breakout."""
+    log = tmp_path / "log"
+
+    def tag(t: str) -> dict:
+        return {"cmd": f"echo {t} >> {log}", "timeout": "5s"}
+
+    run_script(
+        [
+            {
+                "block": {
+                    "name": "b",
+                    "enter": [tag("enter")],
+                    "script": [tag("script")],
+                    "breakout": {"script": [tag("breakout")]},
+                }
+            }
+        ]
+    )
+    assert log.read_text().split() == ["enter", "script", "breakout"]
+
+
+def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
+    """SPEC.md:203, README:304: a failing block breakout is logged; handlers restored."""
+    r = attached()
+    try:
+        r.run_steps(
+            steps([block(script=[{"cmd": "true"}], breakout={"script": [{"cmd": "false"}]})])
+        )
+        assert handler_names(r) == ["top"]
+    finally:
+        r.session.detach()
+    assert "block breakout error (RuntimeError)" in capsys.readouterr().err
+
+
+# -- P5: attach spawn arguments ---------------------------------------------
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #2")
+@pytest.mark.parametrize(("value", "expected"), [("500ms", 0.5), ("1.5s", 1.5)])
+def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected: float):
+    """SPEC.md:74, 307-313: attach.timeout is a duration and is not truncated."""
+    timeline.stop_attach = True
+    with pytest.raises(AttachRecorded):
+        make_runner([], timeout=value).run()
+    _, _, kwargs = next(c for c in timeline.calls if c[0] == "attach")
+    assert kwargs["timeout"] == expected
+
+
+def test_p5_24_attach_timeout_default_and_spawn_templated(
+    timeline: Timeline, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC.md:73-74, 317: spawn is rendered; omitted timeout uses the 300s default."""
+    monkeypatch.delenv("AB_SPAWN_SH", raising=False)
+    timeline.stop_attach = True
+    runner = make_runner(
+        [], spawn="{{ env.AB_SPAWN_SH }} -i", env={"AB_SPAWN_SH": "bash --norc"}, timeout=None
+    )
+    with pytest.raises(AttachRecorded):
+        runner.run()
+    _, args, kwargs = next(c for c in timeline.calls if c[0] == "attach")
+    assert args[0] == "bash --norc -i"
+    assert kwargs["timeout"] == 300

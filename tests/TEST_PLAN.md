@@ -64,14 +64,14 @@ Options:
 | `--banner TEXT` | printed first (default `Welcome`) |
 | `--wait-enter` | after the banner, block on one input line before prompting. Tests stay deterministic: the device only continues when Autobot sends something. |
 | `--same-chunk` | write the banner and the first prompt in one `os.write` (reproduces #3) |
-| `--order login,password` / `password,login` / `password` | prompt sequence per attempt; `login:` / `Password:` text |
+| `--order login,password` / `password,login` / `password` / `none` | prompt sequence per attempt; `login:` / `Password:` text. `none` skips authentication (used for shell-prompt-only tests). |
 | `--accept USER:PASS` (repeatable) | credentials that succeed. A rejected attempt prints `Login incorrect` and restarts the sequence. |
 | `--max-attempts N` | after N failures, print `Too many failures` and keep prompting (used for exhaustion) |
 | `--post-auth-delay SECS` | sleep before printing the shell prompt after auth (for "no solicit after handler") |
 | `--repeat N` | after auth, print `PROMPT$ `, read one line, and run the whole login sequence again (N times) |
-| `--silent` | print the banner and never print anything else (read and discard input) |
+| `--silent` | turn off tty echo, print the banner and never print anything else (read and log input as `SILENT=`) |
 | `--exit-after-banner` | exit after the banner (after the enter, if `--wait-enter`) |
-| `--rawdump N` | put the tty in raw mode, read N bytes, log them as hex, restore, and continue |
+| `--rawdump N` | put the tty in raw mode, print `RAW> `, read N bytes, log them as hex, restore, print `RAW=<hex>`, and continue. The two markers let a script synchronize with `after`. |
 | `--then shell` | after auth, `os.execvpe("bash", [..."--norc","--noprofile","-i"], {PS1: "PROMPT$ ", TERM: "dumb", PATH})` (default); `--then prompt` prints `PROMPT$ ` and loops on `readline` echoing nothing |
 
 Every line the device reads is appended to `log_path` as `<PROMPT>=<value>` (e.g. `LOGIN=admin`, `PASSWORD=secret`, `ENTER=`, `RAW=1d`). Tests assert on the log file, not on parsed pty output. Before each prompt, the device flushes stdout.
@@ -355,6 +355,52 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | xfail #15 |
 
 Totals: 13 pass, 1 xfail.
+
+## Implementation status
+
+The `pass` and `xfail` rows above are implemented (branch `test/impl-p1-p8`). The `decision` rows are not written yet. Every xfail uses `xfail(strict=True, raises=..., reason="finding #N")`. Each one was run with `--runxfail` to confirm that it fails for the stated reason.
+
+| Priority | pass | xfail | slow | Files |
+|----------|-----:|------:|-----:|-------|
+| P1 | 17 | 2 | 1 | `test_cmd_semantics.py` |
+| P2 | 14 | 1 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
+| P3 | 16 | 0 | 0 | `test_common_props.py` |
+| P4 | 16 | 3 | 4 | `test_get_prompt.py` |
+| P5 | 22 | 1 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P6 | 17 | 3 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P7 | 7 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
+| P8 | 13 | 1 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
+| **Total** | **122** | **11** | **5** | |
+
+Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to the existing `test_strip_echo` table.
+
+Runtime on the reference machine: full suite about 115 s (303 passed, 13 xfailed), `-m "not slow"` about 82 s. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
+
+### Deviations from the plan
+
+Fixtures:
+- F1: `make_doc()` returns the raw dict, which the CLI tests need. `make_config`, `make_runner`, `run_script` and `run_vars` (returns `config.vars`) build on it. The default `timeout: 5s` is only added to `cmd`/`call`/`block`/`control` steps, not to plugin steps, so the existing plugin-timeout assertions don't change. `attached_runner(**make_config_kwargs)` is a factory.
+- F3: `FakeSession`/`FakeCtx` are in `conftest.py` but no test uses them yet. Their only planned users are the decision #10 tests.
+- F4/F5: stop modes are `spawned.stop = True` (raises `SpawnRecorded`) and `timeline.stop_attach = True` (raises `AttachRecorded`). Timeline events are `(name, principal_arg)`; full calls are in `timeline.calls`.
+- F6: `autobot/__init__.py` re-exports the `registry` instance, which shadows the `autobot.registry` submodule attribute. The fixtures therefore patch the modules taken from `importlib.import_module`. `plugin_dist(root, key, source, target)` takes the entry-point target explicitly. `ProbeExecutor` also records a snapshot of `session.ctx`.
+
+Tests:
+- P1-09: the pattern is `^ERR.*`, so the message is `command error: ERR x`. `^ERR` alone would produce `command error: ERR`.
+- P1-18: expects `abc\ndef`, not `abcdef`. The solicit newline's tty echo is printed between the two parts, and SPEC.md:111 defines captured output as what the session prints. Today's value is `abcabc\ndef`.
+- P1-19: asserts `session.before == ""` right after `true`, so the failure points at the cause (stale `MARKX\n`) rather than the consequence.
+- P2-04, P3-01: the `after` marker is assembled by `printf`, so the echoed command can't match it.
+- P3-09: uses the F6 probe to snapshot `session.before`/`match` during the step, and `printf '%sion: V%s\n' Vers 42`, so neither `Version` nor `V\d+` appears in the echo.
+- P4-01: sends `echo hi` instead of `""`. With empty output, `session.ctx` isn't updated (#5), so the folded `match` check would be testing #5.
+- P4-02, P4-04, P4-19: use `--order none`. P4-06 and P4-15 use `--wait-enter` plus a kick to avoid the #3 race. P4-15 uses `--then prompt`.
+- P4-19: `get_prompt(timeout=3)` must return; today it raises `TimeoutError` (converted to an assertion). The test doesn't time an elapsed < 4 s.
+- P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail is pinned to #7.
+- P5-10: `enter` uses `line: "PS1='BL''K$ '"`. A `cmd` would first wait for the new prompt, which isn't printed yet. The quoting keeps the echo from matching `BLK\$ `.
+- P5-11: no extra kick is needed; the pending prompt from the `attached_runner` kick serves the first `get_prompt`.
+- P6-07, P6-09, P8-01 and P8-11 are split into two functions each (accept/reject, recorded/real). They still count as one plan row.
+- P6-14: asserts only the model side. Python's `jsonschema` evaluates `pattern` with `re.search`, where `$` also matches before a trailing newline, so the Python validator accepts `"2026-08\n"` too. An ECMA-262 validator would reject it.
+- P8-07: synchronizes on the device's `RAW> ` / `RAW=<hex>` markers with `after`.
+
+No new product findings came up during implementation. #18 (P6-24) reproduces as planned: `TypeError: ... argument after ** must be a mapping` with a traceback.
 
 ## Open spec decisions
 
