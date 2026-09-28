@@ -19,12 +19,8 @@ register_builtins(registry)
 
 
 class Runner:
-    _plugins_discovered = False
-
     def __init__(self, config: Config, cli_args: dict[str, str]):
-        if not Runner._plugins_discovered:
-            registry.discover()
-            Runner._plugins_discovered = True
+        registry.discover()
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300

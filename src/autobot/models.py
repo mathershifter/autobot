@@ -143,7 +143,7 @@ _BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control")
 _COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
 
 
-def _step_discriminator(v: Any) -> str:
+def _step_discriminator(v: Any) -> str | None:
     if isinstance(v, dict):
         for key in _BUILTIN_KEYS:
             if key in v:
@@ -153,7 +153,7 @@ def _step_discriminator(v: Any) -> str:
         for key in v:
             if key not in _COMMON_PROPS and registry.has(key):
                 return "plugin"
-    raise ValueError(f"cannot determine step type: {v}")
+    return None
 
 
 Step = Annotated[
@@ -165,7 +165,14 @@ Step = Annotated[
     | Annotated[ReturnStep, pydantic.Tag("return")]
     | Annotated[ControlStep, pydantic.Tag("control")]
     | Annotated[PluginStep, pydantic.Tag("plugin")],
-    pydantic.Discriminator(_step_discriminator),
+    pydantic.Discriminator(
+        _step_discriminator,
+        custom_error_type="invalid_step",
+        custom_error_message=(
+            "cannot determine step type; expected one of "
+            f"{', '.join(_BUILTIN_KEYS)} or a registered plugin step"
+        ),
+    ),
 ]
 
 Attach.model_rebuild()

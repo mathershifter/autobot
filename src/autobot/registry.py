@@ -12,6 +12,7 @@ class StepRegistry:
         self._executors: dict[str, StepExecutor] = {}
         self._model_keys: dict[type, str] = {}
         self._builtins: set[str] = set()
+        self._discovered = False
 
     def register(self, executor: StepExecutor, *, builtin: bool = False):
         self._executors[executor.key] = executor
@@ -20,11 +21,13 @@ class StepRegistry:
             self._builtins.add(executor.key)
 
     def get(self, key: str) -> StepExecutor:
-        if key not in self._executors:
+        if not self.has(key):
             raise ValueError(f"unknown step type: {key}")
         return self._executors[key]
 
     def has(self, key: str) -> bool:
+        if key not in self._executors:
+            self.discover()
         return key in self._executors
 
     def key_for_step(self, step) -> str:
@@ -44,6 +47,9 @@ class StepRegistry:
         return executor.model.model_validate(raw)
 
     def discover(self):
+        if self._discovered:
+            return
+        self._discovered = True
         for ep in importlib.metadata.entry_points(group="autobot.steps"):
             obj: type[StepExecutor] = ep.load()
             executor = obj() if isinstance(obj, type) or callable(obj) else obj
