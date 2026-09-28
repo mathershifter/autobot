@@ -97,6 +97,8 @@ The `attach` block controls how autobot connects to the remote console.
 5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
 6. Session closed
 
+The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates.
+
 ### Example
 
 ```yaml
@@ -298,6 +300,8 @@ The block lifecycle:
 3. `script` steps execute
 4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
+
+Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`.
 
 ```yaml
 - block:
