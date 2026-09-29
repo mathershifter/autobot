@@ -9,7 +9,7 @@ YAML script → pydantic validation → Runner → Session (pexpect) → remote 
 ```
 
 - **YAML script** defines environment, credentials, prompt patterns, functions, attach config, and a step-based script.
-- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-08.json`.
+- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-08.json`. They also check what a JSON schema can't express: every `call` target is defined in `fn`, and every plugin step's fields are valid for its plugin model. All of this happens when the script is loaded, before `attach.prepare` runs or anything is spawned.
 - **Runner** renders Jinja2 templates, dispatches steps, and manages block breakouts.
 - **Session** wraps pexpect, handles prompt detection and credential cycling.
 
@@ -238,6 +238,8 @@ Cleanup:
 - call: is_system_running
 ```
 
+The target must be a function defined in `fn`. This is checked when the script is loaded, for every `call` in the script: the top-level `script`, `attach.script`, `attach.breakout`, every `fn` body, and the `enter`, `script` and `breakout` of nested blocks. That includes a `call` that `when` would skip or that never runs. An undefined target is a validation error of type `undefined_function`, located at the step's path (e.g. `script.3.block.script.0.call`). Functions may call other functions, including themselves; the check doesn't follow calls, so it doesn't detect cycles.
+
 ### `block` — Named group of steps
 
 Groups steps under a label with an optional `enter` (setup) and `breakout` (cleanup), similar to `attach`.
@@ -340,7 +342,7 @@ All step types except `sleep` support:
 
 `line` and `return` steps do not support `timeout`.
 
-These properties also apply to plugin steps. They are handled by the runner; the plugin's own model receives only its plugin-specific fields.
+These properties also apply to plugin steps. They are handled by the runner; the plugin's own model receives only its plugin-specific fields. Those fields are validated against the plugin's model when the script is loaded, wherever the step appears (the same places as for `call`). A failure is a validation error at the step's path, e.g. `script.0.ech0` with type `extra_forbidden` for a misspelled field.
 
 Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> execute -> `delay_after`.
 
@@ -431,4 +433,4 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 - `script` — path to the YAML script file
 - `--arg` — pass arguments accessible as `{{ args.KEY }}`
 
-A script that fails validation, including an empty file or a document that isn't a mapping, is reported on stderr as `Validation errors:` followed by the details, and the CLI exits with status 1.
+A script that fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields, is reported on stderr as `Validation errors:` followed by the details, and the CLI exits with status 1. Nothing runs: `attach.prepare` isn't run and no session is spawned.

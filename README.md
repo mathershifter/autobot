@@ -464,6 +464,8 @@ script:
   - call: is_system_running
 ```
 
+Every `call` target must be defined in `fn`. This is checked when the script is loaded, like a misspelled field in a plugin step, so a typo is reported as a validation error before `prepare` runs or anything connects.
+
 ## Schema
 
 The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.

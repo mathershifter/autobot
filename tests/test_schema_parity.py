@@ -60,14 +60,17 @@ ACCEPT = {
             "timeout": "2m",
         }
     ),
-    "every-step": s(
-        {"cmd": "x"},
-        {"sleep": 1},
-        {"call": "f"},
-        {"block": {"name": "b"}},
-        {"line": ["a", "b"]},
-        {"return": 2},
-        {"control": ["a", "x"]},
+    "every-step": d(
+        fn={"f": {"script": []}},
+        script=[
+            {"cmd": "x"},
+            {"sleep": 1},
+            {"call": "f"},
+            {"block": {"name": "b"}},
+            {"line": ["a", "b"]},
+            {"return": 2},
+            {"control": ["a", "x"]},
+        ],
     ),
     "send-flat": prompt(send=["a", "b"]),
     "send-grouped": prompt(send=[["a", "b"], ["c", "d"]]),

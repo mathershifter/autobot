@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Annotated, Any
 
 import pydantic
+from pydantic_core import PydanticCustomError
 
 from .types import Duration, StringOrArray
 
@@ -181,6 +183,17 @@ Block.model_rebuild()
 Function.model_rebuild()
 
 
+def _walk_steps(loc: tuple, steps: list[Step]) -> Iterator[tuple[tuple, Step]]:
+    for i, step in enumerate(steps):
+        yield (*loc, i), step
+        if isinstance(step, BlockStep):
+            block, here = step.block, (*loc, i, "block")
+            yield from _walk_steps((*here, "enter"), block.enter)
+            yield from _walk_steps((*here, "script"), block.script)
+            if block.breakout:
+                yield from _walk_steps((*here, "breakout", "script"), block.breakout.script)
+
+
 class Config(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     autobot: str
@@ -198,3 +211,47 @@ class Config(pydantic.BaseModel):
     errors: list[str] = []
     attach: Attach
     script: list[Step]
+
+    @pydantic.model_validator(mode="after")
+    def _check_steps(self) -> Config:
+        from .registry import registry
+
+        roots: list[tuple[tuple, list[Step]]] = [
+            (("attach", "script"), self.attach.script),
+            (("script",), self.script),
+        ]
+        if self.attach.breakout:
+            roots.append((("attach", "breakout", "script"), self.attach.breakout.script))
+        roots += [(("fn", name, "script"), f.script) for name, f in self.fn.items()]
+
+        errors: list[Any] = []
+        for root, steps in roots:
+            for loc, step in _walk_steps(root, steps):
+                if isinstance(step, CallStep) and step.call not in self.fn:
+                    errors.append({
+                        "type": PydanticCustomError(
+                            "undefined_function",
+                            "call to undefined function '{name}'",
+                            {"name": step.call},
+                        ),
+                        "loc": (*loc, "call"),
+                        "input": step.call,
+                    })
+                elif isinstance(step, PluginStep):
+                    try:
+                        registry.validate_plugin_step(step)
+                    except pydantic.ValidationError as e:
+                        errors += [
+                            {
+                                # the plugin's text goes through ctx, so braces in it survive
+                                "type": PydanticCustomError(
+                                    err["type"], "{msg}", {"msg": err["msg"]}
+                                ),
+                                "loc": (*loc, *err["loc"]),
+                                "input": err["input"],
+                            }
+                            for err in e.errors()
+                        ]
+        if errors:
+            raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
+        return self
