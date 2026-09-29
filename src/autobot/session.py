@@ -8,6 +8,8 @@ import pexpect
 
 from .types import ANSI_ESCAPE_RE
 
+DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
+
 
 class CommandError(RuntimeError):
     def __init__(self, message: str, output: str = ""):
@@ -143,7 +145,7 @@ class Session:
             timeout=timeout,
             encoding="utf-8",
             codec_errors="replace",
-            env=env or {"TERM": "dumb", "NO_COLOR": "1"},
+            env=dict(DEFAULT_ENV) if env is None else env,
         )
         self._cld.logfile_read = CleanWriter(sys.stdout)
         try:

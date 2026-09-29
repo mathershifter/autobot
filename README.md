@@ -84,7 +84,7 @@ The `attach` block controls how autobot connects to the remote console.
 | `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Uses the shebang for the interpreter. Aborts on non-zero exit        |
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`)                                                                  |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
-| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1` |
+| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
 | `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
 

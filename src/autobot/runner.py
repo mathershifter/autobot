@@ -132,14 +132,12 @@ class Runner:
         attach = self._config.attach
         spawn = self.render(attach.spawn)
         timeout = self._get_timeout(attach)
-        env = attach.env or {"TERM": "dumb", "NO_COLOR": "1"}
-
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
 
         console.print(f">> attach: {spawn}")
         try:
-            self._session.attach(spawn, env=env, timeout=timeout)
+            self._session.attach(spawn, env=attach.env, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)

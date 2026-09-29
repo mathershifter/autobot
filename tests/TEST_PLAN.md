@@ -354,9 +354,9 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-11 | `test_sleep_step` | 174-178 | F5, then F1 real sleep | `sleep: 2s` → `sleep(2.0)` recorded; real `sleep: 500ms` elapses 0.5 to 2 s | pass |
 | P8-12 | `test_call_runs_function_steps` | 55-66, 180-184 | F1, `fn: {f: {script: [cmd: echo a (register a), cmd: echo b (register b)]}}` | `vars.a == "a"`, `vars.b == "b"` | pass |
 | P8-13 | `test_call_steps_see_registered_vars` | 322 | F1 | `cmd: echo v` `register: v`; `fn` step `echo got-{{ vars.v }}` registers `got-v` | pass |
-| P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | xfail #15 |
+| P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | pass (was xfail #15) |
 
-Totals: 13 pass, 1 xfail.
+Totals: 14 pass.
 
 ## Implementation status
 

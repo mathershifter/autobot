@@ -108,7 +108,7 @@ fn:
 | `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Uses the shebang to determine the interpreter. Aborts if the script exits non-zero. Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). |
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`) |
 | `timeout` | no | Timeout for the initial spawn (duration) |
-| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. |
+| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
 | `script` | no | Steps to run immediately after spawn (before main script) |
 | `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect) |
 
