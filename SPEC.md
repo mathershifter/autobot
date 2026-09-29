@@ -134,7 +134,7 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
   timeout: 30s
 ```
 
-`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
+`cmd` accepts a string or list of strings. A string is rendered as a Jinja2 template as a whole, then split into lines on newlines, and blank lines of the result are skipped. So a Jinja2 block (e.g. `{% for %}`...`{% endfor %}`) may span lines, and a template that expands to several lines sends each of them. A string that renders to nothing but blank lines sends one empty line (like `cmd: ""`). Each item of a list is rendered on its own and split the same way, and the lines of all items are sent in order; a Jinja2 block can't span items. The whole `cmd` is rendered once, after the step's first prompt wait and before its first line is sent, so a template error sends nothing and no line sees the output of an earlier line of the same step. Each line waits for a prompt before sending.
 
 After each command line, the step waits for a shell prompt. If top-level `errors` patterns are defined, that line's captured output is checked against them; on a match the step raises and no further lines are sent.
 
@@ -196,7 +196,7 @@ When a step aborts (an unignored or unignorable error), `vars.<name>` is left un
 
 #### Embedded scripts
 
-If `cmd` is a string starting with `#!`, it is treated as an embedded script. The shebang line determines the interpreter. The script is written to a temp file on the remote, made executable, executed, and cleaned up automatically.
+If `cmd` is a string starting with `#!` (before rendering), it is treated as an embedded script. The shebang line determines the interpreter. The script is written to a temp file on the remote, made executable, executed, and cleaned up automatically.
 
 ```yaml
 - cmd: |
@@ -378,7 +378,7 @@ A bare number must be ≥ 0; a boolean is not a duration. A string must be a non
 ## Jinja2 Templating
 
 These values are rendered as Jinja2 templates:
-- `cmd` (each command line; an embedded script as a whole), `assert`, `line`, `after` and `when`
+- `cmd` (a string, or each item of a list, as a whole before it is split into lines; an embedded script as a whole), `assert`, `line`, `after` and `when`
 - prompt `send` strings in the flat-list and list-of-lists forms, each when it is sent (the values `sendEach` takes from `vars` are sent as they are)
 - `attach.spawn` and `attach.prepare`
 - `env` values (see [Top-level fields](#top-level-fields))

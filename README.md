@@ -191,7 +191,7 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
   timeout: 30s
 ```
 
-`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
+`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is rendered as a template first, then split on newlines (blank lines are skipped), so a `{% for %}` loop may span lines and send one command per iteration.
 
 After each command line, the step waits for a shell prompt and, if top-level `errors` patterns are defined, checks that line's output against them — raising (and sending no further lines) on a match.
 

@@ -176,7 +176,7 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-03 | `test_list_with_shebang_first_item_sent_verbatim` | 162 | F1, F4 | `cmd: ["#!/bin/false", "echo x"]` registers `x`; `#!/bin/false` sent as-is; no sent line contains `/tmp/_autobot_` | pass |
 | P2-04 | `test_after_skips_initial_get_prompt` | 278 | F1, F5 | `line: "printf 'pre%s\\n' READY"`, then `cmd: echo x`, `after: preREADY` → no `get_prompt` between `expect([preREADY])` and `sendline(echo x)` | pass |
 | P2-05 | `test_multiline_lines_rendered_individually` | 99, 317 | F1, `vars: {a: 1, b: 2}` | `cmd: "echo {{ vars.a }}\necho {{ vars.b }}"` registers `1\n2` | pass |
-| P2-06 | `test_multiline_jinja_block_spanning_lines` | 99, 317 | F1 | `cmd: "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}"` registers `n0\nn1` | xfail #8 |
+| P2-06 | `test_multiline_jinja_block_spanning_lines` | 99, 317 | F1 | `cmd: "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}"` registers `n0\nn1` | pass (was xfail #8) |
 | P2-07 | `test_upload_chunks_at_most_512` | 165 | F1, F4, script > 3 x 512 b64 chars | each `printf %s <chunk>` payload ≤ 512 chars; chunk count = `ceil(len(b64)/512)`; concatenated chunks == `b64encode(rendered)` | pass |
 | P2-08 | `test_upload_trailing_newline_preserved_once` | 165 | F1, F4; parametrize script with and without a final `\n` | decoded upload ends with exactly one `\n` | pass |
 | P2-09 | `test_script_mode_700_and_staging_umask_077` | 166 | F1 | script `#!/bin/sh\nstat -c %a "$0" "$0.b64"\n` registers `700\n600` | pass |
@@ -187,7 +187,7 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-14 | `test_cleanup_timeout_uses_shorter_step_timeout` | 172 | F1, `tmp_path_hex`, step `timeout: 2s`, script `sleep 30`, no constant patch | `TimeoutError`; total elapsed < 6 s (2 s step + ≤ 2 s cleanup + margin) | pass |
 | P2-15 | `test_embedded_errors_patterns_apply` | 101, 162 | F1, `errors: ['% .*']`, `tmp_path_hex` | script printing `% bad` raises `CommandError`; files absent | pass |
 
-Totals: 14 pass, 1 xfail.
+Totals: 15 pass.
 
 ## P3: common step properties and templating context
 

@@ -44,17 +44,14 @@ class CmdExecutor:
         if isinstance(step.cmd, str) and step.cmd.startswith("#!"):
             self._execute_script(step, ctx, timeout)
             return
-        if isinstance(step.cmd, str) and "\n" in step.cmd:
-            lines = [l for l in step.cmd.splitlines() if l.strip()]
-        else:
-            lines = ensure_list(step.cmd)
         errors = ctx.config.errors or None
         output: list[str] = []
         if not step.after:
             ctx.session.get_prompt(timeout=timeout)
+        # render before splitting: a Jinja block may span lines or add lines
+        lines = [l for item in ensure_list(step.cmd) for l in self._lines(ctx.render(item))]
         try:
-            for i, line in enumerate(lines):
-                cmd = ctx.render(line)
+            for i, cmd in enumerate(lines):
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
                 ctx.session.sendline(cmd)
@@ -68,6 +65,10 @@ class CmdExecutor:
                 raise
             console.print(f">> error ignored: {e}")
         self._register(step, ctx, "".join(output))
+
+    @staticmethod
+    def _lines(text: str) -> list[str]:
+        return [l for l in text.splitlines() if l.strip()] or [""]
 
     def _check(self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float) -> None:
         assertions = ensure_list(step.assert_)
