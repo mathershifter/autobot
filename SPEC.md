@@ -15,13 +15,13 @@ YAML script → pydantic validation → Runner → Session (pexpect) → remote 
 
 ## YAML Script Structure
 
-All fields validated by pydantic against `schemas/autobot.2026-08.json`.
+All fields validated by pydantic against `schemas/autobot.2026-08.json`. The JSON schema is normative: the models reject every document the schema rejects, and accept what it accepts except where a static schema can't decide. One such case is step keys. A static schema can't know which plugins are installed, so its `pluginStep` accepts any object that has no built-in step key. The models accept a step key that isn't built in only if an installed plugin registers it, and otherwise reject the step (`invalid_step`).
 
 ### Top-level fields
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `autobot` | yes | Schema version in `YYYY-MM` format (e.g. `2026-08`) |
+| `autobot` | yes | Schema version in `YYYY-MM` format (e.g. `2026-08`). The whole string must match; surrounding whitespace or a trailing newline is rejected. |
 | `env` | no | String key-value defaults, overridden by OS environment variables. Supports nesting (e.g. `{{ env.OTHER_KEY }}`). Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
@@ -90,7 +90,7 @@ With single-pattern entries (`expect: ['login:', 'Password:']`) and the same `se
 
 ### `fn`
 
-Named functions callable from `call` steps. Each function contains a `script` array of steps:
+Named functions callable from `call` steps. Each function contains a `script` array of steps (required; may be empty):
 ```yaml
 fn:
   is_system_running:
@@ -317,6 +317,8 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
 - return: 3       # send three
 ```
 
+The value is required and must be an integer ≥ 1.
+
 ### `control` — Send control character(s)
 
 ```yaml
@@ -366,6 +368,8 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 - `500ms` — 500 milliseconds
 - `2m` — 2 minutes
 - `1h` — 1 hour
+
+A bare number must be ≥ 0; a boolean is not a duration. A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected).
 
 ## Jinja2 Templating
 

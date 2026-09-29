@@ -19,12 +19,12 @@ class Prompt(pydantic.BaseModel):
     name: str
     expect: list[str | list[str]]
     send: list[str] | list[list[str]] | SendEach | None = None
-    is_shell_prompt: bool = pydantic.Field(False, alias="return")
+    is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
 
 
 class Function(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    script: list[Step] = []
+    script: list[Step]
 
 
 class Attach(pydantic.BaseModel):
@@ -43,7 +43,7 @@ class CmdStep(pydantic.BaseModel):
     after: str | None = None
     when: str | None = None
     assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
-    ignore_error: bool = False
+    ignore_error: bool = pydantic.Field(False, strict=True)
     register_: str | None = pydantic.Field(None, alias="register")
     delay_before: Duration | None = None
     delay_after: Duration | None = None
@@ -100,7 +100,7 @@ class LineStep(pydantic.BaseModel):
 
 class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    newline_count: int = pydantic.Field(1, alias="return")
+    newline_count: int = pydantic.Field(alias="return", ge=1, strict=True)
     after: str | None = None
     when: str | None = None
     delay_before: Duration | None = None
@@ -188,7 +188,7 @@ class Config(pydantic.BaseModel):
     @pydantic.field_validator("autobot")
     @classmethod
     def _validate_autobot(cls, v: str) -> str:
-        if not re.match(r"^\d{4}-\d{2}$", v):
+        if not re.fullmatch(r"\d{4}-\d{2}", v):
             raise ValueError(f"autobot must be YYYY-MM format, got: {v}")
         return v
     env: dict[str, str] = {}

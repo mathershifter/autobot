@@ -130,16 +130,14 @@ def test_p6_12_parity_reject_corpus(both_validate: Callable, doc: dict[str, Any]
     assert both_validate(doc) == (False, False)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #11")
 def test_p6_13_parity_mixed_expect(both_validate: Callable):
-    """SPEC.md:37: an expect list may mix strings and lists; the schema's oneOf rejects it."""
+    """SPEC.md:37: an expect list may mix strings and lists; both accept it (finding #11)."""
     doc = d(prompts=[{"name": "p", "expect": ["a", ["b", "c"]]}])
     assert both_validate(doc) == (True, True)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #11")
 def test_p6_14_parity_version_trailing_newline():
-    """SPEC.md:24: ``"2026-08\\n"`` is not YYYY-MM; the model accepts it.
+    """SPEC.md:24: ``"2026-08\\n"`` is not YYYY-MM; the model rejects it (finding #11).
 
     Only the model side is asserted. Python's ``jsonschema`` evaluates
     ``pattern`` with ``re.search``, where ``$`` also matches before a

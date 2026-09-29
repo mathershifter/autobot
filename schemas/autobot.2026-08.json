@@ -44,10 +44,8 @@
       "properties": {
         "name": { "type": "string" },
         "expect": {
-          "oneOf": [
-            { "type": "array", "items": { "type": "string" } },
-            { "type": "array", "items": { "type": "array", "items": { "type": "string" } } }
-          ]
+          "type": "array",
+          "items": { "$ref": "#/$defs/stringOrArray" }
         },
         "return": { "type": "boolean", "default": false },
         "send": {
@@ -206,7 +204,7 @@
       "required": ["return"],
       "additionalProperties": false,
       "properties": {
-        "return": { "type": "integer", "minimum": 1, "default": 1 },
+        "return": { "type": "integer", "minimum": 1 },
         "after": { "type": "string" },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },

@@ -17,9 +17,11 @@ _jinja_env.filters["search"] = lambda s, pattern: bool(re.search(pattern, str(s)
 def parse_duration(value: Any) -> float:
     if value is None:
         return 0
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < 0:
+            raise ValueError(f"invalid duration: {value}")
         return float(value)
-    m = DURATION_RE.match(str(value))
+    m = DURATION_RE.fullmatch(str(value))
     if m:
         return float(m.group(1)) * DURATION_MULT[m.group(2)]
     raise ValueError(f"invalid duration: {value}")

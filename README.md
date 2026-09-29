@@ -379,6 +379,8 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 1h      # hours
 ```
 
+Durations can't be negative, and `true`/`false` aren't durations.
+
 ## Templating
 
 These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd` (including embedded scripts), `assert`, `line`, `after`, `when`, prompt `send` strings (not the values `sendEach` reads from `vars`), `attach.spawn`, `attach.prepare`, and `env` values. Other values, such as `expect`, `errors` and `attach.env`, are used as written.
@@ -464,6 +466,6 @@ script:
 
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json).
+The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).
