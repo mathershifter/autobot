@@ -58,7 +58,11 @@ def _cmd_run(args):
         key, value = item.split("=", 1)
         cli_args[key] = value
 
-    runner = Runner(config, cli_args)
+    try:
+        runner = Runner(config, cli_args)
+    except ValueError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        console.print(f"Script error in {args.script}: {e}")
+        sys.exit(1)
     runner.run()
 
 

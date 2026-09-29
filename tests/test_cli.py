@@ -1,4 +1,4 @@
-"""P6-21..30: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..32: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -167,3 +167,38 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
     monkeypatch.setattr(cli.yaml, "safe_load", interrupt)
     with pytest.raises(KeyboardInterrupt):
         cli._load(str(path))
+
+
+# -- Runner construction: env and prompt send templates -----------------------
+
+
+@pytest.mark.parametrize(
+    ("env", "prompts", "message"),
+    [
+        ({"A": "{{ nope( }}"}, None, "template error: unexpected '}', expected ')'"),
+        (None, [{"name": "p", "expect": ["x"], "send": ["{{ x "]}], "template error: unexpected end of template, expected 'end of print statement'."),
+        ({"A": "{{ env.A }}x"}, None, "env nesting too deep (>10 iterations), unresolved: ['A']"),
+    ],
+    ids=["env-template", "send-template", "env-too-deep"],
+)
+def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
+    tmp_path: Path, env: dict[str, str] | None, prompts: list | None, message: str
+):
+    """SPEC.md CLI: `env` and prompt `send` errors are `Script error in <path>: ...`, rc 1, before prepare/spawn."""
+    prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
+    kwargs = {"prompts": prompts} if prompts is not None else {}
+    doc = make_doc([GOT], env=env, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}", **kwargs)
+    res = run_cli(doc, tmp_path)
+    path = tmp_path / "script.autobot.yaml"
+    assert _load_error(res) == f"Script error in {path}: {message}"
+    assert not prepared.exists()
+    assert not spawned.exists()
+
+
+def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
+    """Only building the Runner is guarded: a template error in a step still fails at run time, after attach."""
+    res = run_cli(make_doc([{"cmd": "echo {{ nope( }}"}]), tmp_path)
+    assert res.returncode == 1
+    assert ">> attach: " in res.stderr
+    assert "Script error" not in res.stderr
+    assert "ValueError: template error: " in res.stderr

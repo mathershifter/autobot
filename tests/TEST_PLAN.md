@@ -24,10 +24,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 20 | 0 | 0 | 20 | 4 |
 | P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
-| P6 | model / schema / example / CLI parity | 30 | 0 | 0 | 30 | 0 |
+| P6 | model / schema / example / CLI parity | 32 | 0 | 0 | 32 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **155** | **0** | **0** | **155** | **5** |
+| **Total** | | **157** | **0** | **0** | **157** | **5** |
 
 A parametrized test counts as one test.
 
@@ -132,7 +132,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Duration format (SPEC.md:307-313) | none | P6-09, P8-01 |
 | Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 |
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20 |
-| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..30, P7-07 |
+| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..32, P7-07 |
 | Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..08 |
 | Examples | none | P6-19/20 |
 
@@ -315,8 +315,10 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-28 | `test_cli_utf16_with_bom_loads` | CLI | CLI, F1 script encoded UTF-16 with BOM | rc 0; `got-2-hi` in stdout | pass |
 | P6-29 | `test_cli_errors_print_markup_like_text_verbatim` | CLI | CLI | `--arg '[/x]'`, validation input `"[/x]"` and a missing path containing `[/d]` and `[b]` are printed verbatim; no rich `MarkupError` | pass |
 | P6-30 | `test_cli_load_does_not_swallow_keyboard_interrupt` | CLI | in-process, `yaml.safe_load` patched to raise `KeyboardInterrupt` | `cli._load` re-raises `KeyboardInterrupt` | pass |
+| P6-31 | `test_cli_script_error_at_runner_load_is_clean_error` (parametrized: `env: {A: "{{ nope( }}"}`, top-level prompt `send: ["{{ x "]`, `env: {A: "{{ env.A }}x"}`) | CLI | CLI; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: template error: ...` / `env nesting too deep (>10 iterations), unresolved: ['A']`; neither marker exists | pass |
+| P6-32 | `test_cli_runtime_errors_are_not_caught_as_load_errors` | CLI | CLI, F1, `cmd: "echo {{ nope( }}"` | rc 1; `>> attach:` logged; no `Script error`; the run's `ValueError: template error: ` still reaches stderr (only building the `Runner` is guarded) | pass |
 
-Totals: 30 pass.
+Totals: 32 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -377,12 +379,12 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
 | P4 | 20 | 0 | 4 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 30 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 32 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **155** | **0** | **5** | |
+| **Total** | **157** | **0** | **5** | |
 
-Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16).
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32).
 
 Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
 - removes the P6-13/P6-14 xfail markers (both pass)
@@ -568,6 +570,10 @@ These are not in the list of blocking decisions. None of them is tested in this 
 - **#18** (cli.py:24): an empty YAML file or a top-level list reaches `Config(**config_dict)` and crashes with `TypeError: ... argument after ** must be a mapping` and a traceback. The schema requires a top-level object, so this is a validation failure and should be reported the way other validation errors are. It's covered by P6-24. Fixed: the CLI now uses `Config.model_validate`, and SPEC.md's CLI section documents the error report.
 - **#19** (cli.py:20-21): a missing file or a YAML syntax error prints a traceback. It was a spec question. Fixed: the CLI reads the file in binary mode (PyYAML decodes UTF-8, or UTF-16 with a BOM) and reports `Cannot read script <path>: <reason>` or `YAML error in <path>, line L, column C: <problem>` with rc 1, before anything runs. The CLI console also stopped interpreting rich markup, which crashed on `--arg '[/x]'` and on validation input containing `[/x]`. Covered by P6-25..30.
 - **#20** (runner.py:17, steps.py:26): the operator log consoles interpreted rich markup in the text they print. `cmd: echo "[/x]"` crashed the run with `rich.errors.MarkupError` when `>> cmd:` was logged, `[bold]x[/bold]` was logged as `x`, and the same applied to block names, the spawn line and error messages. Lines longer than 80 columns were also hard-wrapped when stderr wasn't a terminal. Fixed: both consoles use `markup=False, soft_wrap=True`. Covered by P8-15 and P8-16.
+- Follow-ups found while fixing #19 (not tested):
+  - A `sendEach` whose `each` path doesn't exist (`each: vars.nope`) raises a bare `KeyError: 'nope'` with a traceback while the `Runner` is built. The CLI only catches `ValueError` there, so this still prints a traceback (before `prepare`).
+  - Mutually referencing `env` values (`A: "{{ env.B }}"`, `B: "{{ env.A }}"`) converge to the literal `{{ env.A }}` without an error, so the run starts with unresolved values.
+  - Duplicate YAML keys are accepted and the last one wins (PyYAML). SPEC doesn't say whether they should be rejected.
 
 ## Implementation order
 
