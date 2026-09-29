@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+from collections.abc import Callable
 
 import pexpect
 
@@ -65,6 +66,7 @@ class PromptHandler:
         responses: list[list[str]],
         is_return: bool,
         slots: list[int | None] | None = None,
+        render: Callable[[str], str] | None = None,
     ):
         self.name = name
         self.is_return = is_return
@@ -74,6 +76,8 @@ class PromptHandler:
         self.start = 0
         self.end = len(patterns)
         self._sets = responses
+        # renders a response as it is sent; None sends responses verbatim
+        self._render = render
         self.reset()
 
     @property
@@ -101,9 +105,15 @@ class PromptHandler:
             raise RuntimeError(
                 f"prompt '{self.name}': no response available for {self.patterns[i]!r}"
             )
+        value = current[slot]
+        if self._render:
+            try:
+                value = self._render(value)
+            except ValueError as e:
+                raise ValueError(f"prompt '{self.name}': {e}") from e
         self._used.add(slot)
         self._fired = True
-        return current[slot]
+        return value
 
     def _next_unused(self) -> int | None:
         current = self._sets[self._set]

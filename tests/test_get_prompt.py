@@ -323,7 +323,6 @@ def test_p4_19_shell_prompt_in_same_chunk_as_banner(device):
     assert found, "the prompt in the banner chunk was swallowed by the initial attach wait"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #7")
 def test_p4_20_send_template_rendered_at_send_time(fake_device: FakeDevice):
     """SPEC.md:317, 322: send templates see vars registered by earlier steps."""
     spawn, log = fake_device("--order", "login,password", "--accept", "admin:secret")
@@ -342,3 +341,10 @@ def test_p4_20_send_template_rendered_at_send_time(fake_device: FakeDevice):
         raise AssertionError(f"send was rendered before the script ran: {e}") from e
     runner.run()
     assert "LOGIN=admin" in FakeDevice.read(log)
+
+
+def test_send_template_syntax_error_at_load():
+    """#7: send is rendered when sent, but a syntax error still fails at load."""
+    login = {"name": "login", "expect": ["login:"], "send": ["{{ vars.user "]}
+    with pytest.raises(ValueError, match=r"^template error: "):
+        make_runner([], prompts=[SHELL_PROMPT, login])

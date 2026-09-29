@@ -240,11 +240,11 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with a grouped `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with `sendEach` without `fields` → `no response available for 'Password:'` | pass (was todo #4) |
 | P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | pass (was xfail #3) |
 | P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
-| P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | xfail #7 |
+| P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | pass (was xfail #7) |
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-Totals: 19 pass (P4-01..19), 1 xfail (P4-20). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
+Totals: 20 pass (P4-01..20). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
 
 ## P5: attach and block lifecycles, env
 
@@ -405,7 +405,7 @@ Tests:
 - P4-01: sends `echo hi` instead of `""` (written while #5 left `session.ctx` stale on empty output). It first calls `get_prompt()` to reach bash's first prompt, which is no longer swallowed at attach (#3), then clears the send log.
 - P4-02, P4-04, P4-19: use `--order none`. The fake-device tests that kick (P4-06, P4-15 and others) use `--wait-enter`, where the device blocks until it reads that Enter; the kick is part of the device protocol, not a #3 workaround, and stays after the #3 fix. P4-15 uses `--then prompt`.
 - P4-19: `get_prompt(timeout=3)` must return; before the #3 fix it raised `TimeoutError` (converted to an assertion). The test doesn't time an elapsed < 4 s.
-- P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail is pinned to #7.
+- P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail was pinned to #7. The re-raise stays now that #7 is fixed: a regression fails with that message. The #7 fix adds one test outside the plan, `test_send_template_syntax_error_at_load`: a malformed `send` still fails when the `Runner` is built, as `ValueError("template error: ...")`.
 - P5-10: `enter` uses `line: "PS1='BL''K$ '"`. A `cmd` would first wait for the new prompt, which isn't printed yet. The quoting keeps the echo from matching `BLK\$ `.
 - P5-11: no kick is needed; bash's first prompt, still pending after `attached_runner` attaches, serves the first `get_prompt`.
 - P6-07, P6-09, P8-01 and P8-11 are split into two functions each (accept/reject, recorded/real). They still count as one plan row.

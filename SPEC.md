@@ -41,6 +41,8 @@ Each prompt has:
   - A list of lists (grouped attempts): `[["user", "pass"], ["user2", "pass2"]]`
   - A `sendEach` object for data-driven responses (see below)
 
+  The strings of the flat-list and list-of-lists forms are Jinja2 templates. Each is rendered when it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A template syntax error is reported as a `ValueError` (`template error: ...`) when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, as `prompt '<name>': template error: ...`, and aborts the step waiting for the prompt, even with `ignore_error: true` (see [`ignore_error`](#captured-output)).
+
 #### `sendEach`
 
 Iterates over a collection from `vars` to build responses:
@@ -50,7 +52,7 @@ send:
   fields: [username, password]
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly.
+This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`), and its values are sent as they are, never rendered as templates.
 
 #### Response selection
 
@@ -169,7 +171,7 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result
 - a closed connection (`EOFError`)
-- template errors (an undefined variable or a syntax error) and invalid regular expressions in `assert` or `errors`
+- template errors (an undefined variable or a syntax error), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
 - prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
@@ -377,7 +379,7 @@ A bare number must be ≥ 0; a boolean is not a duration. A string must be a non
 
 These values are rendered as Jinja2 templates:
 - `cmd` (each command line; an embedded script as a whole), `assert`, `line`, `after` and `when`
-- prompt `send` strings in the flat-list and list-of-lists forms (the values `sendEach` takes from `vars` are sent as they are)
+- prompt `send` strings in the flat-list and list-of-lists forms, each when it is sent (the values `sendEach` takes from `vars` are sent as they are)
 - `attach.spawn` and `attach.prepare`
 - `env` values (see [Top-level fields](#top-level-fields))
 

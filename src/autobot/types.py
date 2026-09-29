@@ -40,6 +40,14 @@ def render(template: Any, ctx: dict) -> Any:
         raise ValueError(f"template error: {e}") from e
 
 
+def check_template(template: str) -> None:
+    """Report a template syntax error now rather than when the template is rendered."""
+    try:
+        _jinja_env.parse(template)
+    except jinja2.TemplateSyntaxError as e:
+        raise ValueError(f"template error: {e}") from e
+
+
 def ensure_list(value: StringOrArray | None) -> list[str]:
     if value is None:
         return []
