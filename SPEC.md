@@ -34,7 +34,7 @@ All fields validated by pydantic against `schemas/autobot.2026-08.json`.
 
 Each prompt has:
 - `name` — identifier
-- `expect` — list of patterns to match against session output. Each entry can be a string or a list of strings (grouped alternatives).
+- `expect` — list of patterns to match against session output. Each entry can be a string (a single-pattern entry) or a list of strings (a grouped entry, e.g. `['login:', 'Password:']`). Entries of both kinds may be mixed. The entry kind decides which response a match sends (see [Response selection](#response-selection)).
 - `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt.
 - `send` — optional; responses to send when a pattern matches. Accepts three forms:
   - A flat list of strings: `["response1", "response2"]`
@@ -51,6 +51,42 @@ send:
 ```
 
 This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly.
+
+#### Response selection
+
+Every `send` form is a list of *credential sets*, each an ordered list of responses:
+
+| `send` form | Credential sets |
+|-------------|-----------------|
+| Flat list `["admin", "pw"]` | One set: `["admin", "pw"]` |
+| List of lists `[["admin", "pw1"], ["admin", "pw2"]]` | One set per inner list |
+| `sendEach` with `fields` | One set per item: the named fields, in order |
+| `sendEach` without `fields` | One set per item, holding the item converted to a string |
+
+Responses come from the current set, starting with the first. When a pattern of the prompt matches:
+- **Grouped entry:** the pattern at position k of its group (the first pattern is position 0) sends item k of the current set.
+- **Single-pattern entry:** sends the first item of the current set that hasn't been sent yet.
+
+Before sending, the current set advances to the next set when:
+- a grouped pattern picks an item that was already sent from the current set (the group starts over, e.g. `login:` matches again after `Password:`, or `Password:` matches twice), or
+- a single-pattern entry matches and every item of the current set has already been sent.
+
+A prompt raises `RuntimeError`:
+- `prompt '<name>': responses exhausted` when the set must advance and there is no next set.
+- `prompt '<name>': no response available` when the prompt has no credential sets (`send: []`, or `sendEach` over an empty collection), or when the current set has no item at a grouped pattern's position (the message then names the pattern).
+
+The selection starts over at the first set, with nothing sent, on every prompt wait (each `get_prompt`).
+
+With `expect: [['login:', 'Password:']]` and `send: [[admin, pw1], [admin, pw2]]`:
+
+| Device prompts (a rejected login restarts the sequence) | Sent |
+|---|---|
+| `login:`, `Password:`, `login:`, `Password:` | `admin`, `pw1`, `admin`, `pw2` |
+| `Password:`, `login:`, `Password:`, `login:` | `pw1`, `admin`, `pw2`, `admin` |
+| `Password:`, `Password:` (e.g. `ssh admin@host`) | `pw1`, `pw2` |
+| `login:`, `Password:`, `login:`, `Password:`, `login:` | `admin`, `pw1`, `admin`, `pw2`, then `responses exhausted` |
+
+With single-pattern entries (`expect: ['login:', 'Password:']`) and the same `send`, the responses go out in order across the sets, whichever pattern matched: `admin`, `pw1`, `admin`, `pw2`. That suits devices that always prompt in the same order, and a lone prompt (e.g. a PIN) whose sets each hold one response.
 
 ### `fn`
 
@@ -339,7 +375,7 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 
 The prompt engine polls the session output in 5-second intervals:
 1. If a prompt with no `send` (or `return: true`) matches → return (shell prompt reached)
-2. If a prompt with `send` values matches → send the next response and continue waiting
+2. If a prompt with `send` values matches → send the response chosen as described in [Response selection](#response-selection) and continue waiting
 3. On 5-second timeout with no match → send a single empty newline to solicit a prompt (once only, and only if no handler has been activated yet)
 4. On overall timeout → raise `TimeoutError`
 

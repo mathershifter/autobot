@@ -144,19 +144,24 @@ A prompt with `send` is an **interactive prompt** — autobot responds automatic
     fields: [username, password]
 ```
 
-The `expect` field is a list of patterns. Each entry can be a string or a list of strings (grouped alternatives). Grouped entries are matched together — when the first pattern in a group matches, autobot sends the first response; when the second matches, it sends the second, and so on.
+The `expect` field is a list of patterns. Each entry can be a string or a list of strings (a grouped entry). Responses are organized in credential sets (one per login attempt, see the send forms below):
+
+- In a **grouped entry**, responses are positional: when the first pattern in the group matches, autobot sends the first response of the current set; when the second matches, it sends the second, and so on. So a device that asks for the password first (e.g. `ssh admin@host`) gets the password. When the group starts over (a pattern whose response was already sent matches again, e.g. `login:` after `Password:`), autobot moves on to the next set.
+- A **single string** entry sends the next unsent response of the current set, moving on to the next set once all of them were sent. With single strings, responses go out in order, whichever pattern matched.
+
+If autobot must move on and no set is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
 ### Send forms
 
 The `send` field accepts three forms:
 
-**Flat list** — responses sent in order as patterns match:
+**Flat list** — a single credential set:
 
 ```yaml
 send: ["admin", "password"]
 ```
 
-**List of lists** — grouped attempts (credential cycling):
+**List of lists** — one credential set per attempt (credential cycling):
 
 ```yaml
 send:
@@ -172,7 +177,7 @@ send:
   fields: [username, password]
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order.
+This resolves `vars.creds`, and each item becomes a credential set of the named fields, in order. Without `fields`, each item is a set of one response (the item as a string).
 
 ## Step Types
 
