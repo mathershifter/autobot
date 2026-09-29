@@ -151,12 +151,26 @@ The captured output of a command line is the text the session prints between sen
 
 `errors` patterns are matched with `re.MULTILINE` against the captured output after the shell prompt returns, so they never match the echoed command, and the session is left at the prompt when the error is raised. An error that is printed without a prompt returning results in a timeout rather than an error match.
 
-Set `ignore_error: true` to continue on failure:
+Set `ignore_error: true` to continue when the command fails:
 
 ```yaml
 - cmd: show bogus
   ignore_error: true
 ```
+
+`ignore_error` covers command failures only. These are:
+- a non-zero exit code from the `$?` check
+- an `assert` where no pattern matches
+- an `errors` pattern match (no further lines of the step are sent)
+- an embedded-script upload whose byte count doesn't match
+
+An ignored failure is logged (`>> error ignored: ...`), and the script continues with the step's `delay_after` and then the next step. Each of these failures is detected with the session at a shell prompt, so the next step starts from a prompt as usual.
+
+Every other error aborts the step, and with it the script, even with `ignore_error: true`:
+- timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result
+- a closed connection (`EOFError`)
+- template errors (an undefined variable or a syntax error) and invalid regular expressions in `assert` or `errors`
+- prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
 
@@ -171,7 +185,12 @@ Set `register` to store the command's captured output into `vars.<name>`, making
 
 `register` works with all `cmd` forms: plain commands, command lists, multiline strings, and embedded scripts. The output is captured regardless of whether `assert`, `ignore_error`, or `errors` are in use — as long as execution continues past the step (i.e., the error is either absent or ignored).
 
-For command lists and multiline strings, the captured output of every line is concatenated. When an error is ignored, the output captured up to and including the failing line is stored.
+For command lists and multiline strings, the captured output of every line is concatenated. When an error is ignored, `register` stores:
+- after an `errors` match, the output of the lines up to and including the failing line
+- after an exit code or `assert` failure, the output of all lines
+- for an embedded script, the script's output, or `""` if the upload failed
+
+When a step aborts (an unignored or unignorable error), `vars.<name>` is left unchanged.
 
 #### Embedded scripts
 

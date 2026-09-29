@@ -423,6 +423,8 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
   ignore_error: true
 ```
 
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection, template errors and prompt-response failures (`responses exhausted`) always abort the script.
+
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 
 ```yaml
