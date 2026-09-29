@@ -9,16 +9,39 @@ from pathlib import Path
 import pydantic
 import yaml
 from rich.console import Console
+from yaml.reader import ReaderError
 
 from .models import Config
 from .runner import Runner
 
-console = Console(stderr=True)
+# markup off: messages echo user text (paths, --arg, YAML input) that may look like [tags]
+console = Console(stderr=True, markup=False, soft_wrap=True)
+
+
+def _load(path: str) -> object:
+    try:
+        with open(path, "rb") as f:
+            return yaml.safe_load(f)
+    except OSError as e:
+        console.print(f"Cannot read script {path}: {e.strerror or e}")
+    except yaml.MarkedYAMLError as e:
+        mark = e.problem_mark
+        at = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        console.print(f"YAML error in {path}{at}: {e.problem}")
+        if e.context:
+            mark = e.context_mark
+            at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+            console.print(f"  {e.context}{at}")
+    except ReaderError as e:
+        what = "character" if e.encoding == "unicode" else f"{e.encoding} byte"
+        console.print(f"YAML error in {path}, position {e.position}: {e.reason} ({what} #x{e.character:02x})")
+    except yaml.YAMLError as e:
+        console.print(f"YAML error in {path}: {e}")
+    sys.exit(1)
 
 
 def _cmd_run(args):
-    with open(args.script) as f:
-        config_dict = yaml.safe_load(f)
+    config_dict = _load(args.script)
 
     try:
         config = Config.model_validate(config_dict)

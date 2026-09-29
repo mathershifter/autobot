@@ -24,6 +24,8 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 |------------------|-------------------------------------------------------------|
 | `--arg KEY=VALUE` | Pass arguments accessible as `{{ args.KEY }}` in templates |
 
+If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a validation failure, and an `--arg` without `=`.
+
 ## Script Structure
 
 A script is a YAML file with the following top-level fields:
