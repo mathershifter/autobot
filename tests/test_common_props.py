@@ -72,6 +72,38 @@ def test_p3_04_when_truthy_values(sent: SentLog, when: str):
     assert "echo x" in sent.lines()
 
 
+def test_p3_05_when_none_value(sent: SentLog):
+    """SPEC "Conditional execution with when" (decision #6): a null renders ``None``, falsy."""
+    r = make_runner([{"line": "echo x", "when": "{{ vars.v }}"}], vars={"v": None})
+    assert r.render("{{ vars.v }}") == "None"
+    r.run()
+    assert "echo x" not in sent.lines()
+
+
+@pytest.mark.parametrize(
+    ("when", "runs"),
+    [
+        (" false ", False),
+        ("\tFALSE\n", False),
+        ("NONE", False),
+        (" None ", False),
+        (" 0 ", False),
+        ("   ", False),
+        ("False", False),
+        ("no", True),
+        ("off", True),
+        (" no ", True),
+    ],
+)
+def test_p3_05_when_surrounding_whitespace_and_case(sent: SentLog, when: str, runs: bool):
+    """SPEC "Conditional execution with when" (decision #6): stripped, lowercased.
+
+    Padded and uppercase falsy words skip the step; ``no``/``off`` still run it.
+    """
+    run_script([{"line": "echo x", "when": when}])
+    assert ("echo x" in sent.lines()) is runs
+
+
 def test_p3_06_filter_contains():
     """SPEC.md:333: contains filter."""
     r = make_runner([])

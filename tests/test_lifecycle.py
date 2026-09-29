@@ -229,6 +229,57 @@ def test_p5_04_prepare_without_shebang_fails_cleanly(
     assert children == []
 
 
+def test_p5_05_prepare_is_templated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """SPEC attach table and "Jinja2 Templating" (decision #9): prepare is rendered."""
+    out = tmp_path / "out"
+    monkeypatch.setenv("AUTOBOT_T_X", "from-os")
+    run_script(
+        [],
+        env={"AUTOBOT_T_X": "default", "Y": "{{ env.AUTOBOT_T_X }}-y"},
+        vars={"v": "V"},
+        args={"a": "A"},
+        prepare=(
+            "#!/bin/sh\n"
+            f"echo '{{{{ env.Y }}}} {{{{ vars.v }}}} {{{{ args.a }}}}' > {out}\n"
+        ),
+    )
+    assert out.read_text() == "from-os-y V A\n"
+
+
+BASH_ARRAY = '#!/bin/bash\narr=(a b c)\n{body}\n'
+
+
+def test_p5_05_prepare_bash_array_length_needs_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeline: Timeline, children
+):
+    """SPEC "Jinja2 Templating" (decision #9): ``{#`` in prepare opens a Jinja comment.
+
+    Bare ``${#arr[@]}`` fails to render before anything runs: no prepare
+    process, no spawn, no temp file. Wrapped in ``{% raw %}`` it runs.
+    """
+    import tempfile
+
+    import jinja2
+
+    tdir = tmp_path / "tmp"
+    tdir.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tdir))
+    out = tmp_path / "out"
+
+    bare = BASH_ARRAY.format(body=f'echo "${{#arr[@]}}" > {out}')
+    with pytest.raises(jinja2.TemplateSyntaxError):
+        make_runner([], prepare=bare).run()
+    assert not out.exists()
+    assert list(tdir.glob("_autobot_*")) == []
+    assert "attach" not in timeline.names()
+    assert children == []
+
+    raw = BASH_ARRAY.format(body=f'{{% raw %}}echo "${{#arr[@]}}"{{% endraw %}} > {out}')
+    run_script([], prepare=raw)
+    assert out.read_text() == "3\n"
+    assert list(tdir.glob("_autobot_*")) == []
+
+
 def test_p5_06_attach_breakout_runs_after_script_failure(tmp_path: Path):
     """SPEC.md:77, 84: breakout runs in finally after the main script fails."""
     bo = tmp_path / "bo"

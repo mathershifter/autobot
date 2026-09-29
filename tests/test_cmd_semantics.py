@@ -6,10 +6,19 @@ test plan rows (tests/TEST_PLAN.md).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 import pytest
-from conftest import RC_PROBE, SentLog, run_vars, steps
+from conftest import (
+    RC_PROBE,
+    SHELL_PROMPT,
+    ProbeExecutor,
+    SentLog,
+    make_runner,
+    run_vars,
+    steps,
+)
 
 from autobot.runner import Runner
 from autobot.session import CommandError
@@ -178,3 +187,73 @@ def test_p1_19_session_before_cleared_by_empty_output(attached_runner: Callable[
     )
     r.run_steps(skipped)
     assert "r" not in r.config.vars
+
+
+# -- P1-20: ignore_error covers command failures only (decision #10) --------
+
+# `LOG%s: ` keeps the echoed command from matching the `LOGIN: ` pattern
+TWO_LOGINS = "printf 'LOG%s: ' IN; read a; printf 'LOG%s: ' IN; read b"
+ONE_SHOT_LOGIN = {"name": "login", "expect": ["LOGIN: "], "send": ["x"]}
+
+
+def aborting_runner(step: dict, **kw) -> Runner:
+    """``step`` with ignore_error and register r (preset), then a probe step."""
+    return make_runner(
+        [{**step, "ignore_error": True, "register": "r"}, {"probe": "next"}],
+        vars={"r": "preset"},
+        **kw,
+    )
+
+
+def assert_aborted(runner: Runner, probe: ProbeExecutor) -> None:
+    assert probe.calls == [], "the step after the aborting step ran"
+    assert runner.config.vars["r"] == "preset"
+
+
+def test_p1_20_ignore_error_does_not_swallow_timeout(probe: ProbeExecutor):
+    """SPEC "cmd" ignore_error: a prompt timeout aborts despite ignore_error."""
+    r = aborting_runner({"cmd": "sleep 30", "timeout": 1})
+    with pytest.raises(TimeoutError):
+        r.run()
+    assert_aborted(r, probe)
+
+
+def test_p1_20_ignore_error_does_not_swallow_eof(probe: ProbeExecutor):
+    """SPEC "cmd" ignore_error: a closed connection (EOFError) aborts.
+
+    Uses the real shell rather than F3: ``exit`` closes the session before
+    the next prompt.
+    """
+    r = aborting_runner({"cmd": "exit"})
+    with pytest.raises(EOFError):
+        r.run()
+    assert_aborted(r, probe)
+
+
+def test_p1_20_ignore_error_does_not_swallow_template_error(probe: ProbeExecutor, sent: SentLog):
+    """SPEC "cmd" ignore_error: an undefined template variable aborts."""
+    r = aborting_runner({"cmd": "echo {{ vars.nope }}"})
+    with pytest.raises(ValueError, match="^template error: "):
+        r.run()
+    assert_aborted(r, probe)
+    assert sent.commands() == []
+
+
+def test_p1_20_ignore_error_does_not_swallow_invalid_regex(probe: ProbeExecutor):
+    """SPEC "cmd" ignore_error: an invalid regular expression in assert aborts."""
+    r = aborting_runner({"cmd": "echo hi", "assert": "("})
+    with pytest.raises(re.error):
+        r.run()
+    assert_aborted(r, probe)
+
+
+def test_p1_20_ignore_error_does_not_swallow_responses_exhausted(probe: ProbeExecutor):
+    """SPEC "cmd" ignore_error: a prompt-response failure inside the command aborts.
+
+    The command prompts ``LOGIN: `` twice; the prompt has one response, so
+    the second match raises ``responses exhausted``.
+    """
+    r = aborting_runner({"cmd": TWO_LOGINS}, prompts=[SHELL_PROMPT, ONE_SHOT_LOGIN])
+    with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
+        r.run()
+    assert_aborted(r, probe)
