@@ -11,6 +11,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
 from .session import PromptHandler, Session
 from .steps import register_builtins
+from .types import check_template
 from .types import render as render_template
 
 console = Console(stderr=True)
@@ -49,10 +50,12 @@ class Runner:
                 slots.append(None)
         responses = self._build_responses(prompt.send)
         is_return = prompt.is_shell_prompt or prompt.send is None
-        return PromptHandler(prompt.name, patterns, responses, is_return, slots)
+        # literal send strings are templates, rendered as each one is sent
+        render = None if isinstance(prompt.send, SendEach) else self.render
+        return PromptHandler(prompt.name, patterns, responses, is_return, slots, render)
 
     def _build_responses(self, send) -> list[list[str]]:
-        """Credential sets, one list per attempt."""
+        """Credential sets, one list per attempt; literal strings stay unrendered."""
         if not send:
             return []
         if isinstance(send, SendEach):
@@ -60,9 +63,10 @@ class Runner:
             if send.fields:
                 return [[str(item[f]) for f in send.fields] for item in items]
             return [[str(item)] for item in items]
-        if isinstance(send[0], list):
-            return [[self.render(s) for s in attempt] for attempt in send]
-        return [[self.render(s) for s in send]]
+        sets = send if isinstance(send[0], list) else [send]
+        for s in (s for attempt in sets for s in attempt):
+            check_template(s)
+        return [list(attempt) for attempt in sets]
 
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
         env = {k: os.environ.get(k, v) for k, v in defaults.items()}
@@ -132,14 +136,12 @@ class Runner:
         attach = self._config.attach
         spawn = self.render(attach.spawn)
         timeout = self._get_timeout(attach)
-        env = attach.env or {"TERM": "dumb", "NO_COLOR": "1"}
-
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
 
         console.print(f">> attach: {spawn}")
         try:
-            self._session.attach(spawn, env=env, timeout=timeout)
+            self._session.attach(spawn, env=attach.env, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)

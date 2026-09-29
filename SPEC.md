@@ -41,6 +41,8 @@ Each prompt has:
   - A list of lists (grouped attempts): `[["user", "pass"], ["user2", "pass2"]]`
   - A `sendEach` object for data-driven responses (see below)
 
+  The strings of the flat-list and list-of-lists forms are Jinja2 templates. Each is rendered when it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A syntax error is reported when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, prefixed with `prompt '<name>': `, and aborts the step waiting for the prompt. Both are [template errors](#jinja2-templating).
+
 #### `sendEach`
 
 Iterates over a collection from `vars` to build responses:
@@ -50,7 +52,7 @@ send:
   fields: [username, password]
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly.
+This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`), and its values are sent as they are, never rendered as templates.
 
 #### Response selection
 
@@ -108,7 +110,7 @@ fn:
 | `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Uses the shebang to determine the interpreter. Aborts if the script exits non-zero. Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). |
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`) |
 | `timeout` | no | Timeout for the initial spawn (duration) |
-| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. |
+| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
 | `script` | no | Steps to run immediately after spawn (before main script) |
 | `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect) |
 
@@ -132,7 +134,7 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
   timeout: 30s
 ```
 
-`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
+`cmd` accepts a string or list of strings. A string is rendered as a Jinja2 template as a whole, then split into lines on newlines, and blank lines of the result are skipped. So a Jinja2 block (e.g. `{% for %}`...`{% endfor %}`) may span lines, and a template that expands to several lines sends each of them. A string that renders to nothing but blank lines sends one empty line (like `cmd: ""`). Each item of a list is rendered on its own and split the same way, and the lines of all items are sent in order; a Jinja2 block can't span items. The whole `cmd` is rendered once, after the step's first prompt wait and before its first line is sent, so a template error sends nothing and no line sees the output of an earlier line of the same step. Each line waits for a prompt before sending.
 
 After each command line, the step waits for a shell prompt. If top-level `errors` patterns are defined, that line's captured output is checked against them; on a match the step raises and no further lines are sent.
 
@@ -169,7 +171,7 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result
 - a closed connection (`EOFError`)
-- template errors (an undefined variable or a syntax error) and invalid regular expressions in `assert` or `errors`
+- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
 - prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
@@ -194,7 +196,7 @@ When a step aborts (an unignored or unignorable error), `vars.<name>` is left un
 
 #### Embedded scripts
 
-If `cmd` is a string starting with `#!`, it is treated as an embedded script. The shebang line determines the interpreter. The script is written to a temp file on the remote, made executable, executed, and cleaned up automatically.
+If `cmd` is a string starting with `#!` (before rendering), it is treated as an embedded script. The shebang line determines the interpreter. The script is written to a temp file on the remote, made executable, executed, and cleaned up automatically.
 
 ```yaml
 - cmd: |
@@ -376,12 +378,14 @@ A bare number must be ≥ 0; a boolean is not a duration. A string must be a non
 ## Jinja2 Templating
 
 These values are rendered as Jinja2 templates:
-- `cmd` (each command line; an embedded script as a whole), `assert`, `line`, `after` and `when`
-- prompt `send` strings in the flat-list and list-of-lists forms (the values `sendEach` takes from `vars` are sent as they are)
+- `cmd` (a string, or each item of a list, as a whole before it is split into lines; an embedded script as a whole), `assert`, `line`, `after` and `when`
+- prompt `send` strings in the flat-list and list-of-lists forms, each when it is sent (the values `sendEach` takes from `vars` are sent as they are)
 - `attach.spawn` and `attach.prepare`
 - `env` values (see [Top-level fields](#top-level-fields))
 
 Other values are used verbatim, e.g. `expect`, `errors`, `control`, `call`, `register` and `attach.env`. A plugin step decides which of its own fields it renders.
+
+Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` with the message `template error: ...`. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
 
 Because these values are templates, `{{`, `{%` and `{#` in them always start Jinja2 syntax, even inside shell code. For example, bash's array length `${#arr[@]}` contains `{#`, which opens a Jinja2 comment, so rendering fails with a template syntax error. To pass such text through literally, wrap it in `{% raw %}...{% endraw %}`, or emit the delimiter from an expression (`{{ '{#' }}`):
 

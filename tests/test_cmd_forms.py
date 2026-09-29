@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import jinja2
-import pytest
 from conftest import SentLog, Timeline, run_vars
 
 
@@ -59,7 +57,6 @@ def test_p2_05_multiline_lines_rendered_individually():
     assert out["out"] == "1\n2"
 
 
-@pytest.mark.xfail(strict=True, raises=jinja2.TemplateSyntaxError, reason="finding #8")
 def test_p2_06_multiline_jinja_block_spanning_lines():
     """SPEC.md:99, 317: a Jinja block may span lines of a multiline cmd."""
     out = run_vars(

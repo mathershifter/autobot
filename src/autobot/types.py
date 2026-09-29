@@ -36,7 +36,15 @@ def render(template: Any, ctx: dict) -> Any:
         return template
     try:
         return _jinja_env.from_string(template).render(ctx)
-    except jinja2.UndefinedError as e:
+    except jinja2.TemplateError as e:
+        raise ValueError(f"template error: {e}") from e
+
+
+def check_template(template: str) -> None:
+    """Report a template syntax error now rather than when the template is rendered."""
+    try:
+        _jinja_env.parse(template)
+    except jinja2.TemplateError as e:
         raise ValueError(f"template error: {e}") from e
 
 

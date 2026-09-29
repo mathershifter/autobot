@@ -127,7 +127,7 @@ def test_block_breakout_template_error_is_best_effort(attached, capsys):
         assert handler_names(r) == ["top"]
     finally:
         r.session.detach()
-    assert "block breakout error (TemplateSyntaxError)" in capsys.readouterr().err
+    assert "block breakout error (ValueError): template error: " in capsys.readouterr().err
 
 
 # -- attach lifecycle -------------------------------------------------------
@@ -259,15 +259,13 @@ def test_p5_05_prepare_bash_array_length_needs_raw(
     """
     import tempfile
 
-    import jinja2
-
     tdir = tmp_path / "tmp"
     tdir.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tdir))
     out = tmp_path / "out"
 
     bare = BASH_ARRAY.format(body=f'echo "${{#arr[@]}}" > {out}')
-    with pytest.raises(jinja2.TemplateSyntaxError):
+    with pytest.raises(ValueError, match="^template error: "):
         make_runner([], prepare=bare).run()
     assert not out.exists()
     assert list(tdir.glob("_autobot_*")) == []

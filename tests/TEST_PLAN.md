@@ -20,14 +20,14 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
-| P2 | `cmd` forms, embedded scripts | 14 | 1 | 0 | 15 | 0 |
+| P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 19 | 1 | 0 | 20 | 4 |
+| P4 | `get_prompt`, prompts, credential cycling | 20 | 0 | 0 | 20 | 4 |
 | P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
 | P6 | model / schema / example / CLI parity | 24 | 0 | 0 | 24 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
-| P8 | Low priority: types, strip_echo, simple steps | 13 | 1 | 0 | 14 | 0 |
-| **Total** | | **144** | **3** | **0** | **147** | **5** |
+| P8 | Low priority: types, strip_echo, simple steps | 14 | 0 | 0 | 14 | 0 |
+| **Total** | | **147** | **0** | **0** | **147** | **5** |
 
 A parametrized test counts as one test.
 
@@ -176,7 +176,7 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-03 | `test_list_with_shebang_first_item_sent_verbatim` | 162 | F1, F4 | `cmd: ["#!/bin/false", "echo x"]` registers `x`; `#!/bin/false` sent as-is; no sent line contains `/tmp/_autobot_` | pass |
 | P2-04 | `test_after_skips_initial_get_prompt` | 278 | F1, F5 | `line: "printf 'pre%s\\n' READY"`, then `cmd: echo x`, `after: preREADY` → no `get_prompt` between `expect([preREADY])` and `sendline(echo x)` | pass |
 | P2-05 | `test_multiline_lines_rendered_individually` | 99, 317 | F1, `vars: {a: 1, b: 2}` | `cmd: "echo {{ vars.a }}\necho {{ vars.b }}"` registers `1\n2` | pass |
-| P2-06 | `test_multiline_jinja_block_spanning_lines` | 99, 317 | F1 | `cmd: "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}"` registers `n0\nn1` | xfail #8 |
+| P2-06 | `test_multiline_jinja_block_spanning_lines` | 99, 317 | F1 | `cmd: "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}"` registers `n0\nn1` | pass (was xfail #8) |
 | P2-07 | `test_upload_chunks_at_most_512` | 165 | F1, F4, script > 3 x 512 b64 chars | each `printf %s <chunk>` payload ≤ 512 chars; chunk count = `ceil(len(b64)/512)`; concatenated chunks == `b64encode(rendered)` | pass |
 | P2-08 | `test_upload_trailing_newline_preserved_once` | 165 | F1, F4; parametrize script with and without a final `\n` | decoded upload ends with exactly one `\n` | pass |
 | P2-09 | `test_script_mode_700_and_staging_umask_077` | 166 | F1 | script `#!/bin/sh\nstat -c %a "$0" "$0.b64"\n` registers `700\n600` | pass |
@@ -187,7 +187,7 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-14 | `test_cleanup_timeout_uses_shorter_step_timeout` | 172 | F1, `tmp_path_hex`, step `timeout: 2s`, script `sleep 30`, no constant patch | `TimeoutError`; total elapsed < 6 s (2 s step + ≤ 2 s cleanup + margin) | pass |
 | P2-15 | `test_embedded_errors_patterns_apply` | 101, 162 | F1, `errors: ['% .*']`, `tmp_path_hex` | script printing `% bad` raises `CommandError`; files absent | pass |
 
-Totals: 14 pass, 1 xfail.
+Totals: 15 pass.
 
 ## P3: common step properties and templating context
 
@@ -240,11 +240,11 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with a grouped `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with `sendEach` without `fields` → `no response available for 'Password:'` | pass (was todo #4) |
 | P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | pass (was xfail #3) |
 | P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
-| P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | xfail #7 |
+| P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | pass (was xfail #7) |
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-Totals: 19 pass (P4-01..19), 1 xfail (P4-20). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
+Totals: 20 pass (P4-01..20). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
 
 ## P5: attach and block lifecycles, env
 
@@ -256,7 +256,7 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-02 | `test_prepare_nonzero_aborts_before_spawn` | 72, 80 | F5, `children`, prepare `#!/bin/sh\nexit 3` | `RuntimeError` `prepare script failed with exit code 3`; no `attach` in timeline; `children == []` | pass |
 | P5-03 | `test_prepare_temp_file_removed` (parametrized success / failure) | 72 | `monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))` | no `_autobot_*` left in `tmp_path` | pass |
 | P5-04 | `test_prepare_without_shebang_fails_cleanly` | 72 | prepare `echo hi` | raises (`OSError`/`RuntimeError`) before spawn; temp file removed; no child | pass |
-| P5-05 | `test_prepare_is_templated` / `test_prepare_bash_array_length_literal` (2 tests) | 72, 317 | prepare `echo {{ env.X }} > out` / `arr=(a b); echo ${#arr[@]} > out` | `out` holds the rendered value / bare `${#arr[@]}` → `jinja2.TemplateSyntaxError` from `run()` before spawn (no child, temp file removed); wrapped in `{% raw %}...{% endraw %}` → `out` is `2` | pass (was todo #9) (x2) |
+| P5-05 | `test_prepare_is_templated` / `test_prepare_bash_array_length_literal` (2 tests) | 72, 317 | prepare `echo {{ env.X }} > out` / `arr=(a b); echo ${#arr[@]} > out` | `out` holds the rendered value / bare `${#arr[@]}` → `ValueError` `template error: ...` from `run()` before spawn (no child, temp file removed); wrapped in `{% raw %}...{% endraw %}` → `out` is `2` | pass (was todo #9) (x2) |
 | P5-06 | `test_attach_breakout_runs_after_script_failure` | 77, 84 | F1, breakout `cmd: "touch <tmp>/bo"`, main `cmd: false` | raises `exit code 1`; `bo` exists | pass |
 | P5-07 | `test_attach_breakout_runs_after_attach_script_failure` | 76-84 | F1, `attach_script: [cmd: false]` | raises; main steps not sent (F4); breakout marker exists | pass |
 | P5-08 | `test_attach_breakout_resets_handlers_first` | 84 | F1, F5 | `reset_handlers` appears in timeline before the first breakout `sendline` | pass |
@@ -354,9 +354,9 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-11 | `test_sleep_step` | 174-178 | F5, then F1 real sleep | `sleep: 2s` → `sleep(2.0)` recorded; real `sleep: 500ms` elapses 0.5 to 2 s | pass |
 | P8-12 | `test_call_runs_function_steps` | 55-66, 180-184 | F1, `fn: {f: {script: [cmd: echo a (register a), cmd: echo b (register b)]}}` | `vars.a == "a"`, `vars.b == "b"` | pass |
 | P8-13 | `test_call_steps_see_registered_vars` | 322 | F1 | `cmd: echo v` `register: v`; `fn` step `echo got-{{ vars.v }}` registers `got-v` | pass |
-| P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | xfail #15 |
+| P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | pass (was xfail #15) |
 
-Totals: 13 pass, 1 xfail.
+Totals: 14 pass.
 
 ## Implementation status
 
@@ -365,16 +365,16 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
 | P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
-| P2 | 14 | 1 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
+| P2 | 15 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
-| P4 | 19 | 1 | 4 | `test_get_prompt.py` |
+| P4 | 20 | 0 | 4 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 24 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
-| P8 | 13 | 1 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **144** | **3** | **5** | |
+| P8 | 14 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
+| **Total** | **147** | **0** | **5** | |
 
-Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`.
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain.
 
 Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
 - removes the P6-13/P6-14 xfail markers (both pass)
@@ -405,7 +405,7 @@ Tests:
 - P4-01: sends `echo hi` instead of `""` (written while #5 left `session.ctx` stale on empty output). It first calls `get_prompt()` to reach bash's first prompt, which is no longer swallowed at attach (#3), then clears the send log.
 - P4-02, P4-04, P4-19: use `--order none`. The fake-device tests that kick (P4-06, P4-15 and others) use `--wait-enter`, where the device blocks until it reads that Enter; the kick is part of the device protocol, not a #3 workaround, and stays after the #3 fix. P4-15 uses `--then prompt`.
 - P4-19: `get_prompt(timeout=3)` must return; before the #3 fix it raised `TimeoutError` (converted to an assertion). The test doesn't time an elapsed < 4 s.
-- P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail is pinned to #7.
+- P4-20: the `ValueError` from building the `Runner` is re-raised as `AssertionError`, so the xfail was pinned to #7. The re-raise stays now that #7 is fixed: a regression fails with that message. The #7 fix adds one test outside the plan, `test_send_template_syntax_error_at_load`: a malformed `send` still fails when the `Runner` is built, as `ValueError("template error: ...")`. Wrapping every template error adds two parametrized tests outside the plan in `test_types.py`: `test_every_template_error_is_a_value_error` and `test_check_template_reports_syntax_errors_like_render`.
 - P5-10: `enter` uses `line: "PS1='BL''K$ '"`. A `cmd` would first wait for the new prompt, which isn't printed yet. The quoting keeps the echo from matching `BLK\$ `.
 - P5-11: no kick is needed; bash's first prompt, still pending after `attached_runner` attaches, serves the first `get_prompt`.
 - P6-07, P6-09, P8-01 and P8-11 are split into two functions each (accept/reject, recorded/real). They still count as one plan row.
@@ -431,7 +431,7 @@ Deviations from the row targets:
 - P1-20: every case uses the real shell (F1), not F3. EOF comes from `cmd: exit`, which closes bash before the next prompt. The timeout case uses `sleep 30` with `timeout: 1`. "The next step doesn't run" is checked with the F6 probe as the next step. Added cases beyond the three planned: an invalid `assert` regex (`re.error`) and `responses exhausted` from a prompt inside the command (the command prints `LOG%s: ` so its echo can't match `LOGIN: `).
 - P3-05: the whitespace test is parametrized over `" false "`, `"\tFALSE\n"`, `NONE`, `" None "`, `" 0 "`, whitespace only, `False`, and `no`/`off`/`" no "` (which run).
 - P4-17: adds SPEC's table row 4 (login-first, two sets, a third `login:` → `responses exhausted`) as a sixth test. The missing-item case uses `--order password`, so `Password:` is the first match and nothing is sent.
-- P5-05: follows SPEC's example `arr=(a b c)`, so the raw form writes `3`; the row said `arr=(a b)` → `2`. The templated test renders `env` (with an OS override and nesting), `vars` and `args`. The failing case asserts `jinja2.TemplateSyntaxError`, no prepare output, no `_autobot_*` temp file and no `attach` call.
+- P5-05: follows SPEC's example `arr=(a b c)`, so the raw form writes `3`; the row said `arr=(a b)` → `2`. The templated test renders `env` (with an OS override and nesting), `vars` and `args`. The failing case asserts `ValueError` matching `^template error: ` (it asserted `jinja2.TemplateSyntaxError` until all template errors were wrapped, branch `fix/xfail-bugs-7-8-15`), no prepare output, no `_autobot_*` temp file and no `attach` call.
 - P6-15..18: each also asserts the model error location; P6-18 checks that `{script: []}` is accepted by both. Strict booleans (`"yes"`, `"true"`, `1`, `0`) for `ignore_error` and prompt `return` are two extra parametrized tests (`bool_type` at the field).
 - P7-08: the in-process typo test registers an in-process `echo` plugin (F6); the CLI half uses the dist-info `echo` plugin via `PYTHONPATH`. Both CLI halves use `prepare` and `spawn` commands that each touch a marker file, and assert neither exists. The call test nests the call in a block (`("script", 1, "block", "script", 0, "call")`). Added: a parametrized test that checks every location SPEC lists (top-level, `when`-skipped, `attach.script`, `attach.breakout`, `fn` body, block `enter`, block `breakout`), and a test that mutual recursion is accepted.
 

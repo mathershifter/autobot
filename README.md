@@ -84,7 +84,7 @@ The `attach` block controls how autobot connects to the remote console.
 | `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Uses the shebang for the interpreter. Aborts on non-zero exit        |
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`)                                                                  |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
-| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1` |
+| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
 | `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
 
@@ -191,7 +191,7 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
   timeout: 30s
 ```
 
-`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is split on newlines (blank lines are skipped).
+`cmd` accepts a string or list of strings. Each line waits for a prompt before sending. A multiline string is rendered as a template first, then split on newlines (blank lines are skipped), so a `{% for %}` loop may span lines and send one command per iteration.
 
 After each command line, the step waits for a shell prompt and, if top-level `errors` patterns are defined, checks that line's output against them — raising (and sending no further lines) on a match.
 
@@ -383,7 +383,7 @@ Durations can't be negative, and `true`/`false` aren't durations.
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd` (including embedded scripts), `assert`, `line`, `after`, `when`, prompt `send` strings (not the values `sendEach` reads from `vars`), `attach.spawn`, `attach.prepare`, and `env` values. Other values, such as `expect`, `errors` and `attach.env`, are used as written.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd` (including embedded scripts), `assert`, `line`, `after`, `when`, prompt `send` strings (rendered each time one is sent, so they can use `vars` registered by earlier steps; not the values `sendEach` reads from `vars`), `attach.spawn`, `attach.prepare`, and `env` values. Other values, such as `expect`, `errors` and `attach.env`, are used as written.
 
 ```yaml
 env:

@@ -104,7 +104,6 @@ def test_p8_13_call_steps_see_registered_vars():
     assert out["g"] == "got-v"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="finding #15")
 def test_p8_14_attach_env_empty_dict_is_not_omitted(spawned: SpawnLog):
     """SPEC.md:75: an explicit empty env replaces the environment with nothing."""
     spawned.stop = True

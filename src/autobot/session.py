@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 import sys
 import time
+from collections.abc import Callable
 
 import pexpect
 
 from .types import ANSI_ESCAPE_RE
+
+DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
 
 class CommandError(RuntimeError):
@@ -63,6 +66,7 @@ class PromptHandler:
         responses: list[list[str]],
         is_return: bool,
         slots: list[int | None] | None = None,
+        render: Callable[[str], str] | None = None,
     ):
         self.name = name
         self.is_return = is_return
@@ -72,6 +76,8 @@ class PromptHandler:
         self.start = 0
         self.end = len(patterns)
         self._sets = responses
+        # renders a response as it is sent; None sends responses verbatim
+        self._render = render
         self.reset()
 
     @property
@@ -99,9 +105,15 @@ class PromptHandler:
             raise RuntimeError(
                 f"prompt '{self.name}': no response available for {self.patterns[i]!r}"
             )
+        value = current[slot]
+        if self._render:
+            try:
+                value = self._render(value)
+            except ValueError as e:
+                raise ValueError(f"prompt '{self.name}': {e}") from e
         self._used.add(slot)
         self._fired = True
-        return current[slot]
+        return value
 
     def _next_unused(self) -> int | None:
         current = self._sets[self._set]
@@ -143,7 +155,7 @@ class Session:
             timeout=timeout,
             encoding="utf-8",
             codec_errors="replace",
-            env=env or {"TERM": "dumb", "NO_COLOR": "1"},
+            env=dict(DEFAULT_ENV) if env is None else env,
         )
         self._cld.logfile_read = CleanWriter(sys.stdout)
         try:
