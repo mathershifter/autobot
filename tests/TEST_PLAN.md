@@ -13,7 +13,7 @@ The plan only covers tests. It changes no product code. It adds to the existing 
 | `todo #N` | Was blocked on spec decision #N. The decision has landed in SPEC.md (see [Spec decisions](#spec-decisions)), and the Assertion column gives the target. Not written yet; expected to be `pass`. |
 | `slow` | Needs the fixed 5 s idle poll in `get_prompt` (can't be shortened without a product change). Mark `@pytest.mark.slow`. |
 
-Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I found them while writing this plan (see [New findings](#new-findings-from-planning)).
+Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I found them while writing this plan (see [New findings](#new-findings-from-planning)). #20 came up while fixing #19.
 
 ## Summary
 
@@ -26,8 +26,8 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
 | P6 | model / schema / example / CLI parity | 30 | 0 | 0 | 30 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
-| P8 | Low priority: types, strip_echo, simple steps | 14 | 0 | 0 | 14 | 0 |
-| **Total** | | **153** | **0** | **0** | **153** | **5** |
+| P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
+| **Total** | | **155** | **0** | **0** | **155** | **5** |
 
 A parametrized test counts as one test.
 
@@ -361,8 +361,10 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-12 | `test_call_runs_function_steps` | 55-66, 180-184 | F1, `fn: {f: {script: [cmd: echo a (register a), cmd: echo b (register b)]}}` | `vars.a == "a"`, `vars.b == "b"` | pass |
 | P8-13 | `test_call_steps_see_registered_vars` | 322 | F1 | `cmd: echo v` `register: v`; `fn` step `echo got-{{ vars.v }}` registers `got-v` | pass |
 | P8-14 | `test_attach_env_empty_dict_is_not_omitted` | 75 | F4 `spawned` in raise-after-record mode | `attach.env: {}` → spawn kwargs `env == {}` (not the default) | pass (was xfail #15) |
+| P8-15 | `test_log_lines_print_markup_like_text_verbatim` (parametrized: `[/x]`, `[bold]x[/bold]`) | n/a (operator log) | CLI subprocess, F1; the text is in the spawn line (`env X=<text> bash ...`), a block name and `cmd: echo "<text>"` | rc 0; no `Traceback`/`MarkupError`; stderr has the lines `>> attach: env X=<text> ...`, `>> block enter: <text>`, `>> cmd: echo "<text>"`, `>> block completed: <text>` verbatim | pass (finding #20) |
+| P8-16 | `test_log_lines_are_not_wrapped` | n/a (operator log) | CLI subprocess, F1, a 40-word `echo` | the whole `>> cmd: echo word0 ... word39` is one stderr line | pass (finding #20) |
 
-Totals: 14 pass.
+Totals: 16 pass.
 
 ## Implementation status
 
@@ -377,10 +379,10 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 30 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
-| P8 | 14 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **153** | **0** | **5** | |
+| P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
+| **Total** | **155** | **0** | **5** | |
 
-Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1.
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16).
 
 Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
 - removes the P6-13/P6-14 xfail markers (both pass)
@@ -565,6 +567,7 @@ These are not in the list of blocking decisions. None of them is tested in this 
 
 - **#18** (cli.py:24): an empty YAML file or a top-level list reaches `Config(**config_dict)` and crashes with `TypeError: ... argument after ** must be a mapping` and a traceback. The schema requires a top-level object, so this is a validation failure and should be reported the way other validation errors are. It's covered by P6-24. Fixed: the CLI now uses `Config.model_validate`, and SPEC.md's CLI section documents the error report.
 - **#19** (cli.py:20-21): a missing file or a YAML syntax error prints a traceback. It was a spec question. Fixed: the CLI reads the file in binary mode (PyYAML decodes UTF-8, or UTF-16 with a BOM) and reports `Cannot read script <path>: <reason>` or `YAML error in <path>, line L, column C: <problem>` with rc 1, before anything runs. The CLI console also stopped interpreting rich markup, which crashed on `--arg '[/x]'` and on validation input containing `[/x]`. Covered by P6-25..30.
+- **#20** (runner.py:17, steps.py:26): the operator log consoles interpreted rich markup in the text they print. `cmd: echo "[/x]"` crashed the run with `rich.errors.MarkupError` when `>> cmd:` was logged, `[bold]x[/bold]` was logged as `x`, and the same applied to block names, the spawn line and error messages. Lines longer than 80 columns were also hard-wrapped when stderr wasn't a terminal. Fixed: both consoles use `markup=False, soft_wrap=True`. Covered by P8-15 and P8-16.
 
 ## Implementation order
 
