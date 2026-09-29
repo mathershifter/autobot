@@ -14,7 +14,8 @@ from .steps import register_builtins
 from .types import check_template
 from .types import render as render_template
 
-console = Console(stderr=True)
+# markup off: log lines echo commands, names and errors that may look like [tags]
+console = Console(stderr=True, markup=False, soft_wrap=True)
 
 register_builtins(registry)
 
@@ -153,10 +154,7 @@ class Runner:
                         self._session.reset_handlers()
                         self.run_steps(attach.breakout.script)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        console.print(
-                            f">> breakout error ({type(e).__name__}): {e}",
-                            markup=False,
-                        )
+                        console.print(f">> breakout error ({type(e).__name__}): {e}")
         finally:
             self._session.detach()
 

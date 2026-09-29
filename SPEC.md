@@ -437,4 +437,15 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 - `script` — path to the YAML script file
 - `--arg` — pass arguments accessible as `{{ args.KEY }}`
 
-A script that fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields, is reported on stderr as `Validation errors:` followed by the details, and the CLI exits with status 1. Nothing runs: `attach.prepare` isn't run and no session is spawned.
+The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 with a byte order mark). The CLI reports these load errors on stderr without a traceback:
+
+| Error | First line |
+|-------|------------|
+| The file can't be read (missing, a directory, permission denied) | `Cannot read script <path>: <reason>` |
+| The file isn't valid YAML (syntax error, tab indentation, more than one document, an undefined alias, an unsupported tag such as `!!python/object`) | `YAML error in <path>, line <L>, column <C>: <problem>`, followed by an indented context line when YAML gives one |
+| The file has bytes that aren't valid UTF-8, or disallowed control characters | `YAML error in <path>, position <N>: <reason> (...)` |
+| The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by the details |
+| An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
+| The top-level `env` can't be resolved (a template error, or nesting deeper than 10 levels), or a top-level prompt `send` string has a template syntax error | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...` |
+
+Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, print usage and exit with status 2.

@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from .protocols import RunnerContext
     from .registry import StepRegistry
 
-console = Console(stderr=True)
+# markup off: log lines echo commands, names and errors that may look like [tags]
+console = Console(stderr=True, markup=False, soft_wrap=True)
 
 # base64 chars per upload line; keeps each line (~600 chars) under the
 # smallest common canonical-mode line limit (MAX_CANON 1024 on BSD/macOS,
@@ -186,10 +187,7 @@ class BlockExecutor:
                         ctx.session.reset_handlers()
                         ctx.run_steps(step.block.breakout.script)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        console.print(
-                            f">> block breakout error ({type(e).__name__}): {e}",
-                            markup=False,
-                        )
+                        console.print(f">> block breakout error ({type(e).__name__}): {e}")
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)

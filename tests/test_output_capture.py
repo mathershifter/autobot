@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from conftest import BASH, make_doc, run_cli
 from conftest import run_vars as run
 
 from autobot.session import strip_echo
@@ -142,3 +145,31 @@ def test_no_trailing_newline_output_dropped():
 def test_strip_echo(text: str, sent: str, expected: str):
     """SPEC.md:112 (P8-05 extends the table)."""
     assert strip_echo(text, sent) == expected
+
+
+# -- #20: operator log lines print user and device text verbatim ---------------
+
+
+@pytest.mark.parametrize("text", ["[/x]", "[bold]x[/bold]"], ids=["closing-tag", "bold-tags"])
+def test_p8_15_log_lines_print_markup_like_text_verbatim(tmp_path: Path, text: str):
+    """`[...]` in a command, block name or spawn line is logged literally, not as rich markup."""
+    doc = make_doc(
+        [{"block": {"name": text, "script": [{"cmd": f'echo "{text}"', "register": "out"}]}}],
+        spawn=f"env X={text} {BASH}",
+    )
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert "Traceback" not in res.stderr
+    lines = res.stderr.splitlines()
+    assert f">> attach: env X={text} {BASH}" in lines
+    assert f">> block enter: {text}" in lines
+    assert f'>> cmd: echo "{text}"' in lines
+    assert f">> block completed: {text}" in lines
+
+
+def test_p8_16_log_lines_are_not_wrapped(tmp_path: Path):
+    """A `>> cmd:` line longer than 80 columns stays on one line when stderr isn't a terminal."""
+    cmd = "echo " + " ".join(f"word{i}" for i in range(40))
+    res = run_cli(make_doc([{"cmd": cmd}]), tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert f">> cmd: {cmd}" in res.stderr.splitlines()
