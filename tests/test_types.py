@@ -6,7 +6,13 @@ from typing import Any
 
 import pytest
 
-from autobot.types import _jinja_env, ensure_list, parse_duration, render
+from autobot.types import (
+    _jinja_env,
+    check_template,
+    ensure_list,
+    parse_duration,
+    render,
+)
 
 
 @pytest.mark.parametrize(
@@ -51,3 +57,17 @@ def test_p8_03_render_passthrough_and_filters():
 def test_p8_04_render_trailing_newline_dropped():
     """SPEC.md:292: Jinja drops one trailing newline, so ``"false\\n"`` is falsy."""
     assert render("x\n", {}) == "x"
+
+
+@pytest.mark.parametrize("template", ["{{ vars.nope }}", "{{ oops(", "{% if %}", "${#arr[@]}"])
+def test_every_template_error_is_a_value_error(template: str):
+    """SPEC "Jinja2 Templating": syntax and undefined-variable errors read the same."""
+    with pytest.raises(ValueError, match="^template error: "):
+        render(template, {"vars": {}})
+
+
+@pytest.mark.parametrize("template", ["{{ oops(", "{% if %}", "${#arr[@]}"])
+def test_check_template_reports_syntax_errors_like_render(template: str):
+    with pytest.raises(ValueError, match="^template error: "):
+        check_template(template)
+    check_template("{{ vars.nope }}")  # undefined names are only known when rendered

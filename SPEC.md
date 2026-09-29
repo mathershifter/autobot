@@ -41,7 +41,7 @@ Each prompt has:
   - A list of lists (grouped attempts): `[["user", "pass"], ["user2", "pass2"]]`
   - A `sendEach` object for data-driven responses (see below)
 
-  The strings of the flat-list and list-of-lists forms are Jinja2 templates. Each is rendered when it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A template syntax error is reported as a `ValueError` (`template error: ...`) when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, as `prompt '<name>': template error: ...`, and aborts the step waiting for the prompt, even with `ignore_error: true` (see [`ignore_error`](#captured-output)).
+  The strings of the flat-list and list-of-lists forms are Jinja2 templates. Each is rendered when it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A syntax error is reported when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, prefixed with `prompt '<name>': `, and aborts the step waiting for the prompt. Both are [template errors](#jinja2-templating).
 
 #### `sendEach`
 
@@ -171,7 +171,7 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result
 - a closed connection (`EOFError`)
-- template errors (an undefined variable or a syntax error), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
+- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
 - prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
@@ -384,6 +384,8 @@ These values are rendered as Jinja2 templates:
 - `env` values (see [Top-level fields](#top-level-fields))
 
 Other values are used verbatim, e.g. `expect`, `errors`, `control`, `call`, `register` and `attach.env`. A plugin step decides which of its own fields it renders.
+
+Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` with the message `template error: ...`. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
 
 Because these values are templates, `{{`, `{%` and `{#` in them always start Jinja2 syntax, even inside shell code. For example, bash's array length `${#arr[@]}` contains `{#`, which opens a Jinja2 comment, so rendering fails with a template syntax error. To pass such text through literally, wrap it in `{% raw %}...{% endraw %}`, or emit the delimiter from an expression (`{{ '{#' }}`):
 
