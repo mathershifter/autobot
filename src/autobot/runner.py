@@ -176,7 +176,7 @@ class Runner:
         when = getattr(step, "when", None)
         if when is not None:
             result = self.render(when)
-            if result in ("", "false", "False", "0", "none"):
+            if result.strip().lower() in ("", "false", "0", "none"):
                 return
 
         delay_before = getattr(step, "delay_before", None)

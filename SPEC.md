@@ -312,7 +312,7 @@ All step types except `sleep` support:
 | Field | Description |
 |-------|-------------|
 | `after` | Expect regex — wait for this pattern before executing. On match, populates `session.before` and `session.match` |
-| `when` | Jinja2 conditional — template is rendered, step is skipped if result is falsy (`""`, `"false"`, `"False"`, `"0"`, `"none"`) |
+| `when` | Jinja2 conditional — template is rendered, step is skipped if the result is falsy (see below) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after` | Duration to wait after the step |
 | `timeout` | Override default timeout for this step |
@@ -325,7 +325,7 @@ Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> exec
 
 ### Conditional execution with `when`
 
-The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: if the result is empty or one of the falsy strings (`"false"`, `"False"`, `"0"`, `"none"`), the step is skipped entirely.
+The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: it is falsy if, with surrounding whitespace removed and lowercased, it is `""`, `"false"`, `"0"` or `"none"`. A falsy result skips the step entirely. So `False`, `FALSE`, `None` (how Jinja2 renders a null value, e.g. `{{ vars.v }}` when `v` is `null`) and `" false "` are all falsy. Any other result, including `"no"` and `"off"`, runs the step.
 
 The `session.before` and `session.match` context variables are populated both by `after` (explicit expect) and by `get_prompt` (on shell prompt match). Commonly used with `when`:
 
