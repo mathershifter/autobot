@@ -221,6 +221,84 @@ def test_p4_16_grouped_expect_login_first(device):
     assert log_of(log) == ["ENTER=", "LOGIN=admin", "PASSWORD=secret"]
 
 
+GROUPED = [["login:", "Password:"]]
+
+
+def test_p4_17_grouped_expect_password_first(device):
+    """SPEC "Response selection" (decision #4): grouped pattern k sends item k.
+
+    A password-first device gets the password at ``Password:`` and the user
+    name at ``login:``, not the next item of a flat cursor.
+    """
+    login = {"name": "login", "expect": GROUPED, "send": ["admin", "secret"]}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login",
+                    "--accept", "admin:secret")
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "PASSWORD=secret", "LOGIN=admin"]
+
+
+def test_p4_17_grouped_password_first_credential_cycling(device):
+    """SPEC "Response selection" table row 2: a restarted group advances the set."""
+    login = {"name": "login", "expect": GROUPED, "send": [["admin", "p1"], ["admin", "p2"]]}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login",
+                    "--accept", "admin:p2")
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == [
+        "ENTER=", "PASSWORD=p1", "LOGIN=admin", "PASSWORD=p2", "LOGIN=admin",
+    ]
+
+
+def test_p4_17_grouped_password_only_send_each(device):
+    """SPEC "Response selection" table row 3 (``ssh admin@host``), sendEach form.
+
+    ``Password:`` twice: each match picks item 1, the second one advances to
+    the next set, so one password per set is sent.
+    """
+    login = {"name": "login", "expect": GROUPED,
+             "send": {"each": "vars.creds", "fields": ["username", "password"]}}
+    creds = [{"username": "admin", "password": "p1"}, {"username": "admin", "password": "p2"}]
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password",
+                    "--accept", ":p2", vars={"creds": creds})
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "PASSWORD=p1", "PASSWORD=p2"]
+
+
+def test_p4_17_grouped_exhaustion(device):
+    """SPEC "Response selection": the group restarts with no next set -> exhausted."""
+    login = {"name": "login", "expect": GROUPED, "send": [["admin", "bad"]]}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login")
+    with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
+        r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "PASSWORD=bad", "LOGIN=admin"]
+
+
+def test_p4_17_grouped_login_first_exhaustion_after_two_sets(device):
+    """SPEC "Response selection" table row 4: two sets, a third ``login:`` exhausts."""
+    login = {"name": "login", "expect": GROUPED, "send": [["admin", "pw1"], ["admin", "pw2"]]}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "login,password")
+    with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
+        r.session.get_prompt(timeout=10)
+    assert log_of(log) == [
+        "ENTER=", "LOGIN=admin", "PASSWORD=pw1", "LOGIN=admin", "PASSWORD=pw2",
+    ]
+
+
+def test_p4_17_grouped_missing_item_no_response(device):
+    """SPEC "Response selection": no item at the grouped position -> no response.
+
+    ``sendEach`` without ``fields`` gives one-item sets, so ``Password:``
+    (position 1) has nothing to send; the message names the pattern.
+    """
+    login = {"name": "login", "expect": GROUPED, "send": {"each": "vars.pins"}}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password",
+                    vars={"pins": [1111, 2222]})
+    with pytest.raises(
+        RuntimeError, match=r"^prompt 'login': no response available for 'Password:'$"
+    ):
+        r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER="]
+
+
 @pytest.mark.slow
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
     """SPEC.md:81, 341: a login prompt that arrives with the banner is answered."""
