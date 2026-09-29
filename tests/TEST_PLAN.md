@@ -20,14 +20,14 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
-| P2 | `cmd` forms, embedded scripts | 14 | 1 | 0 | 15 | 0 |
+| P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 19 | 1 | 0 | 20 | 4 |
+| P4 | `get_prompt`, prompts, credential cycling | 20 | 0 | 0 | 20 | 4 |
 | P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
 | P6 | model / schema / example / CLI parity | 24 | 0 | 0 | 24 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
-| P8 | Low priority: types, strip_echo, simple steps | 13 | 1 | 0 | 14 | 0 |
-| **Total** | | **144** | **3** | **0** | **147** | **5** |
+| P8 | Low priority: types, strip_echo, simple steps | 14 | 0 | 0 | 14 | 0 |
+| **Total** | | **147** | **0** | **0** | **147** | **5** |
 
 A parametrized test counts as one test.
 
@@ -365,16 +365,16 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
 | P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
-| P2 | 14 | 1 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
+| P2 | 15 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
-| P4 | 19 | 1 | 4 | `test_get_prompt.py` |
+| P4 | 20 | 0 | 4 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 24 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
-| P8 | 13 | 1 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **144** | **3** | **5** | |
+| P8 | 14 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
+| **Total** | **147** | **0** | **5** | |
 
-Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`.
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain.
 
 Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
 - removes the P6-13/P6-14 xfail markers (both pass)
