@@ -144,19 +144,24 @@ A prompt with `send` is an **interactive prompt** — autobot responds automatic
     fields: [username, password]
 ```
 
-The `expect` field is a list of patterns. Each entry can be a string or a list of strings (grouped alternatives). Grouped entries are matched together — when the first pattern in a group matches, autobot sends the first response; when the second matches, it sends the second, and so on.
+The `expect` field is a list of patterns. Each entry can be a string or a list of strings (a grouped entry). Responses are organized in credential sets (one per login attempt, see the send forms below):
+
+- In a **grouped entry**, responses are positional: when the first pattern in the group matches, autobot sends the first response of the current set; when the second matches, it sends the second, and so on. So a device that asks for the password first (e.g. `ssh admin@host`) gets the password. When the group starts over (a pattern whose response was already sent matches again, e.g. `login:` after `Password:`), autobot moves on to the next set.
+- A **single string** entry sends the next unsent response of the current set, moving on to the next set once all of them were sent. With single strings, responses go out in order, whichever pattern matched.
+
+If autobot must move on and no set is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
 ### Send forms
 
 The `send` field accepts three forms:
 
-**Flat list** — responses sent in order as patterns match:
+**Flat list** — a single credential set:
 
 ```yaml
 send: ["admin", "password"]
 ```
 
-**List of lists** — grouped attempts (credential cycling):
+**List of lists** — one credential set per attempt (credential cycling):
 
 ```yaml
 send:
@@ -172,7 +177,7 @@ send:
   fields: [username, password]
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order.
+This resolves `vars.creds`, and each item becomes a credential set of the named fields, in order. Without `fields`, each item is a set of one response (the item as a string).
 
 ## Step Types
 
@@ -355,7 +360,7 @@ All step types except `sleep` support these optional fields:
 | Field          | Description                                                    |
 |----------------|----------------------------------------------------------------|
 | `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match` |
-| `when`         | Jinja2 conditional — step is skipped if the rendered result is falsy (`""`, `"false"`, `"False"`, `"0"`, `"none"`) |
+| `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
 | `timeout`      | Override default timeout for this step                         |
@@ -374,9 +379,11 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 1h      # hours
 ```
 
+Durations can't be negative, and `true`/`false` aren't durations.
+
 ## Templating
 
-All string values support [Jinja2](https://jinja.palletsprojects.com/) templates:
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd` (including embedded scripts), `assert`, `line`, `after`, `when`, prompt `send` strings (not the values `sendEach` reads from `vars`), `attach.spawn`, `attach.prepare`, and `env` values. Other values, such as `expect`, `errors` and `attach.env`, are used as written.
 
 ```yaml
 env:
@@ -386,6 +393,15 @@ env:
 script:
   - cmd: wget -P /tmp {{ env.IMAGE }}
   - cmd: echo {{ args.message }}
+```
+
+Since these values are templates, `{{`, `{%` and `{#` always start Jinja2 syntax, even in shell code: bash's `${#arr[@]}` fails to render because `{#` opens a Jinja2 comment. Wrap such text in `{% raw %}...{% endraw %}` (or write `{{ '{#' }}`):
+
+```yaml
+- cmd: |
+    #!/bin/bash
+    arr=(a b c)
+    {% raw %}echo "${#arr[@]}"{% endraw %}
 ```
 
 Available context:
@@ -408,6 +424,8 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
 - cmd: show bogus
   ignore_error: true
 ```
+
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection, template errors and prompt-response failures (`responses exhausted`) always abort the script.
 
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 
@@ -446,8 +464,10 @@ script:
   - call: is_system_running
 ```
 
+Every `call` target must be defined in `fn`. This is checked when the script is loaded, like a misspelled field in a plugin step, so a typo is reported as a validation error before `prepare` runs or anything connects.
+
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json).
+The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).

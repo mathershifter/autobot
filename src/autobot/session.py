@@ -57,33 +57,61 @@ class CleanWriter:
 
 class PromptHandler:
     def __init__(
-        self, name: str, patterns: list[str], responses: list[str], is_return: bool
+        self,
+        name: str,
+        patterns: list[str],
+        responses: list[list[str]],
+        is_return: bool,
+        slots: list[int | None] | None = None,
     ):
         self.name = name
         self.is_return = is_return
         self.patterns = patterns
+        # slot k: pattern k of a grouped entry; None: a single-pattern entry
+        self.slots = slots if slots is not None else [None] * len(patterns)
         self.start = 0
         self.end = len(patterns)
-        self._responses = responses
-        self._idx = 0
-
-    @property
-    def exhausted(self) -> bool:
-        return bool(self._responses) and self._idx >= len(self._responses)
-
-    def next_response(self) -> str | None:
-        if not self._responses or self._idx >= len(self._responses):
-            return None
-        response = self._responses[self._idx]
-        self._idx += 1
-        return response
+        self._sets = responses
+        self.reset()
 
     @property
     def is_fresh(self) -> bool:
-        return self._idx == 0
+        return not self._fired
 
     def reset(self):
-        self._idx = 0
+        self._set = 0
+        self._used: set[int] = set()
+        self._fired = False
+
+    def respond(self, i: int) -> str:
+        if not self._sets:
+            raise RuntimeError(f"prompt '{self.name}': no response available")
+        slot = self.slots[i]
+        if slot is None:
+            slot = self._next_unused()
+            if slot is None:
+                self._advance()
+                slot = self._next_unused()
+        elif slot in self._used:
+            self._advance()
+        current = self._sets[self._set]
+        if slot is None or slot >= len(current):
+            raise RuntimeError(
+                f"prompt '{self.name}': no response available for {self.patterns[i]!r}"
+            )
+        self._used.add(slot)
+        self._fired = True
+        return current[slot]
+
+    def _next_unused(self) -> int | None:
+        current = self._sets[self._set]
+        return next((k for k in range(len(current)) if k not in self._used), None)
+
+    def _advance(self):
+        if self._set + 1 >= len(self._sets):
+            raise RuntimeError(f"prompt '{self.name}': responses exhausted")
+        self._set += 1
+        self._used = set()
 
 
 class Session:
@@ -182,16 +210,7 @@ class Session:
                 if h.start <= i < h.end:
                     if h.is_return:
                         return self._finish(output, sent, errors, capture)
-                    if h.exhausted:
-                        raise RuntimeError(
-                            f"prompt '{h.name}': responses exhausted"
-                        )
-                    response = h.next_response()
-                    if response is None:
-                        raise RuntimeError(
-                            f"prompt '{h.name}': no response available"
-                        )
-                    self._cld.sendline(response)
+                    self._cld.sendline(h.respond(i - h.start))
                     break
 
     def _finish(

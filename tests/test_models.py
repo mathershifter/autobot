@@ -141,7 +141,8 @@ def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plu
         ({"control": "c"}, ControlStep),
         ({"probe": "x"}, PluginStep),
     ]
-    cfg = Config.model_validate(with_("script", [c[0] for c in cases]))
+    base = with_("fn", {"f": {"script": []}})
+    cfg = Config.model_validate(with_("script", [c[0] for c in cases], base))
     assert [type(s) for s in cfg.script] == [c[1] for c in cases]
     assert cfg.script[-1].plugin_key_ == "probe"  # type: ignore[union-attr]
     assert "extra_forbidden" in error_types(with_("script", [{"cmd": "a", "line": "b"}]))

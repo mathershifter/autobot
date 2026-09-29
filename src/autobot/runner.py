@@ -39,26 +39,30 @@ class Runner:
 
     def build_handler(self, prompt: Prompt) -> PromptHandler:
         patterns: list[str] = []
+        slots: list[int | None] = []
         for entry in prompt.expect:
             if isinstance(entry, list):
                 patterns.extend(entry)
+                slots.extend(range(len(entry)))
             else:
                 patterns.append(entry)
+                slots.append(None)
         responses = self._build_responses(prompt.send)
         is_return = prompt.is_shell_prompt or prompt.send is None
-        return PromptHandler(prompt.name, patterns, responses, is_return)
+        return PromptHandler(prompt.name, patterns, responses, is_return, slots)
 
-    def _build_responses(self, send) -> list[str]:
+    def _build_responses(self, send) -> list[list[str]]:
+        """Credential sets, one list per attempt."""
         if not send:
             return []
         if isinstance(send, SendEach):
             items = self._resolve(send.each)
             if send.fields:
-                return [str(item[f]) for item in items for f in send.fields]
-            return [str(item) for item in items]
+                return [[str(item[f]) for f in send.fields] for item in items]
+            return [[str(item)] for item in items]
         if isinstance(send[0], list):
-            return [self.render(s) for attempt in send for s in attempt]
-        return [self.render(s) for s in send]
+            return [[self.render(s) for s in attempt] for attempt in send]
+        return [[self.render(s) for s in send]]
 
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
         env = {k: os.environ.get(k, v) for k, v in defaults.items()}
@@ -172,7 +176,7 @@ class Runner:
         when = getattr(step, "when", None)
         if when is not None:
             result = self.render(when)
-            if result in ("", "false", "False", "0", "none"):
+            if result.strip().lower() in ("", "false", "0", "none"):
                 return
 
         delay_before = getattr(step, "delay_before", None)

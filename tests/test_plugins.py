@@ -101,3 +101,36 @@ def test_p7_07_schema_command_includes_plugin_defs(plugin_path: Path):
     one_of = schema["$defs"]["step"]["oneOf"]
     assert one_of[-2] == {"$ref": "#/$defs/echoStep"}
     assert one_of[-1] == {"$ref": "#/$defs/pluginStep"}
+
+
+class BraceStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    brace: str
+
+    @pydantic.field_validator("brace")
+    @classmethod
+    def _check(cls, v: str) -> str:
+        raise ValueError("want {name} or ${#arr[@]}, not {}")
+
+
+class BraceExecutor:
+    key = "brace"
+    model = BraceStep
+
+    def execute(self, step, ctx, timeout):  # pragma: no cover - never runs
+        pass
+
+
+def test_plugin_error_with_braces_survives_load_time_check(
+    isolated_registry: StepRegistry, register_plugin
+):
+    """#12: a plugin error message is reported verbatim, braces included."""
+    register_plugin(BraceExecutor())
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(
+            {"autobot": "2026-08", "attach": {"spawn": "x"}, "script": [{"brace": "x"}]}
+        )
+    [err] = ei.value.errors()
+    assert err["loc"] == ("script", 0, "brace")
+    assert err["type"] == "value_error"
+    assert err["msg"] == "Value error, want {name} or ${#arr[@]}, not {}"

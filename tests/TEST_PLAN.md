@@ -10,24 +10,24 @@ The plan only covers tests. It changes no product code. It adds to the existing 
 |--------|---------|
 | `pass` | Encodes SPEC and should pass on current `main`. |
 | `xfail #N` | Encodes SPEC; current code disagrees. Mark `@pytest.mark.xfail(strict=True, reason="finding #N")`. |
-| `decision #N` | Blocked on an open spec decision (see [Open spec decisions](#open-spec-decisions)). Not written until the user decides; then becomes `pass` or `xfail #N`. |
+| `todo #N` | Was blocked on spec decision #N. The decision has landed in SPEC.md (see [Spec decisions](#spec-decisions)), and the Assertion column gives the target. Not written yet; expected to be `pass`. |
 | `slow` | Needs the fixed 5 s idle poll in `get_prompt` (can't be shortened without a product change). Mark `@pytest.mark.slow`. |
 
 Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I found them while writing this plan (see [New findings](#new-findings-from-planning)).
 
 ## Summary
 
-| Priority | Area | pass | xfail | decision | total | slow |
+| Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 19 | 0 | 3 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 14 | 1 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 16 | 0 | 2 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 18 | 1 | 1 | 20 | 4 |
 | P5 | attach / block lifecycles, env | 23 | 0 | 2 | 25 | 0 |
-| P6 | model / schema / example / CLI parity | 18 | 2 | 4 | 24 | 0 |
+| P6 | model / schema / example / CLI parity | 20 | 0 | 4 | 24 | 0 |
 | P7 | registry and plugins | 7 | 0 | 2 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps | 13 | 1 | 0 | 14 | 0 |
-| **Total** | | **128** | **5** | **14** | **147** | **5** |
+| **Total** | | **130** | **3** | **14** | **147** | **5** |
 
 A parametrized test counts as one test.
 
@@ -80,7 +80,7 @@ Every line the device reads is appended to `log_path` as `<PROMPT>=<value>` (e.g
 
 These are in-process doubles that implement `RunnerContext` (`session`, `config`, `render`, `run_steps`, `build_handler`). `FakeSession` records `sendline`, `sendcontrol`, `get_prompt(timeout, errors)`, `expect`, `sleep`, `check_rc`, `save_handlers`, `restore_handlers` and `reset_handlers` into `events: list[tuple]`. It returns scripted values from queues, and a queued `BaseException` instance is raised instead of returned. `FakeCtx.render` uses `autobot.types.render` with a plain dict. `run_steps` runs through the real registry executors.
 
-Use F3 only when a local shell can't produce the condition deterministically. In this plan that is: a `get_prompt` that raises `ValueError`/`EOFError` at an exact point for the #10 decision tests. Everything else uses F1/F2.
+Use F3 only when a local shell can't produce the condition deterministically. In this plan that is: a `get_prompt` that raises `ValueError`/`EOFError` at an exact point for the P1-20 (#10) tests. Everything else uses F1/F2.
 
 ### F4: send recorder (`tests/conftest.py`)
 
@@ -121,7 +121,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
 | Per-line `errors`, success semantics (SPEC.md:101-107) | `test_output_capture::test_errors_*`, `test_list_error_on_middle_line_*`, `test_assert_*` | P1-01..11 |
 | Captured output (SPEC.md:109-116) | `test_output_capture` (echo, long echo, no trailing newline, echo off, strip_echo table) | P1-17/18/19, P8-05 |
-| `ignore_error` (SPEC.md:118-123) | `test_ignored_error_registers_output`, `test_ignored_rc_failure_registers_output`, embedded `rc_ignored` | P1-15, P1-20 (decision #10) |
+| `ignore_error` (SPEC.md:118-123) | `test_ignored_error_registers_output`, `test_ignored_rc_failure_registers_output`, embedded `rc_ignored` | P1-15, P1-20 (todo #10) |
 | `register` (SPEC.md:125-138) | `test_output_capture` register tests | P1-12..16 |
 | Embedded scripts (SPEC.md:140-172) | `test_embedded_script` (round-trip, removed on success/failure/upload failure, cleanup errors, bounded cleanup) | P2-07..15 |
 | `sleep` (SPEC.md:174-178) | none | P3-11, P8-11 |
@@ -130,7 +130,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Common step properties, order (SPEC.md:272-288) | `test_plugin_common_props` (plugin only) | P3-01..16 |
 | `when` (SPEC.md:290-305) | `test_plugin_when` (2 values) | P3-02..06 |
 | Duration format (SPEC.md:307-313) | none | P6-09, P8-01 |
-| Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 (decision #9) |
+| Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 (todo #9) |
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20 |
 | CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-22..24, P7-07 |
 | Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..08 |
@@ -161,9 +161,9 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-17 | `test_session_before_not_clobbered_by_rc_probe` | 324 | F1 | `cmd: echo MARKX`, then `cmd: echo ran`, `register: r`, `when: "{{ session.before \| contains('MARKX') }}"` → `vars.r == "ran"`. Guards a naive fix of #5. | pass |
 | P1-18 | `test_output_spanning_idle_poll_not_duplicated` | 111-114 | F1, `slow` | `cmd: "printf abc; sleep 6; echo def"`, register → `abc\ndef` | pass (was xfail #1) |
 | P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | pass (was xfail #5) |
-| P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 for timeout (`sleep 5`, `timeout: 1`); F3 for EOF/ValueError | per decision #10: either continue to next step (and the step registers partial output), or the exception propagates | decision #10 (x3) |
+| P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 for timeout (`sleep 5`, `timeout: 1`); F3 for EOF/ValueError | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates. In all three the next step doesn't run and `vars.r` is unchanged. Also worth a row: a `responses exhausted` raised by a prompt wait inside the command propagates (it used to be swallowed) | todo #10 (x3) |
 
-Totals: 19 pass (P1-01..19), 3 decision (P1-20). Slow: P1-18.
+Totals: 19 pass (P1-01..19), 3 todo (P1-20). Slow: P1-18.
 
 ## P2: `cmd` forms and embedded scripts
 
@@ -199,7 +199,7 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-02 | `test_when_false_skips_delays_and_execution` | 288, 292 | F1, F5, F4 | `{line: "echo x", when: "false", delay_before: 1s, delay_after: 1s}` → no sleeps, `echo x` not sent | pass |
 | P3-03 | `test_when_falsy_values` (parametrized) | 279, 292 | F1, F4 | `""`, `"false"`, `"False"`, `"0"`, `"none"`, `"{{ '' }}"`, `"false\n"` (Jinja drops a single trailing newline) → step skipped | pass |
 | P3-04 | `test_when_truthy_values` (parametrized) | 292 | F1, F4 | `"true"`, `"True"`, `"1"`, `"yes"`, `"no"`, `"{{ 1 == 1 }}"` → step runs | pass |
-| P3-05 | `test_when_none_value` / `test_when_surrounding_whitespace` (2 tests) | 292 | F1, `vars: {v: null}` | `when: "{{ vars.v }}"` (renders `None`); `when: " false "` → skipped or runs per decision #6 | decision #6 (x2) |
+| P3-05 | `test_when_none_value` / `test_when_surrounding_whitespace` (2 tests) | 292 | F1, `vars: {v: null}` | `when: "{{ vars.v }}"` (renders `None`) → skipped; `when: " false "` → skipped (also `FALSE`, `NONE`); `"no"`/`"off"` still run | todo #6 (x2) |
 | P3-06 | `test_filter_contains` | 333 | `Runner(...).render` (no spawn) | `{{ 'abc' \| contains('b') }}` → `True`; `'x'` → `False`; non-string value is coerced | pass |
 | P3-07 | `test_filter_search` | 334 | as P3-06 | `{{ 'v1.2' \| search('\\d+\\.\\d+') }}` → `True`; no match → `False` | pass |
 | P3-08 | `test_range_global` | 327 | F1 | `cmd: "echo {{ range(3) \| list \| length }}"` registers `3` | pass |
@@ -213,7 +213,7 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-16 | `test_block_when_false_skips_prompt_swap` | 274 | F1, F5 | block with prompts and `when: "false"` → no `restore_handlers` in timeline, enter not run | pass |
 | P3-17 | `test_after_timeout_uses_step_timeout` | 278, 282 | F1 | `{cmd: "true", after: NEVER, timeout: 1}` → `TimeoutError` in < 2.5 s | pass |
 
-Totals: 16 pass (P3-01..04, 06..17), 2 decision (P3-05).
+Totals: 16 pass (P3-01..04, 06..17), 2 todo (P3-05).
 
 ## P4: `get_prompt`, prompts and credential cycling
 
@@ -237,14 +237,14 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-14 | `test_responses_exhausted` | 342 | F2 accepts nothing, send `[admin, bad]` | `RuntimeError` matching `prompt 'login': responses exhausted` | pass |
 | P4-15 | `test_handlers_reset_per_get_prompt` | 342 | F2 `--repeat 2 --accept admin:secret`, send `[admin, secret]` | two consecutive `get_prompt` calls (with `sendline("again")` between) both succeed; log has two `LOGIN=admin` | pass |
 | P4-16 | `test_grouped_expect_login_first` | 37, README:147 | F2 `--order login,password`, expect `[['login:', 'Password:']]`, send `[admin, secret]` | log `LOGIN=admin`, `PASSWORD=secret` (same result under both mappings) | pass |
-| P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | positional: `PASSWORD=secret`, `LOGIN=admin`; sequential: `PASSWORD=admin` | decision #4 |
+| P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with a grouped `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with `sendEach` without `fields` → `no response available for 'Password:'` | todo #4 |
 | P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | pass (was xfail #3) |
 | P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
 | P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | xfail #7 |
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-Totals: 18 pass (P4-01..16, 18, 19), 1 xfail (P4-20), 1 decision (P4-17). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
+Totals: 18 pass (P4-01..16, 18, 19), 1 xfail (P4-20), 1 todo (P4-17). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
 
 ## P5: attach and block lifecycles, env
 
@@ -256,7 +256,7 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-02 | `test_prepare_nonzero_aborts_before_spawn` | 72, 80 | F5, `children`, prepare `#!/bin/sh\nexit 3` | `RuntimeError` `prepare script failed with exit code 3`; no `attach` in timeline; `children == []` | pass |
 | P5-03 | `test_prepare_temp_file_removed` (parametrized success / failure) | 72 | `monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))` | no `_autobot_*` left in `tmp_path` | pass |
 | P5-04 | `test_prepare_without_shebang_fails_cleanly` | 72 | prepare `echo hi` | raises (`OSError`/`RuntimeError`) before spawn; temp file removed; no child | pass |
-| P5-05 | `test_prepare_is_templated` / `test_prepare_bash_array_length_literal` (2 tests) | 72, 317 | prepare `echo {{ env.X }} > out` / `arr=(a b); echo ${#arr[@]} > out` | per decision #9 | decision #9 (x2) |
+| P5-05 | `test_prepare_is_templated` / `test_prepare_bash_array_length_literal` (2 tests) | 72, 317 | prepare `echo {{ env.X }} > out` / `arr=(a b); echo ${#arr[@]} > out` | `out` holds the rendered value / bare `${#arr[@]}` → `jinja2.TemplateSyntaxError` from `run()` before spawn (no child, temp file removed); wrapped in `{% raw %}...{% endraw %}` → `out` is `2` | todo #9 (x2) |
 | P5-06 | `test_attach_breakout_runs_after_script_failure` | 77, 84 | F1, breakout `cmd: "touch <tmp>/bo"`, main `cmd: false` | raises `exit code 1`; `bo` exists | pass |
 | P5-07 | `test_attach_breakout_runs_after_attach_script_failure` | 76-84 | F1, `attach_script: [cmd: false]` | raises; main steps not sent (F4); breakout marker exists | pass |
 | P5-08 | `test_attach_breakout_resets_handlers_first` | 84 | F1, F5 | `reset_handlers` appears in timeline before the first breakout `sendline` | pass |
@@ -277,7 +277,7 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | pass (was xfail #2) |
 | P5-24 | `test_attach_timeout_default_and_spawn_templated` | 73-74, 317 | F5 recorder, `spawn: "{{ env.SH }}"`, no `timeout` | recorded spawn is the rendered string; `timeout == 300` | pass |
 
-Totals: 23 pass, 2 decision (P5-05).
+Totals: 23 pass, 2 todo (P5-05).
 
 ## P6: model, schema, example and CLI parity
 
@@ -297,12 +297,12 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-10 | `test_schema_is_valid_draft_2020_12` | 12 | F7 | `Draft202012Validator.check_schema(schema)` | pass |
 | P6-11 | `test_parity_accept_corpus` (parametrized) | 12 | F7 `both_validate` | a corpus of valid docs (minimal; every step type; every send form; grouped expect; nested block; fn; each duration form) → `(True, True)` | pass |
 | P6-12 | `test_parity_reject_corpus` (parametrized) | 12 | F7 | invalid docs (missing required, extra keys, bad version, bad duration, sleep+when, line+timeout, mixed send) → `(False, False)` | pass |
-| P6-13 | `test_parity_mixed_expect` | 37 | F7 | `expect: ["a", ["b", "c"]]` → `(True, True)`. SPEC allows it; the schema's `oneOf` rejects it. | xfail #11 |
-| P6-14 | `test_parity_version_trailing_newline` | 24 | F7 | `autobot: "2026-08\n"` → `(False, False)`. The model's `re.match` + `$` accepts it. | xfail #11 |
-| P6-15 | `test_parity_return_minimum` | 258-263 | F7 | `return: 0` and `return: -2` | decision #11 |
-| P6-16 | `test_parity_negative_duration` | 307-313 | F7 | `sleep: -1` | decision #11 |
-| P6-17 | `test_parity_bool_duration` | 307-313 | F7 | `sleep: true` | decision #11 |
-| P6-18 | `test_parity_fn_script_required` | 57 | F7 | `fn: {f: {}}` | decision #11 |
+| P6-13 | `test_parity_mixed_expect` | 37 | F7 | `expect: ["a", ["b", "c"]]` → `(True, True)`. SPEC allows it; the schema now uses `items: stringOrArray`. | pass (was xfail #11) |
+| P6-14 | `test_parity_version_trailing_newline` | 24 | F7 | `autobot: "2026-08\n"` → model rejects (`re.fullmatch`). | pass (was xfail #11) |
+| P6-15 | `test_parity_return_minimum` | 258-263 | F7 | `return: 0`, `-2`, `true` and `"1"` → `(False, False)` | todo #11 |
+| P6-16 | `test_parity_negative_duration` | 307-313 | F7 | `sleep: -1` → `(False, False)`; model message `invalid duration` | todo #11 |
+| P6-17 | `test_parity_bool_duration` | 307-313 | F7 | `sleep: true` → `(False, False)`; model message `invalid duration` | todo #11 |
+| P6-18 | `test_parity_fn_script_required` | 57 | F7 | `fn: {f: {}}` → `(False, False)`; model type `missing` at `fn.f.script` | todo #11 |
 | P6-19 | `test_examples_validate_model` (parametrized over `examples/*.yaml`) | 12 | model | `Config.model_validate(yaml.safe_load(...))` succeeds | pass |
 | P6-20 | `test_examples_validate_schema` (parametrized) | 12 | F7 | schema accepts each example | pass |
 | P6-21 | `test_cli_arg_passed_to_templates` | 351-355 | CLI subprocess, F1 script, `--arg msg=hi` | `cmd: "echo got-{{ args.msg }}"` → `got-hi` in stdout, rc 0 | pass |
@@ -310,9 +310,11 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-23 | `test_cli_arg_without_equals_is_clean_error` | 355 | CLI, `--arg bad` | rc 1; stderr `--arg requires KEY=VALUE`; no `Traceback` | pass |
 | P6-24 | `test_cli_non_mapping_yaml_is_clean_error` (parametrized: empty file, top-level list) | 12, 18 | CLI | rc 1; stderr mentions validation; no `Traceback` | pass (was xfail #18) |
 
-Totals: 18 pass, 2 xfail (P6-13, 14), 4 decision (P6-15..18).
+Totals: 20 pass, 4 todo (P6-15..18).
 
-P6-13 and P6-14 are part of #11, but SPEC already settles them: SPEC.md:37 allows mixed entries, and SPEC.md:24 requires `YYYY-MM`. So they are xfail now, not decisions.
+P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
+
+New parity case from #12: a `call` to an undefined function is `(False, True)`: the model rejects it (`undefined_function`) and the static schema accepts it. Keep it out of P6-12's reject corpus; P7-08 covers it.
 
 ## P7: registry and plugins
 
@@ -327,9 +329,9 @@ Files: `tests/test_registry.py` (new) and `tests/test_plugins.py` (extend). SPEC
 | P7-05 | `test_validate_plugin_step_requires_key` | 286 | F6 | `PluginStep` without `plugin_key_` → `ValueError` `no plugin key` | pass |
 | P7-06 | `test_plugin_step_error_propagates` | 286 | F1, F6 executor raising `RuntimeError("boom")` | `Runner.run()` raises `boom`; session closed (`children`) | pass |
 | P7-07 | `test_schema_command_includes_plugin_defs` | 12 (and #16) | CLI subprocess `schema` with plugin on `PYTHONPATH` (F6 `plugin_dist`) | output JSON has `$defs.echoStep`; `$defs.step.oneOf[-2] == {"$ref": "#/$defs/echoStep"}`; `oneOf[-1]` is still `pluginStep` | pass |
-| P7-08 | `test_plugin_field_typo_fails_at_load` / `test_call_undefined_fn_fails_at_load` (2 tests) | 12, 180 | F6 plugin; `{echo: hi, ech0: x}` / `call: nope` | per decision #12: `ValidationError` at `Config` time (and CLI rc 1 before prepare/spawn), or runtime error before any later step | decision #12 (x2) |
+| P7-08 | `test_plugin_field_typo_fails_at_load` / `test_call_undefined_fn_fails_at_load` (2 tests) | 12, 180 | F6 plugin; `{echo: hi, ech0: x}` / `call: nope` | `ValidationError` at `Config` time: `extra_forbidden` at `("script", 0, "ech0")` / `undefined_function` at `("script", i, "call")`, message `call to undefined function 'nope'`. For both, the CLI exits 1 with `Validation errors`, no `Traceback`, and neither `prepare` nor spawn runs (check a `prepare` marker file) | todo #12 (x2) |
 
-Totals: 7 pass, 2 decision.
+Totals: 7 pass, 2 todo.
 
 P7-07 pins the `schema` subcommand. The subcommand is clearly intentional (help text, plugin merging), but SPEC and README don't document it (#16). If the user decides to remove or rename it, drop or adjust this test.
 
@@ -348,7 +350,7 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-07 | `test_control_bracket_is_ctrl_bracket` | 268 | F2 `--rawdump 1 --wait-enter` | `control: "]"` → device log `RAW=1d` | pass |
 | P8-08 | `test_return_sends_n_newlines` | 258-263 | F1, F4 | `return: 3` → three `""` lines | pass |
 | P8-09 | `test_line_list_sends_each_without_waiting` | 252-256 | F1, F5 | `line: ["echo a", "echo b"]` → two `sendline`s, no `get_prompt` in the timeline for the step | pass |
-| P8-10 | `test_line_and_after_are_rendered` | README "Templating" | F1, F4, `vars: {x: hi, pat: MARK}` | `line: "echo {{ vars.x }}"` sends `echo hi`; `after: "{{ vars.pat }}"` waits for `MARK` | pass (see decision #9) |
+| P8-10 | `test_line_and_after_are_rendered` | README "Templating" | F1, F4, `vars: {x: hi, pat: MARK}` | `line: "echo {{ vars.x }}"` sends `echo hi`; `after: "{{ vars.pat }}"` waits for `MARK` | pass (decision #9: stays templated) |
 | P8-11 | `test_sleep_step` | 174-178 | F5, then F1 real sleep | `sleep: 2s` → `sleep(2.0)` recorded; real `sleep: 500ms` elapses 0.5 to 2 s | pass |
 | P8-12 | `test_call_runs_function_steps` | 55-66, 180-184 | F1, `fn: {f: {script: [cmd: echo a (register a), cmd: echo b (register b)]}}` | `vars.a == "a"`, `vars.b == "b"` | pass |
 | P8-13 | `test_call_steps_see_registered_vars` | 322 | F1 | `cmd: echo v` `register: v`; `fn` step `echo got-{{ vars.v }}` registers `got-v` | pass |
@@ -358,7 +360,7 @@ Totals: 13 pass, 1 xfail.
 
 ## Implementation status
 
-The `pass` and `xfail` rows above are implemented (branch `test/impl-p1-p8`). The `decision` rows are not written yet. Every xfail uses `xfail(strict=True, raises=..., reason="finding #N")`. Each one was run with `--runxfail` to confirm that it fails for the stated reason.
+The `pass` and `xfail` rows above are implemented (branch `test/impl-p1-p8`). The `todo` rows (formerly `decision`) are not written yet. Every xfail uses `xfail(strict=True, raises=..., reason="finding #N")`. Each one was run with `--runxfail` to confirm that it fails for the stated reason.
 
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
@@ -367,12 +369,20 @@ The `pass` and `xfail` rows above are implemented (branch `test/impl-p1-p8`). Th
 | P3 | 16 | 0 | 0 | `test_common_props.py` |
 | P4 | 18 | 1 | 4 | `test_get_prompt.py` |
 | P5 | 23 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 18 | 2 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 20 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 7 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
 | P8 | 13 | 1 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **128** | **5** | **5** | |
+| **Total** | **130** | **3** | **5** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`.
+
+Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
+- removes the P6-13/P6-14 xfail markers (both pass)
+- changes the expected breakout log in P5-09/P5-16 to `(StepFailure)`, because rc failures are now `StepFailure` (#10)
+- adds `fn: {f: {script: []}}` to P6-06, P6-11[every-step] and P3-13[call], because a `call` to an undefined function is now a load-time error (#12)
+- adds one test outside the plan: `test_plugins.py::test_plugin_error_with_braces_survives_load_time_check` (#12)
+
+SPEC.md line numbers cited in this plan refer to SPEC.md before that branch. Several sections moved.
 
 Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to the existing `test_strip_echo` table.
 
@@ -382,7 +392,7 @@ Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed,
 
 Fixtures:
 - F1: `make_doc()` returns the raw dict, which the CLI tests need. `make_config`, `make_runner`, `run_script` and `run_vars` (returns `config.vars`) build on it. The default `timeout: 5s` is only added to `cmd`/`call`/`block`/`control` steps, not to plugin steps, so the existing plugin-timeout assertions don't change. `attached_runner(**make_config_kwargs)` is a factory.
-- F3: `FakeSession`/`FakeCtx` are in `conftest.py` but no test uses them yet. Their only planned users are the decision #10 tests.
+- F3: `FakeSession`/`FakeCtx` are in `conftest.py` but no test uses them yet. Their only planned users are the P1-20 (#10) tests.
 - F4/F5: stop modes are `spawned.stop = True` (raises `SpawnRecorded`) and `timeline.stop_attach = True` (raises `AttachRecorded`). Timeline events are `(name, principal_arg)`; full calls are in `timeline.calls`.
 - F6: `autobot/__init__.py` re-exports the `registry` instance, which shadows the `autobot.registry` submodule attribute. The fixtures therefore patch the modules taken from `importlib.import_module`. `plugin_dist(root, key, source, target)` takes the entry-point target explicitly. `ProbeExecutor` also records a snapshot of `session.ctx`.
 
@@ -404,9 +414,27 @@ Tests:
 
 No new product findings came up during implementation. #18 (P6-24) reproduced as planned (`TypeError: ... argument after ** must be a mapping` with a traceback) and is now fixed.
 
-## Open spec decisions
+## Spec decisions
 
-Each decision below blocks the listed tests. Once the user decides, update SPEC.md (the user's call), then write the tests as `pass` or `xfail`.
+All six decisions are made and in SPEC.md (branch `feat/spec-decisions-4-6-9-10-11-12`). Their blocked rows are now `todo`, and each row's Assertion column gives the target.
+
+| # | Outcome |
+|---|---------|
+| #4 | Option A, positional. Pattern k of a grouped entry sends item k of the current credential set, and a single-pattern entry sends the next unsent item. The set advances when a used item is picked again, or when a single pattern finds the set fully sent. SPEC "Response selection". |
+| #6 | Option B, normalize. Falsy if `result.strip().lower()` is in `{"", "false", "0", "none"}`. |
+| #9 | Option A. `prepare`, `line` and `after` stay templated. SPEC lists every rendered field and documents `{% raw %}`. |
+| #10 | Option A, command failures only (exit code, assert, `errors` match, upload mismatch). They now raise `StepFailure`, and prompt-response failures are no longer swallowed. Timeouts, EOF and template errors abort. SPEC states the `register` rules. |
+| #11 | Option A, the schema is normative. `return` ≥ 1 (strict int, required); durations ≥ 0 and not bool; `fn.script` required; version `fullmatch`; strict booleans for `ignore_error` and prompt `return`; the schema allows mixed `expect`. |
+| #12 | Option B, load time. A `Config` validator checks `call` targets and plugin fields everywhere, and the CLI reports `Validation errors` with rc 1 before prepare/spawn. Recursion and cycles aren't detected. |
+
+Known remaining model/schema divergences (not tested; follow-ups):
+- An explicit `null` for an optional field (`timeout: null`, a bare `after:`): the model accepts it, the schema rejects it.
+- `return: 1.0`: the schema accepts it (JSON Schema treats it as an integer); the strict model rejects it.
+- Python `jsonschema` evaluates `pattern` with `re.search`, so `"2026-08\n"` and `"5s\n"` pass the schema in Python (an ECMA-262 validator rejects them); the model rejects both.
+- Unknown step keys (item g below): the static schema accepts them as `pluginStep`.
+- `call` to an undefined function: the model rejects it, the schema accepts it (see P6).
+
+The sections below keep the original option analysis for reference.
 
 ### #4: grouped `expect` → response mapping
 
@@ -464,9 +492,9 @@ SPEC.md:12 and 18 say the models validate "against `schemas/autobot.2026-08.json
 |------|-------|--------|---------------------|
 | (a) mixed `expect: ["a", ["b","c"]]` | accepts | rejects (`oneOf`) | SPEC.md:37 allows it → xfail P6-13 (schema side) |
 | (b) `autobot: "2026-08\n"` | accepts (`re.match` + `$`) | rejects | SPEC.md:24 → xfail P6-14 (model side) |
-| (c) `return: 0` / `-2` | accepts | `minimum: 1` | decision (P6-15) |
-| (d) negative / bool durations | accepts (`-1`, `True` → 1.0) | `minimum: 0`, number only | decision (P6-16, P6-17) |
-| (e) `fn.<name>.script` missing | defaults to `[]` | required | decision (P6-18) |
+| (c) `return: 0` / `-2` | accepts | `minimum: 1` | decided A (P6-15 todo) |
+| (d) negative / bool durations | accepts (`-1`, `True` → 1.0) | `minimum: 0`, number only | decided A (P6-16, P6-17 todo) |
+| (e) `fn.<name>.script` missing | defaults to `[]` | required | decided A (P6-18 todo) |
 | (f) `return` step key without value | field has a default, but the discriminator requires the key anyway | required | cosmetic; no test |
 | (g) unknown step key `{cmdd: x}` | rejects (no registered plugin) | accepts via the `pluginStep` catch-all | inherent to static schemas; recommend documenting it and using `autobot schema` (P7-07) for editor validation |
 
@@ -518,6 +546,6 @@ These are not in the list of blocking decisions. None of them is tested in this 
 2. P1 and P2 (highest value, real shell only).
 3. P4 (needs F2), then P5.
 4. P3, P6, P7, P8.
-5. After each decision lands in SPEC.md, convert its `decision` rows.
+5. Write the `todo` rows (all six decisions are in SPEC.md).
 
 Speed target: the non-slow suite should run in under the current ~70 s after the helpers stop paying the solicit wait. The five slow tests add about 45 s.

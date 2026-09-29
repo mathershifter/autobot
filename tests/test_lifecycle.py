@@ -261,7 +261,7 @@ def test_p5_08_attach_breakout_resets_handlers_first(timeline: Timeline):
 def test_p5_09_attach_breakout_error_logged(capsys):
     """SPEC.md:84: breakout is best-effort; errors are logged to stderr."""
     run_script([{"cmd": "true"}], breakout=[{"cmd": "false", "timeout": "5s"}])
-    assert "breakout error (RuntimeError)" in capsys.readouterr().err
+    assert "breakout error (StepFailure)" in capsys.readouterr().err
 
 
 # -- P5: block lifecycle (SPEC.md:186-204) ----------------------------------
@@ -413,7 +413,7 @@ def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
         assert handler_names(r) == ["top"]
     finally:
         r.session.detach()
-    assert "block breakout error (RuntimeError)" in capsys.readouterr().err
+    assert "block breakout error (StepFailure)" in capsys.readouterr().err
 
 
 # -- P5: attach spawn arguments ---------------------------------------------

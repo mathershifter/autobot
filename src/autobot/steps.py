@@ -32,6 +32,10 @@ SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
 
 
+class StepFailure(RuntimeError):
+    """A command failure that `ignore_error` swallows (exit code, assert, upload)."""
+
+
 class CmdExecutor:
     key = "cmd"
     model = CmdStep
@@ -57,7 +61,7 @@ class CmdExecutor:
                 console.print(f">> cmd: {cmd}")
             output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
             self._check(step, ctx, "".join(output), timeout)
-        except RuntimeError as e:
+        except (CommandError, StepFailure) as e:
             if isinstance(e, CommandError):
                 output.append(e.output)
             if not step.ignore_error:
@@ -70,11 +74,11 @@ class CmdExecutor:
         if assertions:
             rendered = [ctx.render(a) for a in assertions]
             if not any(re.search(p, output) for p in rendered):
-                raise RuntimeError(f"assertion failed: expected {rendered}")
+                raise StepFailure(f"assertion failed: expected {rendered}")
         elif not ctx.config.errors:
             rc = ctx.session.check_rc(timeout=timeout)
             if rc != 0:
-                raise RuntimeError(f"command returned exit code {rc}")
+                raise StepFailure(f"command returned exit code {rc}")
 
     def _register(self, step: CmdStep, ctx: RunnerContext, output: str) -> None:
         if step.register_:
@@ -96,7 +100,7 @@ class CmdExecutor:
             ctx.session.sendline(tmp)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
             self._check(step, ctx, output, timeout)
-        except RuntimeError as e:
+        except (CommandError, StepFailure) as e:
             if isinstance(e, CommandError):
                 output = e.output
             if not step.ignore_error:
@@ -123,7 +127,7 @@ class CmdExecutor:
         )
         out = ctx.session.get_prompt(timeout=timeout)
         if not re.search(rf"(?m)^\s*{len(script)}\s*\n\s*__AUTOBOT_UPLOAD_OK\s*$", out):
-            raise RuntimeError(f"script upload to {tmp} failed: {out.strip()}")
+            raise StepFailure(f"script upload to {tmp} failed: {out.strip()}")
 
     @staticmethod
     def _cleanup(ctx: RunnerContext, tmp: str, timeout: float) -> None:
