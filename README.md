@@ -381,7 +381,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 
 ## Templating
 
-All string values support [Jinja2](https://jinja.palletsprojects.com/) templates:
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd` (including embedded scripts), `assert`, `line`, `after`, `when`, prompt `send` strings (not the values `sendEach` reads from `vars`), `attach.spawn`, `attach.prepare`, and `env` values. Other values, such as `expect`, `errors` and `attach.env`, are used as written.
 
 ```yaml
 env:
@@ -391,6 +391,15 @@ env:
 script:
   - cmd: wget -P /tmp {{ env.IMAGE }}
   - cmd: echo {{ args.message }}
+```
+
+Since these values are templates, `{{`, `{%` and `{#` always start Jinja2 syntax, even in shell code: bash's `${#arr[@]}` fails to render because `{#` opens a Jinja2 comment. Wrap such text in `{% raw %}...{% endraw %}` (or write `{{ '{#' }}`):
+
+```yaml
+- cmd: |
+    #!/bin/bash
+    arr=(a b c)
+    {% raw %}echo "${#arr[@]}"{% endraw %}
 ```
 
 Available context:

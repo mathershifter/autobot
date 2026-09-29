@@ -105,7 +105,7 @@ fn:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Uses the shebang to determine the interpreter. Aborts if the script exits non-zero. |
+| `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Uses the shebang to determine the interpreter. Aborts if the script exits non-zero. Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). |
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`) |
 | `timeout` | no | Timeout for the initial spawn (duration) |
 | `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. |
@@ -350,7 +350,25 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 
 ## Jinja2 Templating
 
-All string values in `cmd`, `assert`, `attach.spawn`, `when`, and prompt `send` fields support Jinja2 templates. Available context:
+These values are rendered as Jinja2 templates:
+- `cmd` (each command line; an embedded script as a whole), `assert`, `line`, `after` and `when`
+- prompt `send` strings in the flat-list and list-of-lists forms (the values `sendEach` takes from `vars` are sent as they are)
+- `attach.spawn` and `attach.prepare`
+- `env` values (see [Top-level fields](#top-level-fields))
+
+Other values are used verbatim, e.g. `expect`, `errors`, `control`, `call`, `register` and `attach.env`. A plugin step decides which of its own fields it renders.
+
+Because these values are templates, `{{`, `{%` and `{#` in them always start Jinja2 syntax, even inside shell code. For example, bash's array length `${#arr[@]}` contains `{#`, which opens a Jinja2 comment, so rendering fails with a template syntax error. To pass such text through literally, wrap it in `{% raw %}...{% endraw %}`, or emit the delimiter from an expression (`{{ '{#' }}`):
+
+```yaml
+attach:
+  prepare: |
+    #!/bin/bash
+    arr=(a b c)
+    {% raw %}echo "${#arr[@]}"{% endraw %}
+```
+
+Available context:
 
 | Variable | Source |
 |----------|--------|
