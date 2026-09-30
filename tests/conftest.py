@@ -1,4 +1,4 @@
-"""Shared fixtures for the Autobot suite (test plan fixtures F1 to F7).
+"""Shared fixtures for the Autobot suite (test plan fixtures F1, F2, F4 to F7).
 
 Import helpers with ``from conftest import ...``; pytest puts ``tests/`` on
 ``sys.path`` because the directory has no ``__init__.py``.
@@ -27,7 +27,6 @@ from autobot.registry import StepRegistry
 from autobot.runner import Runner
 from autobot.session import PromptHandler, Session
 from autobot.steps import register_builtins
-from autobot.types import render as render_template
 
 # ``autobot/__init__.py`` re-exports the ``registry`` instance, which shadows
 # the ``autobot.registry`` submodule attribute; go through sys.modules.
@@ -201,102 +200,6 @@ class FakeDevice:
 def fake_device(tmp_path: Path) -> FakeDevice:
     """Factory: ``fake_device(*opts) -> (spawn_cmd, log_path)``."""
     return FakeDevice(tmp_path)
-
-
-# -- F3: in-process session/context doubles ---------------------------------
-
-
-class FakeSession:
-    """Records calls and returns scripted values.
-
-    ``script(name, *values)`` queues return values for a method; a queued
-    ``BaseException`` instance is raised instead of returned.
-    """
-
-    def __init__(self) -> None:
-        self.events: list[tuple] = []
-        self._queues: dict[str, list[Any]] = {}
-        self._handlers: list[PromptHandler] = []
-        self.ctx: dict[str, str] = {"before": "", "match": ""}
-
-    def script(self, name: str, *values: Any) -> None:
-        self._queues.setdefault(name, []).extend(values)
-
-    def _next(self, name: str, default: Any) -> Any:
-        q = self._queues.get(name)
-        if not q:
-            return default
-        value = q.pop(0)
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    def sendline(self, line: str = "") -> None:
-        self.events.append(("sendline", line))
-        self._next("sendline", None)
-
-    def sendcontrol(self, char: str) -> None:
-        self.events.append(("sendcontrol", char))
-        self._next("sendcontrol", None)
-
-    def get_prompt(self, timeout: float = 300, errors: list[str] | None = None) -> str:
-        self.events.append(("get_prompt", timeout, errors))
-        return self._next("get_prompt", "")
-
-    def expect(self, patterns: list, timeout: float = 300) -> int:
-        self.events.append(("expect", patterns, timeout))
-        return self._next("expect", 0)
-
-    def sleep(self, seconds: float) -> None:
-        self.events.append(("sleep", seconds))
-        self._next("sleep", None)
-
-    def check_rc(self, timeout: float = 300) -> int:
-        self.events.append(("check_rc", timeout))
-        return self._next("check_rc", 0)
-
-    def save_handlers(self) -> list[PromptHandler]:
-        self.events.append(("save_handlers",))
-        return self._handlers
-
-    def restore_handlers(self, handlers: list[PromptHandler]) -> None:
-        self.events.append(("restore_handlers", [h.name for h in handlers]))
-        self._handlers = handlers
-
-    def reset_handlers(self) -> None:
-        self.events.append(("reset_handlers",))
-
-
-class FakeCtx:
-    """A ``RunnerContext`` over a ``FakeSession`` using the real executors."""
-
-    def __init__(self, config: Config, session: FakeSession | None = None, **ctx: Any):
-        self._config = config
-        self._session = session or FakeSession()
-        self._extra = ctx
-
-    @property
-    def session(self) -> FakeSession:  # type: ignore[override]
-        return self._session
-
-    @property
-    def config(self) -> Config:
-        return self._config
-
-    def render(self, template: Any, extra_ctx: dict | None = None) -> Any:
-        ctx = {"env": {}, "vars": self._config.vars, "args": {}, "session": self._session.ctx}
-        ctx.update(self._extra)
-        ctx.update(extra_ctx or {})
-        return render_template(template, ctx)
-
-    def run_steps(self, items: list) -> None:
-        reg = registry_mod.registry
-        for step in items:
-            reg.get(reg.key_for_step(step)).execute(step, self, getattr(step, "timeout", None) or 300)
-
-    def build_handler(self, prompt: Any) -> PromptHandler:
-        patterns = [p for e in prompt.expect for p in (e if isinstance(e, list) else [e])]
-        return PromptHandler(prompt.name, patterns, [], prompt.is_shell_prompt or prompt.send is None)
 
 
 # -- F4: send and spawn recorders -------------------------------------------
