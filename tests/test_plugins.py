@@ -59,7 +59,7 @@ def test_typo_step_key_is_clean_cli_error(tmp_path: Path):
 def test_typo_step_key_is_validation_error():
     with pytest.raises(pydantic.ValidationError) as ei:
         Config.model_validate(
-            {"autobot": "2026-08", "attach": {"spawn": "x"}, "script": [{"cmdd": "x"}]}
+            {"autobot": "2026-10", "attach": {"spawn": "x"}, "script": [{"cmdd": "x"}]}
         )
     assert ei.value.errors()[0]["type"] == "invalid_step"
 
@@ -71,13 +71,13 @@ def test_discovery_is_lazy_and_idempotent(
     reg = isolated_registry
 
     cfg = Config.model_validate(
-        {"autobot": "2026-08", "attach": {"spawn": "x"}, "script": [{"echo": "hi"}, {"echo": "yo"}]}
+        {"autobot": "2026-10", "attach": {"spawn": "x"}, "script": [{"echo": "hi"}, {"echo": "yo"}]}
     )
     assert cfg.script[0].plugin_key_ == "echo"  # type: ignore[union-attr]
     assert reg.validate_plugin_step(cfg.script[1]).echo == "yo"
     with pytest.raises(pydantic.ValidationError):
         Config.model_validate(
-            {"autobot": "2026-08", "attach": {"spawn": "x"}, "script": [{"nope": 1}]}
+            {"autobot": "2026-10", "attach": {"spawn": "x"}, "script": [{"nope": 1}]}
         )
     reg.discover()
     assert reg.discover_calls == 1  # type: ignore[attr-defined]
@@ -128,7 +128,7 @@ def test_plugin_error_with_braces_survives_load_time_check(
     register_plugin(BraceExecutor())
     with pytest.raises(pydantic.ValidationError) as ei:
         Config.model_validate(
-            {"autobot": "2026-08", "attach": {"spawn": "x"}, "script": [{"brace": "x"}]}
+            {"autobot": "2026-10", "attach": {"spawn": "x"}, "script": [{"brace": "x"}]}
         )
     [err] = ei.value.errors()
     assert err["loc"] == ("script", 0, "brace")

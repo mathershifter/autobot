@@ -5,11 +5,11 @@
       "fileMatch": [
         "**/*.autobot.json"
       ],
-      "url": "./schemas/autobot.2026-08.json"
+      "url": "./schemas/autobot.2026-10.json"
     }
   ],
   "yaml.schemas": {
-    "./schemas/autobot.2026-08.json": [
+    "./schemas/autobot.2026-10.json": [
       "**/*.autobot.yaml",
       "**/*.autobot.yml"
     ]

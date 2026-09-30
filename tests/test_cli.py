@@ -96,16 +96,16 @@ def test_p6_25_cli_unreadable_script_is_clean_error(tmp_path: Path, form: tuple[
 @pytest.mark.parametrize(
     ("raw", "where", "problem", "context"),
     [
-        ("autobot: 2026-08\nscript:\n  - cmd: a\n   - cmd: b\n", "line 4, column 4",
+        ("autobot: 2026-10\nscript:\n  - cmd: a\n   - cmd: b\n", "line 4, column 4",
          "expected <block end>, but found '<block sequence start>'", "  while parsing a block collection (line 3, column 3)"),
-        ('autobot: 2026-08\nscript:\n  - cmd: "a\n', "line 4, column 1",
+        ('autobot: 2026-10\nscript:\n  - cmd: "a\n', "line 4, column 1",
          "found unexpected end of stream", "  while scanning a quoted scalar (line 3, column 10)"),
-        ("autobot: 2026-08\nscript:\n\t- cmd: a\n", "line 3, column 1",
+        ("autobot: 2026-10\nscript:\n\t- cmd: a\n", "line 3, column 1",
          "found character '\\t' that cannot start any token", "  while scanning for the next token"),
-        ("autobot: 2026-08\n---\nautobot: 2026-08\n", "line 2, column 1",
+        ("autobot: 2026-10\n---\nautobot: 2026-10\n", "line 2, column 1",
          "but found another document", "  expected a single document in the stream (line 1, column 1)"),
         ("a: &x 1\nb: *y\n", "line 2, column 4", "found undefined alias 'y'", None),
-        ("autobot: 2026-08\nscript: !!python/object:os.system x\n", "line 2, column 9",
+        ("autobot: 2026-10\nscript: !!python/object:os.system x\n", "line 2, column 9",
          "could not determine a constructor for the tag 'tag:yaml.org,2002:python/object:os.system'", None),
     ],
     ids=["bad-indent", "unclosed-quote", "tab-indent", "two-documents", "undefined-alias", "python-tag"],
@@ -124,9 +124,9 @@ def test_p6_26_cli_yaml_syntax_error_is_clean_error(
 @pytest.mark.parametrize(
     ("data", "detail"),
     [
-        (b"autobot: 2026-08\nscript:\n  - cmd: echo \xff\xfe hi\n", "position 39: invalid start byte (utf-8 byte #xff)"),
-        (b"autobot: 2026-08\nx: \xc3\n", "position 20: invalid continuation byte (utf-8 byte #xc3)"),
-        (b"autobot: 2026-08\nscript:\n  - cmd: echo \x07 hi\n", "position 39: special characters are not allowed (character #x07)"),
+        (b"autobot: 2026-10\nscript:\n  - cmd: echo \xff\xfe hi\n", "position 39: invalid start byte (utf-8 byte #xff)"),
+        (b"autobot: 2026-10\nx: \xc3\n", "position 20: invalid continuation byte (utf-8 byte #xc3)"),
+        (b"autobot: 2026-10\nscript:\n  - cmd: echo \x07 hi\n", "position 39: special characters are not allowed (character #x07)"),
     ],
     ids=["latin1-bytes", "truncated-utf8", "control-char"],
 )
@@ -151,7 +151,7 @@ def test_p6_29_cli_errors_print_markup_like_text_verbatim(tmp_path: Path):
     res = run_cli(make_doc([GOT]), tmp_path, "--arg", "[/x]")
     assert _load_error(res) == "--arg requires KEY=VALUE format, got: [/x]"
 
-    res = run_cli(None, tmp_path, raw='autobot: 2026-08\nscript: "[/x]"\n')
+    res = run_cli(None, tmp_path, raw='autobot: 2026-10\nscript: "[/x]"\n')
     assert _load_error(res) == "Validation errors:"
     assert '"input": "[/x]"' in res.stderr
 
@@ -165,7 +165,7 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
         raise KeyboardInterrupt
 
     path = tmp_path / "script.autobot.yaml"
-    path.write_text("autobot: 2026-08\n")
+    path.write_text("autobot: 2026-10\n")
     monkeypatch.setattr(cli.yaml, "load", interrupt)
     with pytest.raises(KeyboardInterrupt):
         cli._load(str(path))
@@ -214,7 +214,7 @@ def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
 def _marked_head(tmp_path: Path) -> str:
     """Lines 1-4 of a script whose `prepare` and `spawn` touch marker files."""
     return (
-        f"autobot: 2026-08\nattach:\n  spawn: touch {tmp_path / 'spawned'}\n"
+        f"autobot: 2026-10\nattach:\n  spawn: touch {tmp_path / 'spawned'}\n"
         f'  prepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
     )
 
@@ -308,12 +308,14 @@ EACH_VARS = {
     "nulls": [{"username": "a", "password": None}],
     "pairs": [{"username": "a", "password": "b"}],
 }
-UP = ["username", "password"]
+UP = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
 SH = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
 
 
 def _each_doc(tmp_path: Path, send: dict, **kw: Any) -> dict:
-    login = {"name": "login", "expect": ["login:", "Password:"], "send": send}
+    login = {"name": "login", "send": send}
+    if "fields" not in send:
+        login["expect"] = ["login:", "Password:"]
     return make_doc([GOT], vars=EACH_VARS, prompts=[SH, login], **kw)
 
 
@@ -336,7 +338,7 @@ def _marked_each_doc(tmp_path: Path, send: dict) -> dict:
         ("vars.nul", None, "'vars.nul' is null, not a list"),
         ("vars.site", UP, "'vars.site' is a mapping, not a list"),
         ("vars.creds", UP, "item 1 has no field 'password'"),
-        ("vars.mixed", ["username"], "item 0 is a string, not a mapping"),
+        ("vars.mixed", UP[:1], "item 0 is a string, not a mapping"),
         ("vars.nulls", UP, "item 0 field 'password' is null, not a string, number or boolean"),
         ("vars.pairs", None, "item 0 is a mapping; without fields each item must be a string, number or boolean"),
     ],
@@ -346,7 +348,7 @@ def _marked_each_doc(tmp_path: Path, send: dict) -> dict:
         "item-not-mapping", "null-field", "mapping-item-without-fields",
     ],
 )
-def test_p6_38_cli_send_each_error_is_clean_error(tmp_path: Path, each: str, fields: list[str] | None, problem: str):
+def test_p6_38_cli_send_each_error_is_clean_error(tmp_path: Path, each: str, fields: list[dict] | None, problem: str):
     """SPEC sendEach: a top-level collection that can't be resolved is a `Script error`, before prepare/spawn."""
     send = {"each": each} if fields is None else {"each": each, "fields": fields}
     res = run_cli(_marked_each_doc(tmp_path, send), tmp_path)
@@ -376,6 +378,40 @@ def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
     res = run_cli(_each_doc(tmp_path, send), tmp_path, "--arg", "msg=hi")
     assert res.returncode == 0, res.stderr
     assert "got-2-hi" in res.stdout
+
+
+def test_p6_46_cli_old_fields_list_is_validation_error_with_hint(tmp_path: Path):
+    """SPEC "Migrating from 2026-08": `fields: [username, password]` fails validation and names the new form."""
+    doc = _marked_each_doc(tmp_path, {"each": "vars.pairs", "fields": ["username", "password"]})
+    doc["prompts"][1]["expect"] = [["login:", "Password:"]]
+    res = run_cli(doc, tmp_path)
+    assert _load_error(res) == "Validation errors:"
+    errs = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert [(e["loc"], e["type"]) for e in errs] == [
+        (["prompts", 1, "send", "fields", 0], "fields_entry"),
+        (["prompts", 1, "send", "fields", 1], "fields_entry"),
+    ]
+    assert errs[1]["msg"] == (
+        "since 2026-10 a fields entry pairs a regex with a field: "
+        'write {match: <regex>, field: password} (see "Migrating from 2026-08" in SPEC.md)'
+    )
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+def test_p6_47_cli_old_version_is_validation_error_with_hint(tmp_path: Path):
+    """SPEC "Top-level fields": `autobot: 2026-08` fails validation and points to the migration section."""
+    doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
+    doc["autobot"] = "2026-08"
+    res = run_cli(doc, tmp_path)
+    assert _load_error(res) == "Validation errors:"
+    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert (err["loc"], err["type"]) == (["autobot"], "unsupported_version")
+    assert err["msg"] == (
+        'autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)'
+    )
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
 
 
 # -- empty values ----------------------------------------------------------------

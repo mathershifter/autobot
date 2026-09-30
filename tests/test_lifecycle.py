@@ -472,7 +472,8 @@ def _send_each_block(each: str, log: Path) -> dict:
     def tag(t: str) -> dict:
         return {"cmd": f"echo {t} >> {log}"}
 
-    login = {"name": "login", "expect": ["login:", "Password:"], "send": {"each": each, "fields": ["username", "password"]}}
+    fields = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
+    login = {"name": "login", "send": {"each": each, "fields": fields}}
     return {
         "block": {
             "name": "b",

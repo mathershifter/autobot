@@ -25,7 +25,7 @@ def test_p7_02_builtin_only_config_does_not_discover(isolated_registry: StepRegi
     """SPEC.md:286: plugin discovery is lazy; builtin-only configs never trigger it."""
     Config.model_validate(
         {
-            "autobot": "2026-08",
+            "autobot": "2026-10",
             "attach": {"spawn": "x", "script": [{"line": "x"}]},
             "fn": {"f": {"script": [{"cmd": "x"}]}},
             "script": [

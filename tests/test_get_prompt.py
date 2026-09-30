@@ -25,6 +25,8 @@ from autobot.runner import Runner
 from autobot.session import Session
 
 LOGIN_FLAT = {"name": "login", "expect": ["login:", "Password:"], "send": ["admin", "secret"]}
+# sendEach fields entries: each pairs a regex (or alternatives) with an item field
+UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
 
 
 @pytest.fixture
@@ -172,9 +174,8 @@ def test_p4_11_list_of_lists_credential_cycling(device):
 
 
 def test_p4_12_send_each_with_fields(device):
-    """SPEC.md:44-53: sendEach emits the named fields of each item in order."""
-    login = {"name": "login", "expect": ["login:", "Password:"],
-             "send": {"each": "vars.creds", "fields": ["username", "password"]}}
+    """SPEC sendEach: each fields entry sends its field of the current item."""
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS}}
     creds = [{"username": "admin", "password": "pass1"}, {"username": "admin", "password": "pass2"}]
     r, log = device([SHELL_PROMPT, login], "--wait-enter", "--accept", "admin:pass2",
                     vars={"creds": creds})
@@ -195,8 +196,7 @@ def test_p4_13_send_each_without_fields_stringifies(device):
 
 def test_p4_21_send_each_nested_path_ignores_other_keys(device):
     """SPEC sendEach: `each` may name nested keys; only the named fields are sent."""
-    login = {"name": "login", "expect": ["login:", "Password:"],
-             "send": {"each": "vars.site.creds", "fields": ["username", "password"]}}
+    login = {"name": "login", "send": {"each": "vars.site.creds", "fields": UP_FIELDS}}
     creds = [{"username": "admin", "password": "pass1", "note": "x"}, {"username": "admin", "password": "pass2"}]
     r, log = device([SHELL_PROMPT, login], "--wait-enter", "--accept", "admin:pass2",
                     vars={"site": {"creds": creds}})
@@ -217,7 +217,7 @@ def test_p4_22_send_each_scalar_items_without_fields(device):
 
 def test_p4_23_send_each_empty_list_fails_at_send_time(device):
     """SPEC sendEach, Response selection: an empty collection loads; the prompt has no response when it fires."""
-    login = {"name": "login", "expect": ["login:"], "send": {"each": "vars.creds", "fields": ["username"]}}
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS[:1]}}
     r, _ = device([SHELL_PROMPT, login], "--wait-enter", vars={"creds": []})
     with pytest.raises(RuntimeError, match="^prompt 'login': no response available"):
         r.session.get_prompt(timeout=5)
@@ -284,8 +284,7 @@ def test_p4_17_grouped_password_only_send_each(device):
     ``Password:`` twice: each match picks item 1, the second one advances to
     the next set, so one password per set is sent.
     """
-    login = {"name": "login", "expect": GROUPED,
-             "send": {"each": "vars.creds", "fields": ["username", "password"]}}
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS}}
     creds = [{"username": "admin", "password": "p1"}, {"username": "admin", "password": "p2"}]
     r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password",
                     "--accept", ":p2", vars={"creds": creds})
@@ -316,17 +315,43 @@ def test_p4_17_grouped_login_first_exhaustion_after_two_sets(device):
 def test_p4_17_grouped_missing_item_no_response(device):
     """SPEC "Response selection": no item at the grouped position -> no response.
 
-    ``sendEach`` without ``fields`` gives one-item sets, so ``Password:``
-    (position 1) has nothing to send; the message names the pattern.
+    A one-item literal set gives ``Password:`` (position 1) nothing to send;
+    the message names the pattern. (``sendEach`` can't produce this since
+    2026-10: fields entries pair each regex with a field, and without
+    ``fields`` grouped entries are rejected.)
     """
-    login = {"name": "login", "expect": GROUPED, "send": {"each": "vars.pins"}}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password",
-                    vars={"pins": [1111, 2222]})
+    login = {"name": "login", "expect": GROUPED, "send": [["admin"]]}
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password")
     with pytest.raises(
         RuntimeError, match=r"^prompt 'login': no response available for 'Password:'$"
     ):
         r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER="]
+
+
+def test_p4_24_send_each_match_alternatives_send_the_same_field(device):
+    """SPEC sendEach: the regexes of one fields entry are alternatives for one field.
+
+    ``login:`` and ``Password:`` both send ``password``, and they share one
+    fired state: the second match is a repeat, so the item advances.
+    """
+    either = [{"match": ["login:", "Password:"], "field": "password"}]
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": either}}
+    creds = [{"username": "u1", "password": "pw1"}, {"username": "u2", "password": "pw2"}]
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "login,password",
+                    "--accept", "pw1:pw2", vars={"creds": creds})
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "LOGIN=pw1", "PASSWORD=pw2"]
+
+
+def test_p4_25_send_each_without_fields_patterns_share_one_state(device):
+    """SPEC sendEach: without fields, every expect regex sends the current item; any repeat advances."""
+    pin = {"name": "pin", "expect": ["login:", "Password:"], "send": {"each": "vars.pins"}}
+    r, log = device([SHELL_PROMPT, pin], "--wait-enter", "--order", "login,password",
+                    "--accept", "1111:2222", vars={"pins": [1111, 2222]})
+    r.session.get_prompt(timeout=10)
+    # per-pattern state would send 1111 again at Password:
+    assert log_of(log) == ["ENTER=", "LOGIN=1111", "PASSWORD=2222"]
 
 
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
