@@ -22,12 +22,14 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 23 | 0 | 0 | 23 | 3 |
+| P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
 | P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
-| P6 | model / schema / example / CLI parity | 40 | 0 | 0 | 40 | 0 |
+| P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **175** | **0** | **0** | **175** | **4** |
+| **Total** | | **188** | **0** | **0** | **188** | **4** |
+
+The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
 A parametrized test counts as one test.
 
@@ -105,7 +107,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 ### F7: JSON schema validator (`tests/conftest.py`)
 
 - Add `jsonschema` to `[dependency-groups] dev` in `pyproject.toml` and run `uv lock`. Add `pytest-cov` the same way, for coverage reports.
-- `schema_validator` fixture: `pytest.importorskip("jsonschema", reason="jsonschema not installed; parity tests skipped")`, loads `schemas/autobot.2026-08.json`, and returns `Draft202012Validator(schema)`.
+- `schema_validator` fixture: `pytest.importorskip("jsonschema", reason="jsonschema not installed; parity tests skipped")`, loads `schemas/autobot.2026-10.json`, and returns `Draft202012Validator(schema)`.
 - `both_validate(doc) -> tuple[bool, bool]`: returns `(model_ok, schema_ok)`, so parity tests can assert `== (True, True)`, `== (False, False)`, or pin a specific divergence.
 
 ## Coverage matrix (SPEC section → existing → planned)
@@ -114,7 +116,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 |--------------|----------------|----------------|
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 |
 | Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31 |
-| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..23, P5-25/26, P6-07/08, P6-38..40 |
+| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..25, P5-25/26, P6-07/08, P6-38..40, P6-46..51 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-09 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
@@ -221,7 +223,7 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | ID | Test | SPEC | Setup | Assertion | Status |
 |----|------|------|-------|-----------|--------|
 | P4-01 | `test_get_prompt_never_sends_command` | 338 | F1 `shell_session`, F4 | after reaching the first prompt, `sendline("echo hi")` and `sent.clear()`, `get_prompt()` returns and `sent.lines() == []` | pass |
-| P4-02 | `test_shell_prompt_forms` (parametrized: `return: true` with `send`; no `send`) | 38, 341 | F2 `--wait-enter --then prompt`, F4 | returns at `PROMPT$ ` with nothing sent after the kick | pass |
+| P4-02 | `test_shell_prompt_forms` (parametrized: `return: true`; no `send`. The `return: true` case had a `send`, which is `return_with_send` since 2026-10) | 38, 341 | F2 `--wait-enter --then prompt`, F4 | returns at `PROMPT$ ` with nothing sent after the kick | pass |
 | P4-03 | `test_empty_send_raises_no_response` | 341-342 | F2 login prompt, `send: []` | `RuntimeError` matching `no response available` | pass |
 | P4-04 | `test_solicit_newline_after_idle` | 343 | F2 `--wait-enter`, F4, `slow` | no manual kick; `get_prompt(timeout=15)` returns; `sent.lines() == [""]`; elapsed ≥ 5 s | pass |
 | P4-05 | `test_solicit_newline_only_once` | 343 | F2 `--silent`, F4, `slow` | `get_prompt(timeout=11)` raises `TimeoutError`; exactly one `""` sent | pass |
@@ -231,23 +233,25 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-09 | `test_eof_is_not_timeout` | 336 | as P4-08 | elapsed < 2 s (EOF is seen before any poll timeout) | pass |
 | P4-10 | `test_flat_send_list_login_then_password` | 39-40 | F2 `--order login,password --accept admin:secret`, prompt expect `['login:', 'Password:']` (flat), send `[admin, secret]` | log == `LOGIN=admin`, `PASSWORD=secret`; returns at the shell | pass |
 | P4-11 | `test_list_of_lists_credential_cycling` | 41 | F2 `--accept admin:pass2`, send `[[admin, pass1], [admin, pass2]]` | log shows attempt 1 `pass1`, attempt 2 `pass2`; returns at the shell | pass |
-| P4-12 | `test_send_each_with_fields` | 44-53 | as P4-11 with `vars.creds` + `each/fields` | same log as P4-11 | pass |
+| P4-12 | `test_send_each_with_fields` | `sendEach` | as P4-11 with `vars.creds` and `fields` entries `login:` → `username`, `Password:` → `password` (no `expect`) | same log as P4-11 | pass |
 | P4-13 | `test_send_each_without_fields_stringifies` | 53 | F2 `--order password --accept :1234`, `vars.pins: [1111, 1234]`, `each: vars.pins` | log `PASSWORD=1111`, `PASSWORD=1234` (ints sent as strings) | pass |
 | P4-14 | `test_responses_exhausted` | 342 | F2 accepts nothing, send `[admin, bad]` | `RuntimeError` matching `prompt 'login': responses exhausted` | pass |
 | P4-15 | `test_handlers_reset_per_get_prompt` | 342 | F2 `--repeat 2 --accept admin:secret`, send `[admin, secret]` | two consecutive `get_prompt` calls (with `sendline("again")` between) both succeed; log has two `LOGIN=admin` | pass |
 | P4-16 | `test_grouped_expect_login_first` | 37, README:147 | F2 `--order login,password`, expect `[['login:', 'Password:']]`, send `[admin, secret]` | log `LOGIN=admin`, `PASSWORD=secret` (same result under both mappings) | pass |
-| P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with a grouped `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with `sendEach` without `fields` → `no response available for 'Password:'` | pass (was todo #4) |
+| P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with the `fields`-entry `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with a one-item literal set `[[admin]]` → `no response available for 'Password:'` (it used `sendEach` without `fields`, which can't be grouped since 2026-10) | pass (was todo #4) |
 | P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick | `get_prompt()` returns at the shell; log is exactly `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` | pass (was xfail #3) |
 | P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
 | P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | pass (was xfail #7) |
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-| P4-21 | `test_send_each_nested_path_ignores_other_keys` | `sendEach` | F2 `--accept admin:pass2`, `each: vars.site.creds`, `fields: [username, password]`, the first item has an extra `note` key | same log as P4-12 (only the named fields are sent) | pass |
+| P4-21 | `test_send_each_nested_path_ignores_other_keys` | `sendEach` | F2 `--accept admin:pass2`, `each: vars.site.creds`, `fields` entries for `username` and `password`, the first item has an extra `note` key | same log as P4-12 (only the named fields are sent) | pass |
 | P4-22 | `test_send_each_scalar_items_without_fields` | `sendEach` | F2 `--order password --accept :True`, `vars.pins: ["1111", 2.5, true]`, no `fields` | log `PASSWORD=1111`, `PASSWORD=2.5`, `PASSWORD=True` | pass |
-| P4-23 | `test_send_each_empty_list_fails_at_send_time` | `sendEach`, Response selection | F2, `vars.creds: []` | the `Runner` builds; `get_prompt` raises `RuntimeError` `prompt 'login': no response available` | pass |
+| P4-23 | `test_send_each_empty_list_fails_at_send_time` | `sendEach`, Response selection | F2, `vars.creds: []`, one `fields` entry `login:` → `username` | the `Runner` builds; `get_prompt` raises `RuntimeError` `prompt 'login': no response available` | pass |
+| P4-24 | `test_send_each_match_alternatives_send_the_same_field` | `sendEach`, Response selection | F2 `--order login,password --accept pw1:pw2`, one `fields` entry `match: [login:, Password:]` → `password`, two items | log `ENTER=, LOGIN=pw1, PASSWORD=pw2`: both alternatives send `password`, and they share one fired state (the second match advances) | pass |
+| P4-25 | `test_send_each_without_fields_patterns_share_one_state` | `sendEach`, Response selection | F2 `--order login,password --accept 1111:2222`, `expect: [login:, Password:]`, `each: vars.pins` without `fields`, pins `[1111, 2222]` | log `ENTER=, LOGIN=1111, PASSWORD=2222`: any later match advances (per-pattern state would send `1111` again) | pass |
 
-Totals: 23 pass (P4-01..23). Slow: P4-04, 05, 06. P4-18 lost its `slow` marker: with #3 fixed it no longer waits for the idle poll (about 0.2 s).
+Totals: 25 pass (P4-01..25). Slow: P4-04, 05, 06. P4-18 lost its `slow` marker: with #3 fixed it no longer waits for the idle poll (about 0.2 s).
 
 ## P5: attach and block lifecycles, env
 
@@ -279,7 +283,7 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-22 | `test_env_cycle_detected` (parametrized: self `A: "{{ env.A }}x"`; mutual `A: "{{ env.B }}"`, `B: "{{ env.A }}"`; mutual with a growing value; 3-cycle; a lead-in key `X -> A` outside the cycle; `env['B'] \| upper` / `env.get('A')` forms) | 25 | none | `Runner(...)` raises `ValueError` exactly `env cycle: A -> ... -> A`, naming only the cycle | pass (was `nesting too deep`; mutual cycles passed silently) |
 | P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | pass (was xfail #2) |
 | P5-24 | `test_attach_timeout_default_and_spawn_templated` | 73-74, 317 | F5 recorder, `spawn: "{{ env.SH }}"`, no `timeout` | recorded spawn is the rendered string; `timeout == 300` | pass |
-| P5-25 | `test_block_send_each_error_aborts_at_entry` (parametrized: `vars.nope`; `vars.creds` overwritten by an earlier `register`) | `sendEach` | F1, block prompt `sendEach` with `fields`; `enter`, `script`, block breakout, a later step and the attach breakout each append a tag to `tmp_path/log` | `run()` raises `ValueError` exactly `prompt 'login': sendEach '<each>': no key 'nope' in 'vars'` / `'vars.creds' is a string, not a list`; log is only `attach-breakout`; handlers `["top"]` | pass |
+| P5-25 | `test_block_send_each_error_aborts_at_entry` (parametrized: `vars.nope`; `vars.creds` overwritten by an earlier `register`) | `sendEach` | F1, block prompt `sendEach` with `fields` entries; `enter`, `script`, block breakout, a later step and the attach breakout each append a tag to `tmp_path/log` | `run()` raises `ValueError` exactly `prompt 'login': sendEach '<each>': no key 'nope' in 'vars'` / `'vars.creds' is a string, not a list`; log is only `attach-breakout`; handlers `["top"]` | pass |
 | P5-26 | `test_block_send_each_valid` | `sendEach` | F1, F6 probe, same block with a valid `vars.creds` | log `enter, script, block-breakout`; the probe inside sees `["blk", "login"]`; handlers `["top"]` afterwards | pass |
 | P5-27 | `test_env_nesting_any_order_and_forms` | 25 | `env: {C: "{{ env['B'] \| upper }}-c", B: "{{ env.get('A') }}-b-{{ args.a }}", A: "{{ vars.v }}", X: "{{ env.NOPE \| default('dflt') }}-{{ 'A' in env }}"}` (referencing keys before the keys they reference) | `render("{{ env.C }} {{ env.X }}") == "A-B-ARG-c dflt-True"` | pass |
 | P5-28 | `test_env_os_override_breaks_cycle` | 25 | `setenv("A", "os")`, `env: {A: "{{ env.B }}", B: "{{ env.A }}-b"}` | no error; `env.A == "os"`, `env.B == "os-b"` | pass |
@@ -299,16 +303,16 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-02 | `test_python_field_names_rejected` | 18 | model | `{cmd: x, assert_: y}`, `{cmd: x, register_: y}` → `extra_forbidden` | pass |
 | P6-03 | `test_extra_keys_forbidden_everywhere` (parametrized over top-level, attach, breakout, prompt, sendEach, fn, block, every builtin step) | 18 | model | unknown key → `extra_forbidden` | pass |
 | P6-04 | `test_required_fields` (parametrized) | 22-31, 70-73, 190-192 | model | missing `autobot` / `attach` / `script` / `attach.spawn` / prompt `name` / `expect` / block `name` → `missing` | pass |
-| P6-05 | `test_version_pattern` | 24 | model | `2026-08` ok; `2026-8`, `26-08`, `2026/08`, `202608`, ` 2026-08` rejected | pass |
+| P6-05 | `test_version_pattern`, `test_old_version_points_to_migration` | Top-level fields | model | `2026-10` ok; `2026-11`, `2026-8`, `26-10`, `2026/10`, `202610`, ` 2026-10` → one `unsupported_version` error at `autobot`, `unsupported autobot version '<v>'; expected 2026-10`; `2026-08` → `autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)` | pass |
 | P6-06 | `test_step_discrimination` | 87-270 | model, F6 | each builtin key → its model class; registered plugin key → `PluginStep`; `{cmd: a, line: b}` → `extra_forbidden` | pass |
-| P6-07 | `test_send_forms` | 39-53 | model | flat list, list of lists, sendEach with and without `fields` accepted; mixed `["a", ["b"]]` rejected | pass |
+| P6-07 | `test_send_forms`, `test_send_each_fields_form` | 39-53 | model | flat list, list of lists, sendEach without `fields` accepted with `expect`; sendEach with `fields` entries accepted without `expect` (`match` is stored as a list); mixed `["a", ["b"]]` rejected | pass |
 | P6-08 | `test_expect_forms` | 37 | model | list of strings, list of lists, and mixed `["a", ["b", "c"]]` accepted | pass |
 | P6-09 | `test_duration_values` (parametrized) | 307-313 | model via `sleep` | `5`→5.0, `5s`, `500ms`→0.5, `2m`→120, `1h`→3600, `1.5s`→1.5, `1.5`→1.5 accepted; `"5"`, `5x`, `""`, `ms`, `1 s`, `-1s` rejected | pass |
 | P6-10 | `test_schema_is_valid_draft_2020_12` | 12 | F7 | `Draft202012Validator.check_schema(schema)` | pass |
-| P6-11 | `test_parity_accept_corpus` (parametrized) | 12 | F7 `both_validate` | a corpus of valid docs (minimal; every step type; every send form; a nested `sendEach` path; grouped expect; nested block; fn; each duration form) → `(True, True)` | pass |
-| P6-12 | `test_parity_reject_corpus` (parametrized) | 12 | F7 | invalid docs (missing required, extra keys, bad version, bad duration, sleep+when, line+timeout, mixed send, a `sendEach` path not of the form `vars.<key>...`) → `(False, False)` | pass |
+| P6-11 | `test_parity_accept_corpus` (parametrized) | 12 | F7 `both_validate` | a corpus of valid docs (minimal; every step type; every send form; `sendEach` with `fields` entries and no `expect`; a nested `sendEach` path; grouped expect; nested block; fn; each duration form) → `(True, True)` | pass |
+| P6-12 | `test_parity_reject_corpus` (parametrized) | 12 | F7 | invalid docs (missing required, extra keys, bad version, bad duration, sleep+when, line+timeout, mixed send, a `sendEach` path not of the form `vars.<key>...`, `autobot` `2026-08` or `2026-11`, the old `fields: [u, p]` list) → `(False, False)` | pass |
 | P6-13 | `test_parity_mixed_expect` | 37 | F7 | `expect: ["a", ["b", "c"]]` → `(True, True)`. SPEC allows it; the schema now uses `items: stringOrArray`. | pass (was xfail #11) |
-| P6-14 | `test_parity_version_trailing_newline` | 24 | F7 | `autobot: "2026-08\n"` → model rejects (`re.fullmatch`). | pass (was xfail #11) |
+| P6-14 | `test_parity_version_trailing_newline` | 24 | F7 | `autobot: "2026-10\n"` → `(False, False)`: the schema's `const` compares whole strings (the old `pattern` let Python's `re.search` accept it, so only the model side was asserted). | pass (was xfail #11) |
 | P6-15 | `test_parity_return_minimum` | 258-263 | F7 | `return: 0`, `-2`, `true` and `"1"` → `(False, False)` | pass (was todo #11) |
 | P6-16 | `test_parity_negative_duration` | 307-313 | F7 | `sleep: -1` → `(False, False)`; model message `invalid duration` | pass (was todo #11) |
 | P6-17 | `test_parity_bool_duration` | 307-313 | F7 | `sleep: true` → `(False, False)`; model message `invalid duration` | pass (was todo #11) |
@@ -334,14 +338,21 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-37 | `test_cli_keys_that_only_look_alike_are_accepted` | CLI | CLI, F1; `vars.m: {1: int, "1": str}` | rc 0; `keys-2-int-str` in stdout | pass |
 | P6-38 | `test_cli_send_each_error_is_clean_error` (parametrized: missing key, missing nested key, missing middle key, path through a string, path through a list, a string / number / null / mapping instead of a list, item missing a field, item not a mapping, null field, mapping item without `fields`) | CLI, `sendEach` | CLI; top-level prompt `sendEach`; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: prompt 'login': sendEach '<each>': <problem>`; neither marker exists | pass |
 | P6-39 | `test_cli_send_each_path_outside_vars_is_validation_error` (parametrized: `env.HOME`, `args.pw`, `session.before`, `creds`, `vars`, `vars..creds`, `vars.creds.`) | CLI, `sendEach` | as P6-38 | rc 1; first line `Validation errors:`; stderr has `each must be a path under vars, like vars.creds, got: <each>`; neither marker exists | pass |
-| P6-40 | `test_cli_valid_send_each_runs` (parametrized: nested path with `fields`; string/number/boolean items without `fields`; strings without `fields`) | CLI, `sendEach` | CLI, F1, top-level prompt `sendEach` that never fires | rc 0; `got-2-hi` in stdout | pass |
+| P6-40 | `test_cli_valid_send_each_runs` (parametrized: nested path with `fields` entries; string/number/boolean items without `fields`; strings without `fields`) | CLI, `sendEach` | CLI, F1, top-level prompt `sendEach` that never fires | rc 0; `got-2-hi` in stdout | pass |
 | P6-41 | `test_null_corpus_covers_every_model`, `test_parity_null_optional_field` (parametrized over every optional field of every model, generated from `model_fields`) | YAML Script Structure | F7; `HOSTS` places each model in a minimal document | `<key>: null` → `(False, False)`; one model error at the key; for a `None`-default field its type is `null_value` with `null (an empty value) is not allowed; omit the key instead`. The coverage test fails if a model with optional fields (other than `PluginStep`) has no host, so new models and fields get cases automatically. | pass |
-| P6-42 | `test_omitted_optional_field_gets_default` (parametrized as P6-41) | YAML Script Structure | F7 | the host document without the key → `(True, True)`; the parsed field equals its default | pass |
+| P6-42 | `test_omitted_optional_field_gets_default` (parametrized as P6-41) | YAML Script Structure | F7 | the host document without the key → `(True, True)`; the parsed field equals its default. The key is built as `OMIT` and dropped, because a prompt's host needs either `expect` or a `fields` `sendEach`, and must leave out whichever key is tested. | pass |
 | P6-43 | `test_null_plugin_common_prop` (parametrized: `after`, `delay_after`, `delay_before`, `timeout`, `when`) | Common Step Properties | model, F6 `probe` | `{probe: x, <prop>: null}` → one `null_value` error at `script.0.plugin.<prop>`. Model only: the static `pluginStep` accepts any object. | pass |
 | P6-44 | `test_parity_null_sleep` | Duration Format | F7 | `sleep: null` → `(False, False)`; model message exactly `Value error, invalid duration: null` at `script.0.sleep.sleep` (it used to sleep 0) | pass |
 | P6-45 | `test_cli_empty_value_is_validation_error` (parametrized: step `after:`, `attach.env:`, `timeout: ~` on a `line`, `sleep:`) | YAML Script Structure, CLI | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; first line `Validation errors:`; the single JSON error has the expected `loc` and message (`null (an empty value)`, `Extra inputs`, `invalid duration: null`); neither marker exists | pass |
 
-Totals: 45 pass.
+| P6-46 | `test_cli_old_fields_list_is_validation_error_with_hint` | CLI, Migrating from 2026-08 | CLI; `send: {each: vars.pairs, fields: [username, password]}` with a grouped `expect`; `prepare` and `spawn` each touch a marker file | rc 1; first line `Validation errors:`; two `fields_entry` errors at `prompts.1.send.fields.0` and `.1`, the second exactly `since 2026-10 a fields entry pairs a regex with a field: write {match: <regex>, field: password} (see "Migrating from 2026-08" in SPEC.md)`; neither marker exists | pass |
+| P6-47 | `test_cli_old_version_is_validation_error_with_hint` | CLI, Top-level fields | as P6-46 with `autobot: 2026-08` | rc 1; `Validation errors:`; one `unsupported_version` error at `autobot` with the migration hint; neither marker exists | pass |
+| P6-48 | `test_send_each_fields_accepted`, `test_send_each_fields_rejected` (parametrized) | `sendEach` | model | accepted: string / list `match`, two entries, the same field twice, a dotted field (a plain key), `sendEach` without `fields` over regex `expect`, block prompt with `fields`. Rejected, each with its exact location and type (and message where autobot writes it): `fields: []` (`too_short`), `match: []` (`too_short`, `match must be a regex or a non-empty list of regexes`), a non-string or mapping `match`, missing `field` / `match`, non-string `field`, an extra key, the old list form (`fields_entry` per entry), `expect` next to `fields` (also `expect: []`) and in a block (`script.0.block.block.prompts.0.expect`, `expect_with_fields`), no `expect` without `fields` (`missing`, three ways), a grouped `expect` with `sendEach` without `fields` (`grouped_expect` at `prompts.0.expect.1`), a bad `each` path | pass |
+| P6-49 | `test_parity_send_each_accepted`, `test_parity_send_each_rejected` (parametrized over the P6-48 corpora) | `sendEach` | F7 | accepted → `(True, True)`; rejected → `(False, False)`: every `sendEach` rule is in the schema, none is model-only | pass |
+| P6-50 | `test_return_without_send_accepted`, `test_return_with_send_rejected` (parametrized: flat, list of lists, `send: []`, `sendEach`, `sendEach` with `fields` and no `expect`, block prompt), `test_return_with_send_reported_with_other_prompt_errors` | prompts | model | `return: true` without `send`, and `send` with `return: false` (flat, `fields`), accepted. Each `return: true` + `send` form → exactly one `return_with_send` error at `...send` with `a return prompt is a shell prompt and sends nothing; remove send or return` (block: `script.0.block.block.prompts.0.send`). With `fields` and `expect` → `return_with_send` then `expect_with_fields`; flat `send` without `expect` → `return_with_send` then `missing` at `expect` | pass |
+| P6-51 | `test_parity_return_without_send_accepted`, `test_parity_return_with_send_rejected` (parametrized over the P6-50 corpora) | prompts | F7 | accepted → `(True, True)`; rejected → `(False, False)`, including the `fields` prompt with no `expect` (the schema's `allOf` checks the `return` rule next to the `expect` rules) | pass |
+
+Totals: 51 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -421,7 +432,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-09-30, 571 tests, 0 skipped, `jsonschema` installed): full suite about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-09-30, 649 tests, 0 skipped, `jsonschema` installed): full suite about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 

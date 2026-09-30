@@ -103,11 +103,11 @@ def _cmd_schema():
     from .registry import registry
 
     registry.discover()
-    schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-08.json"
+    schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
     if schema_path.exists():
         schema = json.loads(schema_path.read_text())
     else:
-        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-08.json"
+        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
         schema = json.loads(urllib.request.urlopen(url).read())
 
     plugins = registry.plugin_executors()

@@ -1,4 +1,4 @@
-autobot: 2026-08
+autobot: 2026-10
 
 env:
   ARTIFACTORY: https://ci.corp.io
@@ -22,11 +22,13 @@ prompts:
     return: true
 
   - name: login
-    expect:
-      - ['(?:L|l)ogin:', '(?:P|p)assword:']
     send:
       each: vars.creds
-      fields: [username, password]
+      fields:
+        - match: '(?:L|l)ogin:'
+          field: username
+        - match: '(?:P|p)assword:'
+          field: password
 
 attach:
   spawn: ssh jmather-home

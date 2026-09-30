@@ -9,13 +9,13 @@ YAML script → pydantic validation → Runner → Session (pexpect) → remote 
 ```
 
 - **YAML script** defines environment, credentials, prompt patterns, functions, attach config, and a step-based script.
-- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-08.json`. They also check what a JSON schema can't express: every `call` target is defined in `fn`, and every plugin step's fields are valid for its plugin model. All of this happens when the script is loaded, before `attach.prepare` runs or anything is spawned.
+- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-10.json`. They also check what a JSON schema can't express: every `call` target is defined in `fn`, and every plugin step's fields are valid for its plugin model. All of this happens when the script is loaded, before `attach.prepare` runs or anything is spawned.
 - **Runner** renders Jinja2 templates, dispatches steps, and manages block breakouts.
 - **Session** wraps pexpect, handles prompt detection and credential cycling.
 
 ## YAML Script Structure
 
-All fields validated by pydantic against `schemas/autobot.2026-08.json`. The JSON schema is normative: the models reject every document the schema rejects, and accept what it accepts except where a static schema can't decide. One such case is step keys. A static schema can't know which plugins are installed, so its `pluginStep` accepts any object that has no built-in step key. The models accept a step key that isn't built in only if an installed plugin registers it, and otherwise reject the step (`invalid_step`).
+All fields validated by pydantic against `schemas/autobot.2026-10.json`. The JSON schema is normative: the models reject every document the schema rejects, and accept what it accepts except where a static schema can't decide. One such case is step keys. A static schema can't know which plugins are installed, so its `pluginStep` accepts any object that has no built-in step key. The models accept a step key that isn't built in only if an installed plugin registers it, and otherwise reject the step (`invalid_step`).
 
 An optional field is either omitted or given a value of its type. An explicit `null`, including a key with an empty YAML value (`after:`, `timeout: ~`), is invalid for every optional field, including the common step properties of plugin steps: omit the key instead to get the default. The error type is `null_value`, located at the key. A plugin's own fields follow the plugin's model.
 
@@ -23,7 +23,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `autobot` | yes | Schema version in `YYYY-MM` format (e.g. `2026-08`). The whole string must match; surrounding whitespace or a trailing newline is rejected. |
+| `autobot` | yes | Schema version: exactly `2026-10`. Surrounding whitespace or a trailing newline is rejected. Any other value is a validation error (`unsupported_version`) at `autobot`: `unsupported autobot version '<value>'; expected 2026-10`, or for `2026-08`, `autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)` (see [Migrating from 2026-08](#migrating-from-2026-08)). |
 | `env` | no | String key-value defaults, overridden by OS environment variables. Supports nesting: a value may reference other keys (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), in any order. Each default is rendered once, after the values it references; the text it renders to isn't rendered again. Any read of a key's value counts as a reference, including `env.get('KEY')` and `env.items()`. An OS variable's value is used exactly as written: it isn't a template and is never rendered, so `{{` in it is plain text, and a key that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a value that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a key that isn't in `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
@@ -36,8 +36,8 @@ An optional field is either omitted or given a value of its type. An explicit `n
 
 Each prompt has:
 - `name` — identifier
-- `expect` — list of patterns to match against session output. Each entry can be a string (a single-pattern entry) or a list of strings (a grouped entry, e.g. `['login:', 'Password:']`). Entries of both kinds may be mixed. The entry kind decides which response a match sends (see [Response selection](#response-selection)).
-- `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt.
+- `expect` — list of patterns to match against session output. Each entry can be a string (a single-pattern entry) or a list of strings (a grouped entry, e.g. `['login:', 'Password:']`). Entries of both kinds may be mixed. The entry kind decides which response a match sends (see [Response selection](#response-selection)). Required, except in a prompt whose `send` is a `sendEach` with `fields`: there `expect` must be absent, because the patterns come from the `fields` entries (see [`sendEach`](#sendeach)).
+- `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt. A prompt with `return: true` must not have `send`, in any form (a flat list, a list of lists, `send: []`, or a `sendEach` with or without `fields`): it would never be sent. That is a validation error (`return_with_send`) at `prompts.N.send`: `a return prompt is a shell prompt and sends nothing; remove send or return`. It is reported together with any other error of the prompt, e.g. `expect_with_fields` or a missing `expect`.
 - `send` — optional; responses to send when a pattern matches. Accepts three forms:
   - A flat list of strings: `["response1", "response2"]`
   - A list of lists (grouped attempts): `[["user", "pass"], ["user2", "pass2"]]`
@@ -47,18 +47,53 @@ Each prompt has:
 
 #### `sendEach`
 
-Iterates over a collection from `vars` to build responses:
+Iterates over a collection from `vars` to build responses. With `fields`, each entry pairs the prompt it answers with the item field it sends:
 ```yaml
-send:
-  each: vars.creds
-  fields: [username, password]
+- name: login
+  send:
+    each: vars.creds
+    fields:
+      - match: ['(?:L|l)ogin:', 'Username:']
+        field: username
+      - match: '(?:P|p)assword:'
+        field: password
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`, so a block sees `vars` registered by earlier steps), and its values are sent as they are, never rendered as templates.
+`fields` is a non-empty list of entries. Each entry has exactly two keys:
+- `match` — a regex, or a non-empty list of regexes. The regexes of one list are alternatives for the same prompt: each of them sends the entry's field.
+- `field` — the key of the item to send. It is a single mapping key; a `.` in it is part of the key, not a path.
+
+A prompt whose `sendEach` has `fields` has no `expect`: its patterns are the `match` regexes of the entries, in order. So each field is sent only in answer to its own prompt, and the number of values sent per item always matches the prompts that ask for them.
+
+Without `fields`, each item is converted to a string and sent in answer to any of the prompt's `expect` patterns, e.g. a PIN list:
+```yaml
+- name: pin
+  expect: ['PIN:', 'Passcode:']
+  send:
+    each: vars.pins
+```
+Here `expect` is required, and each entry must be a single regex: a grouped entry is a validation error (`grouped_expect`, at `prompts.N.expect.M`), since a one-value item can't answer several prompts. Use `fields` for that.
+
+These rules are validation errors, reported like any other before anything runs:
+
+| Rule broken | Location | Type |
+|-------------|----------|------|
+| `fields: []` | `prompts.N.send.fields` | `too_short` |
+| `match: []` | `prompts.N.send.fields.K.match` | `too_short` (`match must be a regex or a non-empty list of regexes`) |
+| a `fields` entry without `match` or `field`, or with another key | `prompts.N.send.fields.K.<key>` | `missing` / `extra_forbidden` |
+| a `fields` entry that is a string (the 2026-08 form) | `prompts.N.send.fields.K` | `fields_entry` (`since 2026-10 a fields entry pairs a regex with a field: write {match: <regex>, field: <name>} (see "Migrating from 2026-08" in SPEC.md)`) |
+| `expect` next to `fields` (even `expect: []`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
+| no `expect`, and no `sendEach` with `fields` | `prompts.N.expect` | `missing` |
+| a grouped `expect` entry with a `sendEach` without `fields` | `prompts.N.expect.M` | `grouped_expect` (`with sendEach without fields, each expect entry is a single regex; use fields to answer several prompts`) |
+| `return: true` with a `sendEach` (with or without `fields`), or any other `send` | `prompts.N.send` | `return_with_send` (`a return prompt is a shell prompt and sends nothing; remove send or return`) |
+
+The JSON schema states all of them, so the models and the schema reject the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...` (the step's type tag comes before its key).
+
+In the example, `vars.creds` is resolved, and each item becomes one credential set: the value of each entry's field, in entry order. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`, so a block sees `vars` registered by earlier steps), and its values are sent as they are, never rendered as templates.
 
 `each` is a path under `vars`: `vars` followed by one or more `.`-separated keys (e.g. `vars.creds`, `vars.site.creds`). Each key names a key of a mapping; list indexes, attributes, `env`, `args` and `session` can't be used. Any other form is a validation error.
 
-The collection must be a list. Without `fields`, each item must be a string, number or boolean. With `fields`, each item must be a mapping with every named field, and each field's value must be a string, number or boolean. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
+The collection must be a list. Without `fields`, each item must be a string, number or boolean. With `fields`, each item must be a mapping with the `field` of every entry, and each field's value must be a string, number or boolean. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
 
 A collection that doesn't meet these rules is an error when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts` (reported by the CLI as a `Script error`), and on entering the block, before its `enter` steps, for a block's `prompts` (the run stops; the block's `breakout` doesn't run, and `attach.breakout` does). The message is `prompt '<name>': sendEach '<each>': <problem>`, where `<problem>` is one of:
 
@@ -82,20 +117,21 @@ Every `send` form is a list of *credential sets*, each an ordered list of respon
 |-------------|-----------------|
 | Flat list `["admin", "pw"]` | One set: `["admin", "pw"]` |
 | List of lists `[["admin", "pw1"], ["admin", "pw2"]]` | One set per inner list |
-| `sendEach` with `fields` | One set per item: the named fields, in order |
+| `sendEach` with `fields` | One set per item: the value of each entry's `field`, in entry order |
 | `sendEach` without `fields` | One set per item, holding the item converted to a string |
 
 Responses come from the current set, starting with the first. When a pattern of the prompt matches:
 - **Grouped entry:** the pattern at position k of its group (the first pattern is position 0) sends item k of the current set.
-- **Single-pattern entry:** sends the first item of the current set that hasn't been sent yet.
+- **`fields` entry:** a regex of entry k (the first entry is 0) sends item k of the current set, the entry's field. It follows the grouped rules: the entries are one group, and the regexes of one entry share its position, so they count as the same prompt.
+- **Single-pattern entry:** sends the first item of the current set that hasn't been sent yet. With a `sendEach` without `fields`, every set holds one item, so a match sends the current item, and any later match of any of the prompt's patterns advances to the next item.
 
 Before sending, the current set advances to the next set when:
-- a grouped pattern picks an item that was already sent from the current set (the group starts over, e.g. `login:` matches again after `Password:`, or `Password:` matches twice), or
+- a grouped pattern or `fields` entry picks an item that was already sent from the current set (the group starts over, e.g. `login:` matches again after `Password:`, or `Password:` matches twice), or
 - a single-pattern entry matches and every item of the current set has already been sent.
 
 A prompt raises `RuntimeError`:
 - `prompt '<name>': responses exhausted` when the set must advance and there is no next set.
-- `prompt '<name>': no response available` when the prompt has no credential sets (`send: []`, or `sendEach` over an empty collection), or when the current set has no item at a grouped pattern's position (the message then names the pattern).
+- `prompt '<name>': no response available` when the prompt has no credential sets (`send: []`, or `sendEach` over an empty collection), or when the current set of a literal `send` has no item at a grouped pattern's position (the message then names the pattern). A `sendEach` never gives the latter: every `fields` entry has its value in every set.
 
 The selection starts over at the first set, with nothing sent, on every prompt wait (each `get_prompt`).
 
@@ -108,7 +144,9 @@ With `expect: [['login:', 'Password:']]` and `send: [[admin, pw1], [admin, pw2]]
 | `Password:`, `Password:` (e.g. `ssh admin@host`) | `pw1`, `pw2` |
 | `login:`, `Password:`, `login:`, `Password:`, `login:` | `admin`, `pw1`, `admin`, `pw2`, then `responses exhausted` |
 
-With single-pattern entries (`expect: ['login:', 'Password:']`) and the same `send`, the responses go out in order across the sets, whichever pattern matched: `admin`, `pw1`, `admin`, `pw2`. That suits devices that always prompt in the same order, and a lone prompt (e.g. a PIN) whose sets each hold one response.
+The `sendEach` form of the same login, `fields` entries `login:` → `username` and `Password:` → `password` over `vars.creds: [{username: admin, password: pw1}, {username: admin, password: pw2}]`, sends the same. A password-only login (e.g. `ssh admin@host`) works with the same prompt: the `username` entry just never matches.
+
+With single-pattern entries (`expect: ['login:', 'Password:']`) and the same literal `send`, the responses go out in order across the sets, whichever pattern matched: `admin`, `pw1`, `admin`, `pw2`. That suits devices that always prompt in the same order, and a lone prompt (e.g. a PIN) whose sets each hold one response.
 
 ### `fn`
 
@@ -314,11 +352,13 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
           - 'admin@host:~\$'
         return: true
       - name: host-login
-        expect:
-          - ['login:', 'Password:']
         send:
           each: vars.creds
-          fields: [username, password]
+          fields:
+            - match: 'login:'
+              field: username
+            - match: 'Password:'
+              field: password
     enter:
       - cmd: consutil connect 0
     script:
@@ -447,6 +487,38 @@ The prompt engine polls the session output in 5-second intervals:
 4. On overall timeout → raise `TimeoutError`
 
 This handles idle consoles that need a return press to display a prompt.
+
+## Migrating from 2026-08
+
+Version `2026-10` changes a `sendEach` with `fields`: each field is now an entry that names the prompt it answers, and the prompt has no `expect`. It also rejects `send` on a `return: true` prompt (see below). To migrate:
+1. Change `autobot: 2026-08` to `autobot: 2026-10`.
+2. In every prompt whose `send` has `fields` (top-level and block `prompts`), move the patterns from `expect` into the `fields` entries: the pattern that asks for a field becomes that entry's `match`, then remove `expect`.
+
+```yaml
+# 2026-08
+- name: login
+  expect:
+    - ['(?:L|l)ogin:', '(?:P|p)assword:']
+  send:
+    each: vars.creds
+    fields: [username, password]
+
+# 2026-10
+- name: login
+  send:
+    each: vars.creds
+    fields:
+      - match: '(?:L|l)ogin:'
+        field: username
+      - match: '(?:P|p)assword:'
+        field: password
+```
+
+Several patterns for the same field become one entry with a `match` list.
+
+A prompt with `return: true` and a `send` is now rejected (`return_with_send`). In 2026-08 it was accepted, but it was a shell prompt and its `send` was never used: remove `send`, or remove `return: true` if the prompt should respond.
+
+Everything else is unchanged: `expect`, `return` without `send`, the flat-list and list-of-lists `send` forms, and a `sendEach` without `fields` (whose `expect` entries must now be single regexes). A 2026-08 document fails validation with `unsupported_version` at `autobot`, and an old `fields` list with a `fields_entry` error per entry that names the new form (see [`sendEach`](#sendeach)).
 
 ## CLI
 

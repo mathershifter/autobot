@@ -9,11 +9,48 @@ from pydantic_core import PydanticCustomError
 
 from .types import Duration, Omittable, StringOrArray
 
+VERSION = "2026-10"
+
+
+def _custom(type_: str, msg: str) -> PydanticCustomError:
+    # the text goes through ctx, so braces in it survive
+    return PydanticCustomError(type_, "{msg}", {"msg": msg})
+
+
+def _error(type_: str, msg: str, loc: tuple, input_: Any) -> dict[str, Any]:
+    return {"type": _custom(type_, msg), "loc": loc, "input": input_}
+
+
+class FieldEntry(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    match: list[str]
+    field: str
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _reject_field_name(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            raise _custom(
+                "fields_entry",
+                "since 2026-10 a fields entry pairs a regex with a field: "
+                f"write {{match: <regex>, field: {data}}} (see \"Migrating from 2026-08\" in SPEC.md)",
+            )
+        return data
+
+    @pydantic.field_validator("match", mode="before")
+    @classmethod
+    def _match_list(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [v]
+        if v == []:
+            raise _custom("too_short", "match must be a regex or a non-empty list of regexes")
+        return v
+
 
 class SendEach(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     each: str
-    fields: Omittable[list[str]] = None
+    fields: Omittable[Annotated[list[FieldEntry], pydantic.Field(min_length=1)]] = None
 
     @pydantic.field_validator("each")
     @classmethod
@@ -26,9 +63,48 @@ class SendEach(pydantic.BaseModel):
 class Prompt(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
-    expect: list[str | list[str]]
+    expect: Omittable[list[str | list[str]]] = None
     send: Omittable[list[str] | list[list[str]] | SendEach] = None
     is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
+
+    @pydantic.field_validator("send", mode="wrap")
+    @classmethod
+    def _send(cls, v: Any, handler: pydantic.ValidatorFunctionWrapHandler) -> Any:
+        # a mapping can only be a sendEach: report its errors at send.<key>, not under each union member
+        return SendEach.model_validate(v) if isinstance(v, dict) else handler(v)
+
+    @pydantic.model_validator(mode="after")
+    def _check_expect(self) -> Prompt:
+        send = self.send if isinstance(self.send, SendEach) else None
+        errors = []
+        if self.is_shell_prompt and self.send is not None:
+            errors.append(_error(
+                "return_with_send",
+                "a return prompt is a shell prompt and sends nothing; remove send or return",
+                ("send",), self.model_dump(by_alias=True)["send"],
+            ))
+        if send and send.fields:
+            if self.expect is not None:
+                errors.append(_error(
+                    "expect_with_fields",
+                    "a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes",
+                    ("expect",), self.expect,
+                ))
+        elif self.expect is None:
+            errors.append({"type": "missing", "loc": ("expect",), "input": self.model_dump(by_alias=True)})
+        elif send:
+            errors += [
+                _error(
+                    "grouped_expect",
+                    "with sendEach without fields, each expect entry is a single regex; "
+                    "use fields to answer several prompts",
+                    ("expect", i), entry,
+                )
+                for i, entry in enumerate(self.expect) if isinstance(entry, list)
+            ]
+        if errors:
+            raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
+        return self
 
 
 class Function(pydantic.BaseModel):
@@ -208,8 +284,13 @@ class Config(pydantic.BaseModel):
     @pydantic.field_validator("autobot")
     @classmethod
     def _validate_autobot(cls, v: str) -> str:
-        if not re.fullmatch(r"\d{4}-\d{2}", v):
-            raise ValueError(f"autobot must be YYYY-MM format, got: {v}")
+        if v == "2026-08":
+            raise _custom(
+                "unsupported_version",
+                f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
+            )
+        if v != VERSION:
+            raise _custom("unsupported_version", f"unsupported autobot version {v!r}; expected {VERSION}")
         return v
     env: dict[str, str] = {}
     vars: dict[str, Any] = {}

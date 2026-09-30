@@ -49,21 +49,22 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
     if not isinstance(obj, list):
         raise fail(f"'{at}' is {_kind(obj)}, not a list")
 
+    fields = [e.field for e in send.fields or []]
     sets: list[list[str]] = []
     for i, item in enumerate(obj):
-        if not send.fields:
+        if not fields:
             if not _scalar(item):
                 raise fail(f"item {i} is {_kind(item)}; without fields each item must be a string, number or boolean")
             sets.append([str(item)])
             continue
         if not isinstance(item, dict):
             raise fail(f"item {i} is {_kind(item)}, not a mapping")
-        for f in send.fields:
+        for f in fields:
             if f not in item:
                 raise fail(f"item {i} has no field '{f}'")
             if not _scalar(item[f]):
                 raise fail(f"item {i} field '{f}' is {_kind(item[f])}, not a string, number or boolean")
-        sets.append([str(item[f]) for f in send.fields])
+        sets.append([str(item[f]) for f in fields])
     return sets
 
 
@@ -133,7 +134,12 @@ class Runner:
     def build_handler(self, prompt: Prompt) -> PromptHandler:
         patterns: list[str] = []
         slots: list[int | None] = []
-        for entry in prompt.expect:
+        if isinstance(prompt.send, SendEach) and prompt.send.fields:
+            # entry k's regexes are alternatives that send field k of the current item
+            for k, entry in enumerate(prompt.send.fields):
+                patterns.extend(entry.match)
+                slots.extend([k] * len(entry.match))
+        for entry in prompt.expect or []:
             if isinstance(entry, list):
                 patterns.extend(entry)
                 slots.extend(range(len(entry)))

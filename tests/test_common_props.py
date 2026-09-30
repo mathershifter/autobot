@@ -21,7 +21,7 @@ COMMON = {"after": "x", "when": "true", "delay_before": "1s", "delay_after": "1s
 
 def doc(step: dict[str, Any]) -> dict[str, Any]:
     return {
-        "autobot": "2026-08",
+        "autobot": "2026-10",
         "attach": {"spawn": "sh"},
         "fn": {"f": {"script": []}},
         "script": [step],

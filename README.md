@@ -31,7 +31,7 @@ If the script can't be loaded, the CLI prints one error on stderr and exits with
 A script is a YAML file with the following top-level fields:
 
 ```yaml
-autobot: 2026-08
+autobot: 2026-10
 
 env:                    # string key-value defaults (overridden by OS env vars)
   IMAGE_URL: https://...
@@ -68,7 +68,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `autobot` | yes      | Schema version in `YYYY-MM` format (e.g. `2026-08`)                                                                             |
+| `autobot` | yes      | Schema version: `2026-10`. Scripts written for `2026-08` need one change, see [Migrating from 2026-08](SPEC.md#migrating-from-2026-08) |
 | `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
@@ -125,7 +125,7 @@ attach:
 
 Prompts define how autobot recognizes and responds to interactive patterns in the session output.
 
-A prompt with `return: true` (or no `send` field) is a **shell prompt** — when matched, autobot knows the previous command finished and the next one can be sent:
+A prompt with `return: true` (or no `send` field) is a **shell prompt** — when matched, autobot knows the previous command finished and the next one can be sent. A `return: true` prompt can't have `send` (it would never be sent); the script fails validation with `return_with_send`:
 
 ```yaml
 - name: cli
@@ -141,9 +141,7 @@ A prompt with `send` is an **interactive prompt** — autobot responds automatic
 - name: login
   expect:
     - ['(?:L|l)ogin:', '(?:P|p)assword:']
-  send:
-    each: vars.creds
-    fields: [username, password]
+  send: [admin, password]
 ```
 
 The `expect` field is a list of patterns. Each entry can be a string or a list of strings (a grouped entry). Responses are organized in credential sets (one per login attempt, see the send forms below):
@@ -171,17 +169,31 @@ send:
   - ["admin", "password2"]
 ```
 
-**sendEach** — data-driven responses from `vars`:
+**sendEach** — data-driven responses from `vars`. Each `fields` entry pairs the prompt it answers (`match`: a regex, or a list of alternative regexes) with the item field it sends, so the prompt has no `expect`:
 
 ```yaml
-send:
-  each: vars.creds
-  fields: [username, password]
+- name: login
+  send:
+    each: vars.creds
+    fields:
+      - match: ['(?:L|l)ogin:', 'Username:']
+        field: username
+      - match: '(?:P|p)assword:'
+        field: password
 ```
 
-This resolves `vars.creds`, and each item becomes a credential set of the named fields, in order. Without `fields`, each item is a set of one response (the item as a string).
+This resolves `vars.creds`, and each item is one login attempt. Each entry sends its field of the current item when one of its regexes matches; when the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt.
 
-`each` must be a path of keys under `vars` (e.g. `vars.creds` or `vars.site.creds`) that leads to a list. With `fields`, every item must be a mapping with all the fields; without it, every item must be a string, number or boolean. A path or item that doesn't fit stops the script: before anything runs for the top-level prompts, or on entering the block for a block's prompts. For example: `prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'`. See [SPEC.md](SPEC.md#sendeach).
+Without `fields`, each item (a string, number or boolean) is sent as it is, in answer to any of the prompt's `expect` regexes, which must be single strings, not groups:
+
+```yaml
+- name: pin
+  expect: ['PIN:']
+  send:
+    each: vars.pins
+```
+
+`each` must be a path of keys under `vars` (e.g. `vars.creds` or `vars.site.creds`) that leads to a list. With `fields`, every item must be a mapping with each entry's field; without it, every item must be a string, number or boolean. A path or item that doesn't fit stops the script: before anything runs for the top-level prompts, or on entering the block for a block's prompts. For example: `prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'`. See [SPEC.md](SPEC.md#sendeach).
 
 ## Step Types
 
@@ -474,6 +486,6 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-08.json`](schemas/autobot.2026-08.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
+The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).

@@ -34,7 +34,7 @@ registry_mod = importlib.import_module("autobot.registry")
 runner_mod = importlib.import_module("autobot.runner")
 
 ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_PATH = ROOT / "schemas" / "autobot.2026-08.json"
+SCHEMA_PATH = ROOT / "schemas" / "autobot.2026-10.json"
 DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 # -- F1: real local shell ----------------------------------------------------
@@ -84,7 +84,7 @@ def make_doc(
     if prepare is not None:
         attach["prepare"] = prepare
     doc: dict[str, Any] = {
-        "autobot": "2026-08",
+        "autobot": "2026-10",
         "prompts": [SHELL_PROMPT] if prompts is _DEFAULT else prompts,
         "attach": attach,
         "script": script,
@@ -126,7 +126,7 @@ def run_vars(script: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
 def steps(items: list[dict[str, Any]]) -> list:
     """Validate a list of step dicts through ``Config``."""
     return Config.model_validate(
-        {"autobot": "2026-08", "attach": {"spawn": BASH}, "script": items}
+        {"autobot": "2026-10", "attach": {"spawn": BASH}, "script": items}
     ).script
 
 

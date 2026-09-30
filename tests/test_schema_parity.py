@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44: the pydantic models and schemas/autobot.2026-08.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -13,11 +13,12 @@ from typing import Any
 import pydantic
 import pytest
 from conftest import model_ok
+from test_models import RETURN_BAD, RETURN_OK, SEND_EACH_BAD, SEND_EACH_OK
 
 from autobot import models
 from autobot.models import Config
 
-MIN: dict[str, Any] = {"autobot": "2026-08", "attach": {"spawn": "ssh host"}, "script": []}
+MIN: dict[str, Any] = {"autobot": "2026-10", "attach": {"spawn": "ssh host"}, "script": []}
 
 
 def d(**kw: Any) -> dict[str, Any]:
@@ -32,6 +33,9 @@ def s(*steps: dict[str, Any]) -> dict[str, Any]:
 
 def prompt(**kw: Any) -> dict[str, Any]:
     return d(prompts=[{"name": "p", "expect": ["x"], **kw}])
+
+
+FIELDS = [{"match": ["login:", "Username:"], "field": "u"}, {"match": "Password:", "field": "p"}]
 
 
 ACCEPT = {
@@ -78,9 +82,9 @@ ACCEPT = {
     ),
     "send-flat": prompt(send=["a", "b"]),
     "send-grouped": prompt(send=[["a", "b"], ["c", "d"]]),
-    "send-each": prompt(send={"each": "vars.creds", "fields": ["u", "p"]}),
+    "send-each": d(prompts=[{"name": "p", "send": {"each": "vars.creds", "fields": FIELDS}}]),
     "send-each-no-fields": prompt(send={"each": "vars.pins"}),
-    "send-each-nested": prompt(send={"each": "vars.site.creds", "fields": ["u", "p"]}),
+    "send-each-nested": d(prompts=[{"name": "p", "send": {"each": "vars.site.creds", "fields": FIELDS}}]),
     "expect-grouped": d(prompts=[{"name": "p", "expect": [["login:", "Password:"]]}]),
     "nested-block": s(
         {
@@ -122,6 +126,9 @@ REJECT = {
     "send-each-bare-key": prompt(send={"each": "creds"}),
     "send-each-bare-vars": prompt(send={"each": "vars"}),
     "send-each-empty-key": prompt(send={"each": "vars..creds"}),
+    "old-version": d(autobot="2026-08"),
+    "other-version": d(autobot="2026-11"),
+    "send-each-old-fields-list": d(prompts=[{"name": "p", "send": {"each": "vars.creds", "fields": ["u", "p"]}}]),
 }
 
 
@@ -148,15 +155,13 @@ def test_p6_13_parity_mixed_expect(both_validate: Callable):
     assert both_validate(doc) == (True, True)
 
 
-def test_p6_14_parity_version_trailing_newline():
-    """SPEC.md:24: ``"2026-08\\n"`` is not YYYY-MM; the model rejects it (finding #11).
+def test_p6_14_parity_version_trailing_newline(both_validate: Callable):
+    """SPEC "Top-level fields": ``"2026-10\\n"`` is not ``2026-10`` (finding #11).
 
-    Only the model side is asserted. Python's ``jsonschema`` evaluates
-    ``pattern`` with ``re.search``, where ``$`` also matches before a
-    trailing newline, so the Python validator accepts it too (an ECMA-262
-    validator would not).
+    The schema's ``const`` compares whole strings, so both reject it now
+    (with the old ``pattern``, Python's ``re.search`` accepted it).
     """
-    assert model_ok(d(autobot="2026-08\n")) is False
+    assert both_validate(d(autobot="2026-10\n")) == (False, False)
 
 
 # -- P6-15..18: the schema is normative (decision #11) ----------------------
@@ -247,11 +252,33 @@ def _step_host(base: dict[str, Any]) -> tuple[Build, Get]:
     return build, lambda c: c.script[0]
 
 
+# a value that drops its key from the built document, so P6-42 can omit a key the host sets
+OMIT: Any = object()
+
+
+def _drop_omitted(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {k: _drop_omitted(v) for k, v in node.items() if v is not OMIT}
+    if isinstance(node, list):
+        return [_drop_omitted(v) for v in node]
+    return node
+
+
+def _prompt_host(fields: dict[str, Any]) -> dict[str, Any]:
+    """A prompt needs expect, or a send with fields entries (and then no expect); keep the tested key free."""
+    base = (
+        {"name": "p", "expect": ["x"]}
+        if "send" in fields
+        else {"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": "f"}]}}
+    )
+    return d(prompts=[{**base, **fields}])
+
+
 HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
     models.Config: (lambda f: d(**f), lambda c: c),
     models.Attach: (lambda f: d(attach={"spawn": "ssh host", **f}), lambda c: c.attach),
     models.Breakout: (lambda f: d(attach={"spawn": "ssh host", "breakout": f}), lambda c: c.attach.breakout),
-    models.Prompt: (lambda f: prompt(**f), lambda c: c.prompts[0]),
+    models.Prompt: (lambda f: _prompt_host(f), lambda c: c.prompts[0]),
     models.SendEach: (lambda f: prompt(send={"each": "vars.c", **f}), lambda c: c.prompts[0].send),
     models.Block: (lambda f: s({"block": {"name": "b", **f}}), lambda c: c.script[0].block),
     models.CmdStep: _step_host({"cmd": "x"}),
@@ -311,7 +338,7 @@ def test_p6_42_omitted_optional_field_gets_default(
 ):
     """Omitting an optional key is valid for both, and the model gives the field its default."""
     build, get = HOSTS[model]
-    doc = build({})
+    doc = _drop_omitted(build({key: OMIT}))
     assert both_validate(doc) == (True, True)
     name, default = optional_fields(model)[key]
     assert getattr(get(Config.model_validate(doc)), name) == default
@@ -336,3 +363,33 @@ def test_p6_44_parity_null_sleep(both_validate: Callable):
     [err] = model_errors(doc)
     assert err["loc"] == ("script", 0, "sleep", "sleep")
     assert err["msg"] == "Value error, invalid duration: null"
+
+
+# -- P6-49: sendEach fields entries, model and schema agree -----------------
+
+
+@pytest.mark.parametrize("doc", list(SEND_EACH_OK.values()), ids=list(SEND_EACH_OK))
+def test_p6_49_parity_send_each_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC sendEach: every accepted shape is accepted by both."""
+    assert both_validate(doc) == (True, True)
+
+
+@pytest.mark.parametrize("doc", [c[0] for c in SEND_EACH_BAD.values()], ids=list(SEND_EACH_BAD))
+def test_p6_49_parity_send_each_rejected(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC sendEach: every rule is in the schema too, so no rejection is model-only."""
+    assert both_validate(doc) == (False, False)
+
+
+# -- P6-51: a return prompt has no send -------------------------------------
+
+
+@pytest.mark.parametrize("doc", list(RETURN_OK.values()), ids=list(RETURN_OK))
+def test_p6_51_parity_return_without_send_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts: both accept `return: true` without send, and send with `return: false`."""
+    assert both_validate(doc) == (True, True)
+
+
+@pytest.mark.parametrize("doc", [c[0] for c in RETURN_BAD.values()], ids=list(RETURN_BAD))
+def test_p6_51_parity_return_with_send_rejected(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts: both reject `return: true` with any send form, including a fields prompt with no expect."""
+    assert both_validate(doc) == (False, False)
