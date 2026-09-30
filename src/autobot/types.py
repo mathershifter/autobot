@@ -5,6 +5,7 @@ from typing import Annotated, Any
 
 import jinja2
 import pydantic
+from pydantic_core import PydanticCustomError
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)$")
@@ -16,7 +17,7 @@ _jinja_env.filters["search"] = lambda s, pattern: bool(re.search(pattern, str(s)
 
 def parse_duration(value: Any) -> float:
     if value is None:
-        return 0
+        raise ValueError("invalid duration: null")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if value < 0:
             raise ValueError(f"invalid duration: {value}")
@@ -27,8 +28,16 @@ def parse_duration(value: Any) -> float:
     raise ValueError(f"invalid duration: {value}")
 
 
+def reject_null(value: Any) -> Any:
+    if value is None:
+        raise PydanticCustomError("null_value", "null (an empty value) is not allowed; omit the key instead")
+    return value
+
+
 Duration = Annotated[float, pydantic.BeforeValidator(parse_duration)]
 StringOrArray = str | list[str]
+# an optional field: the key may be omitted (the field is then None), but an explicit null is rejected
+type Omittable[T] = Annotated[T | None, pydantic.BeforeValidator(reject_null)]
 
 
 def render(template: Any, ctx: dict) -> Any:

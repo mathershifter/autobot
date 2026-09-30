@@ -7,13 +7,13 @@ from typing import Annotated, Any
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, StringOrArray
+from .types import Duration, Omittable, StringOrArray
 
 
 class SendEach(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     each: str
-    fields: list[str] | None = None
+    fields: Omittable[list[str]] = None
 
     @pydantic.field_validator("each")
     @classmethod
@@ -27,7 +27,7 @@ class Prompt(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
     expect: list[str | list[str]]
-    send: list[str] | list[list[str]] | SendEach | None = None
+    send: Omittable[list[str] | list[list[str]] | SendEach] = None
     is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
 
 
@@ -38,25 +38,25 @@ class Function(pydantic.BaseModel):
 
 class Attach(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    prepare: str | None = None
+    prepare: Omittable[str] = None
     spawn: str
-    timeout: Duration | None = None
-    env: dict[str, str] | None = None
+    timeout: Omittable[Duration] = None
+    env: Omittable[dict[str, str]] = None
     script: list[Step] = []
-    breakout: Breakout | None = None
+    breakout: Omittable[Breakout] = None
 
 
 class CmdStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     cmd: StringOrArray
-    after: str | None = None
-    when: str | None = None
-    assert_: StringOrArray | None = pydantic.Field(None, alias="assert")
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    assert_: Omittable[StringOrArray] = pydantic.Field(None, alias="assert")
     ignore_error: bool = pydantic.Field(False, strict=True)
-    register_: str | None = pydantic.Field(None, alias="register")
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
+    register_: Omittable[str] = pydantic.Field(None, alias="register")
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
 
 
 class SleepStep(pydantic.BaseModel):
@@ -67,11 +67,11 @@ class SleepStep(pydantic.BaseModel):
 class CallStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     call: str
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
 
 
 class Breakout(pydantic.BaseModel):
@@ -85,55 +85,55 @@ class Block(pydantic.BaseModel):
     prompts: list[Prompt] = []
     enter: list[Step] = []
     script: list[Step] = []
-    breakout: Breakout | None = None
+    breakout: Omittable[Breakout] = None
 
 
 class BlockStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     block: Block
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
 
 
 class LineStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     line: StringOrArray
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
 
 
 class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     newline_count: int = pydantic.Field(alias="return", ge=1, strict=True)
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
 
 
 class ControlStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     control: StringOrArray
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
 
 
 class PluginStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="allow")
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
-    after: str | None = None
-    when: str | None = None
-    delay_before: Duration | None = None
-    delay_after: Duration | None = None
-    timeout: Duration | None = None
+    after: Omittable[str] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
 
     @pydantic.model_validator(mode="before")
     @classmethod

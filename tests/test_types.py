@@ -25,7 +25,6 @@ from autobot.types import (
         ("2m", 120.0),
         ("1h", 3600.0),
         ("1.5s", 1.5),
-        (None, 0),
     ],
 )
 def test_p8_01_parse_duration(value: Any, seconds: float):
@@ -33,11 +32,17 @@ def test_p8_01_parse_duration(value: Any, seconds: float):
     assert parse_duration(value) == seconds
 
 
-@pytest.mark.parametrize("value", ["5", "5x", "", "ms", "-1s", "1.5.5s"])
-def test_p8_01_parse_duration_invalid(value: str):
-    """SPEC.md:307-313: strings without a valid unit are rejected."""
+@pytest.mark.parametrize("value", ["5", "5x", "", "ms", "-1s", "1.5.5s", None])
+def test_p8_01_parse_duration_invalid(value: str | None):
+    """SPEC.md:307-313: strings without a valid unit, and null, are rejected."""
     with pytest.raises(ValueError, match="invalid duration"):
         parse_duration(value)
+
+
+def test_p8_01_parse_duration_null_message():
+    """A null is reported with its YAML name, not Python's ``None``."""
+    with pytest.raises(ValueError, match="^invalid duration: null$"):
+        parse_duration(None)
 
 
 def test_p8_02_ensure_list():

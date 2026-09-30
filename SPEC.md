@@ -17,6 +17,8 @@ YAML script → pydantic validation → Runner → Session (pexpect) → remote 
 
 All fields validated by pydantic against `schemas/autobot.2026-08.json`. The JSON schema is normative: the models reject every document the schema rejects, and accept what it accepts except where a static schema can't decide. One such case is step keys. A static schema can't know which plugins are installed, so its `pluginStep` accepts any object that has no built-in step key. The models accept a step key that isn't built in only if an installed plugin registers it, and otherwise reject the step (`invalid_step`).
 
+An optional field is either omitted or given a value of its type. An explicit `null`, including a key with an empty YAML value (`after:`, `timeout: ~`), is invalid for every optional field, including the common step properties of plugin steps: omit the key instead to get the default. The error type is `null_value`, located at the key. A plugin's own fields follow the plugin's model.
+
 ### Top-level fields
 
 | Field | Required | Description |
@@ -128,7 +130,7 @@ fn:
 | `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Uses the shebang to determine the interpreter. Aborts if the script exits non-zero. Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). |
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`) |
 | `timeout` | no | Timeout for the initial spawn (duration) |
-| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
+| `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. An empty value (`env:`) is invalid, like any explicit `null`. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
 | `script` | no | Steps to run immediately after spawn (before main script) |
 | `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect) |
 
@@ -391,7 +393,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 - `2m` — 2 minutes
 - `1h` — 1 hour
 
-A bare number must be ≥ 0; a boolean is not a duration. A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected).
+A bare number must be ≥ 0; a boolean is not a duration, and neither is `null` (so `sleep:` with no value is rejected). A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected).
 
 ## Jinja2 Templating
 
