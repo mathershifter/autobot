@@ -22,12 +22,12 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 20 | 0 | 0 | 20 | 4 |
-| P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
-| P6 | model / schema / example / CLI parity | 37 | 0 | 0 | 37 | 0 |
+| P4 | `get_prompt`, prompts, credential cycling | 23 | 0 | 0 | 23 | 4 |
+| P5 | attach / block lifecycles, env | 27 | 0 | 0 | 27 | 0 |
+| P6 | model / schema / example / CLI parity | 40 | 0 | 0 | 40 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **162** | **0** | **0** | **162** | **5** |
+| **Total** | | **170** | **0** | **0** | **170** | **5** |
 
 A parametrized test counts as one test.
 
@@ -115,7 +115,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 |--------------|----------------|----------------|
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 |
 | Top-level fields, `autobot` version (SPEC.md:20-31) | none | P6-05, P6-15 |
-| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P6-07/08 |
+| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..23, P5-25/26, P6-07/08, P6-38..40 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-09 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
@@ -244,7 +244,11 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 
 Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt match (SPEC.md:294). This is folded into P4-01, not counted separately.
 
-Totals: 20 pass (P4-01..20). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
+| P4-21 | `test_send_each_nested_path_ignores_other_keys` | `sendEach` | F2 `--accept admin:pass2`, `each: vars.site.creds`, `fields: [username, password]`, the first item has an extra `note` key | same log as P4-12 (only the named fields are sent) | pass |
+| P4-22 | `test_send_each_scalar_items_without_fields` | `sendEach` | F2 `--order password --accept :True`, `vars.pins: ["1111", 2.5, true]`, no `fields` | log `PASSWORD=1111`, `PASSWORD=2.5`, `PASSWORD=True` | pass |
+| P4-23 | `test_send_each_empty_list_fails_at_send_time` | `sendEach`, Response selection | F2, `vars.creds: []` | the `Runner` builds; `get_prompt` raises `RuntimeError` `prompt 'login': no response available` | pass |
+
+Totals: 23 pass (P4-01..23). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
 
 ## P5: attach and block lifecycles, env
 
@@ -276,8 +280,10 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-22 | `test_env_cycle_too_deep` | 25 | `env: {A: "{{ env.B }}x", B: "{{ env.A }}"}` | `Runner(...)` raises `ValueError` matching `nesting too deep` | pass |
 | P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | pass (was xfail #2) |
 | P5-24 | `test_attach_timeout_default_and_spawn_templated` | 73-74, 317 | F5 recorder, `spawn: "{{ env.SH }}"`, no `timeout` | recorded spawn is the rendered string; `timeout == 300` | pass |
+| P5-25 | `test_block_send_each_error_aborts_at_entry` (parametrized: `vars.nope`; `vars.creds` overwritten by an earlier `register`) | `sendEach` | F1, block prompt `sendEach` with `fields`; `enter`, `script`, block breakout, a later step and the attach breakout each append a tag to `tmp_path/log` | `run()` raises `ValueError` exactly `prompt 'login': sendEach '<each>': no key 'nope' in 'vars'` / `'vars.creds' is a string, not a list`; log is only `attach-breakout`; handlers `["top"]` | pass |
+| P5-26 | `test_block_send_each_valid` | `sendEach` | F1, F6 probe, same block with a valid `vars.creds` | log `enter, script, block-breakout`; the probe inside sees `["blk", "login"]`; handlers `["top"]` afterwards | pass |
 
-Totals: 25 pass.
+Totals: 27 pass.
 
 ## P6: model, schema, example and CLI parity
 
@@ -295,8 +301,8 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-08 | `test_expect_forms` | 37 | model | list of strings, list of lists, and mixed `["a", ["b", "c"]]` accepted | pass |
 | P6-09 | `test_duration_values` (parametrized) | 307-313 | model via `sleep` | `5`→5.0, `5s`, `500ms`→0.5, `2m`→120, `1h`→3600, `1.5s`→1.5, `1.5`→1.5 accepted; `"5"`, `5x`, `""`, `ms`, `1 s`, `-1s` rejected | pass |
 | P6-10 | `test_schema_is_valid_draft_2020_12` | 12 | F7 | `Draft202012Validator.check_schema(schema)` | pass |
-| P6-11 | `test_parity_accept_corpus` (parametrized) | 12 | F7 `both_validate` | a corpus of valid docs (minimal; every step type; every send form; grouped expect; nested block; fn; each duration form) → `(True, True)` | pass |
-| P6-12 | `test_parity_reject_corpus` (parametrized) | 12 | F7 | invalid docs (missing required, extra keys, bad version, bad duration, sleep+when, line+timeout, mixed send) → `(False, False)` | pass |
+| P6-11 | `test_parity_accept_corpus` (parametrized) | 12 | F7 `both_validate` | a corpus of valid docs (minimal; every step type; every send form; a nested `sendEach` path; grouped expect; nested block; fn; each duration form) → `(True, True)` | pass |
+| P6-12 | `test_parity_reject_corpus` (parametrized) | 12 | F7 | invalid docs (missing required, extra keys, bad version, bad duration, sleep+when, line+timeout, mixed send, a `sendEach` path not of the form `vars.<key>...`) → `(False, False)` | pass |
 | P6-13 | `test_parity_mixed_expect` | 37 | F7 | `expect: ["a", ["b", "c"]]` → `(True, True)`. SPEC allows it; the schema now uses `items: stringOrArray`. | pass (was xfail #11) |
 | P6-14 | `test_parity_version_trailing_newline` | 24 | F7 | `autobot: "2026-08\n"` → model rejects (`re.fullmatch`). | pass (was xfail #11) |
 | P6-15 | `test_parity_return_minimum` | 258-263 | F7 | `return: 0`, `-2`, `true` and `"1"` → `(False, False)` | pass (was todo #11) |
@@ -322,8 +328,11 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-35 | `test_cli_merge_key_override_is_accepted` | CLI | CLI, F1; `vars.over: {<<: *base, b: 3}` with `base: {a: 1, b: 2}` | rc 0; `over-1-3` in stdout | pass |
 | P6-36 | `test_merge_keys_load_like_safe_load` (parametrized: override, `<<: [*a, *b]` plus override, a node merged before it's aliased, a plain `=` key) | CLI | in-process | `UniqueKeyLoader` result equals `yaml.safe_load` | pass |
 | P6-37 | `test_cli_keys_that_only_look_alike_are_accepted` | CLI | CLI, F1; `vars.m: {1: int, "1": str}` | rc 0; `keys-2-int-str` in stdout | pass |
+| P6-38 | `test_cli_send_each_error_is_clean_error` (parametrized: missing key, missing nested key, missing middle key, path through a string, path through a list, a string / number / null / mapping instead of a list, item missing a field, item not a mapping, null field, mapping item without `fields`) | CLI, `sendEach` | CLI; top-level prompt `sendEach`; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: prompt 'login': sendEach '<each>': <problem>`; neither marker exists | pass |
+| P6-39 | `test_cli_send_each_path_outside_vars_is_validation_error` (parametrized: `env.HOME`, `args.pw`, `session.before`, `creds`, `vars`, `vars..creds`, `vars.creds.`) | CLI, `sendEach` | as P6-38 | rc 1; first line `Validation errors:`; stderr has `each must be a path under vars, like vars.creds, got: <each>`; neither marker exists | pass |
+| P6-40 | `test_cli_valid_send_each_runs` (parametrized: nested path with `fields`; string/number/boolean items without `fields`; strings without `fields`) | CLI, `sendEach` | CLI, F1, top-level prompt `sendEach` that never fires | rc 0; `got-2-hi` in stdout | pass |
 
-Totals: 37 pass.
+Totals: 40 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 

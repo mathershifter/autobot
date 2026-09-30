@@ -19,6 +19,51 @@ console = Console(stderr=True, markup=False, soft_wrap=True)
 
 register_builtins(registry)
 
+_KINDS = {dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean"}
+
+
+def _kind(value: Any) -> str:
+    return "null" if value is None else _KINDS.get(type(value), f"a {type(value).__name__}")
+
+
+def _scalar(value: Any) -> bool:
+    return value is not None and not isinstance(value, (dict, list))
+
+
+def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list[str]]:
+    """Credential sets from `send.each` (a `vars.a.b` path of mapping keys), one per item."""
+
+    def fail(problem: str) -> ValueError:
+        return ValueError(f"prompt '{name}': sendEach '{send.each}': {problem}")
+
+    obj: Any = vars
+    at = "vars"
+    for key in send.each.split(".")[1:]:
+        if not isinstance(obj, dict):
+            raise fail(f"'{at}' is {_kind(obj)}, not a mapping")
+        if key not in obj:
+            raise fail(f"no key '{key}' in '{at}'")
+        obj, at = obj[key], f"{at}.{key}"
+    if not isinstance(obj, list):
+        raise fail(f"'{at}' is {_kind(obj)}, not a list")
+
+    sets: list[list[str]] = []
+    for i, item in enumerate(obj):
+        if not send.fields:
+            if not _scalar(item):
+                raise fail(f"item {i} is {_kind(item)}; without fields each item must be a string, number or boolean")
+            sets.append([str(item)])
+            continue
+        if not isinstance(item, dict):
+            raise fail(f"item {i} is {_kind(item)}, not a mapping")
+        for f in send.fields:
+            if f not in item:
+                raise fail(f"item {i} has no field '{f}'")
+            if not _scalar(item[f]):
+                raise fail(f"item {i} field '{f}' is {_kind(item[f])}, not a string, number or boolean")
+        sets.append([str(item[f]) for f in send.fields])
+    return sets
+
 
 class Runner:
     def __init__(self, config: Config, cli_args: dict[str, str]):
@@ -49,7 +94,10 @@ class Runner:
             else:
                 patterns.append(entry)
                 slots.append(None)
-        responses = self._build_responses(prompt.send)
+        if isinstance(prompt.send, SendEach):
+            responses = send_each_sets(prompt.name, prompt.send, self._config.vars)
+        else:
+            responses = self._build_responses(prompt.send)
         is_return = prompt.is_shell_prompt or prompt.send is None
         # literal send strings are templates, rendered as each one is sent
         render = None if isinstance(prompt.send, SendEach) else self.render
@@ -59,11 +107,6 @@ class Runner:
         """Credential sets, one list per attempt; literal strings stay unrendered."""
         if not send:
             return []
-        if isinstance(send, SendEach):
-            items = self._resolve(send.each)
-            if send.fields:
-                return [[str(item[f]) for f in send.fields] for item in items]
-            return [[str(item)] for item in items]
         sets = send if isinstance(send[0], list) else [send]
         for s in (s for attempt in sets for s in attempt):
             check_template(s)
@@ -97,16 +140,6 @@ class Runner:
             "args": self._cli_args,
             "session": self._session.ctx,
         }
-
-    def _resolve(self, path: str) -> Any:
-        parts = path.split(".")
-        obj: Any = self._ctx
-        for part in parts:
-            if isinstance(obj, dict):
-                obj = obj[part]
-            else:
-                obj = getattr(obj, part)
-        return obj
 
     def render(self, template: Any, extra_ctx: dict | None = None) -> str:
         ctx = self._ctx

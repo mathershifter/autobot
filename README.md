@@ -181,6 +181,8 @@ send:
 
 This resolves `vars.creds`, and each item becomes a credential set of the named fields, in order. Without `fields`, each item is a set of one response (the item as a string).
 
+`each` must be a path of keys under `vars` (e.g. `vars.creds` or `vars.site.creds`) that leads to a list. With `fields`, every item must be a mapping with all the fields; without it, every item must be a string, number or boolean. A path or item that doesn't fit stops the script: before anything runs for the top-level prompts, or on entering the block for a block's prompts. For example: `prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'`. See [SPEC.md](SPEC.md#sendeach).
+
 ## Step Types
 
 ### `cmd` — Send command(s) to the shell

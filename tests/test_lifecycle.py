@@ -465,6 +465,63 @@ def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
     assert "block breakout error (StepFailure)" in capsys.readouterr().err
 
 
+CREDS = [{"username": "admin", "password": "pw"}]
+
+
+def _send_each_block(each: str, log: Path) -> dict:
+    def tag(t: str) -> dict:
+        return {"cmd": f"echo {t} >> {log}"}
+
+    login = {"name": "login", "expect": ["login:", "Password:"], "send": {"each": each, "fields": ["username", "password"]}}
+    return {
+        "block": {
+            "name": "b",
+            "prompts": [*BLOCK_PROMPTS, login],
+            "enter": [tag("enter")],
+            "script": [tag("script")],
+            "breakout": {"script": [tag("block-breakout")]},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("before", "each", "problem"),
+    [
+        ([], "vars.nope", "no key 'nope' in 'vars'"),
+        ([{"cmd": "echo hi", "register": "creds"}], "vars.creds", "'vars.creds' is a string, not a list"),
+    ],
+    ids=["missing-key", "overwritten-by-register"],
+)
+def test_p5_25_block_send_each_error_aborts_at_entry(tmp_path: Path, before: list, each: str, problem: str):
+    """SPEC sendEach: a block's collection is resolved on entry, with `vars` as registered so far.
+
+    An error stops the run before `enter`; the block's breakout doesn't run, the attach breakout does,
+    and the handlers were never swapped.
+    """
+    log = tmp_path / "log"
+    runner = top_runner(
+        [*before, _send_each_block(each, log), {"cmd": f"echo after >> {log}"}],
+        breakout=[{"cmd": f"echo attach-breakout >> {log}"}],
+        vars={"creds": CREDS},
+    )
+    with pytest.raises(ValueError) as ei:
+        runner.run()
+    assert str(ei.value) == f"prompt 'login': sendEach '{each}': {problem}"
+    assert log.read_text().split() == ["attach-breakout"]
+    assert handler_names(runner) == ["top"]
+
+
+def test_p5_26_block_send_each_valid(tmp_path: Path, probe: ProbeExecutor):
+    """SPEC sendEach: a block's resolvable collection loads on entry and the block runs."""
+    log = tmp_path / "log"
+    blk = _send_each_block("vars.creds", log)
+    blk["block"]["script"].append({"probe": "inside"})
+    runner = run_script([blk], prompts=TOP_PROMPTS, vars={"creds": CREDS})
+    assert log.read_text().split() == ["enter", "script", "block-breakout"]
+    assert probe.by_name("inside")["handlers"] == ["blk", "login"]
+    assert handler_names(runner) == ["top"]
+
+
 # -- P5: attach spawn arguments ---------------------------------------------
 
 
