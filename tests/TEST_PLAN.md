@@ -22,16 +22,18 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 23 | 0 | 0 | 23 | 4 |
+| P4 | `get_prompt`, prompts, credential cycling | 23 | 0 | 0 | 23 | 3 |
 | P5 | attach / block lifecycles, env | 27 | 0 | 0 | 27 | 0 |
 | P6 | model / schema / example / CLI parity | 40 | 0 | 0 | 40 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **170** | **0** | **0** | **170** | **5** |
+| **Total** | | **170** | **0** | **0** | **170** | **4** |
 
 A parametrized test counts as one test.
 
 ## Fixtures (F1 to F7)
+
+F3 was retired: nothing used it, and it has been removed from `conftest.py` (see [F3](#f3-retired)).
 
 All shared fixtures go in `tests/conftest.py`. Device fakes go in `tests/fakes/`. The four copies of a `run()` helper in `test_output_capture.py`, `test_embedded_script.py`, `test_plugin_common_props.py` and `test_lifecycle.py` get folded into F1 in the same PR that adds the fixtures. That refactor must not change what those tests assert.
 
@@ -61,12 +63,11 @@ Options:
 
 | Option | Behavior |
 |--------|----------|
-| `--banner TEXT` | printed first (default `Welcome`) |
+| (no option) | the banner `Welcome` is printed first |
 | `--wait-enter` | after the banner, block on one input line before prompting. Tests stay deterministic: the device only continues when Autobot sends something. |
 | `--same-chunk` | write the banner and the first prompt in one `os.write` (reproduces #3) |
 | `--order login,password` / `password,login` / `password` / `none` | prompt sequence per attempt; `login:` / `Password:` text. `none` skips authentication (used for shell-prompt-only tests). |
 | `--accept USER:PASS` (repeatable) | credentials that succeed. A rejected attempt prints `Login incorrect` and restarts the sequence. |
-| `--max-attempts N` | after N failures, print `Too many failures` and keep prompting (used for exhaustion) |
 | `--post-auth-delay SECS` | sleep before printing the shell prompt after auth (for "no solicit after handler") |
 | `--repeat N` | after auth, print `PROMPT$ `, read one line, and run the whole login sequence again (N times) |
 | `--silent` | turn off tty echo, print the banner and never print anything else (read and log input as `SILENT=`) |
@@ -76,11 +77,9 @@ Options:
 
 Every line the device reads is appended to `log_path` as `<PROMPT>=<value>` (e.g. `LOGIN=admin`, `PASSWORD=secret`, `ENTER=`, `RAW=1d`). Tests assert on the log file, not on parsed pty output. Before each prompt, the device flushes stdout.
 
-### F3: `FakeSession` / `FakeCtx` (`tests/conftest.py`)
+### F3 (retired)
 
-These are in-process doubles that implement `RunnerContext` (`session`, `config`, `render`, `run_steps`, `build_handler`). `FakeSession` records `sendline`, `sendcontrol`, `get_prompt(timeout, errors)`, `expect`, `sleep`, `check_rc`, `save_handlers`, `restore_handlers` and `reset_handlers` into `events: list[tuple]`. It returns scripted values from queues, and a queued `BaseException` instance is raised instead of returned. `FakeCtx.render` uses `autobot.types.render` with a plain dict. `run_steps` runs through the real registry executors.
-
-Use F3 only when a local shell can't produce the condition deterministically. In this plan that is: a `get_prompt` that raises `ValueError`/`EOFError` at an exact point for the P1-20 (#10) tests. Everything else uses F1/F2.
+F3 was planned as in-process `FakeSession`/`FakeCtx` doubles implementing `RunnerContext`, for a `get_prompt` that raises `ValueError`/`EOFError` at an exact point in the P1-20 (#10) tests. Those tests use the real shell for every case, so the doubles had no users and were removed. The ID is not reused.
 
 ### F4: send recorder (`tests/conftest.py`)
 
@@ -161,7 +160,7 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-17 | `test_session_before_not_clobbered_by_rc_probe` | 324 | F1 | `cmd: echo MARKX`, then `cmd: echo ran`, `register: r`, `when: "{{ session.before \| contains('MARKX') }}"` → `vars.r == "ran"`. Guards a naive fix of #5. | pass |
 | P1-18 | `test_output_spanning_idle_poll_not_duplicated` | 111-114 | F1, `slow` | `cmd: "printf abc; sleep 6; echo def"`, register → `abc\ndef` | pass (was xfail #1) |
 | P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | pass (was xfail #5) |
-| P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 for timeout (`sleep 5`, `timeout: 1`); F3 for EOF/ValueError | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates. In all three the next step doesn't run and `vars.r` is unchanged. Also worth a row: a `responses exhausted` raised by a prompt wait inside the command propagates (it used to be swallowed) | pass (was todo #10) (x3) |
+| P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 (see the P1-20 deviation) | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates. In all three the next step doesn't run and `vars.r` is unchanged. Also worth a row: a `responses exhausted` raised by a prompt wait inside the command propagates (it used to be swallowed) | pass (was todo #10) (x3) |
 
 Totals: 22 pass (P1-01..20). Slow: P1-18.
 
@@ -238,7 +237,7 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | P4-15 | `test_handlers_reset_per_get_prompt` | 342 | F2 `--repeat 2 --accept admin:secret`, send `[admin, secret]` | two consecutive `get_prompt` calls (with `sendline("again")` between) both succeed; log has two `LOGIN=admin` | pass |
 | P4-16 | `test_grouped_expect_login_first` | 37, README:147 | F2 `--order login,password`, expect `[['login:', 'Password:']]`, send `[admin, secret]` | log `LOGIN=admin`, `PASSWORD=secret` (same result under both mappings) | pass |
 | P4-17 | `test_grouped_expect_password_first` | 37, README:147 | F2 `--order password,login`, same prompt | `--accept admin:secret`, expect `[['login:', 'Password:']]`, send `[admin, secret]` → log `ENTER=, PASSWORD=secret, LOGIN=admin`; returns at the shell. Extra positional rows: `[[admin, p1], [admin, p2]]` with `--accept admin:p2` → `PASSWORD=p1, LOGIN=admin, PASSWORD=p2, LOGIN=admin`; `--order password` with a grouped `sendEach` → one password per set; grouped `[[admin, bad]]` → `PASSWORD=bad, LOGIN=admin`, then `RuntimeError` `prompt 'login': responses exhausted`; grouped with `sendEach` without `fields` → `no response available for 'Password:'` | pass (was todo #4) |
-| P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick, `slow` | log `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` sent as a credential | pass (was xfail #3) |
+| P4-18 | `test_login_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --order login,password`, no kick | `get_prompt()` returns at the shell; log is exactly `LOGIN=admin`, `PASSWORD=secret`; `sent.lines()` has no `""` | pass (was xfail #3) |
 | P4-19 | `test_shell_prompt_in_same_chunk_as_banner` | 81, 341 | F2 `--same-chunk --then prompt`, no kick | `get_prompt()` returns in < 4 s (no solicit wait) | pass (was xfail #3) |
 | P4-20 | `test_send_template_rendered_at_send_time` | 317, 322 | `send: ["{{ vars.user }}", secret]`; script `cmd: echo admin` `register: user`, then `line: <F2 spawn cmd>`, then `cmd: "true"` | `Runner(cfg, {})` does not raise; F2 log `LOGIN=admin` | pass (was xfail #7) |
 
@@ -248,7 +247,7 @@ Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt m
 | P4-22 | `test_send_each_scalar_items_without_fields` | `sendEach` | F2 `--order password --accept :True`, `vars.pins: ["1111", 2.5, true]`, no `fields` | log `PASSWORD=1111`, `PASSWORD=2.5`, `PASSWORD=True` | pass |
 | P4-23 | `test_send_each_empty_list_fails_at_send_time` | `sendEach`, Response selection | F2, `vars.creds: []` | the `Runner` builds; `get_prompt` raises `RuntimeError` `prompt 'login': no response available` | pass |
 
-Totals: 23 pass (P4-01..23). Slow: P4-04, 05, 06, 18. P4-18 keeps its `slow` marker; with #3 fixed it no longer waits for the idle poll.
+Totals: 23 pass (P4-01..23). Slow: P4-04, 05, 06. P4-18 lost its `slow` marker: with #3 fixed it no longer waits for the idle poll (about 0.2 s).
 
 ## P5: attach and block lifecycles, env
 
@@ -391,7 +390,7 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
 | P2 | 15 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
-| P4 | 20 | 0 | 4 | `test_get_prompt.py` |
+| P4 | 20 | 0 | 3 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 37 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
@@ -412,11 +411,14 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
+Current runtime (2026-09-29, 449 tests, 0 skipped, `jsonschema` installed): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+
 ### Deviations from the plan
 
 Fixtures:
 - F1: `make_doc()` returns the raw dict, which the CLI tests need. `make_config`, `make_runner`, `run_script` and `run_vars` (returns `config.vars`) build on it. The default `timeout: 5s` is only added to `cmd`/`call`/`block`/`control` steps, not to plugin steps, so the existing plugin-timeout assertions don't change. `attached_runner(**make_config_kwargs)` is a factory.
-- F3: `FakeSession`/`FakeCtx` are in `conftest.py` but no test uses them. Their only planned users were the P1-20 (#10) tests, which ended up using the real shell for every case (see [Decision tests](#decision-tests)).
+- F3: retired. `FakeSession`/`FakeCtx` were removed from `conftest.py` because no test used them. Their only planned users were the P1-20 (#10) tests, which ended up using the real shell for every case (see [Decision tests](#decision-tests)).
+- F2: the unused `--banner` and `--max-attempts` device options were removed; the banner is always `Welcome`.
 - F4/F5: stop modes are `spawned.stop = True` (raises `SpawnRecorded`) and `timeline.stop_attach = True` (raises `AttachRecorded`). Timeline events are `(name, principal_arg)`; full calls are in `timeline.calls`.
 - F6: `autobot/__init__.py` re-exports the `registry` instance, which shadows the `autobot.registry` submodule attribute. The fixtures therefore patch the modules taken from `importlib.import_module`. `plugin_dist(root, key, source, target)` takes the entry-point target explicitly. `ProbeExecutor` also records a snapshot of `session.ctx`.
 
@@ -452,7 +454,7 @@ The 14 former `todo` rows are written (branch `test/spec-decision-tests`) and al
 | P7-08 | #12 | `test_p7_08_plugin_field_typo_fails_at_load`, `test_p7_08_call_undefined_fn_fails_at_load`, `test_p7_08_call_undefined_fn_checked_everywhere`, `test_p7_08_recursive_call_is_accepted` (`test_plugins.py`) | 10 |
 
 Deviations from the row targets:
-- P1-20: every case uses the real shell (F1), not F3. EOF comes from `cmd: exit`, which closes bash before the next prompt. The timeout case uses `sleep 30` with `timeout: 1`. "The next step doesn't run" is checked with the F6 probe as the next step. Added cases beyond the three planned: an invalid `assert` regex (`re.error`) and `responses exhausted` from a prompt inside the command (the command prints `LOG%s: ` so its echo can't match `LOGIN: `).
+- P1-20: every case uses the real shell (F1), not the retired F3. EOF comes from `cmd: exit`, which closes bash before the next prompt. The timeout case uses `sleep 30` with `timeout: 1`. "The next step doesn't run" is checked with the F6 probe as the next step. Added cases beyond the three planned: an invalid `assert` regex (`re.error`) and `responses exhausted` from a prompt inside the command (the command prints `LOG%s: ` so its echo can't match `LOGIN: `).
 - P3-05: the whitespace test is parametrized over `" false "`, `"\tFALSE\n"`, `NONE`, `" None "`, `" 0 "`, whitespace only, `False`, and `no`/`off`/`" no "` (which run).
 - P4-17: adds SPEC's table row 4 (login-first, two sets, a third `login:` → `responses exhausted`) as a sixth test. The missing-item case uses `--order password`, so `Password:` is the first match and nothing is sent.
 - P5-05: follows SPEC's example `arr=(a b c)`, so the raw form writes `3`; the row said `arr=(a b)` → `2`. The templated test renders `env` (with an OS override and nesting), `vars` and `args`. The failing case asserts `ValueError` matching `^template error: ` (it asserted `jinja2.TemplateSyntaxError` until all template errors were wrapped, branch `fix/xfail-bugs-7-8-15`), no prepare output, no `_autobot_*` temp file and no `attach` call.
@@ -597,4 +599,4 @@ These are not in the list of blocking decisions. None of them is tested in this 
 4. P3, P6, P7, P8.
 5. Write the `todo` rows (all six decisions are in SPEC.md). Done.
 
-Speed target: the non-slow suite should run in under the current ~70 s after the helpers stop paying the solicit wait. The five slow tests add about 45 s.
+Speed target: the non-slow suite should run in under the current ~70 s after the helpers stop paying the solicit wait. The four slow tests add about 29 s.

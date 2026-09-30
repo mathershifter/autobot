@@ -19,6 +19,7 @@ import tty
 
 PROMPTS = {"login": "login: ", "password": "Password: "}
 SHELL_PROMPT = "PROMPT$ "
+BANNER = "Welcome"
 
 
 class Device:
@@ -50,7 +51,6 @@ class Device:
     def auth(self, first_prompt_written: bool = False) -> None:
         if not self.order:
             return
-        failures = 0
         while True:
             got: dict[str, str] = {}
             for k, p in enumerate(self.order):
@@ -62,10 +62,7 @@ class Device:
             cred = f"{got.get('login', '')}:{got.get('password', '')}"
             if cred in self.args.accept:
                 return
-            failures += 1
             self.write("Login incorrect\n")
-            if self.args.max_attempts and failures >= self.args.max_attempts:
-                self.write("Too many failures\n")
 
     def rawdump(self, n: int) -> None:
         saved = termios.tcgetattr(0)
@@ -102,13 +99,13 @@ class Device:
         first_written = False
         if a.same_chunk:
             first = PROMPTS[self.order[0]] if self.order else SHELL_PROMPT
-            self.write(f"{a.banner}\n{first}")
+            self.write(f"{BANNER}\n{first}")
             if not self.order:
                 # the shell prompt is already on screen
                 self.log("LINE", self.readline())
             first_written = bool(self.order)
         else:
-            self.write(f"{a.banner}\n")
+            self.write(f"{BANNER}\n")
         if a.wait_enter:
             self.log("ENTER", self.readline())
         if a.exit_after_banner:
@@ -130,12 +127,10 @@ class Device:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--log", required=True)
-    p.add_argument("--banner", default="Welcome")
     p.add_argument("--wait-enter", action="store_true")
     p.add_argument("--same-chunk", action="store_true")
     p.add_argument("--order", default="login,password")
     p.add_argument("--accept", action="append", default=[])
-    p.add_argument("--max-attempts", type=int, default=0)
     p.add_argument("--post-auth-delay", type=float, default=0)
     p.add_argument("--repeat", type=int, default=0)
     p.add_argument("--silent", action="store_true")
