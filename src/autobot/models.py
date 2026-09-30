@@ -15,6 +15,13 @@ class SendEach(pydantic.BaseModel):
     each: str
     fields: list[str] | None = None
 
+    @pydantic.field_validator("each")
+    @classmethod
+    def _validate_each(cls, v: str) -> str:
+        if not re.fullmatch(r"vars(\.[^.]+)+", v):
+            raise ValueError(f"each must be a path under vars, like vars.creds, got: {v}")
+        return v
+
 
 class Prompt(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")

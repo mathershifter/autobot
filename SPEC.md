@@ -52,7 +52,25 @@ send:
   fields: [username, password]
 ```
 
-This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`), and its values are sent as they are, never rendered as templates.
+This resolves `vars.creds`, and for each item emits the named fields in order. If `fields` is omitted, each item is converted to a string directly. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`, so a block sees `vars` registered by earlier steps), and its values are sent as they are, never rendered as templates.
+
+`each` is a path under `vars`: `vars` followed by one or more `.`-separated keys (e.g. `vars.creds`, `vars.site.creds`). Each key names a key of a mapping; list indexes, attributes, `env`, `args` and `session` can't be used. Any other form is a validation error.
+
+The collection must be a list. Without `fields`, each item must be a string, number or boolean. With `fields`, each item must be a mapping with every named field, and each field's value must be a string, number or boolean. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
+
+A collection that doesn't meet these rules is an error when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts` (reported by the CLI as a `Script error`), and on entering the block, before its `enter` steps, for a block's `prompts` (the run stops; the block's `breakout` doesn't run, and `attach.breakout` does). The message is `prompt '<name>': sendEach '<each>': <problem>`, where `<problem>` is one of:
+
+| Problem | Example |
+|---------|---------|
+| A key is missing | `no key 'nope' in 'vars.site'` |
+| A value on the path isn't a mapping | `'vars.site' is a string, not a mapping` |
+| The collection isn't a list | `'vars.creds' is a mapping, not a list` |
+| An item isn't a mapping (with `fields`) | `item 2 is a string, not a mapping` |
+| An item lacks a field | `item 2 has no field 'password'` |
+| A field's value isn't a string, number or boolean | `item 2 field 'password' is null, not a string, number or boolean` |
+| An item isn't a string, number or boolean (without `fields`) | `item 0 is a mapping; without fields each item must be a string, number or boolean` |
+
+Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`.
 
 #### Response selection
 
@@ -446,6 +464,6 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | The file has bytes that aren't valid UTF-8, or disallowed control characters | `YAML error in <path>, position <N>: <reason> (...)` |
 | The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by the details |
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
-| The top-level `env` can't be resolved (a template error, or nesting deeper than 10 levels), or a top-level prompt `send` string has a template syntax error | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...` |
+| The top-level `env` can't be resolved (a template error, or nesting deeper than 10 levels), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
 
 Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, print usage and exit with status 2.

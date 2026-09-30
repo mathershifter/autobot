@@ -79,6 +79,7 @@ ACCEPT = {
     "send-grouped": prompt(send=[["a", "b"], ["c", "d"]]),
     "send-each": prompt(send={"each": "vars.creds", "fields": ["u", "p"]}),
     "send-each-no-fields": prompt(send={"each": "vars.pins"}),
+    "send-each-nested": prompt(send={"each": "vars.site.creds", "fields": ["u", "p"]}),
     "expect-grouped": d(prompts=[{"name": "p", "expect": [["login:", "Password:"]]}]),
     "nested-block": s(
         {
@@ -116,6 +117,10 @@ REJECT = {
     "line-with-timeout": s({"line": "x", "timeout": 1}),
     "return-with-timeout": s({"return": 1, "timeout": 1}),
     "mixed-send": prompt(send=["a", ["b"]]),
+    "send-each-env": prompt(send={"each": "env.CREDS"}),
+    "send-each-bare-key": prompt(send={"each": "creds"}),
+    "send-each-bare-vars": prompt(send={"each": "vars"}),
+    "send-each-empty-key": prompt(send={"each": "vars..creds"}),
 }
 
 

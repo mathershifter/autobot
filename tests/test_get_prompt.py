@@ -193,6 +193,36 @@ def test_p4_13_send_each_without_fields_stringifies(device):
     assert log_of(log) == ["ENTER=", "PASSWORD=1111", "PASSWORD=1234"]
 
 
+def test_p4_21_send_each_nested_path_ignores_other_keys(device):
+    """SPEC sendEach: `each` may name nested keys; only the named fields are sent."""
+    login = {"name": "login", "expect": ["login:", "Password:"],
+             "send": {"each": "vars.site.creds", "fields": ["username", "password"]}}
+    creds = [{"username": "admin", "password": "pass1", "note": "x"}, {"username": "admin", "password": "pass2"}]
+    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--accept", "admin:pass2",
+                    vars={"site": {"creds": creds}})
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == [
+        "ENTER=", "LOGIN=admin", "PASSWORD=pass1", "LOGIN=admin", "PASSWORD=pass2",
+    ]
+
+
+def test_p4_22_send_each_scalar_items_without_fields(device):
+    """SPEC sendEach: without fields, a string, number or boolean item is sent as a string."""
+    pin = {"name": "pin", "expect": ["Password:"], "send": {"each": "vars.pins"}}
+    r, log = device([SHELL_PROMPT, pin], "--wait-enter", "--order", "password",
+                    "--accept", ":True", vars={"pins": ["1111", 2.5, True]})
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "PASSWORD=1111", "PASSWORD=2.5", "PASSWORD=True"]
+
+
+def test_p4_23_send_each_empty_list_fails_at_send_time(device):
+    """SPEC sendEach, Response selection: an empty collection loads; the prompt has no response when it fires."""
+    login = {"name": "login", "expect": ["login:"], "send": {"each": "vars.creds", "fields": ["username"]}}
+    r, _ = device([SHELL_PROMPT, login], "--wait-enter", vars={"creds": []})
+    with pytest.raises(RuntimeError, match="^prompt 'login': no response available"):
+        r.session.get_prompt(timeout=5)
+
+
 def test_p4_14_responses_exhausted(device):
     """SPEC.md:342: running out of responses raises."""
     login = {"name": "login", "expect": ["login:", "Password:"], "send": ["admin", "bad"]}

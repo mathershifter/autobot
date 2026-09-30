@@ -1,4 +1,4 @@
-"""P6-21..32: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -288,3 +289,87 @@ def test_p6_37_cli_keys_that_only_look_alike_are_accepted(tmp_path: Path):
     res = run_cli(None, tmp_path, raw=raw)
     assert res.returncode == 0, res.stderr
     assert "keys-2-int-str" in res.stdout
+
+
+# -- sendEach resolution at load (SPEC "sendEach") -------------------------------
+
+EACH_VARS = {
+    "creds": [{"username": "admin", "password": "pw1"}, {"username": "admin"}],
+    "site": {"creds": [{"username": "u", "password": "p", "note": "unused"}]},
+    "s": "hello",
+    "n": 5,
+    "nul": None,
+    "lst": ["x"],
+    "pins": ["1111", 2.5, True],
+    "mixed": ["ok", {"username": "a"}],
+    "nulls": [{"username": "a", "password": None}],
+    "pairs": [{"username": "a", "password": "b"}],
+}
+UP = ["username", "password"]
+SH = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
+
+
+def _each_doc(tmp_path: Path, send: dict, **kw: Any) -> dict:
+    login = {"name": "login", "expect": ["login:", "Password:"], "send": send}
+    return make_doc([GOT], vars=EACH_VARS, prompts=[SH, login], **kw)
+
+
+def _marked_each_doc(tmp_path: Path, send: dict) -> dict:
+    """`prepare` and `spawn` touch marker files, so a run that got that far is visible."""
+    prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
+    return _each_doc(tmp_path, send, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}")
+
+
+@pytest.mark.parametrize(
+    ("each", "fields", "problem"),
+    [
+        ("vars.nope", None, "no key 'nope' in 'vars'"),
+        ("vars.site.nope", UP, "no key 'nope' in 'vars.site'"),
+        ("vars.site.x.creds", UP, "no key 'x' in 'vars.site'"),
+        ("vars.s.x", None, "'vars.s' is a string, not a mapping"),
+        ("vars.lst.0", None, "'vars.lst' is a list, not a mapping"),
+        ("vars.s", None, "'vars.s' is a string, not a list"),
+        ("vars.n", None, "'vars.n' is a number, not a list"),
+        ("vars.nul", None, "'vars.nul' is null, not a list"),
+        ("vars.site", UP, "'vars.site' is a mapping, not a list"),
+        ("vars.creds", UP, "item 1 has no field 'password'"),
+        ("vars.mixed", ["username"], "item 0 is a string, not a mapping"),
+        ("vars.nulls", UP, "item 0 field 'password' is null, not a string, number or boolean"),
+        ("vars.pairs", None, "item 0 is a mapping; without fields each item must be a string, number or boolean"),
+    ],
+    ids=[
+        "missing-key", "missing-nested-key", "missing-middle-key", "through-string", "through-list",
+        "string-not-list", "number-not-list", "null-not-list", "mapping-not-list", "missing-field",
+        "item-not-mapping", "null-field", "mapping-item-without-fields",
+    ],
+)
+def test_p6_38_cli_send_each_error_is_clean_error(tmp_path: Path, each: str, fields: list[str] | None, problem: str):
+    """SPEC sendEach: a top-level collection that can't be resolved is a `Script error`, before prepare/spawn."""
+    send = {"each": each} if fields is None else {"each": each, "fields": fields}
+    res = run_cli(_marked_each_doc(tmp_path, send), tmp_path)
+    path = tmp_path / "script.autobot.yaml"
+    assert _load_error(res) == f"Script error in {path}: prompt 'login': sendEach '{each}': {problem}"
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+@pytest.mark.parametrize("each", ["env.HOME", "args.pw", "session.before", "creds", "vars", "vars..creds", "vars.creds."])
+def test_p6_39_cli_send_each_path_outside_vars_is_validation_error(tmp_path: Path, each: str):
+    """SPEC sendEach: `each` is `vars` followed by keys; anything else fails validation."""
+    res = run_cli(_marked_each_doc(tmp_path, {"each": each}), tmp_path, "--arg", "pw=secret")
+    assert _load_error(res) == "Validation errors:"
+    assert f"each must be a path under vars, like vars.creds, got: {each}" in res.stderr
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+@pytest.mark.parametrize(
+    "send",
+    [{"each": "vars.site.creds", "fields": UP}, {"each": "vars.pins"}, {"each": "vars.lst"}],
+    ids=["nested-with-fields", "scalars-without-fields", "without-fields"],
+)
+def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
+    """SPEC sendEach: a resolvable collection loads, and the script runs."""
+    res = run_cli(_each_doc(tmp_path, send), tmp_path, "--arg", "msg=hi")
+    assert res.returncode == 0, res.stderr
+    assert "got-2-hi" in res.stdout
