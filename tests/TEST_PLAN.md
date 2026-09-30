@@ -335,8 +335,13 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-38 | `test_cli_send_each_error_is_clean_error` (parametrized: missing key, missing nested key, missing middle key, path through a string, path through a list, a string / number / null / mapping instead of a list, item missing a field, item not a mapping, null field, mapping item without `fields`) | CLI, `sendEach` | CLI; top-level prompt `sendEach`; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: prompt 'login': sendEach '<each>': <problem>`; neither marker exists | pass |
 | P6-39 | `test_cli_send_each_path_outside_vars_is_validation_error` (parametrized: `env.HOME`, `args.pw`, `session.before`, `creds`, `vars`, `vars..creds`, `vars.creds.`) | CLI, `sendEach` | as P6-38 | rc 1; first line `Validation errors:`; stderr has `each must be a path under vars, like vars.creds, got: <each>`; neither marker exists | pass |
 | P6-40 | `test_cli_valid_send_each_runs` (parametrized: nested path with `fields`; string/number/boolean items without `fields`; strings without `fields`) | CLI, `sendEach` | CLI, F1, top-level prompt `sendEach` that never fires | rc 0; `got-2-hi` in stdout | pass |
+| P6-41 | `test_null_corpus_covers_every_model`, `test_parity_null_optional_field` (parametrized over every optional field of every model, generated from `model_fields`) | YAML Script Structure | F7; `HOSTS` places each model in a minimal document | `<key>: null` → `(False, False)`; one model error at the key; for a `None`-default field its type is `null_value` with `null (an empty value) is not allowed; omit the key instead`. The coverage test fails if a model with optional fields (other than `PluginStep`) has no host, so new models and fields get cases automatically. | pass |
+| P6-42 | `test_omitted_optional_field_gets_default` (parametrized as P6-41) | YAML Script Structure | F7 | the host document without the key → `(True, True)`; the parsed field equals its default | pass |
+| P6-43 | `test_null_plugin_common_prop` (parametrized: `after`, `delay_after`, `delay_before`, `timeout`, `when`) | Common Step Properties | model, F6 `probe` | `{probe: x, <prop>: null}` → one `null_value` error at `script.0.plugin.<prop>`. Model only: the static `pluginStep` accepts any object. | pass |
+| P6-44 | `test_parity_null_sleep` | Duration Format | F7 | `sleep: null` → `(False, False)`; model message exactly `Value error, invalid duration: null` at `script.0.sleep.sleep` (it used to sleep 0) | pass |
+| P6-45 | `test_cli_empty_value_is_validation_error` (parametrized: step `after:`, `attach.env:`, `timeout: ~` on a `line`, `sleep:`) | YAML Script Structure, CLI | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; first line `Validation errors:`; the single JSON error has the expected `loc` and message (`null (an empty value)`, `Extra inputs`, `invalid duration: null`); neither marker exists | pass |
 
-Totals: 40 pass.
+Totals: 45 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -367,7 +372,7 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 
 | ID | Test | SPEC | Setup | Assertion | Status |
 |----|------|------|-------|-----------|--------|
-| P8-01 | `test_parse_duration` (parametrized) | 307-313 | unit | `5`→5.0, `5.5`, `"5s"`, `"500ms"`→0.5, `"2m"`→120, `"1h"`→3600, `"1.5s"`, `None`→0; `"5"`, `"5x"`, `""`, `"ms"`, `"-1s"`, `"1.5.5s"` → `ValueError` | pass |
+| P8-01 | `test_parse_duration` (parametrized) | 307-313 | unit | `5`→5.0, `5.5`, `"5s"`, `"500ms"`→0.5, `"2m"`→120, `"1h"`→3600, `"1.5s"`; `"5"`, `"5x"`, `""`, `"ms"`, `"-1s"`, `"1.5.5s"`, `None` → `ValueError`; `None` reports `invalid duration: null` (it was 0 until P6-44) | pass |
 | P8-02 | `test_ensure_list` | n/a (helper) | unit | `None`→`[]`, `"a"`→`["a"]`, `["a"]`→`["a"]` | pass |
 | P8-03 | `test_render_passthrough_and_filters` | 315-334 | unit | non-string returned unchanged; `contains`/`search` filters registered | pass |
 | P8-04 | `test_render_trailing_newline_dropped` | 292 | unit | `render("x\n", {}) == "x"` (this is what makes P3-03's `"false\n"` falsy) | pass |
@@ -416,7 +421,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-09-29, 449 tests, 0 skipped, `jsonschema` installed): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-09-30, 571 tests, 0 skipped, `jsonschema` installed): full suite about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 
@@ -479,8 +484,9 @@ All six decisions are made and in SPEC.md (branch `feat/spec-decisions-4-6-9-10-
 | #11 | Option A, the schema is normative. `return` ≥ 1 (strict int, required); durations ≥ 0 and not bool; `fn.script` required; version `fullmatch`; strict booleans for `ignore_error` and prompt `return`; the schema allows mixed `expect`. |
 | #12 | Option B, load time. A `Config` validator checks `call` targets and plugin fields everywhere, and the CLI reports `Validation errors` with rc 1 before prepare/spawn. Recursion and cycles aren't detected. |
 
+An explicit `null` for an optional field (`timeout: null`, a bare `after:`) and `sleep: null` were accepted by the model and rejected by the schema; the model now rejects them (P6-41..45).
+
 Known remaining model/schema divergences (not tested; follow-ups):
-- An explicit `null` for an optional field (`timeout: null`, a bare `after:`): the model accepts it, the schema rejects it.
 - `return: 1.0`: the schema accepts it (JSON Schema treats it as an integer); the strict model rejects it.
 - Python `jsonschema` evaluates `pattern` with `re.search`, so `"2026-08\n"` and `"5s\n"` pass the schema in Python (an ECMA-262 validator rejects them); the model rejects both.
 - Unknown step keys (item g below): the static schema accepts them as `pluginStep`.

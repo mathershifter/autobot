@@ -1,4 +1,4 @@
-"""P6-10..14: the pydantic models and schemas/autobot.2026-08.json agree.
+"""P6-10..18, P6-41..44: the pydantic models and schemas/autobot.2026-08.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -14,6 +14,7 @@ import pydantic
 import pytest
 from conftest import model_ok
 
+from autobot import models
 from autobot.models import Config
 
 MIN: dict[str, Any] = {"autobot": "2026-08", "attach": {"spawn": "ssh host"}, "script": []}
@@ -226,3 +227,112 @@ def test_p6_strict_bool_prompt_return(both_validate: Callable, value: Any):
     [err] = model_errors(doc)
     assert err["loc"] == ("prompts", 0, "return")
     assert err["type"] == "bool_type"
+
+
+# -- P6-41..44: an explicit null for an optional field (decision #11) -------
+
+# Each model with optional fields and where it sits in a document: `build(fields)` returns a
+# minimal document holding one instance with `fields` set; `get(config)` returns that instance.
+Build = Callable[[dict[str, Any]], dict[str, Any]]
+Get = Callable[[Config], Any]
+
+
+def _step_host(base: dict[str, Any]) -> tuple[Build, Get]:
+    def build(fields: dict[str, Any]) -> dict[str, Any]:
+        doc = s({**base, **fields})
+        if "call" in base:
+            doc["fn"] = {"f": {"script": []}}
+        return doc
+
+    return build, lambda c: c.script[0]
+
+
+HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
+    models.Config: (lambda f: d(**f), lambda c: c),
+    models.Attach: (lambda f: d(attach={"spawn": "ssh host", **f}), lambda c: c.attach),
+    models.Breakout: (lambda f: d(attach={"spawn": "ssh host", "breakout": f}), lambda c: c.attach.breakout),
+    models.Prompt: (lambda f: prompt(**f), lambda c: c.prompts[0]),
+    models.SendEach: (lambda f: prompt(send={"each": "vars.c", **f}), lambda c: c.prompts[0].send),
+    models.Block: (lambda f: s({"block": {"name": "b", **f}}), lambda c: c.script[0].block),
+    models.CmdStep: _step_host({"cmd": "x"}),
+    models.CallStep: _step_host({"call": "f"}),
+    models.BlockStep: _step_host({"block": {"name": "b"}}),
+    models.LineStep: _step_host({"line": "x"}),
+    models.ReturnStep: _step_host({"return": 1}),
+    models.ControlStep: _step_host({"control": "c"}),
+}
+
+
+def optional_fields(model: type[pydantic.BaseModel]) -> dict[str, tuple[str, Any]]:
+    """``{YAML key: (attribute name, default)}`` for the optional fields of ``model``, internal ones excluded."""
+    return {
+        f.alias or name: (name, f.get_default(call_default_factory=True))
+        for name, f in model.model_fields.items()
+        if not f.is_required() and not f.exclude
+    }
+
+
+OPTIONAL = [(model, key) for model in HOSTS for key in optional_fields(model)]
+OPTIONAL_IDS = [f"{model.__name__}.{key}" for model, key in OPTIONAL]
+
+
+def test_p6_41_null_corpus_covers_every_model():
+    """Every model with optional fields has a host above, so a new model's fields get null cases.
+
+    ``PluginStep`` is left to P6-43: the static schema's ``pluginStep`` accepts any object.
+    """
+    with_optional = {
+        cls
+        for cls in vars(models).values()
+        if isinstance(cls, type)
+        and issubclass(cls, pydantic.BaseModel)
+        and cls.__module__ == models.__name__
+        and optional_fields(cls)
+    }
+    assert with_optional - {models.PluginStep} == set(HOSTS)
+
+
+@pytest.mark.parametrize(("model", "key"), OPTIONAL, ids=OPTIONAL_IDS)
+def test_p6_41_parity_null_optional_field(both_validate: Callable, model: type[pydantic.BaseModel], key: str):
+    """SPEC "YAML Script Structure": an explicit null (an empty YAML value) is invalid; both reject it."""
+    build, _ = HOSTS[model]
+    doc = build({key: None})
+    assert both_validate(doc) == (False, False)
+    # the send union also reports its list members for a sendEach error; keep the one at the key
+    [err] = [e for e in model_errors(doc) if e["loc"][-1] == key]
+    if optional_fields(model)[key][1] is None:
+        assert err["type"] == "null_value"
+        assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
+
+
+@pytest.mark.parametrize(("model", "key"), OPTIONAL, ids=OPTIONAL_IDS)
+def test_p6_42_omitted_optional_field_gets_default(
+    both_validate: Callable, model: type[pydantic.BaseModel], key: str
+):
+    """Omitting an optional key is valid for both, and the model gives the field its default."""
+    build, get = HOSTS[model]
+    doc = build({})
+    assert both_validate(doc) == (True, True)
+    name, default = optional_fields(model)[key]
+    assert getattr(get(Config.model_validate(doc)), name) == default
+
+
+@pytest.mark.parametrize("key", sorted(models._COMMON_PROPS - {"plugin_key_"}))
+def test_p6_43_null_plugin_common_prop(probe: Any, key: str):
+    """SPEC "Common Step Properties" apply to plugin steps, and an explicit null is rejected there too.
+
+    Only the model is checked: the static schema's ``pluginStep`` accepts any object.
+    """
+    [err] = model_errors(s({"probe": "x", key: None}))
+    assert err["loc"] == ("script", 0, "plugin", key)
+    assert err["type"] == "null_value"
+    assert model_ok(s({"probe": "x"}))
+
+
+def test_p6_44_parity_null_sleep(both_validate: Callable):
+    """SPEC "Duration Format": null is not a duration, so a bare ``sleep:`` is rejected (it used to sleep 0)."""
+    doc = s({"sleep": None})
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert err["loc"] == ("script", 0, "sleep", "sleep")
+    assert err["msg"] == "Value error, invalid duration: null"

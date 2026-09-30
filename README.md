@@ -371,6 +371,8 @@ All step types except `sleep` support these optional fields:
 
 `line` and `return` steps do not support `timeout`.
 
+To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.
+
 ## Duration Format
 
 Durations accept a bare number (seconds) or a string with a unit suffix:
@@ -383,7 +385,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 1h      # hours
 ```
 
-Durations can't be negative, and `true`/`false` aren't durations.
+Durations can't be negative, and `true`/`false` and `null` (e.g. a bare `sleep:`) aren't durations.
 
 ## Templating
 

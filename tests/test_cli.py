@@ -1,7 +1,8 @@
-"""P6-21..40: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40, P6-45: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -375,3 +376,27 @@ def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
     res = run_cli(_each_doc(tmp_path, send), tmp_path, "--arg", "msg=hi")
     assert res.returncode == 0, res.stderr
     assert "got-2-hi" in res.stdout
+
+
+# -- empty values ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tail", "loc", "msg"),
+    [
+        ("script:\n  - cmd: echo one\n    after:\n", ["script", 0, "cmd", "after"], "null (an empty value)"),
+        ("  env:\nscript: []\n", ["attach", "env"], "null (an empty value)"),
+        ("script:\n  - line: x\n    timeout: ~\n", ["script", 0, "line", "timeout"], "Extra inputs"),
+        ("script:\n  - sleep:\n", ["script", 0, "sleep", "sleep"], "invalid duration: null"),
+    ],
+    ids=["step-after", "attach-env", "unsupported-prop", "sleep"],
+)
+def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, loc: list[Any], msg: str):
+    """SPEC "YAML Script Structure": an empty value is invalid (omit the key); rc 1, before prepare/spawn."""
+    res = run_cli(None, tmp_path, raw=_marked_head(tmp_path) + tail)
+    assert _load_error(res) == "Validation errors:"
+    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert err["loc"] == loc
+    assert msg in err["msg"]
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
