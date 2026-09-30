@@ -24,12 +24,12 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
 | P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
-| P6 | model / schema / example / CLI parity | 49 | 0 | 0 | 49 | 0 |
+| P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **186** | **0** | **0** | **186** | **4** |
+| **Total** | | **188** | **0** | **0** | **188** | **4** |
 
-The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..49.
+The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
 A parametrized test counts as one test.
 
@@ -116,7 +116,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 |--------------|----------------|----------------|
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 |
 | Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31 |
-| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..25, P5-25/26, P6-07/08, P6-38..40, P6-46..49 |
+| `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..25, P5-25/26, P6-07/08, P6-38..40, P6-46..51 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-09 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
@@ -223,7 +223,7 @@ File: `tests/test_get_prompt.py` (new). SPEC.md:33-53, 336-346. Session-level te
 | ID | Test | SPEC | Setup | Assertion | Status |
 |----|------|------|-------|-----------|--------|
 | P4-01 | `test_get_prompt_never_sends_command` | 338 | F1 `shell_session`, F4 | after reaching the first prompt, `sendline("echo hi")` and `sent.clear()`, `get_prompt()` returns and `sent.lines() == []` | pass |
-| P4-02 | `test_shell_prompt_forms` (parametrized: `return: true` with `send`; no `send`) | 38, 341 | F2 `--wait-enter --then prompt`, F4 | returns at `PROMPT$ ` with nothing sent after the kick | pass |
+| P4-02 | `test_shell_prompt_forms` (parametrized: `return: true`; no `send`. The `return: true` case had a `send`, which is `return_with_send` since 2026-10) | 38, 341 | F2 `--wait-enter --then prompt`, F4 | returns at `PROMPT$ ` with nothing sent after the kick | pass |
 | P4-03 | `test_empty_send_raises_no_response` | 341-342 | F2 login prompt, `send: []` | `RuntimeError` matching `no response available` | pass |
 | P4-04 | `test_solicit_newline_after_idle` | 343 | F2 `--wait-enter`, F4, `slow` | no manual kick; `get_prompt(timeout=15)` returns; `sent.lines() == [""]`; elapsed ≥ 5 s | pass |
 | P4-05 | `test_solicit_newline_only_once` | 343 | F2 `--silent`, F4, `slow` | `get_prompt(timeout=11)` raises `TimeoutError`; exactly one `""` sent | pass |
@@ -349,8 +349,10 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-47 | `test_cli_old_version_is_validation_error_with_hint` | CLI, Top-level fields | as P6-46 with `autobot: 2026-08` | rc 1; `Validation errors:`; one `unsupported_version` error at `autobot` with the migration hint; neither marker exists | pass |
 | P6-48 | `test_send_each_fields_accepted`, `test_send_each_fields_rejected` (parametrized) | `sendEach` | model | accepted: string / list `match`, two entries, the same field twice, a dotted field (a plain key), `sendEach` without `fields` over regex `expect`, block prompt with `fields`. Rejected, each with its exact location and type (and message where autobot writes it): `fields: []` (`too_short`), `match: []` (`too_short`, `match must be a regex or a non-empty list of regexes`), a non-string or mapping `match`, missing `field` / `match`, non-string `field`, an extra key, the old list form (`fields_entry` per entry), `expect` next to `fields` (also `expect: []`) and in a block (`script.0.block.block.prompts.0.expect`, `expect_with_fields`), no `expect` without `fields` (`missing`, three ways), a grouped `expect` with `sendEach` without `fields` (`grouped_expect` at `prompts.0.expect.1`), a bad `each` path | pass |
 | P6-49 | `test_parity_send_each_accepted`, `test_parity_send_each_rejected` (parametrized over the P6-48 corpora) | `sendEach` | F7 | accepted → `(True, True)`; rejected → `(False, False)`: every `sendEach` rule is in the schema, none is model-only | pass |
+| P6-50 | `test_return_without_send_accepted`, `test_return_with_send_rejected` (parametrized: flat, list of lists, `send: []`, `sendEach`, `sendEach` with `fields` and no `expect`, block prompt), `test_return_with_send_reported_with_other_prompt_errors` | prompts | model | `return: true` without `send`, and `send` with `return: false` (flat, `fields`), accepted. Each `return: true` + `send` form → exactly one `return_with_send` error at `...send` with `a return prompt is a shell prompt and sends nothing; remove send or return` (block: `script.0.block.block.prompts.0.send`). With `fields` and `expect` → `return_with_send` then `expect_with_fields`; flat `send` without `expect` → `return_with_send` then `missing` at `expect` | pass |
+| P6-51 | `test_parity_return_without_send_accepted`, `test_parity_return_with_send_rejected` (parametrized over the P6-50 corpora) | prompts | F7 | accepted → `(True, True)`; rejected → `(False, False)`, including the `fields` prompt with no `expect` (the schema's `allOf` checks the `return` rule next to the `expect` rules) | pass |
 
-Totals: 49 pass.
+Totals: 51 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -430,7 +432,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-09-30, 630 tests, 0 skipped, `jsonschema` installed): full suite about 122 s. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-09-30, 649 tests, 0 skipped, `jsonschema` installed): full suite about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 

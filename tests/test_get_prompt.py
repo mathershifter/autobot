@@ -71,10 +71,10 @@ def test_p4_01_get_prompt_never_sends_command(shell_session: Session, sent: Sent
 @pytest.mark.parametrize(
     "prompt",
     [
-        {"name": "sh", "expect": [r"PROMPT\$ "], "return": True, "send": ["x"]},
+        {"name": "sh", "expect": [r"PROMPT\$ "], "return": True},
         {"name": "sh", "expect": [r"PROMPT\$ "]},
     ],
-    ids=["return-true-with-send", "no-send"],
+    ids=["return-true", "no-send"],
 )
 def test_p4_02_shell_prompt_forms(device, sent: SentLog, prompt: dict[str, Any]):
     """SPEC.md:38, 341: return: true, or no send, marks a shell prompt."""

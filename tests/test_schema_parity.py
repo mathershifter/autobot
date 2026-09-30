@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -13,7 +13,7 @@ from typing import Any
 import pydantic
 import pytest
 from conftest import model_ok
-from test_models import SEND_EACH_BAD, SEND_EACH_OK
+from test_models import RETURN_BAD, RETURN_OK, SEND_EACH_BAD, SEND_EACH_OK
 
 from autobot import models
 from autobot.models import Config
@@ -377,4 +377,19 @@ def test_p6_49_parity_send_each_accepted(both_validate: Callable, doc: dict[str,
 @pytest.mark.parametrize("doc", [c[0] for c in SEND_EACH_BAD.values()], ids=list(SEND_EACH_BAD))
 def test_p6_49_parity_send_each_rejected(both_validate: Callable, doc: dict[str, Any]):
     """SPEC sendEach: every rule is in the schema too, so no rejection is model-only."""
+    assert both_validate(doc) == (False, False)
+
+
+# -- P6-51: a return prompt has no send -------------------------------------
+
+
+@pytest.mark.parametrize("doc", list(RETURN_OK.values()), ids=list(RETURN_OK))
+def test_p6_51_parity_return_without_send_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts: both accept `return: true` without send, and send with `return: false`."""
+    assert both_validate(doc) == (True, True)
+
+
+@pytest.mark.parametrize("doc", [c[0] for c in RETURN_BAD.values()], ids=list(RETURN_BAD))
+def test_p6_51_parity_return_with_send_rejected(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts: both reject `return: true` with any send form, including a fields prompt with no expect."""
     assert both_validate(doc) == (False, False)

@@ -38,21 +38,32 @@
       "type": "object",
       "required": ["name"],
       "additionalProperties": false,
-      "if": {
-        "required": ["send"],
-        "properties": { "send": { "type": "object", "required": ["fields"] } }
-      },
-      "then": { "not": { "required": ["expect"] } },
-      "else": {
-        "required": ["expect"],
-        "if": {
-          "required": ["send"],
-          "properties": { "send": { "type": "object" } }
+      "allOf": [
+        {
+          "if": {
+            "required": ["send"],
+            "properties": { "send": { "type": "object", "required": ["fields"] } }
+          },
+          "then": { "not": { "required": ["expect"] } },
+          "else": {
+            "required": ["expect"],
+            "if": {
+              "required": ["send"],
+              "properties": { "send": { "type": "object" } }
+            },
+            "then": {
+              "properties": { "expect": { "items": { "type": "string" } } }
+            }
+          }
         },
-        "then": {
-          "properties": { "expect": { "items": { "type": "string" } } }
+        {
+          "if": {
+            "required": ["return"],
+            "properties": { "return": { "const": true } }
+          },
+          "then": { "not": { "required": ["send"] } }
         }
-      },
+      ],
       "properties": {
         "name": { "type": "string" },
         "expect": {

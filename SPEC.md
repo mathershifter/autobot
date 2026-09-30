@@ -37,7 +37,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 Each prompt has:
 - `name` — identifier
 - `expect` — list of patterns to match against session output. Each entry can be a string (a single-pattern entry) or a list of strings (a grouped entry, e.g. `['login:', 'Password:']`). Entries of both kinds may be mixed. The entry kind decides which response a match sends (see [Response selection](#response-selection)). Required, except in a prompt whose `send` is a `sendEach` with `fields`: there `expect` must be absent, because the patterns come from the `fields` entries (see [`sendEach`](#sendeach)).
-- `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt.
+- `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt. A prompt with `return: true` must not have `send`, in any form (a flat list, a list of lists, `send: []`, or a `sendEach` with or without `fields`): it would never be sent. That is a validation error (`return_with_send`) at `prompts.N.send`: `a return prompt is a shell prompt and sends nothing; remove send or return`. It is reported together with any other error of the prompt, e.g. `expect_with_fields` or a missing `expect`.
 - `send` — optional; responses to send when a pattern matches. Accepts three forms:
   - A flat list of strings: `["response1", "response2"]`
   - A list of lists (grouped attempts): `[["user", "pass"], ["user2", "pass2"]]`
@@ -85,6 +85,7 @@ These rules are validation errors, reported like any other before anything runs:
 | `expect` next to `fields` (even `expect: []`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
 | no `expect`, and no `sendEach` with `fields` | `prompts.N.expect` | `missing` |
 | a grouped `expect` entry with a `sendEach` without `fields` | `prompts.N.expect.M` | `grouped_expect` (`with sendEach without fields, each expect entry is a single regex; use fields to answer several prompts`) |
+| `return: true` with a `sendEach` (with or without `fields`), or any other `send` | `prompts.N.send` | `return_with_send` (`a return prompt is a shell prompt and sends nothing; remove send or return`) |
 
 The JSON schema states all of them, so the models and the schema reject the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...` (the step's type tag comes before its key).
 
@@ -489,7 +490,7 @@ This handles idle consoles that need a return press to display a prompt.
 
 ## Migrating from 2026-08
 
-Version `2026-10` changes one thing: a `sendEach` with `fields`. Each field is now an entry that names the prompt it answers, and the prompt has no `expect`. To migrate:
+Version `2026-10` changes a `sendEach` with `fields`: each field is now an entry that names the prompt it answers, and the prompt has no `expect`. It also rejects `send` on a `return: true` prompt (see below). To migrate:
 1. Change `autobot: 2026-08` to `autobot: 2026-10`.
 2. In every prompt whose `send` has `fields` (top-level and block `prompts`), move the patterns from `expect` into the `fields` entries: the pattern that asks for a field becomes that entry's `match`, then remove `expect`.
 
@@ -513,7 +514,11 @@ Version `2026-10` changes one thing: a `sendEach` with `fields`. Each field is n
         field: password
 ```
 
-Several patterns for the same field become one entry with a `match` list. Everything else is unchanged: `expect`, `return`, the flat-list and list-of-lists `send` forms, and a `sendEach` without `fields` (whose `expect` entries must now be single regexes). A 2026-08 document fails validation with `unsupported_version` at `autobot`, and an old `fields` list with a `fields_entry` error per entry that names the new form (see [`sendEach`](#sendeach)).
+Several patterns for the same field become one entry with a `match` list.
+
+A prompt with `return: true` and a `send` is now rejected (`return_with_send`). In 2026-08 it was accepted, but it was a shell prompt and its `send` was never used: remove `send`, or remove `return: true` if the prompt should respond.
+
+Everything else is unchanged: `expect`, `return` without `send`, the flat-list and list-of-lists `send` forms, and a `sendEach` without `fields` (whose `expect` entries must now be single regexes). A 2026-08 document fails validation with `unsupported_version` at `autobot`, and an old `fields` list with a `fields_entry` error per entry that names the new form (see [`sendEach`](#sendeach)).
 
 ## CLI
 

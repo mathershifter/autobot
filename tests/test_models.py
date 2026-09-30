@@ -315,3 +315,57 @@ def test_p6_48_send_each_fields_rejected(doc: dict[str, Any], loc: tuple, type_:
     assert err["loc"] == loc
     if msg is not None:
         assert err["msg"] == msg
+
+
+# -- P6-50: a return prompt has no send (SPEC "prompts") ----------------------
+
+RETURN_MSG = "a return prompt is a shell prompt and sends nothing; remove send or return"
+
+
+def return_prompt(**kw: Any) -> dict[str, Any]:
+    return with_("prompts", [{"name": "p", "return": True, **kw}])
+
+
+RETURN_OK = {
+    "return-without-send": return_prompt(expect=["x"]),
+    "return-false-flat-send": with_("prompts", [{"name": "p", "expect": ["x"], "return": False, "send": ["a"]}]),
+    "return-false-fields": with_("prompts", [{"name": "p", "return": False, "send": {**EACH, "fields": UP}}]),
+}
+
+
+@pytest.mark.parametrize("doc", list(RETURN_OK.values()), ids=list(RETURN_OK))
+def test_p6_50_return_without_send_accepted(doc: dict[str, Any]):
+    """SPEC prompts: `return: true` without send, and send with `return: false`, stay valid."""
+    Config.model_validate(doc)
+
+
+RETURN_BAD = {
+    "flat": (return_prompt(expect=["x"], send=["a"]), AT),
+    "list-of-lists": (return_prompt(expect=["x"], send=[["a", "b"]]), AT),
+    "empty": (return_prompt(expect=["x"], send=[]), AT),
+    "send-each": (return_prompt(expect=["x"], send=EACH), AT),
+    "send-each-fields": (return_prompt(send={**EACH, "fields": UP}), AT),
+    "block": (
+        with_("script", [{"block": {"name": "b", "prompts": [
+            {"name": "p", "expect": ["x"], "return": True, "send": ["a"]}]}}]),
+        ("script", 0, "block", "block", "prompts", 0),
+    ),
+}
+
+
+@pytest.mark.parametrize(("doc", "at"), list(RETURN_BAD.values()), ids=list(RETURN_BAD))
+def test_p6_50_return_with_send_rejected(doc: dict[str, Any], at: tuple):
+    """SPEC prompts: `return: true` with any send form is one `return_with_send` error at send."""
+    [err] = errors_of(doc)
+    assert (err["loc"], err["type"], err["msg"]) == ((*at, "send"), "return_with_send", RETURN_MSG)
+
+
+def test_p6_50_return_with_send_reported_with_other_prompt_errors():
+    """SPEC prompts: the rule is checked with the expect rules, so both errors are reported."""
+    errs = errors_of(return_prompt(expect=["x"], send={**EACH, "fields": UP}))
+    assert [(e["loc"], e["type"]) for e in errs] == [
+        ((*AT, "send"), "return_with_send"),
+        ((*AT, "expect"), "expect_with_fields"),
+    ]
+    errs = errors_of(return_prompt(send=["a"]))
+    assert [(e["loc"], e["type"]) for e in errs] == [((*AT, "send"), "return_with_send"), ((*AT, "expect"), "missing")]

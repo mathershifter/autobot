@@ -125,7 +125,7 @@ attach:
 
 Prompts define how autobot recognizes and responds to interactive patterns in the session output.
 
-A prompt with `return: true` (or no `send` field) is a **shell prompt** — when matched, autobot knows the previous command finished and the next one can be sent:
+A prompt with `return: true` (or no `send` field) is a **shell prompt** — when matched, autobot knows the previous command finished and the next one can be sent. A `return: true` prompt can't have `send` (it would never be sent); the script fails validation with `return_with_send`:
 
 ```yaml
 - name: cli

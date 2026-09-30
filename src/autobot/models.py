@@ -77,6 +77,12 @@ class Prompt(pydantic.BaseModel):
     def _check_expect(self) -> Prompt:
         send = self.send if isinstance(self.send, SendEach) else None
         errors = []
+        if self.is_shell_prompt and self.send is not None:
+            errors.append(_error(
+                "return_with_send",
+                "a return prompt is a shell prompt and sends nothing; remove send or return",
+                ("send",), self.model_dump(by_alias=True)["send"],
+            ))
         if send and send.fields:
             if self.expect is not None:
                 errors.append(_error(
