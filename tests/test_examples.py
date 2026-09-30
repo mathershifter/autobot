@@ -9,13 +9,14 @@ import pytest
 import yaml
 from conftest import ROOT
 
+from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
 
 EXAMPLES = sorted((ROOT / "examples").glob("*.yaml"))
 
 
 def load(path: Path) -> Any:
-    return yaml.safe_load(path.read_text())
+    return yaml.load(path.read_text(), Loader=UniqueKeyLoader)
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)

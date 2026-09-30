@@ -159,12 +159,12 @@ def test_p6_29_cli_errors_print_markup_like_text_verbatim(tmp_path: Path):
 
 def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Only file and YAML errors are caught while loading."""
-    def interrupt(_stream: object) -> None:
+    def interrupt(*_args: object, **_kwargs: object) -> None:
         raise KeyboardInterrupt
 
     path = tmp_path / "script.autobot.yaml"
     path.write_text("autobot: 2026-08\n")
-    monkeypatch.setattr(cli.yaml, "safe_load", interrupt)
+    monkeypatch.setattr(cli.yaml, "load", interrupt)
     with pytest.raises(KeyboardInterrupt):
         cli._load(str(path))
 
@@ -202,3 +202,89 @@ def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
     assert ">> attach: " in res.stderr
     assert "Script error" not in res.stderr
     assert "ValueError: template error: " in res.stderr
+
+
+# -- duplicate mapping keys ------------------------------------------------------
+
+
+def _marked_head(tmp_path: Path) -> str:
+    """Lines 1-4 of a script whose `prepare` and `spawn` touch marker files."""
+    return (
+        f"autobot: 2026-08\nattach:\n  spawn: touch {tmp_path / 'spawned'}\n"
+        f'  prepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
+    )
+
+
+@pytest.mark.parametrize(
+    ("tail", "where", "key", "first"),
+    [
+        ("script:\n  - cmd: echo one\nscript:\n  - cmd: echo two\n", "line 7, column 1", "script", "line 5, column 1"),
+        ("script:\n  - cmd: echo one\n    when: 'false'\n    cmd: echo two\n", "line 8, column 5", "cmd", "line 6, column 5"),
+        ("env:\n  HOST: a\n  HOST: b\nscript:\n  - cmd: echo one\n", "line 7, column 3", "HOST", "line 6, column 3"),
+    ],
+    ids=["top-level", "step", "env"],
+)
+def test_p6_33_cli_duplicate_key_is_clean_error(tmp_path: Path, tail: str, where: str, key: str, first: str):
+    """SPEC.md CLI: a key given twice in one mapping is a `YAML error` naming both places, rc 1, before prepare."""
+    res = run_cli(None, tmp_path, raw=_marked_head(tmp_path) + tail)
+    path = tmp_path / "script.autobot.yaml"
+    assert _load_error(res) == f"YAML error in {path}, {where}: found duplicate key '{key}'"
+    lines = [line for line in res.stderr.splitlines() if "RuntimeWarning" not in line]
+    assert lines[1:] == [f"  first defined ({first})"]
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+@pytest.mark.parametrize(
+    ("raw", "key", "line"),
+    [
+        ("attach:\n  spawn: a\n  timeout: 5\n  spawn: b\n", "spawn", 4),
+        ("prompts:\n  - name: a\n    expect: [x]\n    name: b\n", "name", 4),
+        ("fn:\n  f:\n    script:\n      - {cmd: a, cmd: b}\n", "cmd", 4),
+        ("vars:\n  a:\n    b:\n      c: 1\n      c: 2\n", "c", 5),
+        ("vars:\n  m:\n    <<: {x: 1, x: 2}\n", "x", 3),
+        ("vars:\n  a: &a {x: 1}\n  b: &b {y: 1}\n  m:\n    <<: *a\n    <<: *b\n", "<<", 6),
+        ('vars:\n  m: {x: 1, "x": 2}\n', "x", 2),
+    ],
+    ids=["attach", "prompt", "fn-step", "nested-vars", "merge-source", "two-merge-keys", "quoted-same-key"],
+)
+def test_p6_34_duplicate_key_rejected_at_any_level(raw: str, key: str, line: int):
+    """SPEC.md: keys are unique in every mapping, including inside `<<` merge sources; one `<<` per mapping."""
+    with pytest.raises(yaml.constructor.ConstructorError) as exc:
+        yaml.load(raw, Loader=cli.UniqueKeyLoader)
+    assert exc.value.problem == f"found duplicate key '{key}'"
+    assert exc.value.problem_mark.line + 1 == line
+    assert exc.value.context == "first defined"
+
+
+def test_p6_35_cli_merge_key_override_is_accepted(tmp_path: Path):
+    """SPEC.md: a key set next to `<<` overrides the merged value; it isn't a duplicate."""
+    doc = make_doc([{"cmd": 'echo "over-{{ vars.over.a }}-{{ vars.over.b }}"'}])
+    raw = yaml.safe_dump(doc) + "vars:\n  base: &base {a: 1, b: 2}\n  over:\n    <<: *base\n    b: 3\n"
+    res = run_cli(None, tmp_path, raw=raw)
+    assert res.returncode == 0, res.stderr
+    assert "over-1-3" in res.stdout
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "a: &a {x: 1, y: 1}\nb: {<<: *a, x: 2}\n",
+        "a: &a {x: 1}\nb: &b {x: 2, z: 0}\nc: {<<: [*a, *b], z: 9}\n",
+        "a: &a {x: 1}\nc: {<<: &b {<<: *a, x: 2}}\nd: *b\n",
+        "m: {=: a}\n",
+    ],
+    ids=["override", "merge-list", "merged-then-aliased", "value-key"],
+)
+def test_p6_36_merge_keys_load_like_safe_load(raw: str):
+    """Keys without duplicates load exactly as `yaml.safe_load` loads them, `<<` merges included."""
+    assert yaml.load(raw, Loader=cli.UniqueKeyLoader) == yaml.safe_load(raw)
+
+
+def test_p6_37_cli_keys_that_only_look_alike_are_accepted(tmp_path: Path):
+    """SPEC.md: keys are compared as loaded, so `1` (an integer) and `"1"` (a string) are different keys."""
+    doc = make_doc([{"cmd": "echo \"keys-{{ vars.m | length }}-{{ vars.m[1] }}-{{ vars.m['1'] }}\""}])
+    raw = yaml.safe_dump(doc) + 'vars:\n  m: {1: int, "1": str}\n'
+    res = run_cli(None, tmp_path, raw=raw)
+    assert res.returncode == 0, res.stderr
+    assert "keys-2-int-str" in res.stdout
