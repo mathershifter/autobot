@@ -24,7 +24,7 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 |------------------|-------------------------------------------------------------|
 | `--arg KEY=VALUE` | Pass arguments accessible as `{{ args.KEY }}` in templates |
 
-If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a validation failure, an `--arg` without `=`, and a template error in the top-level `env` or in a top-level prompt's `send`.
+If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, and a template error in the top-level `env` or in a top-level prompt's `send`.
 
 ## Script Structure
 

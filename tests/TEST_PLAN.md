@@ -24,10 +24,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 20 | 0 | 0 | 20 | 4 |
 | P5 | attach / block lifecycles, env | 25 | 0 | 0 | 25 | 0 |
-| P6 | model / schema / example / CLI parity | 32 | 0 | 0 | 32 | 0 |
+| P6 | model / schema / example / CLI parity | 37 | 0 | 0 | 37 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **157** | **0** | **0** | **157** | **5** |
+| **Total** | | **162** | **0** | **0** | **162** | **5** |
 
 A parametrized test counts as one test.
 
@@ -132,7 +132,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Duration format (SPEC.md:307-313) | none | P6-09, P8-01 |
 | Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 |
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20 |
-| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..32, P7-07 |
+| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..37, P7-07 |
 | Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..08 |
 | Examples | none | P6-19/20 |
 
@@ -303,8 +303,8 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-16 | `test_parity_negative_duration` | 307-313 | F7 | `sleep: -1` → `(False, False)`; model message `invalid duration` | pass (was todo #11) |
 | P6-17 | `test_parity_bool_duration` | 307-313 | F7 | `sleep: true` → `(False, False)`; model message `invalid duration` | pass (was todo #11) |
 | P6-18 | `test_parity_fn_script_required` | 57 | F7 | `fn: {f: {}}` → `(False, False)`; model type `missing` at `fn.f.script` | pass (was todo #11) |
-| P6-19 | `test_examples_validate_model` (parametrized over `examples/*.yaml`) | 12 | model | `Config.model_validate(yaml.safe_load(...))` succeeds | pass |
-| P6-20 | `test_examples_validate_schema` (parametrized) | 12 | F7 | schema accepts each example | pass |
+| P6-19 | `test_examples_validate_model` (parametrized over `examples/*.yaml`) | 12 | model | `Config.model_validate(yaml.load(..., Loader=cli.UniqueKeyLoader))` succeeds (the CLI loader, so a duplicate key in an example fails) | pass |
+| P6-20 | `test_examples_validate_schema` (parametrized) | 12 | F7 | schema accepts each example, loaded with `cli.UniqueKeyLoader` | pass |
 | P6-21 | `test_cli_arg_passed_to_templates` | 351-355 | CLI subprocess, F1 script, `--arg msg=hi` | `cmd: "echo got-{{ args.msg }}"` → `got-hi` in stdout, rc 0 | pass |
 | P6-22 | `test_cli_arg_value_may_contain_equals` | 355 | as P6-21, `--arg k=a=b` | `got-a=b` | pass |
 | P6-23 | `test_cli_arg_without_equals_is_clean_error` | 355 | CLI, `--arg bad` | rc 1; stderr `--arg requires KEY=VALUE`; no `Traceback` | pass |
@@ -314,11 +314,16 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-27 | `test_cli_undecodable_script_is_clean_error` (parametrized: `\xff\xfe`, truncated `\xc3`, `\x07`) | CLI | CLI, raw bytes | rc 1; no `Traceback`; first line exactly `YAML error in <path>, position N: <reason> (utf-8 byte #xff)` / `(character #x07)` | pass (was spec question #19) |
 | P6-28 | `test_cli_utf16_with_bom_loads` | CLI | CLI, F1 script encoded UTF-16 with BOM | rc 0; `got-2-hi` in stdout | pass |
 | P6-29 | `test_cli_errors_print_markup_like_text_verbatim` | CLI | CLI | `--arg '[/x]'`, validation input `"[/x]"` and a missing path containing `[/d]` and `[b]` are printed verbatim; no rich `MarkupError` | pass |
-| P6-30 | `test_cli_load_does_not_swallow_keyboard_interrupt` | CLI | in-process, `yaml.safe_load` patched to raise `KeyboardInterrupt` | `cli._load` re-raises `KeyboardInterrupt` | pass |
+| P6-30 | `test_cli_load_does_not_swallow_keyboard_interrupt` | CLI | in-process, `yaml.load` patched to raise `KeyboardInterrupt` | `cli._load` re-raises `KeyboardInterrupt` | pass |
 | P6-31 | `test_cli_script_error_at_runner_load_is_clean_error` (parametrized: `env: {A: "{{ nope( }}"}`, top-level prompt `send: ["{{ x "]`, `env: {A: "{{ env.A }}x"}`) | CLI | CLI; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: template error: ...` / `env nesting too deep (>10 iterations), unresolved: ['A']`; neither marker exists | pass |
 | P6-32 | `test_cli_runtime_errors_are_not_caught_as_load_errors` | CLI | CLI, F1, `cmd: "echo {{ nope( }}"` | rc 1; `>> attach:` logged; no `Script error`; the run's `ValueError: template error: ` still reaches stderr (only building the `Runner` is guarded) | pass |
+| P6-33 | `test_cli_duplicate_key_is_clean_error` (parametrized: second top-level `script:`, second `cmd:` in a step, second key in `env`) | CLI | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `YAML error in <path>, line L, column C: found duplicate key '<key>'` at the repeated key; the only other line is `  first defined (line L, column C)` at the first one; neither marker exists | pass |
+| P6-34 | `test_duplicate_key_rejected_at_any_level` (parametrized: `attach`, prompt, `fn` step, nested `vars`, inside a `<<` merge source, two `<<` keys, `x` and `"x"`) | CLI | in-process, `yaml.load(..., Loader=cli.UniqueKeyLoader)` | `ConstructorError`; `problem` is `found duplicate key '<key>'` on the expected line; `context` is `first defined` | pass |
+| P6-35 | `test_cli_merge_key_override_is_accepted` | CLI | CLI, F1; `vars.over: {<<: *base, b: 3}` with `base: {a: 1, b: 2}` | rc 0; `over-1-3` in stdout | pass |
+| P6-36 | `test_merge_keys_load_like_safe_load` (parametrized: override, `<<: [*a, *b]` plus override, a node merged before it's aliased, a plain `=` key) | CLI | in-process | `UniqueKeyLoader` result equals `yaml.safe_load` | pass |
+| P6-37 | `test_cli_keys_that_only_look_alike_are_accepted` | CLI | CLI, F1; `vars.m: {1: int, "1": str}` | rc 0; `keys-2-int-str` in stdout | pass |
 
-Totals: 32 pass.
+Totals: 37 pass.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -379,12 +384,12 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
 | P4 | 20 | 0 | 4 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 32 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 37 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **157** | **0** | **5** | |
+| **Total** | **162** | **0** | **5** | |
 
-Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32).
+Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
 Decisions #4, #6, #9, #10, #11 and #12 landed on branch `feat/spec-decisions-4-6-9-10-11-12`. That branch also:
 - removes the P6-13/P6-14 xfail markers (both pass)

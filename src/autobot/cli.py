@@ -9,6 +9,7 @@ from pathlib import Path
 import pydantic
 import yaml
 from rich.console import Console
+from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
 from .models import Config
@@ -17,11 +18,43 @@ from .runner import Runner
 # markup off: messages echo user text (paths, --arg, YAML input) that may look like [tags]
 console = Console(stderr=True, markup=False, soft_wrap=True)
 
+MERGE_TAG = "tag:yaml.org,2002:merge"
+VALUE_TAG = "tag:yaml.org,2002:value"  # a plain `=` key, which flatten_mapping turns into the string "="
+_MERGE = object()
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """`SafeLoader` that rejects a mapping key given twice instead of keeping the last value.
+
+    Keys pulled in by a `<<` merge may be overridden; only keys written in the mapping itself must be unique.
+    """
+
+    def __init__(self, stream: object) -> None:
+        super().__init__(stream)
+        self._checked: set[yaml.Node] = set()
+
+    # every mapping (merge sources too) is flattened before it's built, and flattening rewrites node.value,
+    # so check the keys as written, once per node, before the first flatten
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        if node not in self._checked:
+            self._checked.add(node)
+            seen: dict[object, yaml.Node] = {}
+            for k, _ in node.value:
+                key = _MERGE if k.tag == MERGE_TAG else k.value if k.tag == VALUE_TAG else self.construct_object(k)
+                try:
+                    first = seen.setdefault(key, k)
+                except TypeError:  # unhashable: construct_mapping reports it
+                    continue
+                if first is not k:
+                    name = k.value if isinstance(k, yaml.ScalarNode) else key
+                    raise ConstructorError("first defined", first.start_mark, f"found duplicate key {name!r}", k.start_mark)
+        super().flatten_mapping(node)
+
 
 def _load(path: str) -> object:
     try:
         with open(path, "rb") as f:
-            return yaml.safe_load(f)
+            return yaml.load(f, Loader=UniqueKeyLoader)
     except OSError as e:
         console.print(f"Cannot read script {path}: {e.strerror or e}")
     except yaml.MarkedYAMLError as e:

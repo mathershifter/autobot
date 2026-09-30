@@ -437,12 +437,12 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 - `script` — path to the YAML script file
 - `--arg` — pass arguments accessible as `{{ args.KEY }}`
 
-The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 with a byte order mark). The CLI reports these load errors on stderr without a traceback:
+The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 with a byte order mark). Keys must be unique in every mapping at every level (top level, `attach`, `env`, `vars`, `fn`, prompts, steps, and any nested value). A repeated key is an error rather than overriding the earlier value. Keys are compared as loaded, so `x` and `"x"` are the same key, while `1` (an integer) and `"1"` (a string) are different keys. A key set next to a `<<` merge key overrides the merged value and isn't a duplicate. A mapping can have only one `<<` key; to merge several mappings, use `<<: [*a, *b]`. The CLI reports these load errors on stderr without a traceback:
 
 | Error | First line |
 |-------|------------|
 | The file can't be read (missing, a directory, permission denied) | `Cannot read script <path>: <reason>` |
-| The file isn't valid YAML (syntax error, tab indentation, more than one document, an undefined alias, an unsupported tag such as `!!python/object`) | `YAML error in <path>, line <L>, column <C>: <problem>`, followed by an indented context line when YAML gives one |
+| The file isn't valid YAML (syntax error, tab indentation, more than one document, an undefined alias, an unsupported tag such as `!!python/object`, a duplicate key) | `YAML error in <path>, line <L>, column <C>: <problem>`, followed by an indented context line when YAML gives one. For a duplicate key the problem is `found duplicate key '<key>'` at the repeated key, and the context line is `  first defined (line <L>, column <C>)` |
 | The file has bytes that aren't valid UTF-8, or disallowed control characters | `YAML error in <path>, position <N>: <reason> (...)` |
 | The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by the details |
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
