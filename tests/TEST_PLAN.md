@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 23 | 0 | 0 | 23 | 3 |
-| P5 | attach / block lifecycles, env | 27 | 0 | 0 | 27 | 0 |
+| P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
 | P6 | model / schema / example / CLI parity | 40 | 0 | 0 | 40 | 0 |
 | P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **170** | **0** | **0** | **170** | **4** |
+| **Total** | | **175** | **0** | **0** | **175** | **4** |
 
 A parametrized test counts as one test.
 
@@ -113,7 +113,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | SPEC section | Existing tests | Gaps closed by |
 |--------------|----------------|----------------|
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 |
-| Top-level fields, `autobot` version (SPEC.md:20-31) | none | P6-05, P6-15 |
+| Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31 |
 | `prompts`, `send` forms, `sendEach` (SPEC.md:33-53) | none | P4-10..16, P4-21..23, P5-25/26, P6-07/08, P6-38..40 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-09 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
@@ -276,13 +276,18 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-19 | `test_yaml_env_overridden_by_os_env` | 25 | `monkeypatch.setenv("AB_X", "os")`, `env: {AB_X: yaml, AB_Y: keep}` | `runner.render("{{ env.AB_X }}-{{ env.AB_Y }}") == "os-keep"` (no spawn) | pass |
 | P5-20 | `test_env_nesting` | 25 | `env: {A: a, B: "{{ env.A }}-b", C: "{{ env.B }}-c"}` | `env.C == "a-b-c"` | pass |
 | P5-21 | `test_env_nesting_uses_os_override` | 25 | `setenv("A", "os")`, same env | `env.C == "os-b-c"` | pass |
-| P5-22 | `test_env_cycle_too_deep` | 25 | `env: {A: "{{ env.B }}x", B: "{{ env.A }}"}` | `Runner(...)` raises `ValueError` matching `nesting too deep` | pass |
+| P5-22 | `test_env_cycle_detected` (parametrized: self `A: "{{ env.A }}x"`; mutual `A: "{{ env.B }}"`, `B: "{{ env.A }}"`; mutual with a growing value; 3-cycle; a lead-in key `X -> A` outside the cycle; `env['B'] \| upper` / `env.get('A')` forms) | 25 | none | `Runner(...)` raises `ValueError` exactly `env cycle: A -> ... -> A`, naming only the cycle | pass (was `nesting too deep`; mutual cycles passed silently) |
 | P5-23 | `test_attach_timeout_subsecond` (parametrized `500ms` → 0.5, `1.5s` → 1.5) | 74, 307-313 | F5 (`Session.attach` recorder, not delegating) | recorded `timeout` equals the parsed float | pass (was xfail #2) |
 | P5-24 | `test_attach_timeout_default_and_spawn_templated` | 73-74, 317 | F5 recorder, `spawn: "{{ env.SH }}"`, no `timeout` | recorded spawn is the rendered string; `timeout == 300` | pass |
 | P5-25 | `test_block_send_each_error_aborts_at_entry` (parametrized: `vars.nope`; `vars.creds` overwritten by an earlier `register`) | `sendEach` | F1, block prompt `sendEach` with `fields`; `enter`, `script`, block breakout, a later step and the attach breakout each append a tag to `tmp_path/log` | `run()` raises `ValueError` exactly `prompt 'login': sendEach '<each>': no key 'nope' in 'vars'` / `'vars.creds' is a string, not a list`; log is only `attach-breakout`; handlers `["top"]` | pass |
 | P5-26 | `test_block_send_each_valid` | `sendEach` | F1, F6 probe, same block with a valid `vars.creds` | log `enter, script, block-breakout`; the probe inside sees `["blk", "login"]`; handlers `["top"]` afterwards | pass |
+| P5-27 | `test_env_nesting_any_order_and_forms` | 25 | `env: {C: "{{ env['B'] \| upper }}-c", B: "{{ env.get('A') }}-b-{{ args.a }}", A: "{{ vars.v }}", X: "{{ env.NOPE \| default('dflt') }}-{{ 'A' in env }}"}` (referencing keys before the keys they reference) | `render("{{ env.C }} {{ env.X }}") == "A-B-ARG-c dflt-True"` | pass |
+| P5-28 | `test_env_os_override_breaks_cycle` | 25 | `setenv("A", "os")`, `env: {A: "{{ env.B }}", B: "{{ env.A }}-b"}` | no error; `env.A == "os"`, `env.B == "os-b"` | pass |
+| P5-29 | `test_env_value_rendered_once` | 25 | `env: {A: "{% raw %}{{ lit }}{% endraw %}", B: "{{ env.A }}"}` | `env.B == "{{ lit }}"` (the rendered text isn't rendered again) | pass |
+| P5-30 | `test_env_undefined_key_and_depth_limit` | 25 | `env: {A: "{{ env.NOPE }}"}`; chains of 50 and 51 keys | `ValueError` exactly `template error: env has no key 'NOPE'`; 50 keys resolve; 51 raise exactly `env nesting deeper than 50 levels: K0 -> ... -> K50` | pass |
+| P5-31 | `test_env_os_value_is_verbatim` | 25 | `setenv("A", "p{{w}}d{% x %}")`, `env: {A: default, B: "{{ env.A }}-b"}`; then `setenv("A", "{{ env.B }}")` | no error; `env.A == "p{{w}}d{% x %}"`, `env.B == "p{{w}}d{% x %}-b"`; with `A={{ env.B }}` no cycle: `env.A == "{{ env.B }}"`, `env.B == "{{ env.B }}-b"` | pass (behavior change: OS values were rendered) |
 
-Totals: 27 pass.
+Totals: 32 pass.
 
 ## P6: model, schema, example and CLI parity
 
@@ -320,7 +325,7 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-28 | `test_cli_utf16_with_bom_loads` | CLI | CLI, F1 script encoded UTF-16 with BOM | rc 0; `got-2-hi` in stdout | pass |
 | P6-29 | `test_cli_errors_print_markup_like_text_verbatim` | CLI | CLI | `--arg '[/x]'`, validation input `"[/x]"` and a missing path containing `[/d]` and `[b]` are printed verbatim; no rich `MarkupError` | pass |
 | P6-30 | `test_cli_load_does_not_swallow_keyboard_interrupt` | CLI | in-process, `yaml.load` patched to raise `KeyboardInterrupt` | `cli._load` re-raises `KeyboardInterrupt` | pass |
-| P6-31 | `test_cli_script_error_at_runner_load_is_clean_error` (parametrized: `env: {A: "{{ nope( }}"}`, top-level prompt `send: ["{{ x "]`, `env: {A: "{{ env.A }}x"}`) | CLI | CLI; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: template error: ...` / `env nesting too deep (>10 iterations), unresolved: ['A']`; neither marker exists | pass |
+| P6-31 | `test_cli_script_error_at_runner_load_is_clean_error` (parametrized: `env: {A: "{{ nope( }}"}`, top-level prompt `send: ["{{ x "]`, env self cycle `{A: "{{ env.A }}x"}`, mutual cycle `{A: "{{ env.B }}", B: "{{ env.A }}"}`, 3-cycle `A -> B -> C -> A`) | CLI | CLI; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `Script error in <path>: template error: ...` / `env cycle: A -> A` / `env cycle: A -> B -> A` / `env cycle: A -> B -> C -> A`; neither marker exists | pass |
 | P6-32 | `test_cli_runtime_errors_are_not_caught_as_load_errors` | CLI | CLI, F1, `cmd: "echo {{ nope( }}"` | rc 1; `>> attach:` logged; no `Script error`; the run's `ValueError: template error: ` still reaches stderr (only building the `Runner` is guarded) | pass |
 | P6-33 | `test_cli_duplicate_key_is_clean_error` (parametrized: second top-level `script:`, second `cmd:` in a step, second key in `env`) | CLI | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; no `Traceback`; first line exactly `YAML error in <path>, line L, column C: found duplicate key '<key>'` at the repeated key; the only other line is `  first defined (line L, column C)` at the first one; neither marker exists | pass |
 | P6-34 | `test_duplicate_key_rejected_at_any_level` (parametrized: `attach`, prompt, `fn` step, nested `vars`, inside a `<<` merge source, two `<<` keys, `x` and `"x"`) | CLI | in-process, `yaml.load(..., Loader=cli.UniqueKeyLoader)` | `ConstructorError`; `problem` is `found duplicate key '<key>'` on the expected line; `context` is `first defined` | pass |
@@ -588,7 +593,7 @@ These are not in the list of blocking decisions. None of them is tested in this 
 - **#20** (runner.py:17, steps.py:26): the operator log consoles interpreted rich markup in the text they print. `cmd: echo "[/x]"` crashed the run with `rich.errors.MarkupError` when `>> cmd:` was logged, `[bold]x[/bold]` was logged as `x`, and the same applied to block names, the spawn line and error messages. Lines longer than 80 columns were also hard-wrapped when stderr wasn't a terminal. Fixed: both consoles use `markup=False, soft_wrap=True`. Covered by P8-15 and P8-16.
 - Follow-ups found while fixing #19 (not tested):
   - A `sendEach` whose `each` path doesn't exist (`each: vars.nope`) raises a bare `KeyError: 'nope'` with a traceback while the `Runner` is built. The CLI only catches `ValueError` there, so this still prints a traceback (before `prepare`).
-  - Mutually referencing `env` values (`A: "{{ env.B }}"`, `B: "{{ env.A }}"`) converge to the literal `{{ env.A }}` without an error, so the run starts with unresolved values.
+  - Mutually referencing `env` values (`A: "{{ env.B }}"`, `B: "{{ env.A }}"`) converge to the literal `{{ env.A }}` without an error, so the run starts with unresolved values. Fixed on branch `fix/env-reference-cycle`: each default is rendered once, on first read, OS values are used verbatim, and a cycle is `env cycle: A -> B -> A` (P5-22, P5-27..31, P6-31).
   - Duplicate YAML keys are accepted and the last one wins (PyYAML). SPEC doesn't say whether they should be rejected.
 
 ## Implementation order

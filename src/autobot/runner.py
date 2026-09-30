@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator, Mapping
 from typing import Any
 
+from jinja2 import StrictUndefined
 from rich.console import Console
 
 from .models import Config, PluginStep, Prompt, SendEach, Step
@@ -65,6 +67,50 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
     return sets
 
 
+ENV_DEPTH = 50
+
+
+class _EnvRefs(Mapping[str, Any]):
+    """`env` while it's resolved: a default is rendered once, when first read, so a cycle is caught.
+
+    Values in `fixed` (from the OS environment) are used as they are, never rendered.
+    """
+
+    def __init__(self, raw: dict[str, str], fixed: dict[str, str], ctx: dict[str, Any]):
+        self.__raw = raw
+        self.__ctx = {**ctx, "env": self}
+        self.__done: dict[str, Any] = dict(fixed)
+        self.__path: list[str] = []
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in self.__raw:
+            return StrictUndefined(hint=f"env has no key '{key}'")
+        if key not in self.__done:
+            if key in self.__path:
+                cycle = [*self.__path[self.__path.index(key):], key]
+                raise ValueError(f"env cycle: {' -> '.join(cycle)}")
+            if len(self.__path) == ENV_DEPTH:
+                raise ValueError(f"env nesting deeper than {ENV_DEPTH} levels: {self.__path[0]} -> ... -> {key}")
+            self.__path.append(key)
+            try:
+                self.__done[key] = render_template(self.__raw[key], self.__ctx)
+            finally:
+                self.__path.pop()
+        return self.__done[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.__raw
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self[key] if key in self.__raw else default
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.__raw)
+
+    def __len__(self) -> int:
+        return len(self.__raw)
+
+
 class Runner:
     def __init__(self, config: Config, cli_args: dict[str, str]):
         registry.discover()
@@ -113,24 +159,9 @@ class Runner:
         return [list(attempt) for attempt in sets]
 
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
-        env = {k: os.environ.get(k, v) for k, v in defaults.items()}
-        ctx = {"env": env, "vars": self._config.vars, "args": self._cli_args}
-        for iteration in range(10):
-            changed = False
-            for k, v in env.items():
-                rendered = render_template(v, ctx)
-                if rendered != v:
-                    env[k] = rendered
-                    changed = True
-            if not changed:
-                break
-        else:
-            unresolved = [k for k, v in env.items() if "{{" in str(v)]
-            if unresolved:
-                raise ValueError(
-                    f"env nesting too deep (>10 iterations), unresolved: {unresolved}"
-                )
-        return env
+        fixed = {k: os.environ[k] for k in defaults if k in os.environ}
+        refs = _EnvRefs(defaults, fixed, {"vars": self._config.vars, "args": self._cli_args})
+        return {k: refs[k] for k in defaults}
 
     @property
     def _ctx(self) -> dict:

@@ -24,7 +24,7 @@ autobot <script.yaml> [--arg KEY=VALUE ...]
 |------------------|-------------------------------------------------------------|
 | `--arg KEY=VALUE` | Pass arguments accessible as `{{ args.KEY }}` in templates |
 
-If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, and a template error in the top-level `env` or in a top-level prompt's `send`.
+If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, and a template error in a top-level prompt's `send`.
 
 ## Script Structure
 
@@ -69,7 +69,7 @@ script:                 # main steps to execute
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
 | `autobot` | yes      | Schema version in `YYYY-MM` format (e.g. `2026-08`)                                                                             |
-| `env`     | no       | String key-value defaults, overridden by OS env vars. Supports nesting: `{{ env.OTHER_KEY }}`. Accessible as `{{ env.KEY }}` |
+| `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking                         |

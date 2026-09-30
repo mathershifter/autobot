@@ -178,9 +178,11 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
     [
         ({"A": "{{ nope( }}"}, None, "template error: unexpected '}', expected ')'"),
         (None, [{"name": "p", "expect": ["x"], "send": ["{{ x "]}], "template error: unexpected end of template, expected 'end of print statement'."),
-        ({"A": "{{ env.A }}x"}, None, "env nesting too deep (>10 iterations), unresolved: ['A']"),
+        ({"A": "{{ env.A }}x"}, None, "env cycle: A -> A"),
+        ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, None, "env cycle: A -> B -> A"),
+        ({"A": "{{ env.B }}", "B": "{{ env.C }}", "C": "{{ env.A }}"}, None, "env cycle: A -> B -> C -> A"),
     ],
-    ids=["env-template", "send-template", "env-too-deep"],
+    ids=["env-template", "send-template", "env-cycle-self", "env-cycle-mutual", "env-cycle-three"],
 )
 def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     tmp_path: Path, env: dict[str, str] | None, prompts: list | None, message: str
