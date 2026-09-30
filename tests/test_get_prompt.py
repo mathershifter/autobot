@@ -329,16 +329,12 @@ def test_p4_17_grouped_missing_item_no_response(device):
     assert log_of(log) == ["ENTER="]
 
 
-@pytest.mark.slow
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
     """SPEC.md:81, 341: a login prompt that arrives with the banner is answered."""
     r, log = device([SHELL_PROMPT, LOGIN_FLAT], "--same-chunk", "--order", "login,password",
                     "--accept", "admin:secret", kick=False)
-    try:
-        r.session.get_prompt(timeout=12)
-    except RuntimeError:
-        pass  # exhausted after the wrong mapping; the log shows why
-    assert log_of(log)[:2] == ["LOGIN=admin", "PASSWORD=secret"]
+    r.session.get_prompt(timeout=5)
+    assert log_of(log) == ["LOGIN=admin", "PASSWORD=secret"]
     assert "" not in sent.lines()
 
 
