@@ -196,6 +196,18 @@ The attach lifecycle:
 5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
 6. Session closed
 
+Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`.
+
+If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI prints a traceback and exits with status 1). The spawn wait fails when:
+- `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for ...`). The process is still running until it is closed.
+- the process exits before any output: `EOFError` (`connection closed`)
+- the `spawn` command isn't found or isn't executable: pexpect's `ExceptionPexpect` (`The command was not found or was not executable: <command>`). No process is started.
+- the operator interrupts the run (`KeyboardInterrupt`) during the wait
+
+`attach.prepare` has already run when the spawn wait fails. Nothing undoes it; a `prepare` that sets something up (e.g. a tunnel) must clean up after itself.
+
+Any output ends the spawn wait successfully, even if the process then exits. A process that prints a banner and exits before a prompt fails in the first step that waits on it (usually with `EOFError`), and `attach.breakout` runs as it does after any step failure. Its steps that wait on the session fail with `EOFError`; the first one ends the breakout and is logged (`>> breakout error (EOFError): connection closed`), and the original error propagates.
+
 ## Step Types
 
 ### `cmd` — Send command(s) to the shell
@@ -643,4 +655,4 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 
 Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
-Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn, breakouts still run and the session is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1.
+Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn wait succeeds, breakouts still run and the session is closed first. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1.

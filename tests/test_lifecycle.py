@@ -5,6 +5,9 @@ Tests prefixed ``test_p5_NN_`` map to test plan rows P5-NN.
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -15,11 +18,14 @@ from conftest import (
     BASH,
     SHELL_ENV,
     AttachRecorded,
+    FakeDevice,
     ProbeExecutor,
     SentLog,
     Timeline,
     handler_names,
+    make_doc,
     make_runner,
+    run_cli,
     run_script,
     steps,
 )
@@ -150,12 +156,120 @@ def test_attach_original_error_preserved_when_breakout_fails(children):
     assert not children[0].isalive()
 
 
-def test_attach_initial_timeout_closes_child(children):
-    r = top_runner([{"cmd": "true"}], spawn="sleep 30", timeout=1)
-    with pytest.raises(TimeoutError):
+# -- P5: spawn failure (attach lifecycle step 2) ------------------------------
+
+# case -> (spawn, error, message); the spawn wait fails before any output
+SPAWN_FAILURES: dict[str, tuple[str, type[BaseException], str]] = {
+    "timeout": ("sleep 30", TimeoutError, r"^timed out after 1(\.0)?s waiting for "),
+    "exits": ("true", EOFError, r"^connection closed$"),
+    "not-found": (
+        "autobot_no_such_cmd",
+        pexpect.ExceptionPexpect,
+        r"^The command was not found or was not executable: autobot_no_such_cmd",
+    ),
+}
+
+
+def spawn_runner(tmp_path: Path, spawn: str) -> tuple[Runner, Path]:
+    """Every phase appends a tag to ``log``; the breakout would also send ``exit``."""
+    log = tmp_path / "log"
+    runner = make_runner(
+        [{"cmd": f"echo main >> {log}"}],
+        spawn=spawn,
+        timeout=1,
+        prepare=f"#!/bin/sh\necho prepare >> {log}\n",
+        attach_script=[{"cmd": f"echo attach >> {log}", "timeout": "2s"}],
+        breakout=[{"line": "exit"}, {"cmd": f"echo breakout >> {log}", "timeout": "2s"}],
+    )
+    return runner, log
+
+
+def progress(err: str) -> list[str]:
+    return [line for line in err.splitlines() if line.startswith(">> ")]
+
+
+@pytest.mark.parametrize("case", SPAWN_FAILURES)
+def test_p5_32_spawn_failure_skips_scripts_and_breakout(
+    case: str, tmp_path: Path, children, sent: SentLog, capsys
+):
+    """SPEC attach "If the spawn wait fails": prepare ran; no script, no breakout; closed."""
+    spawn, error, message = SPAWN_FAILURES[case]
+    r, log = spawn_runner(tmp_path, spawn)
+    with pytest.raises(error, match=message):
         r.run()
+    assert log.read_text().split() == ["prepare"]
+    assert list(sent) == []  # nothing reached the process, breakout included
+    assert r.session._cld is None
+    if case == "not-found":
+        assert children == []  # pexpect refuses before it forks
+    else:
+        assert len(children) == 1
+        assert not children[0].isalive()
+        assert children[0].closed  # pty released
+    assert progress(capsys.readouterr().err) == [
+        ">> prepare: running local script",
+        ">> prepare: done",
+        f">> attach: {spawn}",
+    ]
+
+
+def test_p5_33_banner_then_exit_runs_breakout(
+    tmp_path: Path, fake_device: FakeDevice, children, capsys
+):
+    """SPEC attach: output ends the spawn wait; the first wait then hits EOF and breakout runs."""
+    spawn, _ = fake_device("--exit-after-banner")
+    r, log = spawn_runner(tmp_path, spawn)
+    with pytest.raises(EOFError, match="^connection closed$"):
+        r.run()
+    assert log.read_text().split() == ["prepare"]
     assert len(children) == 1
     assert not children[0].isalive()
+    assert children[0].closed
+    assert r.session._cld is None
+    assert progress(capsys.readouterr().err) == [
+        ">> prepare: running local script",
+        ">> prepare: done",
+        f">> attach: {spawn}",
+        ">> breakout: detaching",
+        ">> breakout error (EOFError): connection closed",
+    ]
+
+
+def _pids(cmdline: str) -> list[str]:
+    return subprocess.run(["pgrep", "-x", "-f", cmdline], capture_output=True, text=True, check=False).stdout.split()
+
+
+@pytest.mark.parametrize("case", [*SPAWN_FAILURES, "banner"])
+def test_p5_34_spawn_failure_cli_exit_status(case: str, tmp_path: Path, fake_device: FakeDevice):
+    """SPEC CLI: a spawn failure is a run-time error: traceback, status 1, no child left."""
+    if case == "banner":
+        spawn, _ = fake_device("--exit-after-banner")
+        error = "EOFError"
+    else:
+        spawn, exc, _ = SPAWN_FAILURES[case]
+        error = f"{exc.__module__}.{exc.__qualname__}" if exc.__module__ != "builtins" else exc.__name__
+    if case == "timeout":
+        spawn = f"sleep 9{os.getpid()}"  # unique, so a leaked child can be found
+    log = tmp_path / "log"
+    doc = make_doc(
+        [{"cmd": f"echo main >> {log}"}],
+        spawn=spawn,
+        timeout=1,
+        prepare=f"#!/bin/sh\necho prepare >> {log}\n",
+        breakout=[{"cmd": f"echo breakout >> {log}", "timeout": "2s"}],
+    )
+    try:
+        res = run_cli(doc, tmp_path)
+        leaked = _pids(spawn) if case == "timeout" else []
+    finally:
+        for pid in _pids(spawn) if case == "timeout" else []:
+            os.kill(int(pid), signal.SIGKILL)
+    assert res.returncode == 1, res.stderr
+    assert "Traceback" in res.stderr
+    assert res.stderr.rstrip().splitlines()[-1].startswith(f"{error}: ")
+    assert (">> breakout: detaching" in res.stderr) == (case == "banner")
+    assert log.read_text().split() == ["prepare"]
+    assert leaked == []
 
 
 # -- P5: attach lifecycle (SPEC.md:68-85) -----------------------------------

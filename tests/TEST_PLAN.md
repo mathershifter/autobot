@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 20 | 0 | 0 | 20 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
-| P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
+| P5 | attach / block lifecycles, env | 35 | 0 | 0 | 35 | 0 |
 | P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
 | P7 | registry and plugins | 13 | 0 | 0 | 13 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **197** | **0** | **0** | **197** | **4** |
+| **Total** | | **200** | **0** | **0** | **200** | **4** |
 
 The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
@@ -119,7 +119,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31 |
 | `prompts`, `send` forms, `sendEach`, Response selection | none | P4-12..15, P4-17, P4-20..31, P5-25/26, P6-07, P6-38..40, P6-46..56 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-08 |
-| `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
+| `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved) | P5-01..09, P5-17..24, P5-32..34, P8-14 |
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
 | Per-line `errors`, success semantics (SPEC.md:101-107) | `test_output_capture::test_errors_*`, `test_list_error_on_middle_line_*`, `test_assert_*` | P1-01..11 |
 | Captured output (SPEC.md:109-116) | `test_output_capture` (echo, long echo, no trailing newline, echo off, strip_echo table) | P1-17/18/19, P8-05 |
@@ -302,8 +302,11 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-29 | `test_env_value_rendered_once` | 25 | `env: {A: "{% raw %}{{ lit }}{% endraw %}", B: "{{ env.A }}"}` | `env.B == "{{ lit }}"` (the rendered text isn't rendered again) | pass |
 | P5-30 | `test_env_undefined_key_and_depth_limit` | 25 | `env: {A: "{{ env.NOPE }}"}`; chains of 50 and 51 keys | `ValueError` exactly `template error: env has no key 'NOPE'`; 50 keys resolve; 51 raise exactly `env nesting deeper than 50 levels: K0 -> ... -> K50` | pass |
 | P5-31 | `test_env_os_value_is_verbatim` | 25 | `setenv("A", "p{{w}}d{% x %}")`, `env: {A: default, B: "{{ env.A }}-b"}`; then `setenv("A", "{{ env.B }}")` | no error; `env.A == "p{{w}}d{% x %}"`, `env.B == "p{{w}}d{% x %}-b"`; with `A={{ env.B }}` no cycle: `env.A == "{{ env.B }}"`, `env.B == "{{ env.B }}-b"` | pass (behavior change: OS values were rendered) |
+| P5-32 | `test_spawn_failure_skips_scripts_and_breakout` (parametrized: `timeout` = `sleep 30` with `attach.timeout: 1`; `exits` = `true`; `not-found` = `autobot_no_such_cmd`) | attach, "If the spawn wait fails" | F1, F4 `sent`, `children`, `capsys`; prepare, `attach.script`, `script` and the breakout each append a tag to `tmp_path/log`, and the breakout also sends `line: exit` | raises `TimeoutError` `timed out after 1.0s waiting for ...` / `EOFError` `connection closed` / `pexpect.ExceptionPexpect` `The command was not found or was not executable: ...`; log is only `prepare`; nothing was sent; `_cld is None`; the child is dead and `closed` (`not-found`: no child at all); the `>> ` lines are exactly `prepare: running local script`, `prepare: done`, `attach: <spawn>` | pass (replaces `test_attach_initial_timeout_closes_child`) |
+| P5-33 | `test_banner_then_exit_runs_breakout` | attach, "Any output ends the spawn wait" | F2 `--exit-after-banner`, the same tags, `children`, `capsys` | raises `EOFError` `connection closed`; log is only `prepare`; the child is dead and `closed`; the `>> ` lines are the P5-32 lines then `breakout: detaching`, `breakout error (EOFError): connection closed` | pass |
+| P5-34 | `test_spawn_failure_cli_exit_status` (parametrized: the three P5-32 cases and `banner` = F2 `--exit-after-banner`) | attach; CLI, "Errors after the script is loaded" | `run_cli`; the `timeout` case spawns `sleep 9<pid>`, so a leaked child can be found with `pgrep -x -f` (and is killed in `finally`) | status 1; `Traceback` on stderr, last line `<error>: ...`; `>> breakout: detaching` only for `banner`; log is only `prepare`; no `sleep 9<pid>` left running | pass |
 
-Totals: 32 pass.
+Totals: 35 pass.
 
 ## P6: model, schema, example and CLI parity
 
@@ -455,7 +458,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-10-01, 735 tests, 0 skipped, `jsonschema` installed): full suite about 124 s. The generated-schema fix and the `PluginStep` copy fix (P7-09..12) took the count from 696 to 735; their tests are in-process schema and model checks. Before it (2026-09-30, 696 tests): about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-10-01, 749 tests, 0 skipped, `jsonschema` installed): full suite about 143 s. The spawn-failure tests (P5-32..34) took the count from 742 to 749: eight added, and `test_attach_initial_timeout_closes_child` folded into P5-32. They spawn short-lived children and four CLI subprocesses. Earlier (735 tests): about 124 s. The generated-schema fix and the `PluginStep` copy fix (P7-09..12) took the count from 696 to 735; their tests are in-process schema and model checks. Before it (2026-09-30, 696 tests): about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 
