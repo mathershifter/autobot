@@ -223,9 +223,23 @@ When `assert` is defined, it replaces the return code check — the assertion pa
 The captured output of a command line is the text the session prints between sending the line and the next shell prompt, with:
 - The terminal echo of the sent command removed. The echo is matched ignoring whitespace and `\r`, across wrapped lines, and in readline's horizontal-scroll form (`\r<` + visible tail) used for long lines. If the echo doesn't match (e.g. echo disabled), the output is left unchanged.
 - Line endings normalized to `\n`.
+- ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)).
 - The trailing partial line before the prompt match (the prompt prefix) dropped. Output that doesn't end with a newline is therefore not captured.
 
 `errors` patterns are matched with `re.MULTILINE` against the captured output after the shell prompt returns, so they never match the echoed command, and the session is left at the prompt when the error is raised. An error that is printed without a prompt returning results in a timeout rather than an error match.
+
+#### ANSI escape sequences
+
+The session removes ANSI escape sequences that match `types.ANSI_ESCAPE_RE`: CSI sequences (`ESC [`, parameter and intermediate bytes, a final byte; e.g. colors, `ESC [?2004h`, cursor movement) and two-byte `ESC` sequences whose second byte is `@` through `Z` or `\` through `_`. Other sequences are left in the text, e.g. `ESC ( B`, `ESC =`, `ESC 7`, the 8-bit CSI byte `0x9B`, and the body of an OSC sequence such as a terminal title (only its `ESC ]` is removed). `attach.env` defaults to `TERM=dumb` and `NO_COLOR=1`, so many programs print no color to begin with.
+
+Stripped text, which never contains a removed sequence:
+- The captured output of a command (see above), and so the text `assert` and `errors` patterns are matched against, the value `register` stores, and `session.before` after a shell prompt.
+- The session output echoed to the operator. Everything read from the session is written to stdout with the sequences removed (`session.CleanWriter`), while autobot's own `>> ...` messages and errors go to stderr.
+
+Raw text, with escape sequences as received:
+- `after` patterns are matched against the raw output stream, and the `session.before` and `session.match` set by an `after` match are raw: escape sequences, `\r\n` line endings and the command echo are all kept. A pattern such as `AABBCC` doesn't match output printed as `AA ESC[1m BB ESC[0m CC`; match around the sequence instead (e.g. `AA.*CC`).
+- Prompt `expect` regexes (and the `match` regexes of `sendEach` `fields` entries) are matched against the raw stream too, but while it waits for a prompt the engine also consumes each line break and each escape sequence as it arrives (see [Prompt Handling](#prompt-handling-get_prompt)). A prompt regex should therefore match text that comes after the prompt's last escape sequence and before any that follows it. For a prompt printed as `ESC[32m PS1> ESC[0m`, `PS1> ` matches, but `PS1> $` doesn't when the `ESC[0m` arrives together with the prompt, as it usually does: it is still in the stream after `PS1> ` when the regex is tried. A regex that spans an escape sequence or a line break may or may not match, depending on how the output arrives. `session.match` after a shell prompt is the text the prompt regex matched.
+- The `$?` check's `__AUTOBOT_RC=` marker is also matched against the raw stream.
 
 Set `ignore_error: true` to continue when the command fails:
 
@@ -412,13 +426,22 @@ All step types except `sleep` support:
 
 | Field | Description |
 |-------|-------------|
-| `after` | Expect regex — wait for this pattern before executing. On match, populates `session.before` and `session.match` |
+| `after` | Expect regex — wait for this pattern before executing. Matched against the raw output, escape sequences included (see [ANSI escape sequences](#ansi-escape-sequences)). On match, populates `session.before` and `session.match` |
 | `when` | Jinja2 conditional — template is rendered, step is skipped if the result is falsy (see below) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after` | Duration to wait after the step |
-| `timeout` | Override default timeout for this step |
+| `timeout` | Duration that bounds each wait of this step (default 300s); see below |
 
 `line` and `return` steps do not support `timeout`.
+
+`timeout` bounds each wait of the step separately; it isn't a deadline for the step as a whole, and it doesn't bound `delay_before` or `delay_after`. It applies to:
+- `after`: the wait for the pattern, in every step type that has `after`. In `line` and `return`, which have no `timeout`, this wait uses the 300s default.
+- `cmd`: also the wait for a prompt before the first line and after each line, the `$?` check, each wait of an embedded-script upload, and (capped at 10s) its cleanup.
+- `call` and `block`: only the `after` wait. The steps of the function, or the block's `enter`, `script` and `breakout`, use their own `timeout`, or the 300s default; they don't inherit the `call` or `block` step's `timeout`.
+- `control`: only the `after` wait.
+- A plugin step: the `after` wait, and whatever the plugin does with the `timeout` it is passed.
+
+`attach.timeout` bounds only the wait for the spawned process's first output; steps don't inherit it either.
 
 These properties also apply to plugin steps. They are handled by the runner; the plugin's own model receives only its plugin-specific fields. Those fields are validated against the plugin's model when the script is loaded, wherever the step appears (the same places as for `call`). A failure is a validation error at the step's path, e.g. `script.0.ech0` with type `extra_forbidden` for a misspelled field.
 
@@ -481,7 +504,7 @@ Available context:
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
 | `args` | CLI `--arg KEY=VALUE` arguments |
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check and embedded-script cleanup don't change it. |
-| `session.match` | Text that matched the last `after` pattern (pexpect `after`) |
+| `session.match` | Text that matched the last `after` pattern (pexpect `after`), or the text the prompt regex matched when a shell prompt is reached. After an `after` match, `session.before` and `session.match` are raw text; after a shell prompt they have ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)). |
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
@@ -495,6 +518,8 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 ## Prompt Handling (`get_prompt`)
 
 `get_prompt()` only detects and navigates to a shell prompt — it does not send commands. The caller is responsible for sending the command via `sendline()` after `get_prompt()` returns.
+
+While it waits, the engine also consumes each `\r\n` and each ANSI escape sequence as it arrives: the text before it goes to the captured output, and the escape sequence itself is dropped (see [ANSI escape sequences](#ansi-escape-sequences)). When several patterns match, the one that starts earliest in the unread output wins; on a tie, `\r\n` comes first, then an escape sequence, then the prompts in the order they are defined.
 
 The prompt engine polls the session output in 5-second intervals:
 1. If a prompt with no `send` (or `return: true`) matches → return (shell prompt reached)
@@ -577,11 +602,29 @@ The single-string `send` and the removal of the list forms and grouped `expect` 
 ## CLI
 
 ```
-autobot <script.yaml> [--arg KEY=VALUE ...]
+autobot [run] <script.yaml> [-a KEY=VALUE ...]
+autobot schema
+autobot -h | --help
 ```
 
-- `script` — path to the YAML script file
-- `--arg` — pass arguments accessible as `{{ args.KEY }}`
+Subcommands:
+- `run <script>`: load, validate and execute the script. `script` is the path to the YAML script file.
+- `schema`: print the JSON schema to stdout (see below). It takes no arguments.
+
+`run` is the default. If the first argument isn't `run`, `schema`, `-h` or `--help`, the CLI treats the command line as `autobot run ...`, so `autobot <script>` is the same as `autobot run <script>`, and options may come before the script (`autobot -a k=v <script>`). A script file named `run` or `schema` must be given with the subcommand (`autobot run schema`) or as a path (`autobot ./schema`).
+
+Options of `run`:
+
+| Flag | Description |
+|------|-------------|
+| `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument to the script, accessible as `{{ args.KEY }}`. Repeatable, one `KEY=VALUE` per flag. The value is everything after the first `=`, so it may contain `=`. Values are strings. If a key is given more than once, the last value wins. |
+| `-h`, `--help` | Print the `run` usage and exit with status 0. |
+
+`autobot -h` prints the list of subcommands and exits with status 0. `autobot` with no arguments prints the same help to stdout and exits with status 1.
+
+`autobot schema` prints the `2026-10` JSON schema, indented, to stdout, extended with the step types of installed plugins. It reads `schemas/autobot.2026-10.json` from the source tree the CLI runs from (a checkout or an editable install). When that file doesn't exist, as in an installed package, it downloads the schema from `https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json`, the `main` branch on GitHub, so it needs network access then. It then loads the plugins registered in the `autobot.steps` entry-point group. For each plugin it adds the plugin model's pydantic JSON schema as `$defs.<key>Step`, and a `$ref` to it in `$defs.step.oneOf` just before the final `pluginStep` entry. The plugin definition describes only the plugin's own fields, not the [common step properties](#common-step-properties).
+
+A run that completes exits with status 0.
 
 The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 with a byte order mark). Keys must be unique in every mapping at every level (top level, `attach`, `env`, `vars`, `fn`, prompts, steps, and any nested value). A repeated key is an error rather than overriding the earlier value. Keys are compared as loaded, so `x` and `"x"` are the same key, while `1` (an integer) and `"1"` (a string) are different keys. A key set next to a `<<` merge key overrides the merged value and isn't a duplicate. A mapping can have only one `<<` key; to merge several mappings, use `<<: [*a, *b]`. The CLI reports these load errors on stderr without a traceback:
 
@@ -594,4 +637,6 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
 | The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...`, `Script error in <path>: env cycle: A -> B -> A` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
 
-Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, print usage and exit with status 2.
+Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
+
+Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn, breakouts still run and the session is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1.

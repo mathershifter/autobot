@@ -17,14 +17,22 @@ pipx install git+https://github.com/mathershifter/autobot.git
 ## Usage
 
 ```
-autobot <script.yaml> [--arg KEY=VALUE ...]
+autobot [run] <script.yaml> [-a KEY=VALUE ...]
+autobot schema
 ```
 
-| Flag             | Description                                                 |
-|------------------|-------------------------------------------------------------|
-| `--arg KEY=VALUE` | Pass arguments accessible as `{{ args.KEY }}` in templates |
+`autobot <script.yaml>` is short for `autobot run <script.yaml>`: anything other than `run`, `schema`, `-h` or `--help` as the first argument runs a script. To run a script file named `run` or `schema`, use `autobot run schema` or `autobot ./schema`.
 
-If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, and a template error in a top-level prompt's `send`.
+| Flag                              | Description                                                 |
+|-----------------------------------|-------------------------------------------------------------|
+| `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument accessible as `{{ args.KEY }}` in templates. Repeat the flag for more arguments; the value is everything after the first `=`, and the last value given for a key wins |
+| `-h`, `--help`                    | Show help (`autobot -h` lists the subcommands, `autobot run -h` the options) |
+
+`autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
+
+A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1.
+
+Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
 
 ## Script Structure
 
@@ -227,6 +235,7 @@ Captured output (used by `register`, `assert`, `errors`, and `session.before`) i
 
 - The terminal echo of the sent command is removed. If the echo doesn't match the sent line (e.g. echo disabled with `stty -echo`), the output is left as is.
 - Line breaks are preserved as `\n`.
+- ANSI escape sequences (colors, cursor movement) are removed, so `assert`, `errors` and `register` see plain text. `after` and prompt `expect` regexes, on the other hand, match the raw output, escape sequences included; see [ANSI escape sequences](SPEC.md#ansi-escape-sequences).
 - The prompt line is excluded. Because of that, any text printed without a trailing newline (it shares a line with the next prompt) is not captured — e.g. `printf 'x\ny'` captures `x`.
 
 **Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead.
@@ -365,9 +374,11 @@ All step types except `sleep` support these optional fields:
 | `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
-| `timeout`      | Override default timeout for this step                         |
+| `timeout`      | Bounds each wait of this step (default 300s), not the step as a whole |
 
 `line` and `return` steps do not support `timeout`.
+
+For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 
 To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.
 
@@ -416,7 +427,7 @@ Available context:
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |
-| `session.match`  | Text that matched the last prompt pattern |
+| `session.match`  | Text that matched the last `after` pattern or shell prompt |
 
 ## Error Handling
 
@@ -472,6 +483,6 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
+The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step. It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).
