@@ -1,4 +1,4 @@
-"""P7-09..11: the schema `autobot schema` generates for installed plugins agrees with the models.
+"""P7-09..12: the schema `autobot schema` generates for installed plugins agrees with the models.
 
 SPEC "CLI": each plugin gets `$defs.<key>Step` in `step.oneOf`, and its key leaves the `pluginStep`
 catch-all. SPEC "Common Step Properties": the common props apply to plugin steps; a plugin's own
@@ -98,12 +98,12 @@ REJECT = {
     "plugin-and-builtin": s({"cmd": "x", "probe": "y"}),
     "extra-allow-plugin-null-common": s({"free": "x", "timeout": None}),
     "extra-allow-plugin-field-type": s({"free": 1}),
+    "internal-plugin-key": s({"probe": "x", "plugin_key_": "probe"}),
 }
 
 
 def both(validator: Any, doc: dict[str, Any]) -> tuple[bool, bool]:
-    # copies: PluginStep's before-validator writes plugin_key_ into the dict it is given
-    return model_ok(copy.deepcopy(doc)), validator.is_valid(copy.deepcopy(doc))
+    return model_ok(doc), validator.is_valid(doc)
 
 
 @pytest.mark.parametrize("doc", ACCEPT.values(), ids=ACCEPT.keys())
@@ -151,3 +151,20 @@ def test_p7_11_step_common_matches_builtins_and_model(schema: dict[str, Any]):
     assert sorted(common) == COMMON
     cmd = schema["$defs"]["cmdStep"]["properties"]
     assert common == {k: cmd[k] for k in COMMON}
+
+
+def test_p7_12_validation_leaves_input_unchanged(plugins: list[Any]):
+    """The model doesn't write its internal `plugin_key_` into the caller's document."""
+    doc = ACCEPT["in-block-and-fn"]
+    before = copy.deepcopy(doc)
+    cfg = models.Config.model_validate(doc)
+    assert doc == before
+    assert cfg.script[0].block.script[0].plugin_key_ == "probe"  # type: ignore[union-attr]
+
+
+def test_p7_12_internal_plugin_key_rejected(plugins: list[Any]):
+    """`plugin_key_` is internal: a script that sets it is rejected, as the schema rejects it."""
+    with pytest.raises(pydantic.ValidationError) as ei:
+        models.Config.model_validate(s({"probe": "x", "plugin_key_": "nest"}))
+    [err] = ei.value.errors()
+    assert (err["loc"], err["type"]) == (("script", 0, "plugin"), "extra_forbidden")
