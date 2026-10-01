@@ -68,7 +68,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `autobot` | yes      | Schema version: `2026-10`. Scripts written for `2026-08` need one change, see [Migrating from 2026-08](SPEC.md#migrating-from-2026-08) |
+| `autobot` | yes      | Schema version: `2026-10`. Scripts written for `2026-08` need changes to their prompts, see [Migrating from 2026-08](SPEC.md#migrating-from-2026-08) |
 | `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
@@ -135,56 +135,42 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
   return: true
 ```
 
-A prompt with `send` is an **interactive prompt** — autobot responds automatically:
+A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a list of regexes. The regexes are alternatives, so any of them triggers the prompt. The `send` field accepts two forms.
+
+**A string**: a simple prompt with one answer, sent on any match: whichever of its regexes matches, each time the prompt appears. It never runs out, so a question asked repeatedly is answered again. The string is a template, rendered each time it is sent. `send: ''` just presses Enter:
 
 ```yaml
-- name: login
+- name: confirm
   expect:
-    - ['(?:L|l)ogin:', '(?:P|p)assword:']
-  send: [admin, password]
+    - 'continue\?'
+    - 'are you sure\?'
+  send: 'yes'
 ```
 
-The `expect` field is a list of patterns. Each entry can be a string or a list of strings (a grouped entry). Responses are organized in credential sets (one per login attempt, see the send forms below):
+Quote the answer. Unquoted, YAML reads `yes`, `no`, `on`, `off`, `true`, `false` and numbers as booleans or numbers, and the script fails validation with `send_type`. A list is not a `send` form (`send_list`), and neither is a list inside `expect` (`grouped_expect`): a login, or any other sequence of prompts, uses `sendEach` with `fields`, with the values in `vars`.
 
-- In a **grouped entry**, responses are positional: when the first pattern in the group matches, autobot sends the first response of the current set; when the second matches, it sends the second, and so on. So a device that asks for the password first (e.g. `ssh admin@host`) gets the password. When the group starts over (a pattern whose response was already sent matches again, e.g. `login:` after `Password:`), autobot moves on to the next set.
-- A **single string** entry sends the next unsent response of the current set, moving on to the next set once all of them were sent. With single strings, responses go out in order, whichever pattern matched.
-
-If autobot must move on and no set is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
-
-### Send forms
-
-The `send` field accepts three forms:
-
-**Flat list** — a single credential set:
+**sendEach**: data-driven responses from `vars`, for logins and other sequences of prompts. Each `fields` entry pairs the prompt it answers (`match`: a regex, or a list of alternative regexes) with the item field it sends, so the prompt has no `expect`:
 
 ```yaml
-send: ["admin", "password"]
+vars:
+  creds:
+    - {username: admin, password: password1}
+    - {username: admin, password: password2}
+
+prompts:
+  - name: login
+    send:
+      each: vars.creds
+      fields:
+        - match: ['(?:L|l)ogin:', 'Username:']
+          field: username
+        - match: '(?:P|p)assword:'
+          field: password
 ```
 
-**List of lists** — one credential set per attempt (credential cycling):
+This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
-```yaml
-send:
-  - ["admin", "password1"]
-  - ["admin", "password2"]
-```
-
-**sendEach** — data-driven responses from `vars`. Each `fields` entry pairs the prompt it answers (`match`: a regex, or a list of alternative regexes) with the item field it sends, so the prompt has no `expect`:
-
-```yaml
-- name: login
-  send:
-    each: vars.creds
-    fields:
-      - match: ['(?:L|l)ogin:', 'Username:']
-        field: username
-      - match: '(?:P|p)assword:'
-        field: password
-```
-
-This resolves `vars.creds`, and each item is one login attempt. Each entry sends its field of the current item when one of its regexes matches; when the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt.
-
-Without `fields`, each item (a string, number or boolean) is sent as it is, in answer to any of the prompt's `expect` regexes, which must be single strings, not groups:
+Without `fields`, each item (a string, number or boolean) is sent as it is, in answer to any of the prompt's `expect` regexes:
 
 ```yaml
 - name: pin

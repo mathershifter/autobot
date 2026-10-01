@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 import yaml
-from conftest import make_doc, run_cli
+from conftest import FakeDevice, make_doc, run_cli
 
 from autobot import cli
 
@@ -178,7 +178,7 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
     ("env", "prompts", "message"),
     [
         ({"A": "{{ nope( }}"}, None, "template error: unexpected '}', expected ')'"),
-        (None, [{"name": "p", "expect": ["x"], "send": ["{{ x "]}], "template error: unexpected end of template, expected 'end of print statement'."),
+        (None, [{"name": "p", "expect": ["x"], "send": "{{ x "}], "template error: unexpected end of template, expected 'end of print statement'."),
         ({"A": "{{ env.A }}x"}, None, "env cycle: A -> A"),
         ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, None, "env cycle: A -> B -> A"),
         ({"A": "{{ env.B }}", "B": "{{ env.C }}", "C": "{{ env.A }}"}, None, "env cycle: A -> B -> C -> A"),
@@ -410,6 +410,72 @@ def test_p6_47_cli_old_version_is_validation_error_with_hint(tmp_path: Path):
     assert err["msg"] == (
         'autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)'
     )
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+# -- simple prompts: one send string (SPEC "prompts") ----------------------------
+
+CONFIRM = {"name": "confirm", "expect": [r"continue\?", r"are you sure\?"], "send": "yes"}
+SEND_TYPE_MSG = (
+    "send must be a string; quote it, e.g. send: 'yes' or send: '1234' "
+    "(unquoted, YAML reads yes, no, on, off, true, false and numbers as booleans or numbers)"
+)
+SEQUENCE_HINT = 'use sendEach with fields'
+
+
+def _confirm_text(tmp_path: Path, fake_device: FakeDevice) -> tuple[str, Path]:
+    spawn, log = fake_device("--order", "none", "--ask", "continue?", "--ask", "'are you sure?'")
+    text = yaml.safe_dump(make_doc([{"cmd": "echo done"}], prompts=[SH, CONFIRM], spawn=spawn))
+    assert "send: 'yes'" in text
+    return text, log
+
+
+def test_p6_54_cli_quoted_send_yes_is_sent(tmp_path: Path, fake_device: FakeDevice):
+    """SPEC prompts: `send: 'yes'` answers any match, whichever alternative matches, with `yes`."""
+    text, log = _confirm_text(tmp_path, fake_device)
+    res = run_cli(None, tmp_path, raw=text)
+    assert res.returncode == 0, res.stderr
+    # after the questions the device runs a shell, which logs nothing
+    assert FakeDevice.read(log) == ["ASK=yes", "ASK=yes"]
+    assert "\ndone" in res.stdout
+
+
+@pytest.mark.parametrize("value", ["yes", "no", "on", "true", "1234"])
+def test_p6_55_cli_unquoted_send_scalar_is_validation_error_with_hint(
+    tmp_path: Path, fake_device: FakeDevice, value: str
+):
+    """SPEC prompts: unquoted `send: yes` is a boolean in YAML, so it fails validation with a quoting hint."""
+    text, log = _confirm_text(tmp_path, fake_device)
+    res = run_cli(None, tmp_path, raw=text.replace("send: 'yes'", f"send: {value}"))
+    assert _load_error(res) == "Validation errors:"
+    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert (err["loc"], err["type"], err["msg"]) == (["prompts", 1, "send"], "send_type", SEND_TYPE_MSG)
+    assert FakeDevice.read(log) == []
+
+
+@pytest.mark.parametrize(
+    ("prompt", "loc", "type_"),
+    [
+        ({"name": "login", "expect": ["login:", "Password:"], "send": ["admin", "pw"]}, ["prompts", 1, "send"], "send_list"),
+        ({"name": "login", "expect": ["login:"], "send": [["admin", "pw1"], ["admin", "pw2"]]},
+         ["prompts", 1, "send"], "send_list"),
+        ({"name": "login", "expect": [["login:", "Password:"]], "send": "admin"}, ["prompts", 1, "expect", 0], "grouped_expect"),
+    ],
+    ids=["flat-send", "list-of-lists-send", "grouped-expect"],
+)
+def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
+    tmp_path: Path, prompt: dict[str, Any], loc: list[Any], type_: str
+):
+    """SPEC "Migrating from 2026-08": a send list and a grouped expect fail validation and point to sendEach."""
+    doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
+    doc["prompts"][1] = prompt
+    res = run_cli(doc, tmp_path)
+    assert _load_error(res) == "Validation errors:"
+    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert (err["loc"], err["type"]) == (loc, type_)
+    assert SEQUENCE_HINT in err["msg"]
+    assert 'see "Migrating from 2026-08" in SPEC.md' in err["msg"]
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 

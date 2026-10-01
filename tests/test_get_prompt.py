@@ -24,9 +24,14 @@ from conftest import (
 from autobot.runner import Runner
 from autobot.session import Session
 
-LOGIN_FLAT = {"name": "login", "expect": ["login:", "Password:"], "send": ["admin", "secret"]}
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
 UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
+LOGIN_EACH = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS}}
+ADMIN = {"creds": [{"username": "admin", "password": "secret"}]}
+
+
+def creds(*passwords: str) -> dict[str, Any]:
+    return {"creds": [{"username": "admin", "password": p} for p in passwords]}
 
 
 @pytest.fixture
@@ -85,14 +90,6 @@ def test_p4_02_shell_prompt_forms(device, sent: SentLog, prompt: dict[str, Any])
     assert log_of(log) == ["ENTER="]
 
 
-def test_p4_03_empty_send_raises_no_response(device):
-    """SPEC.md:341-342: a prompt with an empty send list has no response."""
-    login = {"name": "login", "expect": ["login:"], "send": []}
-    r, _ = device([SHELL_PROMPT, login], "--wait-enter")
-    with pytest.raises(RuntimeError, match="no response available"):
-        r.session.get_prompt(timeout=5)
-
-
 @pytest.mark.slow
 def test_p4_04_solicit_newline_after_idle(device, sent: SentLog):
     """SPEC.md:343: after 5s idle, one empty newline solicits the prompt."""
@@ -115,7 +112,7 @@ def test_p4_05_solicit_newline_only_once(device, sent: SentLog):
 @pytest.mark.slow
 def test_p4_06_no_solicit_after_handler_fired(device, sent: SentLog):
     """SPEC.md:343: no solicit newline once a handler has been activated."""
-    login = {"name": "login", "expect": ["login:"], "send": ["admin"]}
+    login = {"name": "login", "expect": ["login:"], "send": "admin"}
     r, log = device(
         [SHELL_PROMPT, login],
         "--wait-enter", "--order", "login", "--accept", "admin:",
@@ -150,27 +147,6 @@ def test_p4_09_eof_is_not_timeout(device):
     with pytest.raises(EOFError):
         r.session.get_prompt(timeout=10)
     assert time.monotonic() - start < 2
-
-
-def test_p4_10_flat_send_list_login_then_password(device):
-    """SPEC.md:39-40: a flat send list answers prompts in order."""
-    r, log = device(
-        [SHELL_PROMPT, LOGIN_FLAT], "--wait-enter", "--order", "login,password",
-        "--accept", "admin:secret",
-    )
-    r.session.get_prompt(timeout=10)
-    assert log_of(log) == ["ENTER=", "LOGIN=admin", "PASSWORD=secret"]
-
-
-def test_p4_11_list_of_lists_credential_cycling(device):
-    """SPEC.md:41: grouped attempts are tried in turn."""
-    login = {"name": "login", "expect": ["login:", "Password:"],
-             "send": [["admin", "pass1"], ["admin", "pass2"]]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--accept", "admin:pass2")
-    r.session.get_prompt(timeout=10)
-    assert log_of(log) == [
-        "ENTER=", "LOGIN=admin", "PASSWORD=pass1", "LOGIN=admin", "PASSWORD=pass2",
-    ]
 
 
 def test_p4_12_send_each_with_fields(device):
@@ -224,17 +200,16 @@ def test_p4_23_send_each_empty_list_fails_at_send_time(device):
 
 
 def test_p4_14_responses_exhausted(device):
-    """SPEC.md:342: running out of responses raises."""
-    login = {"name": "login", "expect": ["login:", "Password:"], "send": ["admin", "bad"]}
-    r, _ = device([SHELL_PROMPT, login], "--wait-enter")
+    """SPEC "Response selection": running out of credential sets raises."""
+    r, _ = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", vars=creds("bad"))
     with pytest.raises(RuntimeError, match="prompt 'login': responses exhausted"):
         r.session.get_prompt(timeout=10)
 
 
 def test_p4_15_handlers_reset_per_get_prompt(device):
-    """SPEC.md:342: responses start over on every get_prompt call."""
-    r, log = device([SHELL_PROMPT, LOGIN_FLAT], "--wait-enter", "--repeat", "2",
-                    "--accept", "admin:secret", "--then", "prompt")
+    """SPEC "Response selection": the selection starts over on every get_prompt call."""
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--repeat", "2",
+                    "--accept", "admin:secret", "--then", "prompt", vars=ADMIN)
     r.session.get_prompt(timeout=10)
     r.session.sendline("again")
     r.session.get_prompt(timeout=10)
@@ -242,91 +217,58 @@ def test_p4_15_handlers_reset_per_get_prompt(device):
     assert "LINE=again" in log_of(log)
 
 
-def test_p4_16_grouped_expect_login_first(device):
-    """SPEC.md:37, README:147: grouped expect on a login-first device."""
-    login = {"name": "login", "expect": [["login:", "Password:"]], "send": ["admin", "secret"]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "login,password",
-                    "--accept", "admin:secret")
-    r.session.get_prompt(timeout=10)
-    assert log_of(log) == ["ENTER=", "LOGIN=admin", "PASSWORD=secret"]
-
-
-GROUPED = [["login:", "Password:"]]
-
-
-def test_p4_17_grouped_expect_password_first(device):
-    """SPEC "Response selection" (decision #4): grouped pattern k sends item k.
+def test_p4_17_fields_password_first(device):
+    """SPEC "Response selection": fields entry k sends field k of the current item.
 
     A password-first device gets the password at ``Password:`` and the user
-    name at ``login:``, not the next item of a flat cursor.
+    name at ``login:``.
     """
-    login = {"name": "login", "expect": GROUPED, "send": ["admin", "secret"]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login",
-                    "--accept", "admin:secret")
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--order", "password,login",
+                    "--accept", "admin:secret", vars=ADMIN)
     r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER=", "PASSWORD=secret", "LOGIN=admin"]
 
 
-def test_p4_17_grouped_password_first_credential_cycling(device):
-    """SPEC "Response selection" table row 2: a restarted group advances the set."""
-    login = {"name": "login", "expect": GROUPED, "send": [["admin", "p1"], ["admin", "p2"]]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login",
-                    "--accept", "admin:p2")
+def test_p4_17_fields_password_first_credential_cycling(device):
+    """SPEC "Response selection" table row 2: a repeated entry advances the set."""
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--order", "password,login",
+                    "--accept", "admin:p2", vars=creds("p1", "p2"))
     r.session.get_prompt(timeout=10)
     assert log_of(log) == [
         "ENTER=", "PASSWORD=p1", "LOGIN=admin", "PASSWORD=p2", "LOGIN=admin",
     ]
 
 
-def test_p4_17_grouped_password_only_send_each(device):
-    """SPEC "Response selection" table row 3 (``ssh admin@host``), sendEach form.
+def test_p4_17_fields_password_only(device):
+    """SPEC "Response selection" table row 3 (``ssh admin@host``).
 
-    ``Password:`` twice: each match picks item 1, the second one advances to
+    ``Password:`` twice: the second match repeats the entry and advances to
     the next set, so one password per set is sent.
     """
-    login = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS}}
-    creds = [{"username": "admin", "password": "p1"}, {"username": "admin", "password": "p2"}]
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password",
-                    "--accept", ":p2", vars={"creds": creds})
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--order", "password",
+                    "--accept", ":p2", vars=creds("p1", "p2"))
     r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER=", "PASSWORD=p1", "PASSWORD=p2"]
 
 
-def test_p4_17_grouped_exhaustion(device):
-    """SPEC "Response selection": the group restarts with no next set -> exhausted."""
-    login = {"name": "login", "expect": GROUPED, "send": [["admin", "bad"]]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password,login")
+def test_p4_17_fields_exhaustion(device):
+    """SPEC "Response selection": a repeated entry with no next set -> exhausted."""
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--order", "password,login",
+                    vars=creds("bad"))
     with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
         r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER=", "PASSWORD=bad", "LOGIN=admin"]
 
 
-def test_p4_17_grouped_login_first_exhaustion_after_two_sets(device):
+def test_p4_17_fields_login_first_exhaustion_after_two_sets(device):
     """SPEC "Response selection" table row 4: two sets, a third ``login:`` exhausts."""
-    login = {"name": "login", "expect": GROUPED, "send": [["admin", "pw1"], ["admin", "pw2"]]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "login,password")
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--wait-enter", "--order", "login,password",
+                    vars=creds("pw1", "pw2"))
     with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
         r.session.get_prompt(timeout=10)
     assert log_of(log) == [
         "ENTER=", "LOGIN=admin", "PASSWORD=pw1", "LOGIN=admin", "PASSWORD=pw2",
     ]
-
-
-def test_p4_17_grouped_missing_item_no_response(device):
-    """SPEC "Response selection": no item at the grouped position -> no response.
-
-    A one-item literal set gives ``Password:`` (position 1) nothing to send;
-    the message names the pattern. (``sendEach`` can't produce this since
-    2026-10: fields entries pair each regex with a field, and without
-    ``fields`` grouped entries are rejected.)
-    """
-    login = {"name": "login", "expect": GROUPED, "send": [["admin"]]}
-    r, log = device([SHELL_PROMPT, login], "--wait-enter", "--order", "password")
-    with pytest.raises(
-        RuntimeError, match=r"^prompt 'login': no response available for 'Password:'$"
-    ):
-        r.session.get_prompt(timeout=10)
-    assert log_of(log) == ["ENTER="]
 
 
 def test_p4_24_send_each_match_alternatives_send_the_same_field(device):
@@ -356,8 +298,8 @@ def test_p4_25_send_each_without_fields_patterns_share_one_state(device):
 
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
     """SPEC.md:81, 341: a login prompt that arrives with the banner is answered."""
-    r, log = device([SHELL_PROMPT, LOGIN_FLAT], "--same-chunk", "--order", "login,password",
-                    "--accept", "admin:secret", kick=False)
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], "--same-chunk", "--order", "login,password",
+                    "--accept", "admin:secret", vars=ADMIN, kick=False)
     r.session.get_prompt(timeout=5)
     assert log_of(log) == ["LOGIN=admin", "PASSWORD=secret"]
     assert "" not in sent.lines()
@@ -375,10 +317,9 @@ def test_p4_19_shell_prompt_in_same_chunk_as_banner(device):
 
 
 def test_p4_20_send_template_rendered_at_send_time(fake_device: FakeDevice):
-    """SPEC.md:317, 322: send templates see vars registered by earlier steps."""
-    spawn, log = fake_device("--order", "login,password", "--accept", "admin:secret")
-    login = {"name": "login", "expect": ["login:", "Password:"],
-             "send": ["{{ vars.user }}", "secret"]}
+    """SPEC prompts: a send template sees vars registered by earlier steps."""
+    spawn, log = fake_device("--order", "none", "--ask", "Name?")
+    ask = {"name": "name", "expect": [r"Name\? "], "send": "{{ vars.user }}"}
     try:
         runner = make_runner(
             [
@@ -386,16 +327,75 @@ def test_p4_20_send_template_rendered_at_send_time(fake_device: FakeDevice):
                 {"line": spawn},
                 {"cmd": "true"},
             ],
-            prompts=[SHELL_PROMPT, login],
+            prompts=[SHELL_PROMPT, ask],
         )
     except ValueError as e:
         raise AssertionError(f"send was rendered before the script ran: {e}") from e
     runner.run()
-    assert "LOGIN=admin" in FakeDevice.read(log)
+    assert FakeDevice.read(log) == ["ASK=admin"]
 
 
 def test_send_template_syntax_error_at_load():
     """#7: send is rendered when sent, but a syntax error still fails at load."""
-    login = {"name": "login", "expect": ["login:"], "send": ["{{ vars.user "]}
+    login = {"name": "login", "expect": ["login:"], "send": "{{ vars.user "}
     with pytest.raises(ValueError, match=r"^template error: "):
         make_runner([], prompts=[SHELL_PROMPT, login])
+
+
+# -- P4-26..31: simple prompts, one send string (SPEC "prompts") -------------
+
+CONFIRM = {"name": "confirm", "expect": [r"continue\?", r"are you sure\?"], "send": "yes"}
+
+
+def test_p4_26_simple_prompt_answered_each_time_it_appears(device):
+    """SPEC "Response selection": a simple prompt sends its string on any match, each time it appears, with no exhaustion."""
+    r, log = device([SHELL_PROMPT, CONFIRM], "--wait-enter", "--order", "none",
+                    "--ask", "continue?", "--ask", "continue?", "--ask", "continue?", "--then", "prompt")
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "ASK=yes", "ASK=yes", "ASK=yes"]
+
+
+def test_p4_27_simple_prompt_alternatives(device):
+    """SPEC prompts: the expect regexes are alternatives; each of them sends the string."""
+    r, log = device([SHELL_PROMPT, CONFIRM], "--wait-enter", "--order", "none",
+                    "--ask", "'are you sure?'", "--ask", "continue?", "--then", "prompt")
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "ASK=yes", "ASK=yes"]
+
+
+def test_p4_28_simple_prompt_single_expect_string(device):
+    """SPEC prompts: expect may be a single regex."""
+    confirm = {"name": "confirm", "expect": r"continue\?", "send": "yes"}
+    r, log = device([SHELL_PROMPT, confirm], "--wait-enter", "--order", "none",
+                    "--ask", "continue?", "--then", "prompt")
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "ASK=yes"]
+
+
+def test_p4_29_simple_prompt_template(device):
+    """SPEC prompts: send is a template, rendered each time it is sent."""
+    confirm = {**CONFIRM, "send": "{{ vars.answer | upper }}"}
+    r, log = device([SHELL_PROMPT, confirm], "--wait-enter", "--order", "none",
+                    "--ask", "continue?", "--ask", "continue?", "--then", "prompt", vars={"answer": "y"})
+    r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER=", "ASK=Y", "ASK=Y"]
+
+
+def test_p4_30_simple_prompt_empty_send_presses_enter(device, sent: SentLog):
+    """SPEC prompts: `send: ""` answers with an empty line."""
+    confirm = {**CONFIRM, "send": ""}
+    r, log = device([SHELL_PROMPT, confirm], "--wait-enter", "--order", "none",
+                    "--ask", "continue?", "--then", "prompt")
+    sent.clear()
+    r.session.get_prompt(timeout=10)
+    assert sent.lines() == [""]
+    assert log_of(log) == ["ENTER=", "ASK="]
+
+
+def test_p4_31_simple_prompt_undefined_variable_aborts(device):
+    """SPEC prompts: an undefined variable in send is reported when it is sent, naming the prompt."""
+    confirm = {**CONFIRM, "send": "{{ vars.nope }}"}
+    r, log = device([SHELL_PROMPT, confirm], "--wait-enter", "--order", "none", "--ask", "continue?")
+    with pytest.raises(ValueError, match=r"^prompt 'confirm': template error: "):
+        r.session.get_prompt(timeout=10)
+    assert log_of(log) == ["ENTER="]

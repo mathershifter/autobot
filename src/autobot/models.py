@@ -60,18 +60,42 @@ class SendEach(pydantic.BaseModel):
         return v
 
 
+_MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
+
+
 class Prompt(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
+    # entries are single regexes; a grouped entry is kept here so _check_expect can name it
     expect: Omittable[list[str | list[str]]] = None
-    send: Omittable[list[str] | list[list[str]] | SendEach] = None
+    send: Omittable[str | SendEach] = None
     is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
+
+    @pydantic.field_validator("expect", mode="before")
+    @classmethod
+    def _expect(cls, v: Any) -> Any:
+        return [v] if isinstance(v, str) else v
 
     @pydantic.field_validator("send", mode="wrap")
     @classmethod
     def _send(cls, v: Any, handler: pydantic.ValidatorFunctionWrapHandler) -> Any:
         # a mapping can only be a sendEach: report its errors at send.<key>, not under each union member
-        return SendEach.model_validate(v) if isinstance(v, dict) else handler(v)
+        if isinstance(v, dict):
+            return SendEach.model_validate(v)
+        if isinstance(v, list):
+            raise _custom(
+                "send_list",
+                "send is a single string: for a simple prompt write send: '<response>'; "
+                "to answer a sequence of prompts such as a login, use sendEach with fields "
+                f"and keep the values in vars {_MIGRATE}",
+            )
+        if v is not None and not isinstance(v, str):
+            raise _custom(
+                "send_type",
+                "send must be a string; quote it, e.g. send: 'yes' or send: '1234' "
+                "(unquoted, YAML reads yes, no, on, off, true, false and numbers as booleans or numbers)",
+            )
+        return handler(v)
 
     @pydantic.model_validator(mode="after")
     def _check_expect(self) -> Prompt:
@@ -92,12 +116,12 @@ class Prompt(pydantic.BaseModel):
                 ))
         elif self.expect is None:
             errors.append({"type": "missing", "loc": ("expect",), "input": self.model_dump(by_alias=True)})
-        elif send:
+        else:
             errors += [
                 _error(
                     "grouped_expect",
-                    "with sendEach without fields, each expect entry is a single regex; "
-                    "use fields to answer several prompts",
+                    "each expect entry is a single regex, and the regexes are alternatives; "
+                    f"to answer a sequence of prompts such as a login, use sendEach with fields {_MIGRATE}",
                     ("expect", i), entry,
                 )
                 for i, entry in enumerate(self.expect) if isinstance(entry, list)

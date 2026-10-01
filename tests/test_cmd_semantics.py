@@ -193,14 +193,14 @@ def test_p1_19_session_before_cleared_by_empty_output(attached_runner: Callable[
 
 # `LOG%s: ` keeps the echoed command from matching the `LOGIN: ` pattern
 TWO_LOGINS = "printf 'LOG%s: ' IN; read a; printf 'LOG%s: ' IN; read b"
-ONE_SHOT_LOGIN = {"name": "login", "expect": ["LOGIN: "], "send": ["x"]}
+ONE_SHOT_LOGIN = {"name": "login", "expect": ["LOGIN: "], "send": {"each": "vars.logins"}}
 
 
 def aborting_runner(step: dict, **kw) -> Runner:
     """``step`` with ignore_error and register r (preset), then a probe step."""
     return make_runner(
         [{**step, "ignore_error": True, "register": "r"}, {"probe": "next"}],
-        vars={"r": "preset"},
+        vars={"r": "preset", "logins": ["x"]},
         **kw,
     )
 
@@ -250,7 +250,7 @@ def test_p1_20_ignore_error_does_not_swallow_invalid_regex(probe: ProbeExecutor)
 def test_p1_20_ignore_error_does_not_swallow_responses_exhausted(probe: ProbeExecutor):
     """SPEC "cmd" ignore_error: a prompt-response failure inside the command aborts.
 
-    The command prompts ``LOGIN: `` twice; the prompt has one response, so
+    The command prompts ``LOGIN: `` twice; the prompt's sendEach has one item, so
     the second match raises ``responses exhausted``.
     """
     r = aborting_runner({"cmd": TWO_LOGINS}, prompts=[SHELL_PROMPT, ONE_SHOT_LOGIN])
