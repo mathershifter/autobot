@@ -45,16 +45,7 @@
             "properties": { "send": { "type": "object", "required": ["fields"] } }
           },
           "then": { "not": { "required": ["expect"] } },
-          "else": {
-            "required": ["expect"],
-            "if": {
-              "required": ["send"],
-              "properties": { "send": { "type": "object" } }
-            },
-            "then": {
-              "properties": { "expect": { "items": { "type": "string" } } }
-            }
-          }
+          "else": { "required": ["expect"] }
         },
         {
           "if": {
@@ -66,15 +57,11 @@
       ],
       "properties": {
         "name": { "type": "string" },
-        "expect": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/stringOrArray" }
-        },
+        "expect": { "$ref": "#/$defs/stringOrArray" },
         "return": { "type": "boolean", "default": false },
         "send": {
           "oneOf": [
-            { "type": "array", "items": { "type": "string" } },
-            { "type": "array", "items": { "type": "array", "items": { "type": "string" } } },
+            { "type": "string" },
             { "$ref": "#/$defs/sendEach" }
           ]
         }

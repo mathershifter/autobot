@@ -11,7 +11,7 @@ from rich.console import Console
 
 from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
-from .session import PromptHandler, Session
+from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
 from .types import check_template
 from .types import render as render_template
@@ -132,37 +132,25 @@ class Runner:
         return self._config
 
     def build_handler(self, prompt: Prompt) -> PromptHandler:
+        send = prompt.send
+        expect = [e for e in prompt.expect or [] if isinstance(e, str)]  # grouped entries are rejected
+        if send is None:  # a shell prompt (a return prompt can't have send)
+            return PromptHandler(prompt.name, expect, [], True)
+        if isinstance(send, str):
+            # a literal send is a template, rendered each time it is sent
+            check_template(send)
+            return SimpleHandler(prompt.name, expect, send, self.render)
         patterns: list[str] = []
         slots: list[int | None] = []
-        if isinstance(prompt.send, SendEach) and prompt.send.fields:
+        if send.fields:
             # entry k's regexes are alternatives that send field k of the current item
-            for k, entry in enumerate(prompt.send.fields):
+            for k, entry in enumerate(send.fields):
                 patterns.extend(entry.match)
                 slots.extend([k] * len(entry.match))
-        for entry in prompt.expect or []:
-            if isinstance(entry, list):
-                patterns.extend(entry)
-                slots.extend(range(len(entry)))
-            else:
-                patterns.append(entry)
-                slots.append(None)
-        if isinstance(prompt.send, SendEach):
-            responses = send_each_sets(prompt.name, prompt.send, self._config.vars)
-        else:
-            responses = self._build_responses(prompt.send)
-        is_return = prompt.is_shell_prompt or prompt.send is None
-        # literal send strings are templates, rendered as each one is sent
-        render = None if isinstance(prompt.send, SendEach) else self.render
-        return PromptHandler(prompt.name, patterns, responses, is_return, slots, render)
-
-    def _build_responses(self, send) -> list[list[str]]:
-        """Credential sets, one list per attempt; literal strings stay unrendered."""
-        if not send:
-            return []
-        sets = send if isinstance(send[0], list) else [send]
-        for s in (s for attempt in sets for s in attempt):
-            check_template(s)
-        return [list(attempt) for attempt in sets]
+        patterns.extend(expect)
+        slots.extend([None] * len(expect))
+        responses = send_each_sets(prompt.name, send, self._config.vars)
+        return PromptHandler(prompt.name, patterns, responses, False, slots)
 
     def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
         fixed = {k: os.environ[k] for k in defaults if k in os.environ}

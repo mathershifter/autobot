@@ -66,18 +66,15 @@ class PromptHandler:
         responses: list[list[str]],
         is_return: bool,
         slots: list[int | None] | None = None,
-        render: Callable[[str], str] | None = None,
     ):
         self.name = name
         self.is_return = is_return
         self.patterns = patterns
-        # slot k: pattern k of a grouped entry; None: a single-pattern entry
+        # slot k: a match regex of fields entry k; None: an expect regex (sendEach without fields)
         self.slots = slots if slots is not None else [None] * len(patterns)
         self.start = 0
         self.end = len(patterns)
         self._sets = responses
-        # renders a response as it is sent; None sends responses verbatim
-        self._render = render
         self.reset()
 
     @property
@@ -100,20 +97,10 @@ class PromptHandler:
                 slot = self._next_unused()
         elif slot in self._used:
             self._advance()
-        current = self._sets[self._set]
-        if slot is None or slot >= len(current):
-            raise RuntimeError(
-                f"prompt '{self.name}': no response available for {self.patterns[i]!r}"
-            )
-        value = current[slot]
-        if self._render:
-            try:
-                value = self._render(value)
-            except ValueError as e:
-                raise ValueError(f"prompt '{self.name}': {e}") from e
+        assert slot is not None  # every sendEach set has an item at every slot
         self._used.add(slot)
         self._fired = True
-        return value
+        return self._sets[self._set][slot]
 
     def _next_unused(self) -> int | None:
         current = self._sets[self._set]
@@ -124,6 +111,23 @@ class PromptHandler:
             raise RuntimeError(f"prompt '{self.name}': responses exhausted")
         self._set += 1
         self._used = set()
+
+
+class SimpleHandler(PromptHandler):
+    """A prompt with one `send` template, rendered and sent on any match of its patterns, each time."""
+
+    def __init__(self, name: str, patterns: list[str], send: str, render: Callable[[str], str]):
+        super().__init__(name, patterns, [[send]], False)
+        self._send = send
+        self._render = render
+
+    def respond(self, i: int) -> str:
+        try:
+            value = self._render(self._send)
+        except ValueError as e:
+            raise ValueError(f"prompt '{self.name}': {e}") from e
+        self._fired = True
+        return value
 
 
 class Session:

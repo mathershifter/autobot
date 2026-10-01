@@ -164,15 +164,14 @@ def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plu
 
 
 SEND_OK = {
-    "flat": ["a", "b"],
-    "list-of-lists": [["a", "b"], ["c", "d"]],
+    "string": "yes",
     "sendEach": {"each": "vars.pins"},
 }
 
 
 @pytest.mark.parametrize("send", list(SEND_OK.values()), ids=list(SEND_OK))
 def test_p6_07_send_forms(send: Any):
-    """SPEC.md:39-53: the three send forms are accepted."""
+    """SPEC prompts: send is a string or a sendEach."""
     Config.model_validate(with_("prompts", [{"name": "p", "expect": ["x"], "send": send}]))
 
 
@@ -185,21 +184,77 @@ def test_p6_07_send_each_fields_form():
     assert [(e.match, e.field) for e in prompt.send.fields] == [(["a", "b"], "u"), (["c"], "p")]  # type: ignore[union-attr]
 
 
-def test_p6_07_send_mixed_rejected():
-    """SPEC.md:39-43: a send list mixing strings and lists is rejected."""
-    with pytest.raises(pydantic.ValidationError):
-        Config.model_validate(
-            with_("prompts", [{"name": "p", "expect": ["x"], "send": ["a", ["b"]]}])
-        )
+# -- P6-52: simple prompts, one send string (SPEC "prompts") -----------------
 
-
-@pytest.mark.parametrize(
-    "expect", [["a", "b"], [["a", "b"]], ["a", ["b", "c"]]], ids=["strings", "grouped", "mixed"]
+AT = ("prompts", 0)
+MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
+SEND_LIST_MSG = (
+    "send is a single string: for a simple prompt write send: '<response>'; to answer a sequence of "
+    f"prompts such as a login, use sendEach with fields and keep the values in vars {MIGRATE}"
 )
-def test_p6_08_expect_forms(expect: list):
-    """SPEC.md:37: each expect entry is a string or a list of strings."""
-    cfg = Config.model_validate(with_("prompts", [{"name": "p", "expect": expect}]))
-    assert cfg.prompts[0].expect == expect
+SEND_TYPE_MSG = (
+    "send must be a string; quote it, e.g. send: 'yes' or send: '1234' "
+    "(unquoted, YAML reads yes, no, on, off, true, false and numbers as booleans or numbers)"
+)
+GROUPED_MSG = (
+    "each expect entry is a single regex, and the regexes are alternatives; "
+    f"to answer a sequence of prompts such as a login, use sendEach with fields {MIGRATE}"
+)
+
+
+def simple(**kw: Any) -> dict[str, Any]:
+    return with_("prompts", [{"name": "p", **kw}])
+
+
+SIMPLE_OK = {
+    "alternatives": simple(expect=["continue?", "are you sure?"], send="yes"),
+    "expect-string": simple(expect="continue?", send="yes"),
+    "empty-send": simple(expect=["continue?"], send=""),
+    "template": simple(expect=["continue?"], send="{{ vars.answer }}"),
+    "shell-expect-string": simple(expect="x", **{"return": True}),
+    "block": with_("script", [{"block": {"name": "b", "prompts": [{"name": "p", "expect": "x", "send": "y"}]}}]),
+}
+
+
+@pytest.mark.parametrize("doc", list(SIMPLE_OK.values()), ids=list(SIMPLE_OK))
+def test_p6_52_simple_prompt_accepted(doc: dict[str, Any]):
+    """SPEC prompts: expect is a regex or a list of regexes; send is one string (it may be empty)."""
+    Config.model_validate(doc)
+
+
+def test_p6_52_expect_string_is_a_one_item_list():
+    """SPEC prompts: a single expect regex is the same as a list holding it."""
+    cfg = Config.model_validate(SIMPLE_OK["expect-string"])
+    assert (cfg.prompts[0].expect, cfg.prompts[0].send) == (["continue?"], "yes")
+
+
+SIMPLE_BAD = {
+    "flat-send": (simple(expect=["x"], send=["a", "b"]), (*AT, "send"), "send_list", SEND_LIST_MSG),
+    "one-item-send": (simple(expect=["x"], send=["a"]), (*AT, "send"), "send_list", SEND_LIST_MSG),
+    "list-of-lists-send": (simple(expect=["x"], send=[["a", "b"]]), (*AT, "send"), "send_list", SEND_LIST_MSG),
+    "mixed-send": (simple(expect=["x"], send=["a", ["b"]]), (*AT, "send"), "send_list", SEND_LIST_MSG),
+    "empty-list-send": (simple(expect=["x"], send=[]), (*AT, "send"), "send_list", SEND_LIST_MSG),
+    "bool-send": (simple(expect=["x"], send=True), (*AT, "send"), "send_type", SEND_TYPE_MSG),
+    "int-send": (simple(expect=["x"], send=1234), (*AT, "send"), "send_type", SEND_TYPE_MSG),
+    "float-send": (simple(expect=["x"], send=2.5), (*AT, "send"), "send_type", SEND_TYPE_MSG),
+    "grouped-expect": (simple(expect=[["a", "b"]], send="y"), (*AT, "expect", 0), "grouped_expect", GROUPED_MSG),
+    "mixed-expect": (simple(expect=["x", ["a", "b"]], send="y"), (*AT, "expect", 1), "grouped_expect", GROUPED_MSG),
+    "grouped-expect-shell": (simple(expect=[["a", "b"]]), (*AT, "expect", 0), "grouped_expect", GROUPED_MSG),
+    "grouped-expect-return": (
+        simple(expect=["x", ["a", "b"]], **{"return": True}), (*AT, "expect", 1), "grouped_expect", GROUPED_MSG,
+    ),
+    "block-flat-send": (
+        with_("script", [{"block": {"name": "b", "prompts": [{"name": "p", "expect": "x", "send": ["a"]}]}}]),
+        ("script", 0, "block", "block", "prompts", 0, "send"), "send_list", SEND_LIST_MSG,
+    ),
+}
+
+
+@pytest.mark.parametrize(("doc", "loc", "type_", "msg"), list(SIMPLE_BAD.values()), ids=list(SIMPLE_BAD))
+def test_p6_52_removed_prompt_forms_rejected(doc: dict[str, Any], loc: tuple, type_: str, msg: str):
+    """SPEC prompts, "Migrating from 2026-08": a send list, a non-string send and a grouped expect are errors."""
+    [err] = errors_of(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (loc, type_, msg)
 
 
 @pytest.mark.parametrize(
@@ -223,12 +278,8 @@ def test_p6_09_duration_values_rejected(value: str):
 
 EACH = {"each": "vars.creds"}
 UP = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
-AT = ("prompts", 0)
 MATCH_MSG = "match must be a regex or a non-empty list of regexes"
 WITH_FIELDS_MSG = "a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes"
-GROUPED_MSG = (
-    "with sendEach without fields, each expect entry is a single regex; use fields to answer several prompts"
-)
 
 
 def fields_prompt(fields: Any, **kw: Any) -> dict[str, Any]:
@@ -287,7 +338,7 @@ SEND_EACH_BAD = {
     "expect-with-fields": (fields_prompt(UP, expect=["x"]), (*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG),
     "empty-expect-with-fields": (fields_prompt(UP, expect=[]), (*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG),
     "no-expect-no-send": (with_("prompts", [{"name": "p"}]), (*AT, "expect"), "missing", None),
-    "no-expect-literal-send": (with_("prompts", [{"name": "p", "send": ["a"]}]), (*AT, "expect"), "missing", None),
+    "no-expect-literal-send": (with_("prompts", [{"name": "p", "send": "a"}]), (*AT, "expect"), "missing", None),
     "no-expect-no-fields": (with_("prompts", [{"name": "p", "send": EACH}]), (*AT, "expect"), "missing", None),
     "grouped-without-fields": (
         with_("prompts", [{"name": "p", "expect": ["x", ["a", "b"]], "send": EACH}]),
@@ -328,7 +379,7 @@ def return_prompt(**kw: Any) -> dict[str, Any]:
 
 RETURN_OK = {
     "return-without-send": return_prompt(expect=["x"]),
-    "return-false-flat-send": with_("prompts", [{"name": "p", "expect": ["x"], "return": False, "send": ["a"]}]),
+    "return-false-send": with_("prompts", [{"name": "p", "expect": ["x"], "return": False, "send": "a"}]),
     "return-false-fields": with_("prompts", [{"name": "p", "return": False, "send": {**EACH, "fields": UP}}]),
 }
 
@@ -340,14 +391,13 @@ def test_p6_50_return_without_send_accepted(doc: dict[str, Any]):
 
 
 RETURN_BAD = {
-    "flat": (return_prompt(expect=["x"], send=["a"]), AT),
-    "list-of-lists": (return_prompt(expect=["x"], send=[["a", "b"]]), AT),
-    "empty": (return_prompt(expect=["x"], send=[]), AT),
+    "string": (return_prompt(expect=["x"], send="a"), AT),
+    "empty": (return_prompt(expect=["x"], send=""), AT),
     "send-each": (return_prompt(expect=["x"], send=EACH), AT),
     "send-each-fields": (return_prompt(send={**EACH, "fields": UP}), AT),
     "block": (
         with_("script", [{"block": {"name": "b", "prompts": [
-            {"name": "p", "expect": ["x"], "return": True, "send": ["a"]}]}}]),
+            {"name": "p", "expect": ["x"], "return": True, "send": "a"}]}}]),
         ("script", 0, "block", "block", "prompts", 0),
     ),
 }
@@ -367,5 +417,17 @@ def test_p6_50_return_with_send_reported_with_other_prompt_errors():
         ((*AT, "send"), "return_with_send"),
         ((*AT, "expect"), "expect_with_fields"),
     ]
-    errs = errors_of(return_prompt(send=["a"]))
+    errs = errors_of(return_prompt(send="a"))
     assert [(e["loc"], e["type"]) for e in errs] == [((*AT, "send"), "return_with_send"), ((*AT, "expect"), "missing")]
+    errs = errors_of(return_prompt(expect=[["a", "b"]], send="a"))
+    assert [(e["loc"], e["type"]) for e in errs] == [
+        ((*AT, "send"), "return_with_send"),
+        ((*AT, "expect", 0), "grouped_expect"),
+    ]
+
+
+def test_p6_50_invalid_send_reported_on_its_own():
+    """SPEC prompts: a send_list or send_type error is reported alone; the prompt rules wait for a valid send."""
+    for send, type_ in ((["a"], "send_list"), (True, "send_type")):
+        [err] = errors_of(return_prompt(send=send))
+        assert (err["loc"], err["type"]) == ((*AT, "send"), type_)

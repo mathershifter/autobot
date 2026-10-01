@@ -3,7 +3,8 @@
 
 Spawned as ``attach.spawn`` (or from a shell with ``line``). It prints a
 banner, then login/password prompts in a configurable order, and finally
-drops into a shell (or a bare ``PROMPT$ `` loop). Every line it reads is
+drops into a shell (or a bare ``PROMPT$ `` loop). Each ``--ask TEXT`` asks
+``TEXT `` once, before the login prompts. Every line it reads is
 appended to ``--log`` as ``<KIND>=<value>`` so tests can assert on what
 Autobot actually sent, instead of parsing pty output.
 """
@@ -115,6 +116,9 @@ class Device:
                 self.log("SILENT", self.readline())
         if a.rawdump:
             self.rawdump(a.rawdump)
+        for question in a.ask:
+            self.write(f"{question} ")
+            self.log("ASK", self.readline())
         for _ in range(a.repeat):
             self.auth(first_written)
             first_written = False
@@ -136,6 +140,7 @@ def main() -> None:
     p.add_argument("--silent", action="store_true")
     p.add_argument("--exit-after-banner", action="store_true")
     p.add_argument("--rawdump", type=int, default=0)
+    p.add_argument("--ask", action="append", default=[])
     p.add_argument("--then", choices=["shell", "prompt"], default="shell")
     Device(p.parse_args()).run()
 

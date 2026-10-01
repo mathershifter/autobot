@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -13,7 +13,14 @@ from typing import Any
 import pydantic
 import pytest
 from conftest import model_ok
-from test_models import RETURN_BAD, RETURN_OK, SEND_EACH_BAD, SEND_EACH_OK
+from test_models import (
+    RETURN_BAD,
+    RETURN_OK,
+    SEND_EACH_BAD,
+    SEND_EACH_OK,
+    SIMPLE_BAD,
+    SIMPLE_OK,
+)
 
 from autobot import models
 from autobot.models import Config
@@ -80,12 +87,12 @@ ACCEPT = {
             {"control": ["a", "x"]},
         ],
     ),
-    "send-flat": prompt(send=["a", "b"]),
-    "send-grouped": prompt(send=[["a", "b"], ["c", "d"]]),
+    "send-string": prompt(send="yes"),
+    "send-empty-string": prompt(send=""),
     "send-each": d(prompts=[{"name": "p", "send": {"each": "vars.creds", "fields": FIELDS}}]),
     "send-each-no-fields": prompt(send={"each": "vars.pins"}),
     "send-each-nested": d(prompts=[{"name": "p", "send": {"each": "vars.site.creds", "fields": FIELDS}}]),
-    "expect-grouped": d(prompts=[{"name": "p", "expect": [["login:", "Password:"]]}]),
+    "expect-string": d(prompts=[{"name": "p", "expect": "login:"}]),
     "nested-block": s(
         {
             "block": {
@@ -121,7 +128,11 @@ REJECT = {
     "sleep-with-when": s({"sleep": 1, "when": "true"}),
     "line-with-timeout": s({"line": "x", "timeout": 1}),
     "return-with-timeout": s({"return": 1, "timeout": 1}),
+    "send-flat": prompt(send=["a", "b"]),
+    "send-grouped": prompt(send=[["a", "b"], ["c", "d"]]),
     "mixed-send": prompt(send=["a", ["b"]]),
+    "send-bool": prompt(send=True),
+    "expect-grouped": d(prompts=[{"name": "p", "expect": [["login:", "Password:"]]}]),
     "send-each-env": prompt(send={"each": "env.CREDS"}),
     "send-each-bare-key": prompt(send={"each": "creds"}),
     "send-each-bare-vars": prompt(send={"each": "vars"}),
@@ -150,9 +161,9 @@ def test_p6_12_parity_reject_corpus(both_validate: Callable, doc: dict[str, Any]
 
 
 def test_p6_13_parity_mixed_expect(both_validate: Callable):
-    """SPEC.md:37: an expect list may mix strings and lists; both accept it (finding #11)."""
+    """SPEC prompts: every expect entry is a single regex, so a list in it is rejected by both."""
     doc = d(prompts=[{"name": "p", "expect": ["a", ["b", "c"]]}])
-    assert both_validate(doc) == (True, True)
+    assert both_validate(doc) == (False, False)
 
 
 def test_p6_14_parity_version_trailing_newline(both_validate: Callable):
@@ -392,4 +403,19 @@ def test_p6_51_parity_return_without_send_accepted(both_validate: Callable, doc:
 @pytest.mark.parametrize("doc", [c[0] for c in RETURN_BAD.values()], ids=list(RETURN_BAD))
 def test_p6_51_parity_return_with_send_rejected(both_validate: Callable, doc: dict[str, Any]):
     """SPEC prompts: both reject `return: true` with any send form, including a fields prompt with no expect."""
+    assert both_validate(doc) == (False, False)
+
+
+# -- P6-53: simple prompts, model and schema agree --------------------------
+
+
+@pytest.mark.parametrize("doc", list(SIMPLE_OK.values()), ids=list(SIMPLE_OK))
+def test_p6_53_parity_simple_prompt_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts: both accept a single send string and an expect regex or list of regexes."""
+    assert both_validate(doc) == (True, True)
+
+
+@pytest.mark.parametrize("doc", [c[0] for c in SIMPLE_BAD.values()], ids=list(SIMPLE_BAD))
+def test_p6_53_parity_removed_prompt_forms_rejected(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC "Migrating from 2026-08": both reject a send list, a non-string send and a grouped expect."""
     assert both_validate(doc) == (False, False)
