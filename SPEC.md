@@ -313,8 +313,12 @@ Upload mechanism:
 - The remote must be a POSIX shell with `base64 -d`, `tee`, and `wc`.
 
 Cleanup:
-- The script and its `.b64` staging file are always removed, even if the upload or the script fails.
-- Cleanup is best-effort with a timeout of at most 10s (or the step timeout, if shorter). Its errors are logged but never replace the step's error.
+- The script and its `.b64` staging file are always removed: on success, on script failure, on upload failure and on timeout (as far as the interrupt below allows).
+- After success or a command failure (exit code, `assert`, `errors` match, upload mismatch) the session is already at a shell prompt, and cleanup just sends `rm -f <file> <file>.b64` and waits for the prompt.
+- After any other error, the session may not be at a prompt: a timeout (while the script runs, during an upload line, or in the `$?` check) leaves that command in the foreground. Cleanup then first sends a single Ctrl-C (`^C`, logged as `>> script: interrupt sent: ^C`) with no newline, waits for the shell prompt, and then sends the `rm`. The same applies to a closed connection, a prompt-response failure, or an operator interrupt.
+- The interrupt and the cleanup never change the step's outcome: the original error propagates and aborts the script, also with `ignore_error: true` (timeouts are never ignorable). Cleanup doesn't change `session.before` or `session.match`.
+- If cleanup succeeds, the session is left at a shell prompt with nothing running, so breakouts start from a prompt. If the interrupt doesn't bring a prompt back (the script ignores `SIGINT`, or the remote doesn't treat `^C` as an interrupt), the prompt wait times out, `rm` isn't sent and the files are left on the remote. The session is then in an unknown state, and breakouts run against whatever is in the foreground.
+- Cleanup is best-effort: each of its two prompt waits (before and after the `rm`) takes at most 10s, or the step timeout if that's shorter. Its errors are logged but never replace the step's error.
 
 ### `sleep` — Pause execution
 

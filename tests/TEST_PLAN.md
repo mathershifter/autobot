@@ -20,14 +20,14 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
-| P2 | `cmd` forms, embedded scripts | 15 | 0 | 0 | 15 | 0 |
+| P2 | `cmd` forms, embedded scripts | 20 | 0 | 0 | 20 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
 | P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
 | P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
 | P7 | registry and plugins | 13 | 0 | 0 | 13 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **192** | **0** | **0** | **192** | **4** |
+| **Total** | | **197** | **0** | **0** | **197** | **4** |
 
 The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
@@ -125,7 +125,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Captured output (SPEC.md:109-116) | `test_output_capture` (echo, long echo, no trailing newline, echo off, strip_echo table) | P1-17/18/19, P8-05 |
 | `ignore_error` (SPEC.md:118-123) | `test_ignored_error_registers_output`, `test_ignored_rc_failure_registers_output`, embedded `rc_ignored` | P1-15, P1-20 |
 | `register` (SPEC.md:125-138) | `test_output_capture` register tests | P1-12..16 |
-| Embedded scripts (SPEC.md:140-172) | `test_embedded_script` (round-trip, removed on success/failure/upload failure, cleanup errors, bounded cleanup) | P2-07..15 |
+| Embedded scripts (SPEC.md:140-172) | `test_embedded_script` (round-trip, removed on success/failure/upload failure, cleanup errors, bounded cleanup with `^C` ignored) | P2-07..20 |
 | `sleep` (SPEC.md:174-178) | none | P3-11, P8-11 |
 | `block` (SPEC.md:186-250) | `test_lifecycle::test_block_*` (breakout timeout, failing enter, error preserved, template error) | P5-10..16 |
 | `line` / `return` / `control` (SPEC.md:252-270) | none | P8-06..09 |
@@ -186,10 +186,15 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-11 | `test_embedded_assert_failure_cleans_up` | 162, 171 | F1, `tmp_path_hex` | `assert: nomatch` raises `assertion failed`; script and `.b64` absent | pass |
 | P2-12 | `test_byte_count_mismatch_fails_step` | 167 | F1, fake `wc` first on `PATH` (prints `1`) | raises `script upload .* failed`; files absent | pass |
 | P2-13 | `test_byte_count_mismatch_ignorable` | 167 | as P2-12 + `ignore_error: true` | next step `echo next` runs and registers; files absent | pass |
-| P2-14 | `test_cleanup_timeout_uses_shorter_step_timeout` | 172 | F1, `tmp_path_hex`, step `timeout: 2s`, script `sleep 30`, no constant patch | `TimeoutError`; total elapsed < 6 s (2 s step + ≤ 2 s cleanup + margin) | pass |
+| P2-14 | `test_cleanup_timeout_uses_shorter_step_timeout` | 172 | F1, `tmp_path_hex`, step `timeout: 2s`, script `trap '' INT; sleep 30` (so the interrupt can't end it and the cleanup wait runs into its bound), no constant patch | `TimeoutError`; total elapsed < 6 s (2 s step + ≤ 2 s cleanup + margin) | pass |
 | P2-15 | `test_embedded_errors_patterns_apply` | 101, 162 | F1, `errors: ['% .*']`, `tmp_path_hex` | script printing `% bad` raises `CommandError`; files absent | pass |
+| P2-16 | `test_timed_out_script_interrupted_and_removed` (parametrized: `ignore_error` false/true) | Embedded scripts: Cleanup | F1, F4, `tmp_path_hex`, script `sleep 30`, `timeout: 2s`, then `cmd: echo never` | `TimeoutError` propagates in both cases; elapsed < 6 s; `sent.controls() == ["c"]`; `rm -f <tmp> <tmp>.b64` sent; `echo never` not sent; files absent | pass |
+| P2-17 | `test_timed_out_script_leaves_session_at_prompt` | Embedded scripts: Cleanup | F1 `attached_runner`, F4 | after the timed-out script step, `cmd: echo next` with `register` returns `next` in < 2 s (the script is no longer in the foreground); files absent | pass |
+| P2-18 | `test_timed_out_upload_interrupted_and_removed` (parametrized: fake `wc` sleeps: hangs a chunk line; fake `base64` sleeps: hangs the decode) | Embedded scripts: Cleanup | F1, F4, fake first on `PATH`, `timeout: 2s` | `TimeoutError`; elapsed < 6 s; `^C` sent; the script path is never sent as a command; files absent | pass |
+| P2-19 | `test_interrupt_failure_does_not_mask_timeout` | Embedded scripts: Cleanup | F1, `Session.sendcontrol` patched to raise `OSError` | `TimeoutError` (not `OSError`) propagates; stderr has `cleanup of <tmp> failed (OSError): boom` | pass |
+| P2-20 | `test_no_interrupt_on_success_or_failure` | Embedded scripts: Cleanup | F1, F4 | success, exit code 2 and an `errors` match each run cleanup without `^C`: `sent.controls() == []` | pass |
 
-Totals: 15 pass.
+Totals: 20 pass.
 
 ## P3: common step properties and templating context
 
