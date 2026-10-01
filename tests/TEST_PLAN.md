@@ -25,9 +25,9 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
 | P5 | attach / block lifecycles, env | 32 | 0 | 0 | 32 | 0 |
 | P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
-| P7 | registry and plugins | 9 | 0 | 0 | 9 | 0 |
+| P7 | registry and plugins | 12 | 0 | 0 | 12 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **188** | **0** | **0** | **188** | **4** |
+| **Total** | | **191** | **0** | **0** | **191** | **4** |
 
 The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
@@ -118,7 +118,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 |
 | Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31 |
 | `prompts`, `send` forms, `sendEach`, Response selection | none | P4-12..15, P4-17, P4-20..31, P5-25/26, P6-07, P6-38..40, P6-46..56 |
-| `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-09 |
+| `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-08 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved, initial timeout) | P5-01..09, P5-17..24, P8-14 |
 | `cmd` basic / multiline / list (SPEC.md:89-99) | `test_output_capture::test_list_registers_all_lines`, `test_multiline_string_registers_all_lines` | P2-01..06 |
 | Per-line `errors`, success semantics (SPEC.md:101-107) | `test_output_capture::test_errors_*`, `test_list_error_on_middle_line_*`, `test_assert_*` | P1-01..11 |
@@ -134,8 +134,8 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Duration format (SPEC.md:307-313) | none | P6-09, P8-01 |
 | Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 |
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20 |
-| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..37, P7-07 |
-| Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..08 |
+| CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..37, P7-07, P7-09..11 |
+| Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..11 |
 | Examples | none | P6-19/20 |
 
 ## P1: `cmd` success semantics
@@ -372,7 +372,7 @@ New parity case from #12: a `call` to an undefined function is `(False, True)`: 
 
 ## P7: registry and plugins
 
-Files: `tests/test_registry.py` (new) and `tests/test_plugins.py` (extend). SPEC.md:286; charter (plugins through `autobot.steps` entry points).
+Files: `tests/test_registry.py` (new), `tests/test_plugins.py` (extend) and `tests/test_schema_plugins.py`. SPEC.md:286; charter (plugins through `autobot.steps` entry points).
 
 | ID | Test | SPEC | Setup | Assertion | Status |
 |----|------|------|-------|-----------|--------|
@@ -382,10 +382,15 @@ Files: `tests/test_registry.py` (new) and `tests/test_plugins.py` (extend). SPEC
 | P7-04 | `test_plugin_model_receives_only_plugin_fields` | 286 | F1, F6 `register_plugin` with an `extra="forbid"` model | step with `after`/`when`/`delay_before`/`delay_after`/`timeout` runs; executor receives an instance of its own model with no common-prop attributes; `timeout` arrives as the argument | pass |
 | P7-05 | `test_validate_plugin_step_requires_key` | 286 | F6 | `PluginStep` without `plugin_key_` → `ValueError` `no plugin key` | pass |
 | P7-06 | `test_plugin_step_error_propagates` | 286 | F1, F6 executor raising `RuntimeError("boom")` | `Runner.run()` raises `boom`; session closed (`children`) | pass |
-| P7-07 | `test_schema_command_includes_plugin_defs` | 12 (and #16) | CLI subprocess `schema` with plugin on `PYTHONPATH` (F6 `plugin_dist`) | output JSON has `$defs.echoStep`; `$defs.step.oneOf[-2] == {"$ref": "#/$defs/echoStep"}`; `oneOf[-1]` is still `pluginStep` | pass |
+| P7-07 | `test_schema_command_includes_plugin_defs` | 12 (and #16) | CLI subprocess `schema` with plugin on `PYTHONPATH` (F6 `plugin_dist`) | output JSON has `$defs.echoStep`; `$defs.step.oneOf[-2] == {"$ref": "#/$defs/echoStep"}`; `oneOf[-1]` is still `pluginStep`; `pluginStep.not.anyOf` ends with `{required: [echo]}`; the output accepts `{echo: hi, timeout: 5s}` and rejects `{echo: 1}` | pass |
 | P7-08 | `test_plugin_field_typo_fails_at_load` / `test_call_undefined_fn_fails_at_load` (2 tests) | 12, 180 | F6 plugin; `{echo: hi, ech0: x}` / `call: nope` | `ValidationError` at `Config` time: `extra_forbidden` at `("script", 0, "ech0")` / `undefined_function` at `("script", i, "call")`, message `call to undefined function 'nope'`. For both, the CLI exits 1 with `Validation errors`, no `Traceback`, and neither `prepare` nor spawn runs (check a `prepare` marker file) | pass (was todo #12) (x2) |
+| P7-09 | `test_generated_schema_parity_accept` / `_reject` (parametrized corpus) | CLI, Common Step Properties | F6 `probe` plus in-process `nest` (nested model, optional fields) and `free` (`extra="allow"`) plugins; F7; schema built in-process with `cli.add_plugin_steps` | accept for both model and generated schema: `{probe: x}`, with each common prop and all of them, inside a block and a `fn`, a nested model, `null` for the plugin's own optional fields, extra keys and a common prop on the `extra="allow"` plugin. Reject for both: `null` and wrong-typed values of each common prop, an unknown extra key, wrong plugin field types (top level and nested), two plugin keys in one step, a plugin key next to `cmd` | pass |
+| P7-10 | `test_unknown_step_key_falls_to_plugin_step` (parametrized) | YAML Script Structure, CLI | as P7-09 | `{nope: 1}`, `{nope: 1, timeout: 5s}`, `{timeout: 5}` → model rejects, generated and static schema accept via `pluginStep` (the static-schema divergence SPEC allows) | pass |
+| P7-11 | `test_generated_schema_shape` / `test_step_common_matches_builtins_and_model` | CLI, Common Step Properties | as P7-09 | the generated schema is valid 2020-12; plugin refs sit before `pluginStep` in registration order; `pluginStep` excludes each plugin key; each `<key>Step` starts with `$ref stepCommon`; nested model defs live under `<key>Step.$defs`. `stepCommon` has exactly `PluginStep`'s common keys and equals `cmdStep`'s definitions of them | pass |
 
-Totals: 9 pass.
+Totals: 12 pass.
+
+P7-09..11 were added with the fix for the generated schema found in the PR #23 review: a plain plugin step matched both `<key>Step` and `pluginStep`, so `oneOf` rejected it, and a plugin step with a common prop or an invalid field fell through to `pluginStep` and was accepted unchecked. The P7-09 helper deep-copies each document before validating it, because `PluginStep`'s before-validator writes `plugin_key_` into the dict it is given.
 
 P7-07 pins the `schema` subcommand. The subcommand is clearly intentional (help text, plugin merging), but SPEC and README don't document it (#16). If the user decides to remove or rename it, drop or adjust this test.
 
@@ -426,9 +431,9 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P4 | 20 | 0 | 3 | `test_get_prompt.py` |
 | P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 37 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
-| P7 | 9 | 0 | 0 | `test_registry.py`, `test_plugins.py` |
+| P7 | 12 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **162** | **0** | **5** | |
+| **Total** | **165** | **0** | **5** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -444,7 +449,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-09-30, 696 tests, 0 skipped, `jsonschema` installed): full suite about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-10-01, 732 tests, 0 skipped, `jsonschema` installed): full suite about 124 s. The generated-schema fix (P7-09..11) took the count from 696 to 732; its tests are in-process schema and model checks. Before it (2026-09-30, 696 tests): about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 
