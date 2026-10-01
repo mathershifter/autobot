@@ -241,10 +241,11 @@ class PluginStep(pydantic.BaseModel):
         if isinstance(data, dict):
             from .registry import registry
 
+            if "plugin_key_" in data:
+                raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
             for key in data:
                 if key not in _COMMON_PROPS and registry.has(key):
-                    data["plugin_key_"] = key
-                    break
+                    return {**data, "plugin_key_": key}
         return data
 
 

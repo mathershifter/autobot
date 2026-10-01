@@ -101,6 +101,11 @@ def test_p7_07_schema_command_includes_plugin_defs(plugin_path: Path):
     one_of = schema["$defs"]["step"]["oneOf"]
     assert one_of[-2] == {"$ref": "#/$defs/echoStep"}
     assert one_of[-1] == {"$ref": "#/$defs/pluginStep"}
+    assert schema["$defs"]["pluginStep"]["not"]["anyOf"][-1] == {"required": ["echo"]}
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema not installed")
+    validator = jsonschema.Draft202012Validator(schema)
+    assert validator.is_valid(make_doc([{"echo": "hi", "timeout": "5s"}]))
+    assert not validator.is_valid(make_doc([{"echo": 1}]))
 
 
 class BraceStep(pydantic.BaseModel):

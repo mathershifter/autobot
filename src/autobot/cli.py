@@ -5,6 +5,7 @@ import json
 import sys
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pydantic
 import yaml
@@ -14,6 +15,9 @@ from yaml.reader import ReaderError
 
 from .models import Config
 from .runner import Runner
+
+if TYPE_CHECKING:
+    from .protocols import StepExecutor
 
 # markup off: messages echo user text (paths, --arg, YAML input) that may look like [tags]
 console = Console(stderr=True, markup=False, soft_wrap=True)
@@ -110,16 +114,27 @@ def _cmd_schema():
         url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
         schema = json.loads(urllib.request.urlopen(url).read())
 
-    plugins = registry.plugin_executors()
-    for executor in plugins:
-        plugin_schema = executor.model.model_json_schema()
-        def_name = f"{executor.key}Step"
-        schema["$defs"][def_name] = plugin_schema
-        ref = {"$ref": f"#/$defs/{def_name}"}
-        step_oneof = schema["$defs"]["step"]["oneOf"]
-        step_oneof.insert(-1, ref)
+    print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
-    print(json.dumps(schema, indent=2))
+
+def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> dict[str, Any]:
+    """Add a `<key>Step` def per plugin to `step.oneOf`, and take its key out of the `pluginStep` catch-all."""
+    defs = schema["$defs"]
+    one_of = defs["step"]["oneOf"]
+    for executor in executors:
+        name = f"{executor.key}Step"
+        model = executor.model.model_json_schema(ref_template=f"#/$defs/{name}/$defs/{{model}}")
+        step: dict[str, Any] = {"$defs": model.pop("$defs")} if "$defs" in model else {}
+        # the plugin's model sees every key but the common props, so its closing additionalProperties
+        # moves out to cover the keys neither it nor stepCommon evaluates
+        rest = model.pop("additionalProperties", None)
+        step |= {"type": "object", "required": [executor.key], "allOf": [{"$ref": "#/$defs/stepCommon"}, model]}
+        if rest is not None:
+            step["unevaluatedProperties"] = rest
+        defs[name] = step
+        one_of.insert(-1, {"$ref": f"#/$defs/{name}"})
+        defs["pluginStep"]["not"]["anyOf"].append({"required": [executor.key]})
+    return schema
 
 
 def main():

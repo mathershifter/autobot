@@ -249,6 +249,16 @@
         ]
       }
     },
+    "stepCommon": {
+      "type": "object",
+      "properties": {
+        "after": { "type": "string" },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
     "sendEach": {
       "type": "object",
       "required": ["each"],
