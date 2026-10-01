@@ -284,7 +284,7 @@ If `cmd` is a string starting with `#!`, it is treated as an embedded script. Th
 
 Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
 
-The script is uploaded base64-encoded, in lines of at most 512 base64 characters, to `/tmp/_autobot_<random>` (mode `700`, created under `umask 077`). The remote shell must be POSIX-compatible and provide `base64 -d`, `tee`, and `wc`. The upload is checked by comparing the decoded byte count to the script's length. The temp file is always removed, even if the upload or the script fails. Removal is best-effort: it waits at most 10 seconds (or the step timeout, if that's shorter) for the prompt, and a failed cleanup is logged without replacing the step's own error.
+The script is uploaded base64-encoded, in lines of at most 512 base64 characters, to `/tmp/_autobot_<random>` (mode `700`, created under `umask 077`). The remote shell must be POSIX-compatible and provide `base64 -d`, `tee`, and `wc`. The upload is checked by comparing the decoded byte count to the script's length. The temp file is always removed, even if the upload or the script fails. If the step times out while the script or the upload is still running, Autobot first sends a single Ctrl-C to interrupt it, waits for the prompt, and then removes the files; the timeout still aborts the script, even with `ignore_error`. A script that ignores `SIGINT` can't be interrupted, so its files are left behind. Removal is best-effort: each prompt wait takes at most 10 seconds (or the step timeout, if that's shorter), and a failed cleanup is logged without replacing the step's own error.
 
 ### `sleep` — Pause execution
 

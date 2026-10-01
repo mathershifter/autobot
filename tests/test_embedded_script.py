@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SHELL_ENV, SentLog
+from conftest import SHELL_ENV, SentLog, steps
 from conftest import run_vars as run
 
 import autobot.steps
@@ -152,15 +152,19 @@ def test_timeout_not_masked_and_cleanup_bounded(
 ):
     monkeypatch.setattr(autobot.steps, "SCRIPT_CLEANUP_TIMEOUT", 1.0)
     start = time.monotonic()
-    with pytest.raises(TimeoutError):
-        run([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "4s"}])
-    # 4s step timeout + 1s cleanup wait, not a second full step timeout
-    assert time.monotonic() - start < 7
-    tmp_path_hex.unlink(missing_ok=True)
-    Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+    try:
+        with pytest.raises(TimeoutError):
+            # the script ignores the interrupt (sleep inherits the ignored INT),
+            # so the cleanup prompt wait runs into its bound
+            run([{"cmd": "#!/bin/sh\ntrap '' INT\nsleep 30\n", "timeout": "4s"}])
+        # 4s step timeout + 1s cleanup wait, not a second full step timeout
+        assert time.monotonic() - start < 7
+    finally:
+        tmp_path_hex.unlink(missing_ok=True)
+        Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
 
 
-# -- P2-07..15: embedded scripts (SPEC.md:140-172) ---------------------------
+# -- P2-07..20: embedded scripts (SPEC.md:140-172) ---------------------------
 
 
 UPLOAD_PREFIX = "(umask 077; printf %s "
@@ -250,11 +254,11 @@ def test_p2_13_byte_count_mismatch_ignorable(tmp_path_hex: Path, tmp_path: Path)
 
 
 def test_p2_14_cleanup_timeout_uses_shorter_step_timeout(tmp_path_hex: Path):
-    """SPEC.md:172: cleanup waits at most min(10s, step timeout)."""
+    """SPEC.md:172: cleanup waits at most min(10s, step timeout), even if ^C is ignored."""
     start = time.monotonic()
     try:
         with pytest.raises(TimeoutError):
-            run([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}])
+            run([{"cmd": "#!/bin/sh\ntrap '' INT\nsleep 30\n", "timeout": "2s"}])
         # 2s step timeout + at most 2s cleanup, not the 10s cleanup cap
         assert time.monotonic() - start < 6
     finally:
@@ -267,3 +271,94 @@ def test_p2_15_embedded_errors_patterns_apply(tmp_path_hex: Path):
     with pytest.raises(CommandError, match="command error: % bad"):
         run([{"cmd": "#!/bin/sh\necho '% bad'\n"}], errors=["% .*"])
     assert_removed(tmp_path_hex)
+
+
+@pytest.mark.parametrize("ignore_error", [False, True])
+def test_p2_16_timed_out_script_interrupted_and_removed(
+    tmp_path_hex: Path, sent: SentLog, ignore_error: bool
+):
+    """A running script that times out gets ^C, then its files are removed."""
+    start = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            run(
+                [
+                    {"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s", "ignore_error": ignore_error},
+                    {"cmd": "echo never"},
+                ]
+            )
+        assert time.monotonic() - start < 6
+        assert sent.controls() == ["c"]
+        assert f"rm -f {tmp_path_hex} {tmp_path_hex}.b64" in sent.lines()
+        assert "echo never" not in sent.lines()
+        assert_removed(tmp_path_hex)
+    finally:
+        tmp_path_hex.unlink(missing_ok=True)
+        Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+
+
+def test_p2_17_timed_out_script_leaves_session_at_prompt(
+    tmp_path_hex: Path, attached_runner, sent: SentLog
+):
+    """After the interrupt and cleanup the session is back at a shell prompt."""
+    r = attached_runner()
+    try:
+        with pytest.raises(TimeoutError):
+            r.run_steps(steps([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}]))
+        start = time.monotonic()
+        r.run_steps(steps([{"cmd": "echo next", "register": "next", "timeout": "3s"}]))
+        assert r.config.vars["next"] == "next"
+        assert time.monotonic() - start < 2
+        assert_removed(tmp_path_hex)
+    finally:
+        tmp_path_hex.unlink(missing_ok=True)
+        Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("hang", ["wc", "base64"], ids=["chunk", "decode"])
+def test_p2_18_timed_out_upload_interrupted_and_removed(
+    tmp_path_hex: Path, tmp_path: Path, sent: SentLog, hang: str
+):
+    """An upload that hangs (a chunk line or the decode) is interrupted and cleaned up."""
+    fake = tmp_path / hang
+    fake.write_text("#!/bin/sh\nsleep 30\n")
+    fake.chmod(0o755)
+    env = {**SHELL_ENV, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    start = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            run([{"cmd": "#!/bin/sh\necho hi\n", "timeout": "2s"}], attach_env=env)
+        assert time.monotonic() - start < 6
+        assert sent.controls() == ["c"]
+        assert not any(line == str(tmp_path_hex) for line in sent.lines())  # never executed
+        assert_removed(tmp_path_hex)
+    finally:
+        tmp_path_hex.unlink(missing_ok=True)
+        Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+
+
+def test_p2_19_interrupt_failure_does_not_mask_timeout(
+    tmp_path_hex: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """A failing interrupt is logged; the step's TimeoutError still propagates."""
+    def sendcontrol(self: Session, char: str) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr(Session, "sendcontrol", sendcontrol)
+    try:
+        with pytest.raises(TimeoutError):
+            run([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}])
+        assert f"cleanup of {tmp_path_hex} failed (OSError): boom" in capsys.readouterr().err
+    finally:
+        tmp_path_hex.unlink(missing_ok=True)
+        Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+
+
+def test_p2_20_no_interrupt_on_success_or_failure(sent: SentLog):
+    """Only a step that ends away from the prompt is interrupted."""
+    run([{"cmd": "#!/bin/sh\necho ok\n"}])
+    with pytest.raises(RuntimeError, match="exit code 2"):
+        run([{"cmd": "#!/bin/sh\nexit 2\n"}])
+    with pytest.raises(CommandError):
+        run([{"cmd": "#!/bin/sh\necho '% bad'\n"}], errors=["% .*"])
+    assert sent.controls() == []

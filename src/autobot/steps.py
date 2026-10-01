@@ -93,6 +93,7 @@ class CmdExecutor:
             script += "\n"  # jinja drops the trailing newline
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         output = ""
+        interrupt = False
         if not step.after:
             ctx.session.get_prompt(timeout=timeout)
         try:
@@ -108,8 +109,12 @@ class CmdExecutor:
             if not step.ignore_error:
                 raise
             console.print(f">> error ignored: {e}")
+        except BaseException:
+            # e.g. a timeout: the script or an upload line may still be running
+            interrupt = True
+            raise
         finally:
-            self._cleanup(ctx, tmp, min(timeout, SCRIPT_CLEANUP_TIMEOUT))
+            self._cleanup(ctx, tmp, min(timeout, SCRIPT_CLEANUP_TIMEOUT), interrupt)
         self._register(step, ctx, output)
 
     @staticmethod
@@ -132,9 +137,12 @@ class CmdExecutor:
             raise StepFailure(f"script upload to {tmp} failed: {out.strip()}")
 
     @staticmethod
-    def _cleanup(ctx: RunnerContext, tmp: str, timeout: float) -> None:
+    def _cleanup(ctx: RunnerContext, tmp: str, timeout: float, interrupt: bool) -> None:
         try:
-            ctx.session.get_prompt(timeout=timeout)
+            if interrupt:
+                ctx.session.sendcontrol("c")
+                console.print(">> script: interrupt sent: ^C")
+            ctx.session.get_prompt(timeout=timeout, capture=False)
             ctx.session.sendline(f"rm -f {tmp} {tmp}.b64")
             ctx.session.get_prompt(timeout=timeout, capture=False)
             console.print(f">> script: cleaned up {tmp}")
