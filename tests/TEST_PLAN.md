@@ -22,12 +22,12 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
 | P2 | `cmd` forms, embedded scripts | 20 | 0 | 0 | 20 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 25 | 0 | 0 | 25 | 3 |
-| P5 | attach / block lifecycles, env | 35 | 0 | 0 | 35 | 0 |
+| P4 | `get_prompt`, prompts, credential cycling | 28 | 0 | 0 | 28 | 3 |
+| P5 | attach / block lifecycles, env | 42 | 0 | 0 | 42 | 0 |
 | P6 | model / schema / example / CLI parity | 51 | 0 | 0 | 51 | 0 |
 | P7 | registry and plugins | 13 | 0 | 0 | 13 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **200** | **0** | **0** | **200** | **4** |
+| **Total** | | **210** | **0** | **0** | **210** | **4** |
 
 The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
 
@@ -127,7 +127,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | `register` (SPEC.md:125-138) | `test_output_capture` register tests | P1-12..16 |
 | Embedded scripts (SPEC.md:140-172) | `test_embedded_script` (round-trip, removed on success/failure/upload failure, cleanup errors, bounded cleanup with `^C` ignored) | P2-07..20 |
 | `sleep` (SPEC.md:174-178) | none | P3-11, P8-11 |
-| `block` (SPEC.md:186-250) | `test_lifecycle::test_block_*` (breakout timeout, failing enter, error preserved, template error) | P5-10..16 |
+| `block` (SPEC.md:186-250) | `test_lifecycle::test_block_*` (breakout timeout, failing enter, error preserved, template error) | P5-10..16, P5-35..41, P4-32..34 (prompt state across a swap) |
 | `line` / `return` / `control` (SPEC.md:252-270) | none | P8-06..09 |
 | Common step properties, order (SPEC.md:272-288) | `test_plugin_common_props` (plugin only) | P3-01..16 |
 | `when` (SPEC.md:290-305) | `test_plugin_when` (2 values) | P3-02..06 |
@@ -262,8 +262,11 @@ Also check in P4-01: `session.ctx["match"] == "PROMPT$ "` after a shell-prompt m
 | P4-29 | `test_simple_prompt_template` | prompts | as P4-26, `send: '{{ vars.answer \| upper }}'`, `vars.answer: y`, two asks | log `ENTER=, ASK=Y, ASK=Y` (rendered on each send) | pass |
 | P4-30 | `test_simple_prompt_empty_send_presses_enter` | prompts | as P4-26, `send: ''`, one ask, F4 | `sent.lines() == [""]`; log `ENTER=, ASK=` | pass |
 | P4-31 | `test_simple_prompt_undefined_variable_aborts` | prompts | as P4-26, `send: '{{ vars.nope }}'`, one ask, no `--then` | `ValueError` `prompt 'confirm': template error: ...`; nothing sent after the kick | pass |
+| P4-32 | `test_prompt_text_checked_like_a_prompt_wait` (parametrized: same, anchored, suffix, other, no handlers, a `send` regex starting first, ties both ways, escape skipped / starting first / inside the prompt, line break skipped, invalid regex) | block, "Prompt state across a swap" | `Session(handlers)._is_shell_prompt(text)`, no spawn | true only when the earliest match (ties: the first defined) after skipping `\r\n` and escape sequences is a shell prompt; an invalid regex gives false instead of raising | pass (#14) |
+| P4-33 | `test_swap_keeps_a_recognized_prompt` (parametrized: same, `[A-Z]+\$ `, an added question handler, `BLK\$ `) | block, "Prompt state across a swap" | F1 `shell_session`, F4; reach a prompt after `echo hi`, `sent.clear()`, `restore_handlers(...)` | recognized: `get_prompt` returns `""` in < 0.5 s and sends nothing; `BLK\$ `: `get_prompt(timeout=1)` raises `TimeoutError` after exactly one solicit `""`; `session.before`/`match` stay `hi\n`/`PROMPT$ ` | pass (#14) |
+| P4-34 | `test_swap_never_starts_prompt_state` | block, "Prompt state across a swap" | F1 `shell_session`; `sendline("echo hi")` without a wait, then a swap to a matching handler | `get_prompt` returns `hi\n` (it read the output instead of returning `""` at once) | pass (#14) |
 
-Totals: 27 rows pass (P4-01..31 without the removed P4-03, P4-10, P4-11, P4-16). Slow: P4-04, 05, 06. P4-18 lost its `slow` marker: with #3 fixed it no longer waits for the idle poll (about 0.2 s).
+Totals: 30 rows pass (P4-01..34 without the removed P4-03, P4-10, P4-11, P4-16). Slow: P4-04, 05, 06. P4-18 lost its `slow` marker: with #3 fixed it no longer waits for the idle poll (about 0.2 s).
 
 ## P5: attach and block lifecycles, env
 
@@ -305,8 +308,15 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-32 | `test_spawn_failure_skips_scripts_and_breakout` (parametrized: `timeout` = `sleep 30` with `attach.timeout: 1`; `exits` = `true`; `not-found` = `autobot_no_such_cmd`) | attach, "If the spawn wait fails" | F1, F4 `sent`, `children`, `capsys`; prepare, `attach.script`, `script` and the breakout each append a tag to `tmp_path/log`, and the breakout also sends `line: exit` | raises `TimeoutError` `timed out after 1.0s waiting for ...` / `EOFError` `connection closed` / `pexpect.ExceptionPexpect` `The command was not found or was not executable: ...`; log is only `prepare`; nothing was sent; `_cld is None`; the child is dead and `closed` (`not-found`: no child at all); the `>> ` lines are exactly `prepare: running local script`, `prepare: done`, `attach: <spawn>` | pass (replaces `test_attach_initial_timeout_closes_child`) |
 | P5-33 | `test_banner_then_exit_runs_breakout` | attach, "Any output ends the spawn wait" | F2 `--exit-after-banner`, the same tags, `children`, `capsys` | raises `EOFError` `connection closed`; log is only `prepare`; the child is dead and `closed`; the `>> ` lines are the P5-32 lines then `breakout: detaching`, `breakout error (EOFError): connection closed` | pass |
 | P5-34 | `test_spawn_failure_cli_exit_status` (parametrized: the three P5-32 cases and `banner` = F2 `--exit-after-banner`) | attach; CLI, "Errors after the script is loaded" | `run_cli`; the `timeout` case spawns `sleep 9<pid>`, so a leaked child can be found with `pgrep -x -f` (and is killed in `finally`) | status 1; `Traceback` on stderr, last line `<error>: ...`; `>> breakout: detaching` only for `banner`; log is only `prepare`; no `sleep 9<pid>` left running | pass |
+| P5-35 | `test_block_swap_keeps_recognized_prompt` (parametrized: block prompts `PROMPT\$ `, `[A-Z]+\$ `, `PROMPT\$ ` plus a question handler) | block, "Prompt state across a swap" | F1, F4; `cmd`s with `register` before, inside (two) and after the block | run < 3 s (was about 10.7 s: a 5 s wait on entry and on exit); no `""` sent; commands exactly `echo before, echo in1, echo in2, echo after`; every `register` right; `session.before`/`match` end as `after\n`/`PROMPT$ ` | pass (#14) |
+| P5-36 | `test_block_question_answered_without_solicit` | block, "Prompt state across a swap" | F1, F4; block adds `yn` (`continue\? ` → `y`); `read -p 'conti''nue? ' a; echo got=$a` | run < 3 s; sent lines exactly `echo before, RC, <read>, y, RC, echo after, RC`; `vars.ans == "y\ngot=y"` | pass (#14) |
+| P5-37 | `test_block_prompt_change_waits_for_new_prompt` | block, "Prompt state across a swap" | F1, F4; block prompts `BLK\$ ` only, `enter: line PS1='BL''K$ '`, breakout `line PS1='PROM''PT$ '` | run < 3 s; no `""` sent; registers before, in and after the block right | pass (#14) |
+| P5-38 | `test_nested_blocks_keep_recognized_prompt` | block, "Prompt state across a swap" | F1, F4, F6 probe; outer `PROMPT\$ `, inner `[A-Z]+\$ `, `cmd`s at each level | run < 3 s; no `""` sent; all registers right; the probes see `session.before` `o1\n` inside the inner block and `i1\n` after it | pass (#14) |
+| P5-39 | `test_unrecognized_prompt_not_used_on_entry` | block, "Prompt state across a swap" | F1, F4; block prompts `BLK\$ ` only, `enter: cmd PS1='BL''K$ '` with `timeout: 1`; attach breakout `cmd: echo bo` (register) | `TimeoutError` `timed out waiting for prompt`; sent lines exactly `echo before, RC, "", echo bo, RC` (the `PS1` command is never sent); `vars.bo == "bo"` | pass (#14) |
+| P5-40 | `test_unrecognized_prompt_not_used_on_exit` | block, "Prompt state across a swap" | F1, F4; block prompts `BLK\$ `, entered with `line`, no breakout; then `cmd: echo after` with `timeout: 1` | `TimeoutError`; sent lines exactly `PS1=..., echo in1, RC, ""` (`echo after` is never sent) | pass (#14) |
+| P5-41 | `test_restore_after_error_keeps_recognized_prompt` | block, "Prompt state across a swap" | F1, F4; block prompts `PROMPT\$ `, script `cmd: false`, block breakout and attach breakout each `cmd` with `register` | `exit code 1` raised in < 3 s; no `""` sent; both breakout registers right | pass (#14) |
 
-Totals: 35 pass.
+Totals: 42 pass.
 
 ## P6: model, schema, example and CLI parity
 
@@ -437,12 +447,12 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
 | P2 | 15 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
-| P4 | 20 | 0 | 3 | `test_get_prompt.py` |
-| P5 | 25 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P4 | 23 | 0 | 3 | `test_get_prompt.py` |
+| P5 | 32 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 37 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 13 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **166** | **0** | **5** | |
+| **Total** | **176** | **0** | **5** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -458,7 +468,7 @@ Test functions are named `test_pN_MM_*` after their plan ID. P8-05 adds rows to 
 
 Runtime on the reference machine: full suite about 100 s (311 passed, 5 xfailed, with `jsonschema` installed), `-m "not slow"` about 82 s at the time of the P1-P8 implementation. The original 55 tests went from about 70 s to about 25 s once the `run()` helpers were folded into F1. The added tests missed the < 70 s non-slow target. The remaining cost is per spawn: pexpect waits 50 ms before every send and about 0.1 s when it closes a child, and there are about 180 spawning tests. `pytest-xdist` would be the next lever. It isn't added here.
 
-Current runtime (2026-10-01, 749 tests, 0 skipped, `jsonschema` installed): full suite about 143 s. The spawn-failure tests (P5-32..34) took the count from 742 to 749: eight added, and `test_attach_initial_timeout_closes_child` folded into P5-32. They spawn short-lived children and four CLI subprocesses. Earlier (735 tests): about 124 s. The generated-schema fix and the `PluginStep` copy fix (P7-09..12) took the count from 696 to 735; their tests are in-process schema and model checks. Before it (2026-09-30, 696 tests): about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
+Current runtime (2026-10-01, 776 tests, 0 skipped, `jsonschema` installed): full suite about 147 s. The block prompt-swap fix (#14; P4-32..34, P5-35..41) took the count from 749 to 776. The 27 new tests add about 9 s: 13 are in-process checks, the rest spawn a shell; with the fix, none of them waits the 5 s idle poll (P4-33 `other`, P5-39 and P5-40 each wait out a 1 s deadline). The 749 earlier tests took about 138 s with the fix and about 143 s without it. Only `test_block_breakout_after_timeout_restores_handlers` got clearly faster (6.4 s to 1.4 s); the other block tests reach their blocks with no prompt matched yet, or with a `line`, so the swap never cost them a wait. Before the fix (749 tests): about 143 s. The spawn-failure tests (P5-32..34) took the count from 742 to 749: eight added, and `test_attach_initial_timeout_closes_child` folded into P5-32. They spawn short-lived children and four CLI subprocesses. Earlier (735 tests): about 124 s. The generated-schema fix and the `PluginStep` copy fix (P7-09..12) took the count from 696 to 735; their tests are in-process schema and model checks. Before it (2026-09-30, 696 tests): about 143 s. The simple-`send` change (P4-26..31, P6-52..56, and the migrated and removed rows) took the count from 649 to 696. Its new tests are in-process model and schema checks, apart from seven fake-device tests and nine CLI subprocesses. Before it (649 tests): about 122 s. The 19 tests of P6-50/51 (`return` with `send`) are in-process model and schema checks. The 59 tests added with the `sendEach` fields entries (P4-24/25, P6-46..49 and the migrated rows) are in-process model and schema checks, apart from two fake-device tests and two CLI subprocesses. Before them (571 tests): about 121 s. The 122 tests added with P6-41..45 (including the P8-01 null message) are in-process model and schema checks, apart from four CLI subprocesses. Before them (2026-09-29, 449 tests): full suite about 137 s; `-m "not slow"` about 109 s (445 tests); the four `slow` tests about 29 s. Slow-marker timings: P4-05 11.1 s, P1-18 6.3 s, P4-06 6.2 s, P4-04 5.2 s (each waits on the 5 s idle poll); P4-18 0.2 s, so it is no longer marked.
 
 ### Deviations from the plan
 
@@ -619,7 +629,7 @@ These are not in the list of blocking decisions. None of them is tested in this 
 | # | Question | Source |
 |---|----------|--------|
 | #13 | Does `timeout` on `call`/`block` bound the nested steps, or only `after`? Today nested steps keep the 300 s default. | steps.py:152-191 |
-| #14 | A block with `prompts` resets `_at_prompt` on swap and on restore. Each costs a 5 s solicit wait. Is that acceptable, or should prompt state survive a swap? | session.py:110 |
+| #14 | Answered and fixed on branch `fix/block-prompt-swap-wait`: prompt state survives a swap or restore only if the new prompts take the prompt text the last wait matched for a shell prompt (SPEC block, "Prompt state across a swap"). A swap never starts the state. Before, every swap reset it: about 5 s and a solicit newline on entry and again on exit. Covered by P4-32..34 and P5-35..41. | session.py `_set_handlers`, `_is_shell_prompt` |
 | #16 | Should SPEC/README document the `run` and `schema` subcommands and `-a`? P7-07 pins `schema` in the meantime. | cli.py:65-83 |
 | #17 | The solicit newline can reach a running command's stdin (SPEC-mandated). Is a note in SPEC enough? | session.py:170-172 |
 | Q-a | When an embedded script times out while running, cleanup can't reach a prompt and the files stay behind. SPEC.md:171 says they are "always removed". Should cleanup interrupt the script (Ctrl-C) first? | steps.py:105-106 |

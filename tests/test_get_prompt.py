@@ -22,7 +22,7 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import Session
+from autobot.session import PromptHandler, Session
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
 UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
@@ -399,3 +399,91 @@ def test_p4_31_simple_prompt_undefined_variable_aborts(device):
     with pytest.raises(ValueError, match=r"^prompt 'confirm': template error: "):
         r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER="]
+
+
+# -- P4-32..34: prompt state across a handler swap (SPEC "Prompt state across a swap") --
+
+
+def shell(*patterns: str) -> PromptHandler:
+    return PromptHandler("b", list(patterns), [], True)
+
+
+def ask(*patterns: str) -> PromptHandler:
+    return PromptHandler("ask", list(patterns), [["x"]], False)
+
+
+BOLD, OFF = "\x1b[1m", "\x1b[0m"
+
+# case -> (handlers, the prompt text the last wait matched, still at the prompt)
+PROMPT_TEXTS: dict[str, tuple[Callable[[], list[PromptHandler]], str, bool]] = {
+    "same": (lambda: [shell(r"PROMPT\$ ")], "PROMPT$ ", True),
+    "anchored": (lambda: [shell(r"^PROMPT\$ $")], "PROMPT$ ", True),
+    "suffix": (lambda: [shell(r"\$ ")], "PROMPT$ ", True),
+    "other": (lambda: [shell(r"BLK\$ ")], "PROMPT$ ", False),
+    "no-handlers": (list, "PROMPT$ ", False),
+    "send-starts-first": (lambda: [shell(r"\$ "), ask("PROMPT")], "PROMPT$ ", False),
+    "tie-shell-defined-first": (lambda: [shell(r"PROMPT\$ "), ask("PROMPT")], "PROMPT$ ", True),
+    "tie-send-defined-first": (lambda: [ask("PROMPT"), shell(r"PROMPT\$ ")], "PROMPT$ ", False),
+    "escape-skipped": (lambda: [shell(r"^PROMPT\$ ")], f"{BOLD}PROMPT$ {OFF}", True),
+    "escape-starts-first": (lambda: [shell(r"PT\$ ")], f"PROM{BOLD}PT$ ", True),
+    "escape-inside": (lambda: [shell(r"PROMPT\$ ")], f"PROM{BOLD}PT$ ", False),
+    "line-break-skipped": (lambda: [shell(r"^PROMPT\$ ")], "x\r\nPROMPT$ ", True),
+    "invalid-regex": (lambda: [shell("(")], "PROMPT$ ", False),
+}
+
+
+@pytest.mark.parametrize("case", PROMPT_TEXTS)
+def test_p4_32_prompt_text_checked_like_a_prompt_wait(case: str):
+    """SPEC "Prompt state across a swap": earliest match wins, ties by order, breaks and escapes skipped."""
+    handlers, text, expected = PROMPT_TEXTS[case]
+    assert Session(handlers())._is_shell_prompt(text) is expected
+
+
+# case -> (handlers after the swap, still at the prompt)
+SWAPS: dict[str, tuple[Callable[[], list[PromptHandler]], bool]] = {
+    "same": (lambda: [shell(r"PROMPT\$ ")], True),
+    "suffix": (lambda: [shell(r"[A-Z]+\$ ")], True),
+    "added-question": (lambda: [shell(r"PROMPT\$ "), ask(r"continue\? ")], True),
+    "other": (lambda: [shell(r"BLK\$ ")], False),
+}
+
+
+@pytest.mark.parametrize("case", SWAPS)
+def test_p4_33_swap_keeps_a_recognized_prompt(shell_session: Session, sent: SentLog, case: str):
+    """SPEC "Prompt state across a swap": a recognized prompt is reused at once, sending nothing.
+
+    An unrecognized one isn't: the wait reads new output and, at its first poll timeout
+    (here the 1 s deadline), sends its one solicit newline. The shell prints the same
+    prompt again, which still doesn't match.
+    """
+    handlers, kept = SWAPS[case]
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("echo hi")
+    assert s.get_prompt(timeout=5) == "hi\n"
+    sent.clear()
+    s.restore_handlers(handlers())
+    start = time.monotonic()
+    if kept:
+        assert s.get_prompt(timeout=5) == ""
+        assert time.monotonic() - start < 0.5
+        assert sent.lines() == []
+    else:
+        with pytest.raises(TimeoutError):
+            s.get_prompt(timeout=1)
+        assert sent.lines() == [""]
+    assert s.ctx == {"before": "hi\n", "match": "PROMPT$ "}
+
+
+def test_p4_34_swap_never_starts_prompt_state(shell_session: Session):
+    """SPEC "Prompt state across a swap": a session that isn't at a prompt stays that way.
+
+    The last prompt text still matches the new handlers, but a line was sent after it,
+    so the wait reads that line's output instead of returning at once.
+    """
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("echo hi")
+    s.restore_handlers([shell(r"PROMPT\$ ")])
+    assert s.get_prompt(timeout=5) == "hi\n"
+    assert s.ctx["before"] == "hi\n"

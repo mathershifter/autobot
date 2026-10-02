@@ -134,6 +134,7 @@ class Session:
     def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
         self._at_prompt = False
+        self._prompt = ""
         self._sent: str | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._set_handlers(handlers)
@@ -151,7 +152,23 @@ class Session:
             self._patterns.extend(h.patterns)
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
-        self._at_prompt = False
+        # the prompt on screen still counts only if the new prompts take it for a shell prompt
+        self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
+
+    def _is_shell_prompt(self, text: str) -> bool:
+        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers."""
+        try:
+            regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
+        except re.error:
+            return False  # the next get_prompt reports it
+        while True:
+            found = [(m.start(), i, m.end()) for i, r in enumerate(regexes) if (m := r.search(text))]
+            if not found:
+                return False
+            _, i, end = min(found)
+            if i > 1:
+                return next(h for h in self._handlers if h.start <= i < h.end).is_return
+            text = text[end:]  # a line break or escape sequence, consumed as get_prompt does
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         self._cld = pexpect.spawn(
@@ -225,6 +242,7 @@ class Session:
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
+                        self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture)
                     self._cld.sendline(h.respond(i - h.start))
                     break

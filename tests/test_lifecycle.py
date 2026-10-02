@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ import pexpect
 import pytest
 from conftest import (
     BASH,
+    RC_PROBE,
     SHELL_ENV,
     AttachRecorded,
     FakeDevice,
@@ -635,6 +637,144 @@ def test_p5_26_block_send_each_valid(tmp_path: Path, probe: ProbeExecutor):
     assert log.read_text().split() == ["enter", "script", "block-breakout"]
     assert probe.by_name("inside")["handlers"] == ["blk", "login"]
     assert handler_names(runner) == ["top"]
+
+
+# -- P5: prompt state across a block swap (SPEC "Prompt state across a swap") --
+
+# a step that took one 5 s idle wait before the fix can't pass these bounds
+FAST = 3.0
+BLK_ONLY = [{"name": "blk", "expect": [r"BLK\$ "], "return": True}]
+# quoted so the echoed commands never match a prompt
+TO_BLK = {"line": "PS1='BL''K$ '"}
+TO_TOP = {"line": "PS1='PROM''PT$ '"}
+ASK = "read -p 'conti''nue? ' a; echo got=$a"
+YN = {"name": "yn", "expect": [r"continue\? "], "send": "y"}
+
+
+def reg(cmd: str, name: str) -> dict:
+    return {"cmd": cmd, "register": name, "timeout": "5s"}
+
+
+def timed(runner: Runner) -> float:
+    start = time.monotonic()
+    try:
+        runner.run()
+    finally:
+        elapsed = time.monotonic() - start
+    return elapsed
+
+
+# case -> block prompts that recognize the top-level prompt `PROMPT$ `
+RECOGNIZING = {
+    "same": BLOCK_PROMPTS,
+    "broader": [{"name": "blk", "expect": [r"[A-Z]+\$ "], "return": True}],
+    "added-question": [*BLOCK_PROMPTS, YN],
+}
+
+
+@pytest.mark.parametrize("case", RECOGNIZING)
+def test_p5_35_block_swap_keeps_recognized_prompt(sent: SentLog, case: str):
+    """SPEC "Prompt state across a swap": entry and exit at a recognized prompt cost no wait and no newline.
+
+    Before the fix each swap reset the prompt state: about 5 s and one solicit newline on entry and again on exit.
+    """
+    runner = top_runner([
+        reg("echo before", "b"),
+        {"block": {"name": "b", "prompts": RECOGNIZING[case], "script": [reg("echo in1", "i1"), reg("echo in2", "i2")]}},
+        reg("echo after", "a"),
+    ])
+    assert timed(runner) < FAST
+    assert runner.config.vars == {"b": "before", "i1": "in1", "i2": "in2", "a": "after"}
+    assert "" not in sent.lines()
+    assert sent.commands() == ["echo before", "echo in1", "echo in2", "echo after"]
+    assert runner.session.ctx == {"before": "after\n", "match": "PROMPT$ "}
+
+
+def test_p5_36_block_question_answered_without_solicit(sent: SentLog):
+    """SPEC "Prompt state across a swap": a block that only adds a question handler starts at the prompt."""
+    runner = top_runner([
+        reg("echo before", "b"),
+        {"block": {"name": "b", "prompts": RECOGNIZING["added-question"], "script": [reg(ASK, "ans")]}},
+        reg("echo after", "a"),
+    ])
+    assert timed(runner) < FAST
+    assert sent.lines() == ["echo before", RC_PROBE, ASK, "y", RC_PROBE, "echo after", RC_PROBE]
+    assert runner.config.vars == {"b": "before", "ans": "y\ngot=y", "a": "after"}
+
+
+def test_p5_37_block_prompt_change_waits_for_new_prompt(sent: SentLog):
+    """SPEC "Prompt state across a swap": a sub-CLI entered with `line` and left in the breakout.
+
+    The swap ends the prompt state (`BLK$ ` patterns don't match `PROMPT$ `), but `line` sends anyway;
+    each wait then matches the prompt the shell prints, with no solicit newline.
+    """
+    runner = top_runner([
+        reg("echo before", "b"),
+        {"block": {"name": "b", "prompts": BLK_ONLY, "enter": [TO_BLK], "script": [reg("echo in1", "i1")],
+                   "breakout": {"script": [TO_TOP]}}},
+        reg("echo after", "a"),
+    ])
+    assert timed(runner) < FAST
+    assert "" not in sent.lines()
+    assert runner.config.vars == {"b": "before", "i1": "in1", "a": "after"}
+
+
+def test_p5_38_nested_blocks_keep_recognized_prompt(sent: SentLog, probe: ProbeExecutor):
+    """SPEC "Prompt state across a swap": every nested entry and exit is checked; all recognize `PROMPT$ `."""
+    inner = {"block": {"name": "inner", "prompts": [{"name": "i", "expect": [r"[A-Z]+\$ "], "return": True}],
+                       "script": [{"probe": "in_inner"}, reg("echo i1", "i1")]}}
+    outer = {"block": {"name": "outer", "prompts": [{"name": "o", "expect": [r"PROMPT\$ "], "return": True}],
+                       "script": [reg("echo o1", "o1"), inner, {"probe": "after_inner"}, reg("echo o2", "o2")]}}
+    runner = top_runner([reg("echo before", "b"), outer, reg("echo after", "a")])
+    assert timed(runner) < FAST
+    assert "" not in sent.lines()
+    assert runner.config.vars == {"b": "before", "o1": "o1", "i1": "i1", "o2": "o2", "a": "after"}
+    assert probe.by_name("in_inner")["ctx"]["before"] == "o1\n"
+    assert probe.by_name("after_inner")["ctx"]["before"] == "i1\n"
+
+
+def test_p5_39_unrecognized_prompt_not_used_on_entry(sent: SentLog):
+    """SPEC "Prompt state across a swap": a `cmd` can't enter a sub-CLI whose prompt the block expects.
+
+    The block's prompts don't match `PROMPT$ `, so the cmd waits; at its 1 s deadline it solicits once and
+    times out without sending. Restored, the top-level prompts match the prompt the newline brought.
+    """
+    enter = [{"cmd": "PS1='BL''K$ '", "timeout": 1}]
+    runner = top_runner(
+        [reg("echo before", "b"), {"block": {"name": "b", "prompts": BLK_ONLY, "enter": enter}}],
+        breakout=[reg("echo bo", "bo")],
+    )
+    with pytest.raises(TimeoutError, match="^timed out waiting for prompt$"):
+        runner.run()
+    assert sent.lines() == ["echo before", RC_PROBE, "", "echo bo", RC_PROBE]
+    assert runner.config.vars == {"b": "before", "bo": "bo"}
+
+
+def test_p5_40_unrecognized_prompt_not_used_on_exit(sent: SentLog):
+    """SPEC "Prompt state across a swap": a block left at its own prompt; the restored prompts don't match it."""
+    runner = top_runner([
+        {"block": {"name": "b", "prompts": BLK_ONLY, "enter": [TO_BLK], "script": [reg("echo in1", "i1")]}},
+        {"cmd": "echo after", "timeout": 1},
+    ])
+    with pytest.raises(TimeoutError, match="^timed out waiting for prompt$"):
+        runner.run()
+    assert sent.lines() == [TO_BLK["line"], "echo in1", RC_PROBE, ""]
+    assert runner.config.vars == {"i1": "in1"}
+
+
+def test_p5_41_restore_after_error_keeps_recognized_prompt(sent: SentLog):
+    """SPEC "Prompt state across a swap": a failure at a prompt leaves the session at it for both breakouts."""
+    runner = top_runner(
+        [reg("echo before", "b"),
+         block(script=[{"cmd": "false", "timeout": "5s"}], breakout={"script": [reg("echo bbo", "bbo")]})],
+        breakout=[reg("echo bo", "bo")],
+    )
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="exit code 1"):
+        runner.run()
+    assert time.monotonic() - start < FAST
+    assert "" not in sent.lines()
+    assert runner.config.vars == {"b": "before", "bbo": "bbo", "bo": "bo"}
 
 
 # -- P5: attach spawn arguments ---------------------------------------------

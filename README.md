@@ -319,6 +319,8 @@ The block lifecycle:
 4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
+When the session is sitting at a shell prompt, the swap and the restore keep it there if the new prompts recognize that prompt, so the next `cmd` sends at once: no 5s idle wait and no extra newline. If they don't, the next `cmd` waits for one of the new prompts, and an idle shell never prints one. So enter a sub-CLI whose prompt the block's prompts expect with `line`, not `cmd`, and leave it in the breakout (e.g. `line: exit`). See [SPEC.md](SPEC.md#prompt-state-across-a-swap).
+
 Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`.
 
 ```yaml
