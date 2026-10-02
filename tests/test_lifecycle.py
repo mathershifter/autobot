@@ -329,18 +329,101 @@ def test_p5_03_prepare_temp_file_removed(tmp_path: Path, monkeypatch: pytest.Mon
     assert list(tdir.glob("_autobot_*")) == []
 
 
-def test_p5_04_prepare_without_shebang_fails_cleanly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeline: Timeline, children
-):
-    """SPEC.md:72: prepare uses the shebang; without one it fails before spawn."""
+@pytest.fixture
+def prep_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Temp dir for the prepare script, so a leftover ``_autobot_*`` file is seen."""
     import tempfile
 
     tdir = tmp_path / "tmp"
     tdir.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(tdir))
-    with pytest.raises((OSError, RuntimeError)):
-        make_runner([], prepare="echo hi\n").run()
-    assert list(tdir.glob("_autobot_*")) == []
+    return tdir
+
+
+def test_p5_04_prepare_without_shebang_runs_under_sh(
+    tmp_path: Path, prep_tmp: Path, timeline: Timeline, capsys
+):
+    """SPEC attach table: without a shebang, prepare runs under ``/bin/sh``."""
+    out = tmp_path / "out"
+    make_runner([], prepare=f"\n  echo \"sh:$0\" > {out}\n").run()
+    assert out.read_text().startswith(f"sh:{prep_tmp}/_autobot_")
+    assert progress(capsys.readouterr().err)[:2] == [
+        ">> prepare: running local script (no shebang, using /bin/sh)",
+        ">> prepare: done",
+    ]
+    assert "attach" in timeline.names()
+    assert list(prep_tmp.glob("_autobot_*")) == []
+
+
+JUNK = {
+    "blank-lines": "\n\n\r\n",
+    "spaces": " \t ",
+    "bom": "\ufeff",
+    "mixed": "\ufeff\n \u200b\t\u2060\n",
+}
+PY_ONLY = "import pathlib; pathlib.Path({out!r}).write_text(str(sum(range(4))))\n"
+
+
+@pytest.mark.parametrize("junk", JUNK.values(), ids=JUNK.keys())
+@pytest.mark.parametrize("interp", ["sh", "python3"])
+def test_p5_42_prepare_shebang_after_leading_junk(
+    junk: str, interp: str, tmp_path: Path, prep_tmp: Path, capsys
+):
+    """SPEC attach table: leading blank lines, whitespace, a BOM and zero-width characters are ignored."""
+    out = tmp_path / "out"
+    if interp == "sh":
+        body = f"#!/bin/sh\necho sh > {out}\n"
+        want = "sh\n"
+    else:
+        body = "#!/usr/bin/env python3\n" + PY_ONLY.format(out=str(out))
+        want = "6"
+    make_runner([], prepare=junk + body).run()
+    assert out.read_text() == want
+    assert ">> prepare: running local script" in progress(capsys.readouterr().err)
+    assert list(prep_tmp.glob("_autobot_*")) == []
+
+
+def test_p5_43_prepare_shebang_crlf(tmp_path: Path, prep_tmp: Path):
+    """SPEC attach table: a CR ending the shebang line is dropped (was ENOENT for ``/bin/sh\\r``)."""
+    out = tmp_path / "out"
+    make_runner([], prepare=f"#!/bin/sh\r\necho ok > {out}\n").run()
+    assert out.read_text() == "ok\n"
+    assert list(prep_tmp.glob("_autobot_*")) == []
+
+
+@pytest.mark.parametrize(
+    "prepare", ["echo hi\nexit 4\n", "\ufeff\n  #!/bin/sh\nexit 4\n"], ids=["no-shebang", "junk-shebang"]
+)
+def test_p5_44_prepare_fallback_nonzero_aborts(
+    prepare: str, prep_tmp: Path, timeline: Timeline, children
+):
+    """SPEC attach table: the exit status check is the same with or without a shebang."""
+    with pytest.raises(RuntimeError, match="^prepare script failed with exit code 4$"):
+        make_runner([{"cmd": "true"}], prepare=prepare).run()
+    assert list(prep_tmp.glob("_autobot_*")) == []
+    assert "attach" not in timeline.names()
+    assert children == []
+
+
+@pytest.mark.parametrize("case", ["missing", "not-executable"])
+def test_p5_45_prepare_interpreter_cannot_run(
+    case: str, tmp_path: Path, prep_tmp: Path, timeline: Timeline, children
+):
+    """SPEC attach table: an interpreter that can't run is a ``RuntimeError`` naming the shebang."""
+    if case == "missing":
+        interp = tmp_path / "no_such_interp"
+        exc, err = FileNotFoundError, "[Errno 2] No such file or directory"
+    else:
+        interp = tmp_path / "interp"
+        interp.write_text("not a program\n")
+        interp.chmod(0o600)
+        exc, err = PermissionError, "[Errno 13] Permission denied"
+    first = f"#!{interp}"
+    with pytest.raises(RuntimeError) as ei:
+        make_runner([{"cmd": "true"}], prepare=f"\n{first}\r\necho hi\n").run()
+    assert str(ei.value) == f"prepare script could not run ({first!r}): {err}"
+    assert isinstance(ei.value.__cause__, exc)
+    assert list(prep_tmp.glob("_autobot_*")) == []
     assert "attach" not in timeline.names()
     assert children == []
 

@@ -21,6 +21,10 @@ console = Console(stderr=True, markup=False, soft_wrap=True)
 
 register_builtins(registry)
 
+# Stripped before looking for a shebang: whitespace and line breaks, a BOM,
+# and the zero-width characters that copy and paste leave behind.
+_PREPARE_JUNK = " \t\r\n\ufeff\u200b\u2060"
+
 _KINDS = {dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean"}
 
 
@@ -174,7 +178,16 @@ class Runner:
 
     @staticmethod
     def _run_prepare(script: str):
-        console.print(">> prepare: running local script")
+        script = script.lstrip(_PREPARE_JUNK)
+        first, nl, rest = script.partition("\n")
+        if script.startswith("#!"):
+            first = first.removesuffix("\r")
+            script = first + nl + rest
+            argv: list[str] = []
+            console.print(">> prepare: running local script")
+        else:
+            argv = ["/bin/sh"]
+            console.print(">> prepare: running local script (no shebang, using /bin/sh)")
         with tempfile.NamedTemporaryFile(
             mode="w", prefix="_autobot_", suffix=".sh", delete=False
         ) as f:
@@ -182,7 +195,12 @@ class Runner:
             tmp = f.name
         try:
             os.chmod(tmp, 0o700)
-            result = subprocess.run([tmp], check=False)
+            try:
+                result = subprocess.run([*argv, tmp], check=False)
+            except OSError as e:
+                raise RuntimeError(
+                    f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}"
+                ) from e
             if result.returncode != 0:
                 raise RuntimeError(
                     f"prepare script failed with exit code {result.returncode}"
