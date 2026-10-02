@@ -365,6 +365,21 @@ The block lifecycle:
 4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
+#### Prompt state across a swap
+
+The swap (step 1) and the restore (step 5) neither read from the session nor send anything. They change only whether the session counts as being at a shell prompt, that is, whether the next prompt wait (e.g. the first wait of a `cmd`) returns at once (see [Prompt Handling](#prompt-handling-get_prompt)):
+
+- If the session is at a shell prompt, the text of that prompt is checked against the new prompts the way a prompt wait would read it. The text is the prompt's line as the last prompt wait matched it: from the end of the last line break or escape sequence before the match, up to the end of the match, escape sequences in the match included. As in a prompt wait, the match that starts earliest in that text wins, among `\r\n`, escape sequences and the new prompts' regexes, with ties broken the same way. A winning line break or escape sequence is skipped and the rest of the text is checked again. If the winner belongs to a shell prompt, the session stays at the prompt: the next `cmd` sends at once, without the 5-second idle wait or a solicit newline. If it belongs to a prompt with `send`, or nothing matches, the session no longer counts as at a prompt. So does a new prompt regex that isn't valid; the next prompt wait reports the error.
+- If the session isn't at a shell prompt (e.g. after a `line`, `return` or `control` step, or a step that timed out), it stays that way. A swap or restore never puts the session at a prompt.
+
+So a block whose prompts recognize the prompt on screen, e.g. one that only adds a handler for a confirmation question, or nests a block with the same shell prompt, costs no extra wait or newline on entry or exit. Captured output is unaffected: the check consumes no output, and `session.before` and `session.match` keep the values of the last prompt wait.
+
+When the session doesn't count as at a prompt, the next prompt wait reads new output with the new prompts, and sends its one solicit newline if nothing matches by its first poll timeout (5 seconds, or the wait's timeout if that is shorter). A prompt that the active prompts don't recognize is never used to send a command, and an idle shell answers the solicit newline with the same prompt again. So:
+- A `cmd` as the first step of a block whose prompts don't recognize the current prompt times out. Enter the sub-CLI with `line` (it sends without waiting for a prompt), as in the example below, or also list the current prompt in the block's prompts.
+- On exit, the restore runs after the breakout. If the block leaves the session at a prompt that the restored prompts don't recognize (e.g. it has no breakout to leave the sub-CLI), the next `cmd` outside the block times out. A breakout that ends with `line: exit` leaves the session not at a prompt, and the next `cmd` waits for the outer prompt that the exit brings back.
+
+A block breakout's handler reset (step 4) only restarts the response selection; it doesn't change the prompt state. Neither does the attach breakout's. A block without `prompts` doesn't swap, so its prompt state is never checked.
+
 ```yaml
 - block:
     name: Install SONiC
@@ -406,7 +421,8 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
             - match: 'Password:'
               field: password
     enter:
-      - cmd: consutil connect 0
+      # line: the block's prompts don't recognize the outer prompt, so a cmd would time out
+      - line: consutil connect 0
     script:
       - cmd: show version
     breakout:
@@ -534,6 +550,8 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 ## Prompt Handling (`get_prompt`)
 
 `get_prompt()` only detects and navigates to a shell prompt — it does not send commands. The caller is responsible for sending the command via `sendline()` after `get_prompt()` returns.
+
+The session is *at a shell prompt* from the moment a prompt wait ends at one until anything is sent (a command line, the `$?` check, `line`, `return`, `control`). A prompt wait while the session is at a shell prompt returns at once, without reading output, sending anything, or changing `session.before` and `session.match`. A block's prompt swap and restore can end this state but never start it (see [Prompt state across a swap](#prompt-state-across-a-swap)).
 
 While it waits, the engine also consumes each `\r\n` and each ANSI escape sequence as it arrives: the text before it goes to the captured output, and the escape sequence itself is dropped (see [ANSI escape sequences](#ansi-escape-sequences)). When several patterns match, the one that starts earliest in the unread output wins; on a tie, `\r\n` comes first, then an escape sequence, then the prompts in the order they are defined.
 
