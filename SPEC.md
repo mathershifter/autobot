@@ -199,7 +199,7 @@ The attach lifecycle:
 Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`.
 
 If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI prints a traceback and exits with status 1). The spawn wait fails when:
-- `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for ...`). The process is still running until it is closed.
+- `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`, with the rendered `spawn` command). The process is still running until it is closed.
 - the process exits before any output: `EOFError` (`connection closed`)
 - the `spawn` command isn't found or isn't executable: pexpect's `ExceptionPexpect` (`The command was not found or was not executable: <command>`). No process is started.
 - the operator interrupts the run (`KeyboardInterrupt`) during the wait
@@ -269,7 +269,7 @@ Set `ignore_error: true` to continue when the command fails:
 An ignored failure is logged (`>> error ignored: ...`), and the script continues with the step's `delay_after` and then the next step. Each of these failures is detected with the session at a shell prompt, so the next step starts from a prompt as usual.
 
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
-- timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result
+- timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result. The `TimeoutError` messages are `timed out after <timeout>s waiting for a shell prompt ('<name>', ...)` (the names of the current shell prompts, or `none defined`), `... waiting for the after pattern '<pattern>'` (the rendered pattern) and `... waiting for the exit code of the command (echo $?)`
 - a closed connection (`EOFError`)
 - template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
 - prompt-response failures (`responses exhausted`, `no response available`)
@@ -559,7 +559,7 @@ The prompt engine polls the session output in 5-second intervals:
 1. If a prompt with no `send` (or `return: true`) matches → return (shell prompt reached)
 2. If a prompt with `send` values matches → send the response chosen as described in [Response selection](#response-selection) and continue waiting
 3. On 5-second timeout with no match → send a single empty newline to solicit a prompt (once only, and only if no handler has been activated yet)
-4. On overall timeout → raise `TimeoutError`
+4. On overall timeout → raise `TimeoutError` (`timed out after <timeout>s waiting for a shell prompt ('<name>', ...)`, naming the current prompts that are shell prompts, or `none defined`)
 
 This handles idle consoles that need a return press to display a prompt.
 

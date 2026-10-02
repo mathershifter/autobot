@@ -226,6 +226,6 @@ def test_p3_16_block_when_false_skips_prompt_swap(timeline: Timeline, sent: Sent
 def test_p3_17_after_timeout_uses_step_timeout():
     """SPEC.md:278, 282: the after wait is bounded by the step timeout."""
     start = time.monotonic()
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for the after pattern 'NEVER'$"):
         run_script([{"cmd": "true", "after": "NEVER", "timeout": 1}])
     assert time.monotonic() - start < 2.5

@@ -67,6 +67,39 @@ def test_expect_timeout_is_builtin_timeout():
         s.detach()
 
 
+def test_p5_46_attach_timeout_message_names_spawn():
+    """SPEC attach "If the spawn wait fails": the message names the spawn command, not the internal pattern."""
+    s = Session([])
+    with pytest.raises(TimeoutError) as ei:
+        s.attach("sleep 30", env=SHELL_ENV, timeout=0.5)
+    assert str(ei.value) == "timed out after 0.5s waiting for the first output from 'sleep 30' (attach.timeout)"
+    assert isinstance(ei.value.__cause__, pexpect.TIMEOUT)
+
+
+def test_p5_47_check_rc_timeout_message(shell_session: Session):
+    """SPEC "cmd" ignore_error: the `$?` wait times out with a message naming the exit code check."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("sleep 30")
+    with pytest.raises(TimeoutError, match=r"^timed out after 1s waiting for the exit code of the command \(echo \$\?\)$"):
+        s.check_rc(timeout=1)
+
+
+@pytest.mark.parametrize(
+    ("what", "message"),
+    [
+        (None, "waiting for 'NEVER' or 'NOPE'"),
+        ("the after pattern 'NEVER'", "waiting for the after pattern 'NEVER'"),
+    ],
+    ids=["patterns", "what"],
+)
+def test_p5_48_expect_timeout_message(shell_session: Session, what: str | None, message: str):
+    """Session.expect quotes its patterns as written (no list repr), or uses the caller's description."""
+    with pytest.raises(TimeoutError) as ei:
+        shell_session.expect(["NEVER", "NOPE"] if what is None else ["NEVER"], timeout=0.5, what=what)
+    assert str(ei.value) == f"timed out after 0.5s {message}"
+
+
 def test_sleep_and_check_rc_eof_is_builtin_eof():
     s = Session([])
     s.attach(BASH, env=SHELL_ENV, timeout=5)
@@ -162,7 +195,11 @@ def test_attach_original_error_preserved_when_breakout_fails(children):
 
 # case -> (spawn, error, message); the spawn wait fails before any output
 SPAWN_FAILURES: dict[str, tuple[str, type[BaseException], str]] = {
-    "timeout": ("sleep 30", TimeoutError, r"^timed out after 1(\.0)?s waiting for "),
+    "timeout": (
+        "sleep 30",
+        TimeoutError,
+        r"^timed out after 1(\.0)?s waiting for the first output from 'sleep 30' \(attach\.timeout\)$",
+    ),
     "exits": ("true", EOFError, r"^connection closed$"),
     "not-found": (
         "autobot_no_such_cmd",
@@ -827,7 +864,7 @@ def test_p5_39_unrecognized_prompt_not_used_on_entry(sent: SentLog):
         [reg("echo before", "b"), {"block": {"name": "b", "prompts": BLK_ONLY, "enter": enter}}],
         breakout=[reg("echo bo", "bo")],
     )
-    with pytest.raises(TimeoutError, match="^timed out waiting for prompt$"):
+    with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for a shell prompt \('blk'\)$"):
         runner.run()
     assert sent.lines() == ["echo before", RC_PROBE, "", "echo bo", RC_PROBE]
     assert runner.config.vars == {"b": "before", "bo": "bo"}
@@ -839,7 +876,7 @@ def test_p5_40_unrecognized_prompt_not_used_on_exit(sent: SentLog):
         {"block": {"name": "b", "prompts": BLK_ONLY, "enter": [TO_BLK], "script": [reg("echo in1", "i1")]}},
         {"cmd": "echo after", "timeout": 1},
     ])
-    with pytest.raises(TimeoutError, match="^timed out waiting for prompt$"):
+    with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for a shell prompt \('top'\)$"):
         runner.run()
     assert sent.lines() == [TO_BLK["line"], "echo in1", RC_PROBE, ""]
     assert runner.config.vars == {"i1": "in1"}

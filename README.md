@@ -109,7 +109,7 @@ The `attach` block controls how autobot connects to the remote console.
 
 The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates.
 
-If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError`), the process exiting before any output (`EOFError`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
+If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError: timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`EOFError`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
 
 ### Example
 

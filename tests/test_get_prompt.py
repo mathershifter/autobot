@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from conftest import (
+    BASH,
     SHELL_ENV,
     SHELL_PROMPT,
     FakeDevice,
@@ -128,7 +129,7 @@ def test_p4_07_timeout_error_at_deadline(device):
     """SPEC.md:344: the overall timeout raises TimeoutError."""
     r, _ = device([SHELL_PROMPT], "--silent", kick=False)
     start = time.monotonic()
-    with pytest.raises(TimeoutError, match="timed out waiting for prompt"):
+    with pytest.raises(TimeoutError, match=r"^timed out after 1s waiting for a shell prompt \('sh'\)$"):
         r.session.get_prompt(timeout=1)
     assert time.monotonic() - start < 2
 
@@ -487,3 +488,27 @@ def test_p4_34_swap_never_starts_prompt_state(shell_session: Session):
     s.restore_handlers([shell(r"PROMPT\$ ")])
     assert s.get_prompt(timeout=5) == "hi\n"
     assert s.ctx["before"] == "hi\n"
+
+
+QUESTION = PromptHandler("q", [r"continue\? "], [["y"]], False)
+
+
+@pytest.mark.parametrize(
+    ("handlers", "names"),
+    [
+        ([PromptHandler("sh", [r"PROMPT\$ "], [], True), QUESTION, PromptHandler("root", ["# "], [], True)],
+         "('sh', 'root')"),
+        ([QUESTION], "(none defined)"),
+    ],
+    ids=["names", "none"],
+)
+def test_p4_35_timeout_names_shell_prompts(handlers: list[PromptHandler], names: str):
+    """SPEC get_prompt: the overall timeout names the current shell prompts, in order; answer-only prompts aren't."""
+    s = Session(handlers)
+    s.attach(BASH, env={**SHELL_ENV, "PS1": "X> "}, timeout=5)  # a prompt no handler matches
+    try:
+        with pytest.raises(TimeoutError) as ei:
+            s.get_prompt(timeout=1)
+        assert str(ei.value) == f"timed out after 1s waiting for a shell prompt {names}"
+    finally:
+        s.detach()
