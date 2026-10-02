@@ -502,6 +502,34 @@ def test_p5_45_prepare_interpreter_cannot_run(
     assert children == []
 
 
+def test_p5_52_prepare_written_as_utf8(
+    tmp_path: Path, prep_tmp: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC attach table: the prepare script is written as UTF-8 whatever the locale's encoding."""
+    import tempfile
+
+    real = tempfile._io
+
+    class Latin1Default:
+        """``tempfile``'s ``_io``, but the locale's encoding is Latin-1 (an ISO-8859-1 locale)."""
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+        @staticmethod
+        def open(file, mode="r", *args, encoding=None, **kw):
+            # tempfile passes io.text_encoding(None), which is "locale"
+            if "b" not in mode and encoding in (None, "locale"):
+                encoding = "latin-1"
+            return real.open(file, mode, *args, encoding=encoding, **kw)
+
+    monkeypatch.setattr(tempfile, "_io", Latin1Default())
+    out = tmp_path / "out"
+    make_runner([], prepare=f"#!/bin/sh\necho '\u00e9 \u2713 \u65e5\u672c' > {out}\n").run()
+    assert out.read_bytes() == b"\xc3\xa9 \xe2\x9c\x93 \xe6\x97\xa5\xe6\x9c\xac\n"
+    assert list(prep_tmp.glob("_autobot_*")) == []
+
+
 def test_p5_05_prepare_is_templated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """SPEC attach table and "Jinja2 Templating" (decision #9): prepare is rendered."""
     out = tmp_path / "out"

@@ -189,7 +189,7 @@ class Runner:
             argv = ["/bin/sh"]
             console.print(">> prepare: running local script (no shebang, using /bin/sh)")
         with tempfile.NamedTemporaryFile(
-            mode="w", prefix="_autobot_", suffix=".sh", delete=False
+            mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
         ) as f:
             f.write(script)
             tmp = f.name
