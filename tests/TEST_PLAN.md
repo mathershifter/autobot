@@ -24,10 +24,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 32 | 0 | 0 | 32 | 3 |
 | P5 | attach / block lifecycles, env | 52 | 0 | 0 | 52 | 0 |
-| P6 | model / schema / example / CLI parity | 58 | 0 | 0 | 58 | 0 |
+| P6 | model / schema / example / CLI parity | 59 | 0 | 0 | 59 | 0 |
 | P7 | registry and plugins | 12 | 0 | 0 | 12 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **228** | **0** | **0** | **228** | **4** |
+| **Total** | | **229** | **0** | **0** | **229** | **4** |
 
 The counts are recounted from the section tables (2026-10-02); earlier edits had only added deltas. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -378,7 +378,7 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-40 | `test_cli_valid_send_each_runs` (parametrized: nested path with `fields` entries; string/number/boolean items without `fields`; strings without `fields`) | CLI, `sendEach` | CLI, F1, top-level prompt `sendEach` that never fires | rc 0; `got-2-hi` in stdout | pass |
 | P6-41 | `test_null_corpus_covers_every_model`, `test_parity_null_optional_field` (parametrized over every optional field of every model, generated from `model_fields`) | YAML Script Structure | F7; `HOSTS` places each model in a minimal document | `<key>: null` → `(False, False)`; one model error at the key; for a `None`-default field its type is `null_value` with `null (an empty value) is not allowed; omit the key instead`. The coverage test fails if a model with optional fields (other than `PluginStep`) has no host, so new models and fields get cases automatically. | pass |
 | P6-42 | `test_omitted_optional_field_gets_default` (parametrized as P6-41) | YAML Script Structure | F7 | the host document without the key → `(True, True)`; the parsed field equals its default. The key is built as `OMIT` and dropped, because a prompt's host needs either `expect` or a `fields` `sendEach`, and must leave out whichever key is tested. | pass |
-| P6-43 | `test_null_plugin_common_prop` (parametrized: `after`, `delay_after`, `delay_before`, `timeout`, `when`) | Common Step Properties | model, F6 `probe` | `{probe: x, <prop>: null}` → one `null_value` error at `script.0.plugin.<prop>`. Model only: the static `pluginStep` accepts any object. | pass |
+| P6-43 | `test_null_plugin_common_prop` (parametrized: `after`, `delay_after`, `delay_before`, `timeout`, `when`) | Common Step Properties | model, F6 `probe` | `{probe: x, <prop>: null}` → one `null_value` error at `script.0.plugin.<prop>`; the static schema rejects it too (`pluginStep` applies `stepCommon`), so `(False, False)`. `{probe: x}` → `(True, True)` | pass |
 | P6-44 | `test_parity_null_sleep` | Duration Format | F7 | `sleep: null` → `(False, False)`; model message exactly `Value error, invalid duration: null` at `script.0.sleep.sleep` (it used to sleep 0) | pass |
 | P6-45 | `test_cli_empty_value_is_validation_error` (parametrized: step `after:`, `attach.env:`, `timeout: ~` on a `line`, `sleep:`) | YAML Script Structure, CLI | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; first line `Validation errors:`; the single JSON error has the expected `loc` and message (`null (an empty value)`, `Extra inputs`, `invalid duration: null`); neither marker exists | pass |
 
@@ -396,8 +396,9 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-57 | `test_empty_expect_or_match_rejected` (parametrized), `test_whitespace_regex_accepted` | prompts, `sendEach`, Migrating from 2026-08 | model | the exact error list (location, type, message) for: `expect: []` with a `send` string, with no `send`, with a `sendEach` without `fields`, and in a block (`script.0.block.block.prompts.0.expect`), each one `too_short` at `...expect` (`expect must be a regex or a non-empty list of regexes`); `expect: ''` → `string_too_short` at `prompts.0.expect`, an entry `''` → at `prompts.0.expect.M` (`a regex must not be empty: an empty regex matches at once, before any output`); an empty entry and a grouped entry → both errors, in entry order; `return: true` + `send` with `expect: []` or `''` → `return_with_send` then the empty-`expect` error; `expect: []`, `''` or `['']` next to `fields` → only `expect_with_fields`; `match: ''` → `string_too_short` at `...fields.K.match`, a `match` entry `''` at `...match.M` (also in a block). `expect: ' '` and `match: [' ']` accepted | pass |
 | P6-58 | `test_parity_empty_expect_or_match_rejected` (parametrized over the P6-57 corpus), `test_parity_whitespace_regex_accepted` | prompts, `sendEach` | F7 | rejected → `(False, False)` (the schema's `$defs.regexes`: `minItems: 1`, `minLength: 1`); a single-space regex → `(True, True)` | pass |
 | P6-59 | `test_cli_empty_expect_or_match_is_validation_error` (parametrized: `expect: []`, `expect: ''` on a return prompt, a `match` entry `''`) | CLI, prompts, `sendEach` | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; `Validation errors:`; exactly one error with the location, type and message of P6-57; neither marker exists | pass |
+| P6-60 | `test_parity_plugin_step_bad_common_prop_rejected`, `test_parity_plugin_step_good_common_prop_accepted` (parametrized) | Common Step Properties, YAML Script Structure | F6 `probe`, F7 | the static `pluginStep` applies `stepCommon`. Bad common prop (`timeout: '5 s'`, `timeout: true`, `when: null`, `after: 3`, `delay_before: -1`): `{nope: 1, <prop>}` → `(False, False)`, the model's only error `invalid_step` at `script.0` (no plugin registers `nope`); `{probe: x, <prop>}` → `(False, False)`, the model's only error at `script.0.plugin.<prop>`. Valid ones (none, `timeout: 5s`, all five): `{nope: 1, ...}` → `(False, True)` (the unknown-key divergence SPEC allows); `{probe: x, ...}` → `(True, True)` | pass |
 
-Totals: 58 pass (P6-01..59 without the removed P6-08).
+Totals: 59 pass (P6-01..60 without the removed P6-08).
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -418,7 +419,7 @@ Files: `tests/test_registry.py` (new), `tests/test_plugins.py` (extend) and `tes
 | P7-07 | `test_schema_command_includes_plugin_defs` | 12 (and #16) | CLI subprocess `schema` with plugin on `PYTHONPATH` (F6 `plugin_dist`) | output JSON has `$defs.echoStep`; `$defs.step.oneOf[-2] == {"$ref": "#/$defs/echoStep"}`; `oneOf[-1]` is still `pluginStep`; `pluginStep.not.anyOf` ends with `{required: [echo]}`; the output accepts `{echo: hi, timeout: 5s}` and rejects `{echo: 1}` | pass |
 | P7-08 | `test_plugin_field_typo_fails_at_load` / `test_call_undefined_fn_fails_at_load` (2 tests) | 12, 180 | F6 plugin; `{echo: hi, ech0: x}` / `call: nope` | `ValidationError` at `Config` time: `extra_forbidden` at `("script", 0, "ech0")` / `undefined_function` at `("script", i, "call")`, message `call to undefined function 'nope'`. For both, the CLI exits 1 with `Validation errors`, no `Traceback`, and neither `prepare` nor spawn runs (check a `prepare` marker file) | pass (was todo #12) (x2) |
 | P7-09 | `test_generated_schema_parity_accept` / `_reject` (parametrized corpus) | CLI, Common Step Properties | F6 `probe` plus in-process `nest` (nested model, optional fields) and `free` (`extra="allow"`) plugins; F7; schema built in-process with `cli.add_plugin_steps` | accept for both model and generated schema: `{probe: x}`, with each common prop and all of them, inside a block and a `fn`, a nested model, `null` for the plugin's own optional fields, extra keys and a common prop on the `extra="allow"` plugin. Reject for both: `null` and wrong-typed values of each common prop, an unknown extra key, wrong plugin field types (top level and nested), two plugin keys in one step, a plugin key next to `cmd`, a script-set `plugin_key_` | pass |
-| P7-10 | `test_unknown_step_key_falls_to_plugin_step` (parametrized) | YAML Script Structure, CLI | as P7-09 | `{nope: 1}`, `{nope: 1, timeout: 5s}`, `{timeout: 5}` → model rejects, generated and static schema accept via `pluginStep` (the static-schema divergence SPEC allows) | pass |
+| P7-10 | `test_unknown_step_key_falls_to_plugin_step` (parametrized) | YAML Script Structure, CLI | as P7-09 | `{nope: 1}`, `{nope: 1, timeout: 5s}`, `{timeout: 5}` → model rejects, generated and static schema accept via `pluginStep` (the static-schema divergence SPEC allows). `test_unknown_step_key_bad_common_prop_rejected` (parametrized over the common props): `{nope: 1, <prop>: null}` and the P7-09 wrong-typed value → model, generated and static schema all reject (`pluginStep` applies `stepCommon`) | pass |
 | P7-11 | `test_generated_schema_shape` / `test_step_common_matches_builtins_and_model` | CLI, Common Step Properties | as P7-09 | the generated schema is valid 2020-12; plugin refs sit before `pluginStep` in registration order; `pluginStep` excludes each plugin key; each `<key>Step` starts with `$ref stepCommon`; nested model defs live under `<key>Step.$defs`. `stepCommon` has exactly `PluginStep`'s common keys and equals `cmdStep`'s definitions of them | pass |
 | P7-12 | `test_validation_leaves_input_unchanged` / `test_internal_plugin_key_rejected` | YAML Script Structure | as P7-09 | `Config.model_validate(doc)` leaves a document with plugin steps (in a block and a `fn`) deep-equal to its copy, and the parsed step still has `plugin_key_`; `{probe: x, plugin_key_: nest}` → one `extra_forbidden` error at `("script", 0, "plugin")` | pass |
 
@@ -464,10 +465,10 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
 | P4 | 32 | 0 | 3 | `test_get_prompt.py` |
 | P5 | 52 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 58 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 59 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 12 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **228** | **0** | **4** | |
+| **Total** | **229** | **0** | **4** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -551,7 +552,7 @@ An explicit `null` for an optional field (`timeout: null`, a bare `after:`) and 
 Known remaining model/schema divergences (not tested; follow-ups):
 - `return: 1.0`: the schema accepts it (JSON Schema treats it as an integer); the strict model rejects it.
 - Python `jsonschema` evaluates `pattern` with `re.search`, so `"2026-08\n"` and `"5s\n"` pass the schema in Python (an ECMA-262 validator rejects them); the model rejects both.
-- Unknown step keys (item g below): the static schema accepts them as `pluginStep`.
+- Unknown step keys (item g below): the static schema accepts them as `pluginStep` when their common step properties are valid (it applies `stepCommon`, P6-60).
 - `call` to an undefined function: the model rejects it, the schema accepts it (see P6).
 
 The sections below keep the original option analysis for reference.
@@ -616,7 +617,7 @@ SPEC.md:12 and 18 say the models validate "against `schemas/autobot.2026-08.json
 | (d) negative / bool durations | accepts (`-1`, `True` → 1.0) | `minimum: 0`, number only | decided A (P6-16, P6-17, pass) |
 | (e) `fn.<name>.script` missing | defaults to `[]` | required | decided A (P6-18, pass) |
 | (f) `return` step key without value | field has a default, but the discriminator requires the key anyway | required | cosmetic; no test |
-| (g) unknown step key `{cmdd: x}` | rejects (no registered plugin) | accepts via the `pluginStep` catch-all | inherent to static schemas; recommend documenting it and using `autobot schema` (P7-07) for editor validation |
+| (g) unknown step key `{cmdd: x}` | rejects (no registered plugin) | accepts via the `pluginStep` catch-all (which checks the common step properties since P6-60) | inherent to static schemas; recommend documenting it and using `autobot schema` (P7-07) for editor validation |
 
 Options:
 - **A. Schema is normative.** The model must match the schema: add `ge=1` on `return`, `ge=0` and strict numbers on durations, and make `fn.script` required. Fix (b) in the model.

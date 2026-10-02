@@ -129,6 +129,15 @@ def test_p7_10_unknown_step_key_falls_to_plugin_step(
     assert schema_validator.is_valid(doc)
 
 
+@pytest.mark.parametrize("key", COMMON)
+def test_p7_10_unknown_step_key_bad_common_prop_rejected(generated_validator: Any, schema_validator: Any, key: str):
+    """`pluginStep` applies `stepCommon` in both schemas, so an unknown key with a bad common prop is rejected."""
+    for value in (None, BAD_COMMON[key]):
+        doc = s({"nope": 1, key: value})
+        assert both(generated_validator, doc) == (False, False)
+        assert not schema_validator.is_valid(doc)
+
+
 def test_p7_11_generated_schema_shape(generated: dict[str, Any], generated_validator: Any):
     """The generated schema is valid 2020-12; each plugin def reuses `stepCommon`, and `pluginStep` excludes its key."""
     type(generated_validator).check_schema(generated)
