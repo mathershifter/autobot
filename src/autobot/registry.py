@@ -3,6 +3,10 @@ from __future__ import annotations
 import importlib.metadata
 from typing import TYPE_CHECKING, Any
 
+import pydantic
+
+from .models import _BUILTIN_KEYS, _COMMON_PROPS
+
 if TYPE_CHECKING:
     from .protocols import StepExecutor
 
@@ -15,10 +19,32 @@ class StepRegistry:
         self._discovered = False
 
     def register(self, executor: StepExecutor, *, builtin: bool = False):
+        if not builtin:
+            self._check_plugin(executor)
         self._executors[executor.key] = executor
         self._model_keys[executor.model] = executor.key
         if builtin:
             self._builtins.add(executor.key)
+
+    def _check_plugin(self, executor: StepExecutor):
+        # the step model strips the common props before the plugin's model sees the step, and the
+        # discriminator never routes them, or a built-in key, to a plugin: such a name could never be set
+        key, model = executor.key, executor.model
+        who = f"{type(executor).__module__}.{type(executor).__qualname__}"
+        if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
+            raise TypeError(
+                f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
+            )
+        clashes = [
+            name if name == field else f"{name} (field {field!r})"
+            for field, info in model.model_fields.items()
+            for name in sorted(_input_names(field, info) & _COMMON_PROPS)
+        ]
+        if clashes:
+            raise TypeError(
+                f"plugin {who}, step key {key!r}: model {model.__name__} reuses common step property names, "
+                f"which the runner handles and never passes to the plugin: {', '.join(clashes)}"
+            )
 
     def get(self, key: str) -> StepExecutor:
         if not self.has(key):
@@ -60,6 +86,14 @@ class StepRegistry:
 
     def keys(self) -> list[str]:
         return list(self._executors.keys())
+
+
+def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
+    """The keys a script could use to set a model field: its name and every alias."""
+    alias = info.validation_alias
+    choices = alias.choices if isinstance(alias, pydantic.AliasChoices) else [alias]
+    names = {field, info.alias, *(c.path[0] if isinstance(c, pydantic.AliasPath) else c for c in choices)}
+    return {n for n in names if isinstance(n, str)}
 
 
 registry = StepRegistry()

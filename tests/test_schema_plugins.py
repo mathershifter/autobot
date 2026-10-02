@@ -1,4 +1,4 @@
-"""P7-09..12: the schema `autobot schema` generates for installed plugins agrees with the models.
+"""P7-09..12, P7-14, P7-15: the schema `autobot schema` generates for installed plugins agrees with the models.
 
 SPEC "CLI": each plugin gets `$defs.<key>Step` in `step.oneOf`, and its key leaves the `pluginStep`
 catch-all. SPEC "Common Step Properties": the common props apply to plugin steps; a plugin's own
@@ -177,3 +177,119 @@ def test_p7_12_internal_plugin_key_rejected(plugins: list[Any]):
         models.Config.model_validate(s({"probe": "x", "plugin_key_": "nest"}))
     [err] = ei.value.errors()
     assert (err["loc"], err["type"]) == (("script", 0, "plugin"), "extra_forbidden")
+
+
+class TreeStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    tree: str
+    children: list[TreeStep] = []
+
+
+class LooseStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="allow")
+    loose: str
+
+
+@pytest.fixture
+def edge_plugins(register_plugin) -> list[Any]:
+    return [
+        register_plugin(_Executor("tree", TreeStep)),
+        register_plugin(_Executor("free", FreeStep)),
+        register_plugin(_Executor("loose", LooseStep)),
+    ]
+
+
+@pytest.fixture
+def edge_generated(schema: dict[str, Any], edge_plugins: list[Any]) -> dict[str, Any]:
+    return add_plugin_steps(copy.deepcopy(schema), edge_plugins)
+
+
+@pytest.fixture
+def edge_validator(edge_generated: dict[str, Any]) -> Any:
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema not installed; parity tests skipped")
+    return jsonschema.Draft202012Validator(edge_generated)
+
+
+TREE = {"tree": "a", "children": [{"tree": "b", "children": [{"tree": "c"}]}, {"tree": "d"}]}
+
+TREE_ACCEPT = {
+    "plain": s({"tree": "a"}),
+    "timeout": s({"tree": "a", "timeout": 5}),
+    "all-common": s({"tree": "a", **GOOD_COMMON}),
+    "nested-children": s(TREE),
+    "nested-children-common": s({**TREE, "timeout": 5, "when": "x"}),
+}
+
+TREE_REJECT = {
+    "unknown-extra-key": s({"tree": "a", "bogus": 1}),
+    "null-common": s({"tree": "a", "timeout": None}),
+    "bad-common": s({"tree": "a", "timeout": False}),
+    "child-common-prop": s({"tree": "a", "children": [{"tree": "b", "timeout": 5}]}),
+    "child-unknown-key": s({"tree": "a", "children": [{"tree": "b", "children": [{"tree": "c", "x": 1}]}]}),
+    "child-missing-key": s({"tree": "a", "children": [{"children": []}]}),
+    "child-field-type": s({"tree": "a", "children": [{"tree": 1}]}),
+}
+
+
+@pytest.mark.parametrize("doc", TREE_ACCEPT.values(), ids=TREE_ACCEPT.keys())
+def test_p7_14_recursive_plugin_parity_accept(edge_validator: Any, doc: dict[str, Any]):
+    """A self-referencing plugin model takes the common props at the step, and children at any depth."""
+    assert both(edge_validator, doc) == (True, True)
+
+
+@pytest.mark.parametrize("doc", TREE_REJECT.values(), ids=TREE_REJECT.keys())
+def test_p7_14_recursive_plugin_parity_reject(edge_validator: Any, doc: dict[str, Any]):
+    """Nested children are the plugin's model, not steps: they stay closed and take no common props."""
+    assert both(edge_validator, doc) == (False, False)
+
+
+def test_p7_14_recursive_plugin_schema_shape(edge_generated: dict[str, Any], edge_validator: Any):
+    """The root `$ref` is inlined (open, so `stepCommon` applies); the closed def stays for the nested refs."""
+    type(edge_validator).check_schema(edge_generated)
+    tree = edge_generated["$defs"]["treeStep"]
+    root = tree["allOf"][1]
+    assert "$ref" not in root and "additionalProperties" not in root
+    assert tree["unevaluatedProperties"] is False
+    assert tree["$defs"]["TreeStep"]["additionalProperties"] is False
+    ref = "#/$defs/treeStep/$defs/TreeStep"
+    assert root["properties"]["children"]["items"] == {"$ref": ref}
+    assert tree["$defs"]["TreeStep"]["properties"]["children"]["items"] == {"$ref": ref}
+
+
+TWO_KEYS = {
+    "plain": ({"free": "x", "loose": "y"}, ("script", 0), "free, loose"),
+    "reversed": ({"loose": "y", "free": "x"}, ("script", 0), "loose, free"),
+    "with-common-and-extra": ({"timeout": 5, "free": "x", "other": 1, "loose": "y"}, ("script", 0), "free, loose"),
+    "in-block": (
+        {"block": {"name": "b", "script": [{"free": "x", "loose": "y"}]}},
+        ("script", 0, "block", "script", 0),
+        "free, loose",
+    ),
+}
+
+
+@pytest.mark.parametrize("step,loc,keys", TWO_KEYS.values(), ids=TWO_KEYS.keys())
+def test_p7_15_two_plugin_keys_rejected(edge_validator: Any, step: dict[str, Any], loc: tuple, keys: str):
+    """Two `extra="allow"` plugin keys: one `invalid_step` error at the step; the generated schema rejects it too."""
+    doc = s(step)
+    with pytest.raises(pydantic.ValidationError) as ei:
+        models.Config.model_validate(doc)
+    [err] = ei.value.errors()
+    assert (err["type"], err["loc"], err["msg"]) == ("invalid_step", loc, f"step has more than one plugin key: {keys}")
+    assert not edge_validator.is_valid(doc)
+
+
+def test_p7_15_two_plugin_key_interactions(edge_validator: Any):
+    """A built-in key still wins (plugin keys are extra fields), a script-set `plugin_key_` is rejected first,
+    and a key no plugin registers is only data for an `extra="allow"` plugin."""
+    cases = [
+        ({"cmd": "x", "free": "y", "loose": "z"}, [("script", 0, "cmd", "free"), ("script", 0, "cmd", "loose")]),
+        ({"free": "x", "loose": "y", "plugin_key_": "free"}, [("script", 0, "plugin")]),
+    ]
+    for step, locs in cases:
+        doc = s(step)
+        with pytest.raises(pydantic.ValidationError) as ei:
+            models.Config.model_validate(doc)
+        assert [(e["loc"], e["type"]) for e in ei.value.errors()] == [(loc, "extra_forbidden") for loc in locs]
+        assert not edge_validator.is_valid(doc)
+    assert both(edge_validator, s({"free": "x", "nope": 1})) == (True, True)
