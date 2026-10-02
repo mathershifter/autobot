@@ -205,13 +205,13 @@ Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout 
 
 If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI prints a traceback and exits with status 1). The spawn wait fails when:
 - `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`, with the rendered `spawn` command). The process is still running until it is closed.
-- the process exits before any output: `EOFError` (`connection closed`)
+- the process exits before any output: `EOFError` (`connection closed before any output from '<spawn>'`, with the rendered `spawn` command). Once the process is closed, its exit status or the signal that ended it is appended: ` (exit status <n>)` or ` (killed by <SIGNAL>)`, e.g. ` (killed by SIGKILL)`. `SIGHUP` isn't reported, because closing the pty sends it as well; a process ended by it gets no suffix.
 - the `spawn` command isn't found or isn't executable: pexpect's `ExceptionPexpect` (`The command was not found or was not executable: <command>`). No process is started.
 - the operator interrupts the run (`KeyboardInterrupt`) during the wait
 
 `attach.prepare` has already run when the spawn wait fails. Nothing undoes it; a `prepare` that sets something up (e.g. a tunnel) must clean up after itself.
 
-Any output ends the spawn wait successfully, even if the process then exits. A process that prints a banner and exits before a prompt fails in the first step that waits on it (usually with `EOFError`), and `attach.breakout` runs as it does after any step failure. Its steps that wait on the session fail with `EOFError`; the first one ends the breakout and is logged (`>> breakout error (EOFError): connection closed`), and the original error propagates.
+Any output ends the spawn wait successfully, even if the process then exits. A process that prints a banner and exits before a prompt fails in the first step that waits on it (usually with `EOFError`), and `attach.breakout` runs as it does after any step failure. Its steps that wait on the session fail with `EOFError`; the first one ends the breakout and is logged (e.g. `>> breakout error (EOFError): connection closed while waiting for a shell prompt ('sh')`), and the original error propagates.
 
 ## Step Types
 
@@ -275,7 +275,7 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result. The `TimeoutError` messages are `timed out after <timeout>s waiting for a shell prompt ('<name>', ...)` (the names of the current shell prompts, or `none defined`), `... waiting for the after pattern '<pattern>'` (the rendered pattern) and `... waiting for the exit code of the command (echo $?)`
-- a closed connection (`EOFError`)
+- a closed connection (`EOFError`). The message starts with `connection closed` and names what was being waited for, as the timeouts do: `connection closed while waiting for a shell prompt ('<name>', ...)`, `... while waiting for the after pattern '<pattern>'` and `... while waiting for the exit code of the command (echo $?)`
 - template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
 - prompt-response failures (`responses exhausted`, `no response available`)
 
@@ -342,6 +342,8 @@ Cleanup:
 ```yaml
 - sleep: 60s
 ```
+
+The session output is read during the sleep. If the connection closes, the sleep ends at once with `EOFError` (`connection closed while waiting for the end of a sleep`). The same applies to `delay_before` and `delay_after`.
 
 ### `call` — Invoke a named function
 
@@ -565,6 +567,7 @@ The prompt engine polls the session output in 5-second intervals:
 2. If a prompt with `send` values matches → send the response chosen as described in [Response selection](#response-selection) and continue waiting
 3. On 5-second timeout with no match → send a single empty newline to solicit a prompt (once only, and only if no handler has been activated yet)
 4. On overall timeout → raise `TimeoutError` (`timed out after <timeout>s waiting for a shell prompt ('<name>', ...)`, naming the current prompts that are shell prompts, or `none defined`)
+5. If the connection closes (the process exits) → raise `EOFError` at once (`connection closed while waiting for a shell prompt ('<name>', ...)`, with the same names)
 
 This handles idle consoles that need a return press to display a prompt.
 
@@ -680,4 +683,4 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 
 Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
-Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn wait succeeds, breakouts still run and the session is closed first. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1.
+Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn wait succeeds, breakouts still run and the session is closed first. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1. The traceback's last line is the exception type and message, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.

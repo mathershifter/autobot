@@ -30,7 +30,7 @@ autobot schema
 
 `autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
 
-A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1.
+A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
 
 Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
 
@@ -109,7 +109,7 @@ The `attach` block controls how autobot connects to the remote console.
 
 The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates.
 
-If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError: timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`EOFError`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
+If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError: timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`EOFError: connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
 
 ### Example
 
@@ -444,7 +444,7 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
   ignore_error: true
 ```
 
-`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection, template errors and prompt-response failures (`responses exhausted`) always abort the script.
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`EOFError: connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for), template errors and prompt-response failures (`responses exhausted`) always abort the script.
 
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 

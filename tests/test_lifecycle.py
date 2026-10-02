@@ -86,6 +86,43 @@ def test_p5_47_check_rc_timeout_message(shell_session: Session):
 
 
 @pytest.mark.parametrize(
+    ("spawn", "status"),
+    [
+        ("true", " (exit status 0)"),
+        ("false", " (exit status 1)"),
+        ("sh -c 'exit 255'", " (exit status 255)"),
+        ("sh -c 'kill -KILL $$'", " (killed by SIGKILL)"),
+        ("sh -c 'kill -HUP $$'", ""),  # closing the pty sends SIGHUP too, so it isn't reported
+    ],
+    ids=["true", "false", "exit-255", "sigkill", "sighup"],
+)
+def test_p5_49_attach_eof_message(spawn: str, status: str):
+    """SPEC attach "If the spawn wait fails": the message names the spawn command and how the process ended."""
+    s = Session([])
+    with pytest.raises(EOFError) as ei:
+        s.attach(spawn, env=SHELL_ENV, timeout=5)
+    assert str(ei.value) == f"connection closed before any output from '{spawn}'{status}"
+    assert isinstance(ei.value.__cause__, pexpect.EOF)
+    assert s._cld is None
+
+
+def test_p5_50_check_rc_eof_message(shell_session: Session):
+    """SPEC "cmd" ignore_error: the connection closing during the `$?` wait names the exit code check."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("sleep 0.5; exit")  # the shell is still running when the `$?` check is sent
+    with pytest.raises(EOFError) as ei:
+        s.check_rc(timeout=5)
+    assert str(ei.value) == "connection closed while waiting for the exit code of the command (echo $?)"
+
+
+def test_p5_51_sleep_eof_message():
+    """SPEC "sleep": the connection closing during a sleep raises EOFError, not a silent wait."""
+    with pytest.raises(EOFError, match=r"^connection closed while waiting for the end of a sleep$"):
+        run_script([{"line": "exit"}, {"sleep": "5s"}])
+
+
+@pytest.mark.parametrize(
     ("what", "message"),
     [
         (None, "waiting for 'NEVER' or 'NOPE'"),
@@ -200,7 +237,7 @@ SPAWN_FAILURES: dict[str, tuple[str, type[BaseException], str]] = {
         TimeoutError,
         r"^timed out after 1(\.0)?s waiting for the first output from 'sleep 30' \(attach\.timeout\)$",
     ),
-    "exits": ("true", EOFError, r"^connection closed$"),
+    "exits": ("true", EOFError, r"^connection closed before any output from 'true' \(exit status 0\)$"),
     "not-found": (
         "autobot_no_such_cmd",
         pexpect.ExceptionPexpect,
@@ -258,7 +295,7 @@ def test_p5_33_banner_then_exit_runs_breakout(
     """SPEC attach: output ends the spawn wait; the first wait then hits EOF and breakout runs."""
     spawn, _ = fake_device("--exit-after-banner")
     r, log = spawn_runner(tmp_path, spawn)
-    with pytest.raises(EOFError, match="^connection closed$"):
+    with pytest.raises(EOFError, match=r"^connection closed while waiting for a shell prompt \('sh'\)$"):
         r.run()
     assert log.read_text().split() == ["prepare"]
     assert len(children) == 1
@@ -270,7 +307,7 @@ def test_p5_33_banner_then_exit_runs_breakout(
         ">> prepare: done",
         f">> attach: {spawn}",
         ">> breakout: detaching",
-        ">> breakout error (EOFError): connection closed",
+        ">> breakout error (EOFError): connection closed while waiting for a shell prompt ('sh')",
     ]
 
 
