@@ -161,7 +161,7 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-17 | `test_session_before_not_clobbered_by_rc_probe` | 324 | F1 | `cmd: echo MARKX`, then `cmd: echo ran`, `register: r`, `when: "{{ session.before \| contains('MARKX') }}"` → `vars.r == "ran"`. Guards a naive fix of #5. | pass |
 | P1-18 | `test_output_spanning_idle_poll_not_duplicated` | 111-114 | F1, `slow` | `cmd: "printf abc; sleep 6; echo def"`, register → `abc\ndef` | pass (was xfail #1) |
 | P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | pass (was xfail #5) |
-| P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 (see the P1-20 deviation) | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates. In all three the next step doesn't run and `vars.r` is unchanged. Also worth a row: a `responses exhausted` raised by a prompt wait inside the command propagates (it used to be swallowed) | pass (was todo #10) (x3) |
+| P1-20 | `test_p1_20_ignore_error_does_not_swallow_{timeout,eof,template_error,invalid_regex,responses_exhausted}` (5 tests) | 118 | F1 (see the P1-20 deviation) | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates; invalid `assert` regex → `re.error` propagates; a `responses exhausted` raised by a prompt wait inside the command → `RuntimeError` propagates (it used to be swallowed). In all five the next step doesn't run and `vars.r` is unchanged | pass (was todo #10) (x5) |
 
 Totals: 20 pass (P1-01..20). Slow: P1-18.
 
@@ -603,7 +603,7 @@ SPEC.md:118 says "continue on failure". The code catches only `RuntimeError` (st
 | B. Command failures + timeouts | Also swallow `TimeoutError`. SPEC must then say what state the session is in: the command may still be running. For example, "the next step waits for a prompt as usual", or "Ctrl-C is sent". |
 | C. Everything except script bugs | Swallow `TimeoutError` and `EOFError`; template and validation errors still abort. |
 
-Blocks: P1-20 (3 tests: timeout, EOF, template error). The `register` contents after a swallowed timeout also need a rule (partial output or nothing).
+Blocks: P1-20 (5 tests: timeout, EOF, template error, invalid `assert` regex, responses exhausted). The `register` contents after a swallowed timeout also need a rule (partial output or nothing).
 
 ### #11: model vs JSON schema, which is normative?
 
