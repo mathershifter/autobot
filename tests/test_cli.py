@@ -1,4 +1,4 @@
-"""P6-21..40, P6-45: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40, P6-45, P6-59: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -476,6 +476,36 @@ def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     assert (err["loc"], err["type"]) == (loc, type_)
     assert SEQUENCE_HINT in err["msg"]
     assert 'see "Migrating from 2026-08" in SPEC.md' in err["msg"]
+    assert not (tmp_path / "prepared").exists()
+    assert not (tmp_path / "spawned").exists()
+
+
+# -- empty expect and match (SPEC "prompts", "sendEach") -------------------------
+
+
+EMPTY_REGEX_MSG = "a regex must not be empty: an empty regex matches at once, before any output"
+
+
+@pytest.mark.parametrize(
+    ("tail", "loc", "type_", "msg"),
+    [
+        ("  - name: p\n    expect: []\n    send: 'y'\n", ["prompts", 0, "expect"], "too_short",
+         "expect must be a regex or a non-empty list of regexes"),
+        ("  - name: p\n    expect: ''\n    return: true\n", ["prompts", 0, "expect"], "string_too_short",
+         EMPTY_REGEX_MSG),
+        ("  - name: p\n    send: {each: vars.c, fields: [{match: ['login:', ''], field: u}]}\n",
+         ["prompts", 0, "send", "fields", 0, "match", 1], "string_too_short", EMPTY_REGEX_MSG),
+    ],
+    ids=["expect-empty-list", "expect-empty-string", "match-empty-entry"],
+)
+def test_p6_59_cli_empty_expect_or_match_is_validation_error(
+    tmp_path: Path, tail: str, loc: list[Any], type_: str, msg: str
+):
+    """SPEC prompts, sendEach: an empty expect or regex fails validation; rc 1, before prepare/spawn."""
+    res = run_cli(None, tmp_path, raw=_marked_head(tmp_path) + "prompts:\n" + tail + "script:\n  - cmd: echo one\n")
+    assert _load_error(res) == "Validation errors:"
+    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    assert (err["loc"], err["type"], err["msg"]) == (loc, type_, msg)
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 

@@ -21,9 +21,21 @@ def _error(type_: str, msg: str, loc: tuple, input_: Any) -> dict[str, Any]:
     return {"type": _custom(type_, msg), "loc": loc, "input": input_}
 
 
+_EMPTY_REGEX = "a regex must not be empty: an empty regex matches at once, before any output"
+
+
+def _regex(v: str) -> str:
+    if v == "":
+        raise _custom("string_too_short", _EMPTY_REGEX)
+    return v
+
+
+Regex = Annotated[str, pydantic.AfterValidator(_regex)]
+
+
 class FieldEntry(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    match: list[str]
+    match: list[Regex]
     field: str
 
     @pydantic.model_validator(mode="before")
@@ -41,7 +53,7 @@ class FieldEntry(pydantic.BaseModel):
     @classmethod
     def _match_list(cls, v: Any) -> Any:
         if isinstance(v, str):
-            return [v]
+            return [_regex(v)]
         if v == []:
             raise _custom("too_short", "match must be a regex or a non-empty list of regexes")
         return v
@@ -66,7 +78,7 @@ _MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
 class Prompt(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
-    # entries are single regexes; a grouped entry is kept here so _check_expect can name it
+    # entries are single non-empty regexes; a grouped or empty entry is kept here so _check_expect can name it
     expect: Omittable[list[str | list[str]]] = None
     send: Omittable[str | SendEach] = None
     is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
@@ -97,8 +109,12 @@ class Prompt(pydantic.BaseModel):
             )
         return handler(v)
 
-    @pydantic.model_validator(mode="after")
-    def _check_expect(self) -> Prompt:
+    @pydantic.model_validator(mode="wrap")
+    @classmethod
+    def _check_expect(cls, data: Any, handler: pydantic.ModelWrapValidatorHandler[Prompt]) -> Prompt:
+        self = handler(data)
+        # a single regex is reported at expect, an entry of a list at expect.<i>
+        single = isinstance(data, dict) and isinstance(data.get("expect"), str)
         send = self.send if isinstance(self.send, SendEach) else None
         errors = []
         if self.is_shell_prompt and self.send is not None:
@@ -116,18 +132,21 @@ class Prompt(pydantic.BaseModel):
                 ))
         elif self.expect is None:
             errors.append({"type": "missing", "loc": ("expect",), "input": self.model_dump(by_alias=True)})
+        elif not self.expect:
+            errors.append(_error("too_short", "expect must be a regex or a non-empty list of regexes", ("expect",), []))
         else:
-            errors += [
-                _error(
-                    "grouped_expect",
-                    "each expect entry is a single regex, and the regexes are alternatives; "
-                    f"to answer a sequence of prompts such as a login, use sendEach with fields {_MIGRATE}",
-                    ("expect", i), entry,
-                )
-                for i, entry in enumerate(self.expect) if isinstance(entry, list)
-            ]
+            for i, entry in enumerate(self.expect):
+                if isinstance(entry, list):
+                    errors.append(_error(
+                        "grouped_expect",
+                        "each expect entry is a single regex, and the regexes are alternatives; "
+                        f"to answer a sequence of prompts such as a login, use sendEach with fields {_MIGRATE}",
+                        ("expect", i), entry,
+                    ))
+                elif entry == "":
+                    errors.append(_error("string_too_short", _EMPTY_REGEX, ("expect",) if single else ("expect", i), ""))
         if errors:
-            raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
+            raise pydantic.ValidationError.from_exception_data(cls.__name__, errors)
         return self
 
 

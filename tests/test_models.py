@@ -431,3 +431,68 @@ def test_p6_50_invalid_send_reported_on_its_own():
     for send, type_ in ((["a"], "send_list"), (True, "send_type")):
         [err] = errors_of(return_prompt(send=send))
         assert (err["loc"], err["type"]) == ((*AT, "send"), type_)
+
+
+# -- P6-57: expect and match are never empty (SPEC "prompts", "sendEach") ------
+
+EXPECT_MSG = "expect must be a regex or a non-empty list of regexes"
+EMPTY_MSG = "a regex must not be empty: an empty regex matches at once, before any output"
+BLOCK_AT = ("script", 0, "block", "block", "prompts", 0)
+
+EMPTY_BAD = {
+    "empty-list": (simple(expect=[], send="y"), [((*AT, "expect"), "too_short", EXPECT_MSG)]),
+    "empty-list-shell": (simple(expect=[]), [((*AT, "expect"), "too_short", EXPECT_MSG)]),
+    "empty-list-send-each": (simple(expect=[], send=EACH), [((*AT, "expect"), "too_short", EXPECT_MSG)]),
+    "empty-list-block": (
+        with_("script", [{"block": {"name": "b", "prompts": [{"name": "p", "expect": []}]}}]),
+        [((*BLOCK_AT, "expect"), "too_short", EXPECT_MSG)],
+    ),
+    "empty-string": (simple(expect="", send="y"), [((*AT, "expect"), "string_too_short", EMPTY_MSG)]),
+    "empty-entry": (simple(expect=["x", ""]), [((*AT, "expect", 1), "string_too_short", EMPTY_MSG)]),
+    "empty-only-entry": (simple(expect=[""]), [((*AT, "expect", 0), "string_too_short", EMPTY_MSG)]),
+    "empty-and-grouped-entries": (
+        simple(expect=["", ["a"]]),
+        [((*AT, "expect", 0), "string_too_short", EMPTY_MSG), ((*AT, "expect", 1), "grouped_expect", GROUPED_MSG)],
+    ),
+    "empty-list-return-with-send": (
+        return_prompt(expect=[], send="a"),
+        [((*AT, "send"), "return_with_send", RETURN_MSG), ((*AT, "expect"), "too_short", EXPECT_MSG)],
+    ),
+    "empty-string-return-with-send": (
+        return_prompt(expect="", send="a"),
+        [((*AT, "send"), "return_with_send", RETURN_MSG), ((*AT, "expect"), "string_too_short", EMPTY_MSG)],
+    ),
+    # with fields, expect must be absent: an empty expect is that error, not an empty-expect one
+    "empty-list-with-fields": (fields_prompt(UP, expect=[]), [((*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG)]),
+    "empty-string-with-fields": (
+        fields_prompt(UP, expect=""), [((*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG)],
+    ),
+    "empty-entry-with-fields": (
+        fields_prompt(UP, expect=[""]), [((*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG)],
+    ),
+    "empty-match": (
+        fields_prompt([UP[0], {"match": "", "field": "p"}]),
+        [((*AT, "send", "fields", 1, "match"), "string_too_short", EMPTY_MSG)],
+    ),
+    "empty-match-entry": (
+        fields_prompt([{"match": ["login:", ""], "field": "u"}]),
+        [((*AT, "send", "fields", 0, "match", 1), "string_too_short", EMPTY_MSG)],
+    ),
+    "empty-match-block": (
+        with_("script", [{"block": {"name": "b", "prompts": [
+            {"name": "p", "send": {**EACH, "fields": [{"match": "", "field": "u"}]}}]}}]),
+        [((*BLOCK_AT, "send", "fields", 0, "match"), "string_too_short", EMPTY_MSG)],
+    ),
+}
+
+
+@pytest.mark.parametrize(("doc", "expected"), list(EMPTY_BAD.values()), ids=list(EMPTY_BAD))
+def test_p6_57_empty_expect_or_match_rejected(doc: dict[str, Any], expected: list[tuple[tuple, str, str]]):
+    """SPEC prompts, sendEach: `expect: []` never fires, and an empty regex fires at once; both are errors."""
+    assert [(e["loc"], e["type"], e["msg"]) for e in errors_of(doc)] == expected
+
+
+def test_p6_57_whitespace_regex_accepted():
+    """SPEC prompts: only the empty string is rejected; a regex of a single space is a regex."""
+    Config.model_validate(simple(expect=" ", send="y"))
+    Config.model_validate(fields_prompt([{"match": [" "], "field": "u"}]))

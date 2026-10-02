@@ -57,7 +57,7 @@
       ],
       "properties": {
         "name": { "type": "string" },
-        "expect": { "$ref": "#/$defs/stringOrArray" },
+        "expect": { "$ref": "#/$defs/regexes" },
         "return": { "type": "boolean", "default": false },
         "send": {
           "oneOf": [
@@ -277,12 +277,7 @@
       "required": ["match", "field"],
       "additionalProperties": false,
       "properties": {
-        "match": {
-          "oneOf": [
-            { "type": "string" },
-            { "type": "array", "minItems": 1, "items": { "type": "string" } }
-          ]
-        },
+        "match": { "$ref": "#/$defs/regexes" },
         "field": { "type": "string" }
       }
     },
@@ -290,6 +285,12 @@
       "oneOf": [
         { "type": "number", "minimum": 0 },
         { "type": "string", "pattern": "^\\d+(\\.\\d+)?(ms|s|m|h)$" }
+      ]
+    },
+    "regexes": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
       ]
     },
     "stringOrArray": {
