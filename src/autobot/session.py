@@ -181,18 +181,18 @@ class Session:
         self._cld.logfile_read = CleanWriter(sys.stdout)
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
-            self._expect(r"(?=.)", timeout=timeout)
+            self._expect(r"(?=.)", timeout, f"the first output from '{spawn}' (attach.timeout)")
         except BaseException:
             self.detach()
             raise
 
-    def _expect(self, patterns, timeout: float) -> int:
+    def _expect(self, patterns, timeout: float, what: str) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
         try:
             return self._cld.expect(patterns, timeout=timeout)
         except pexpect.TIMEOUT as e:
-            raise TimeoutError(f"timed out after {timeout}s waiting for {patterns!r}") from e
+            raise TimeoutError(f"timed out after {timeout}s waiting for {what}") from e
         except pexpect.EOF as e:
             raise EOFError("connection closed") from e
 
@@ -221,7 +221,8 @@ class Session:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("timed out waiting for prompt")
+                names = ", ".join(f"'{h.name}'" for h in self._handlers if h.is_return) or "none defined"
+                raise TimeoutError(f"timed out after {timeout}s waiting for a shell prompt ({names})")
             i = self._cld.expect(self._patterns, timeout=min(5, remaining))
             before = str(self._cld.before or "")
             if i == 0:
@@ -274,10 +275,10 @@ class Session:
         for h in self._handlers:
             h.reset()
 
-    def expect(self, patterns: list, timeout: float = 300) -> int:
+    def expect(self, patterns: list, timeout: float = 300, what: str | None = None) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
-        idx = self._expect(patterns, timeout=timeout)
+        idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
         return idx
@@ -294,7 +295,7 @@ class Session:
             raise RuntimeError("not attached")
 
         self.sendline("echo __AUTOBOT_RC=$?")
-        self._expect([r"__AUTOBOT_RC=(\d+)"], timeout=timeout)
+        self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
 
         rc = int(self._cld.match.group(1))  # type: ignore
         self.get_prompt(timeout=timeout, capture=False)
@@ -309,4 +310,4 @@ class Session:
     def sleep(self, seconds: float):
         if not self._cld:
             raise RuntimeError("not attached")
-        self._expect(pexpect.TIMEOUT, timeout=seconds)
+        self._expect(pexpect.TIMEOUT, seconds, "the end of a sleep")

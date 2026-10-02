@@ -247,7 +247,8 @@ class Runner:
 
         after = getattr(step, "after", None)
         if after:
-            self._session.expect([self.render(after)], timeout=timeout)
+            pattern = self.render(after)
+            self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 
         when = getattr(step, "when", None)
         if when is not None:
