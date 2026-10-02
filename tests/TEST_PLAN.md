@@ -19,19 +19,17 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
-| P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
+| P1 | `cmd` success semantics, register, ignore_error | 20 | 0 | 0 | 20 | 1 |
 | P2 | `cmd` forms, embedded scripts | 20 | 0 | 0 | 20 | 0 |
 | P3 | Common step properties, templating context | 18 | 0 | 0 | 18 | 0 |
-| P4 | `get_prompt`, prompts, credential cycling | 28 | 0 | 0 | 28 | 3 |
-| P5 | attach / block lifecycles, env | 43 | 0 | 0 | 43 | 0 |
-| P6 | model / schema / example / CLI parity | 54 | 0 | 0 | 54 | 0 |
-| P7 | registry and plugins | 13 | 0 | 0 | 13 | 0 |
+| P4 | `get_prompt`, prompts, credential cycling | 32 | 0 | 0 | 32 | 3 |
+| P5 | attach / block lifecycles, env | 52 | 0 | 0 | 52 | 0 |
+| P6 | model / schema / example / CLI parity | 58 | 0 | 0 | 58 | 0 |
+| P7 | registry and plugins | 12 | 0 | 0 | 12 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 16 | 0 | 0 | 16 | 0 |
-| **Total** | | **214** | **0** | **0** | **214** | **4** |
+| **Total** | | **228** | **0** | **0** | **228** | **4** |
 
-The P6 row was 40 while its section already listed 45 (P6-41..45 weren't added here); it now counts P6-01..51.
-
-A parametrized test counts as one test.
+The counts are recounted from the section tables (2026-10-02); earlier edits had only added deltas. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
 ## Fixtures (F1 to F7)
 
@@ -165,7 +163,7 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-19 | `test_session_before_cleared_by_empty_output` | 324 | F1 `attached_runner` | `cmd: echo MARKX`; `cmd: "true"`; then `session.ctx["before"] == ""`, and a `when: "{{ session.before \| contains('MARKX') }}"` step is skipped | pass (was xfail #5) |
 | P1-20 | `test_ignore_error_swallows_timeout` / `_eof` / `_template_error` (3 tests) | 118 | F1 (see the P1-20 deviation) | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates. In all three the next step doesn't run and `vars.r` is unchanged. Also worth a row: a `responses exhausted` raised by a prompt wait inside the command propagates (it used to be swallowed) | pass (was todo #10) (x3) |
 
-Totals: 22 pass (P1-01..20). Slow: P1-18.
+Totals: 20 pass (P1-01..20). Slow: P1-18.
 
 ## P2: `cmd` forms and embedded scripts
 
@@ -221,7 +219,7 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-17 | `test_after_timeout_uses_step_timeout` | 278, 282 | F1 | `{cmd: "true", after: NEVER, timeout: 1}` → `TimeoutError` `timed out after 1.0s waiting for the after pattern 'NEVER'` in < 2.5 s | pass |
 | P3-18 | `test_after_eof_names_pattern` | `cmd` ignore_error (closed connection) | F1; `line: exit`, then `{cmd: "true", after: "login: {{ 'x' }}", timeout: 5}` | `EOFError` exactly `connection closed while waiting for the after pattern 'login: x'` (the rendered pattern) | pass |
 
-Totals: 19 pass (P3-01..18).
+Totals: 18 pass (P3-01..18).
 
 ## P4: `get_prompt`, prompts and credential cycling
 
@@ -330,7 +328,7 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-51 | `test_sleep_eof_message` | `sleep` | F1; `line: exit`, then `sleep: 5s` | `EOFError` exactly `connection closed while waiting for the end of a sleep` | pass |
 | P5-52 | `test_prepare_written_as_utf8` | attach `prepare` | `prep_tmp`; `tempfile._io` replaced by a shim whose `open` turns the default encoding (`None` or `"locale"`, which `NamedTemporaryFile` passes via `io.text_encoding`) into `latin-1`, as under an ISO-8859-1 locale; prepare `#!/bin/sh` + `echo 'é ✓ 日本' > out` | `out` is exactly the UTF-8 bytes of `é ✓ 日本\n`; temp file removed | pass (was `UnicodeEncodeError`: `'latin-1' codec can't encode character '\u2713'`) |
 
-Totals: 53 pass.
+Totals: 52 pass (P5-01..52).
 
 ## P6: model, schema, example and CLI parity
 
@@ -399,7 +397,7 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-58 | `test_parity_empty_expect_or_match_rejected` (parametrized over the P6-57 corpus), `test_parity_whitespace_regex_accepted` | prompts, `sendEach` | F7 | rejected → `(False, False)` (the schema's `$defs.regexes`: `minItems: 1`, `minLength: 1`); a single-space regex → `(True, True)` | pass |
 | P6-59 | `test_cli_empty_expect_or_match_is_validation_error` (parametrized: `expect: []`, `expect: ''` on a return prompt, a `match` entry `''`) | CLI, prompts, `sendEach` | CLI, raw text; `prepare` and `spawn` each touch a marker file | rc 1; `Validation errors:`; exactly one error with the location, type and message of P6-57; neither marker exists | pass |
 
-Totals: 54 pass.
+Totals: 58 pass (P6-01..59 without the removed P6-08).
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -424,7 +422,7 @@ Files: `tests/test_registry.py` (new), `tests/test_plugins.py` (extend) and `tes
 | P7-11 | `test_generated_schema_shape` / `test_step_common_matches_builtins_and_model` | CLI, Common Step Properties | as P7-09 | the generated schema is valid 2020-12; plugin refs sit before `pluginStep` in registration order; `pluginStep` excludes each plugin key; each `<key>Step` starts with `$ref stepCommon`; nested model defs live under `<key>Step.$defs`. `stepCommon` has exactly `PluginStep`'s common keys and equals `cmdStep`'s definitions of them | pass |
 | P7-12 | `test_validation_leaves_input_unchanged` / `test_internal_plugin_key_rejected` | YAML Script Structure | as P7-09 | `Config.model_validate(doc)` leaves a document with plugin steps (in a block and a `fn`) deep-equal to its copy, and the parsed step still has `plugin_key_`; `{probe: x, plugin_key_: nest}` → one `extra_forbidden` error at `("script", 0, "plugin")` | pass |
 
-Totals: 13 pass.
+Totals: 12 pass (P7-01..12).
 
 P7-09..12 were added with the fix for the generated schema found in the PR #23 review: a plain plugin step matched both `<key>Step` and `pluginStep`, so `oneOf` rejected it, and a plugin step with a common prop or an invalid field fell through to `pluginStep` and was accepted unchecked. P7-12 came with it: `PluginStep`'s before-validator wrote `plugin_key_` into the caller's dict, and accepted (then overwrote) a `plugin_key_` set in the script, which the schema rejects. It now works on a copy and rejects a script-set `plugin_key_`.
 
@@ -461,15 +459,15 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
-| P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
-| P2 | 15 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
+| P1 | 20 | 0 | 1 | `test_cmd_semantics.py` |
+| P2 | 20 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 18 | 0 | 0 | `test_common_props.py` |
-| P4 | 23 | 0 | 3 | `test_get_prompt.py` |
-| P5 | 32 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 37 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
-| P7 | 13 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
+| P4 | 32 | 0 | 3 | `test_get_prompt.py` |
+| P5 | 52 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P6 | 58 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P7 | 12 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 16 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **176** | **0** | **5** | |
+| **Total** | **228** | **0** | **4** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
