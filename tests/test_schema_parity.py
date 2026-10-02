@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -12,7 +12,6 @@ from typing import Any
 
 import pydantic
 import pytest
-from conftest import model_ok
 from test_models import (
     EMPTY_BAD,
     RETURN_BAD,
@@ -318,7 +317,7 @@ OPTIONAL_IDS = [f"{model.__name__}.{key}" for model, key in OPTIONAL]
 def test_p6_41_null_corpus_covers_every_model():
     """Every model with optional fields has a host above, so a new model's fields get null cases.
 
-    ``PluginStep`` is left to P6-43: the static schema's ``pluginStep`` accepts any object.
+    ``PluginStep`` is left to P6-43 and P6-60: a plugin step needs a registered plugin.
     """
     with_optional = {
         cls
@@ -357,15 +356,17 @@ def test_p6_42_omitted_optional_field_gets_default(
 
 
 @pytest.mark.parametrize("key", sorted(models._COMMON_PROPS - {"plugin_key_"}))
-def test_p6_43_null_plugin_common_prop(probe: Any, key: str):
+def test_p6_43_null_plugin_common_prop(both_validate: Callable, probe: Any, key: str):
     """SPEC "Common Step Properties" apply to plugin steps, and an explicit null is rejected there too.
 
-    Only the model is checked: the static schema's ``pluginStep`` accepts any object.
+    The static schema's ``pluginStep`` applies ``stepCommon``, so it rejects the null as well.
     """
-    [err] = model_errors(s({"probe": "x", key: None}))
+    doc = s({"probe": "x", key: None})
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
     assert err["loc"] == ("script", 0, "plugin", key)
     assert err["type"] == "null_value"
-    assert model_ok(s({"probe": "x"}))
+    assert both_validate(s({"probe": "x"})) == (True, True)
 
 
 def test_p6_44_parity_null_sleep(both_validate: Callable):
@@ -436,3 +437,46 @@ def test_p6_58_parity_whitespace_regex_accepted(both_validate: Callable):
     assert both_validate(d(prompts=[{"name": "p", "expect": " ", "send": "y"}])) == (True, True)
     fields = [{"match": [" "], "field": "u"}]
     assert both_validate(d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": fields}}])) == (True, True)
+
+
+# -- P6-60: the static pluginStep checks the common step properties ---------
+
+PLUGIN_COMMON_BAD = {
+    "timeout-space": {"timeout": "5 s"},
+    "timeout-bool": {"timeout": True},
+    "when-null": {"when": None},
+    "after-int": {"after": 3},
+    "delay_before-negative": {"delay_before": -1},
+}
+PLUGIN_COMMON_GOOD = {
+    "none": {},
+    "timeout": {"timeout": "5s"},
+    "all": {"after": "ready", "when": "{{ x }}", "delay_before": "500ms", "delay_after": 2, "timeout": 5},
+}
+
+
+@pytest.mark.parametrize("props", list(PLUGIN_COMMON_BAD.values()), ids=list(PLUGIN_COMMON_BAD))
+def test_p6_60_parity_plugin_step_bad_common_prop_rejected(
+    both_validate: Callable, probe: Any, props: dict[str, Any]
+):
+    """SPEC "Common Step Properties": an invalid common prop on a plugin step is rejected by both.
+
+    For a key no plugin registers the model reports ``invalid_step`` for the step; for a registered
+    key it reports the prop itself.
+    """
+    [(key, _)] = props.items()
+    unknown = s({"nope": 1, **props})
+    assert both_validate(unknown) == (False, False)
+    assert [(e["loc"], e["type"]) for e in model_errors(unknown)] == [(("script", 0), "invalid_step")]
+    known = s({"probe": "x", **props})
+    assert both_validate(known) == (False, False)
+    assert [e["loc"] for e in model_errors(known)] == [("script", 0, "plugin", key)]
+
+
+@pytest.mark.parametrize("props", list(PLUGIN_COMMON_GOOD.values()), ids=list(PLUGIN_COMMON_GOOD))
+def test_p6_60_parity_plugin_step_good_common_prop_accepted(
+    both_validate: Callable, probe: Any, props: dict[str, Any]
+):
+    """Valid common props: the static schema still accepts an unknown key (the divergence SPEC allows)."""
+    assert both_validate(s({"nope": 1, **props})) == (False, True)
+    assert both_validate(s({"probe": "x", **props})) == (True, True)

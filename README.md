@@ -487,6 +487,6 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step, while autobot rejects a key that no installed plugin provides.
+The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step (it still checks the step's common properties, such as `timeout` and `when`), while autobot rejects a key that no installed plugin provides.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).

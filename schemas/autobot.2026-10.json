@@ -237,6 +237,7 @@
     "pluginStep": {
       "type": "object",
       "minProperties": 1,
+      "allOf": [{ "$ref": "#/$defs/stepCommon" }],
       "not": {
         "anyOf": [
           { "required": ["cmd"] },
