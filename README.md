@@ -145,7 +145,7 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
   return: true
 ```
 
-A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a list of regexes. The regexes are alternatives, so any of them triggers the prompt. The `send` field accepts two forms.
+A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
 
 **A string**: a simple prompt with one answer, sent on any match: whichever of its regexes matches, each time the prompt appears. It never runs out, so a question asked repeatedly is answered again. The string is a template, rendered each time it is sent. `send: ''` just presses Enter:
 

@@ -36,7 +36,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 
 Each prompt has:
 - `name` — identifier
-- `expect` — a regex, or a list of regexes, to match against session output. The regexes are alternatives: any of them triggers the prompt. A single regex is the same as a list holding it. Every entry of the list is a single regex: a list inside `expect` (the grouped entry of earlier versions) is a validation error (`grouped_expect`, see below). Required, except in a prompt whose `send` is a `sendEach` with `fields`: there `expect` must be absent, because the patterns come from the `fields` entries (see [`sendEach`](#sendeach)).
+- `expect` — a regex, or a non-empty list of regexes, to match against session output. The regexes are alternatives: any of them triggers the prompt. A single regex is the same as a list holding it. Every entry of the list is a single regex: a list inside `expect` (the grouped entry of earlier versions) is a validation error (`grouped_expect`, see below). `expect: []` would never fire, and an empty regex (`''`) matches at once, before any output, so both are validation errors (see below). Required, except in a prompt whose `send` is a `sendEach` with `fields`: there `expect` must be absent, because the patterns come from the `fields` entries (see [`sendEach`](#sendeach)).
 - `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt. A prompt with `return: true` must not have `send`, in either form (a string, including `send: ''`, or a `sendEach` with or without `fields`): it would never be sent. That is a validation error (`return_with_send`) at `prompts.N.send`: `a return prompt is a shell prompt and sends nothing; remove send or return`. It is reported together with any other error of the prompt, e.g. `expect_with_fields`, a missing `expect` or `grouped_expect`.
 - `send` — optional; what to send when a pattern matches. Accepts two forms:
   - A string, for a *simple prompt*: a single question with a single answer, such as a confirmation. The string is sent on any match: whichever of the prompt's `expect` regexes matches, each time the prompt appears (see [Response selection](#response-selection)). `send: ''` sends an empty line, i.e. presses Enter.
@@ -62,8 +62,12 @@ These are validation errors at the prompt, reported like any other before anythi
 | `send` is a list (of strings, of lists, or empty) | `prompts.N.send` | `send_list`: `send is a single string: for a simple prompt write send: '<response>'; to answer a sequence of prompts such as a login, use sendEach with fields and keep the values in vars` |
 | `send` is a boolean or a number (e.g. unquoted `send: yes`) | `prompts.N.send` | `send_type`: `send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, on, off, true, false and numbers as booleans or numbers)` |
 | an `expect` entry is a list | `prompts.N.expect.M` | `grouped_expect`: `each expect entry is a single regex, and the regexes are alternatives; to answer a sequence of prompts such as a login, use sendEach with fields` |
+| `expect: []` | `prompts.N.expect` | `too_short`: `expect must be a regex or a non-empty list of regexes` |
+| `expect: ''`, or an `expect` entry `''` | `prompts.N.expect`, or `prompts.N.expect.M` for an entry | `string_too_short`: `a regex must not be empty: an empty regex matches at once, before any output` |
 
-An invalid `send` (`send_list`, `send_type`) is reported on its own: the prompt's other rules, such as `return_with_send`, `grouped_expect` or a missing `expect`, are checked only once `send` is valid. So a 2026-08 login with a grouped `expect` and a `send` list reports `send_list` first. The JSON schema rejects the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...`.
+The `too_short` and `string_too_short` messages don't end with the migration hint. In a prompt whose `sendEach` has `fields`, an empty `expect` (`[]`, `''` or `['']`) is reported only as `expect_with_fields` (see [`sendEach`](#sendeach)): there `expect` must be absent. The empty-`expect` errors are reported together with the prompt's other errors, such as `return_with_send` or `grouped_expect`.
+
+An invalid `send` (`send_list`, `send_type`) is reported on its own: the prompt's other rules, such as `return_with_send`, `grouped_expect`, a missing or empty `expect`, are checked only once `send` is valid. So a 2026-08 login with a grouped `expect` and a `send` list reports `send_list` first. The JSON schema rejects the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...`.
 
 #### `sendEach`
 
@@ -80,7 +84,7 @@ Iterates over a collection from `vars` to build responses. With `fields`, each e
 ```
 
 `fields` is a non-empty list of entries. Each entry has exactly two keys:
-- `match` — a regex, or a non-empty list of regexes. The regexes of one list are alternatives for the same prompt: each of them sends the entry's field.
+- `match` — a regex, or a non-empty list of regexes. No regex may be empty (`''`): it would match at once, before any output. The regexes of one list are alternatives for the same prompt: each of them sends the entry's field.
 - `field` — the key of the item to send. It is a single mapping key; a `.` in it is part of the key, not a path.
 
 A prompt whose `sendEach` has `fields` has no `expect`: its patterns are the `match` regexes of the entries, in order. So each field is sent only in answer to its own prompt, and the number of values sent per item always matches the prompts that ask for them.
@@ -100,9 +104,10 @@ These rules are validation errors, reported like any other before anything runs:
 |-------------|----------|------|
 | `fields: []` | `prompts.N.send.fields` | `too_short` |
 | `match: []` | `prompts.N.send.fields.K.match` | `too_short` (`match must be a regex or a non-empty list of regexes`) |
+| `match: ''`, or a `match` entry `''` | `prompts.N.send.fields.K.match`, or `prompts.N.send.fields.K.match.M` for an entry | `string_too_short` (`a regex must not be empty: an empty regex matches at once, before any output`) |
 | a `fields` entry without `match` or `field`, or with another key | `prompts.N.send.fields.K.<key>` | `missing` / `extra_forbidden` |
 | a `fields` entry that is a string (the 2026-08 form) | `prompts.N.send.fields.K` | `fields_entry` (`since 2026-10 a fields entry pairs a regex with a field: write {match: <regex>, field: <name>} (see "Migrating from 2026-08" in SPEC.md)`) |
-| `expect` next to `fields` (even `expect: []`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
+| `expect` next to `fields` (even `expect: []` or `expect: ''`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
 | no `expect`, and no `sendEach` with `fields` | `prompts.N.expect` | `missing` |
 | `return: true` with a `sendEach` (with or without `fields`), or any other `send` | `prompts.N.send` | `return_with_send` (`a return prompt is a shell prompt and sends nothing; remove send or return`) |
 
@@ -632,6 +637,8 @@ A prompt with `return: true` and a `send` is now rejected (`return_with_send`). 
 Everything else is unchanged: `return` without `send`, and a `sendEach` without `fields`. A 2026-08 document fails validation with `unsupported_version` at `autobot`, an old `fields` list with a `fields_entry` error per entry that names the new form (see [`sendEach`](#sendeach)), a `send` list with `send_list`, and a grouped `expect` entry with `grouped_expect` (see [`prompts`](#prompts)).
 
 The single-string `send` and the removal of the list forms and grouped `expect` entries were amended into `2026-10` after its first release, without a new version number. A `2026-10` document written before the amendment that uses a `send` list or a grouped `expect` entry fails validation with `send_list` or `grouped_expect`; migrate it with steps 3 and 4.
+
+`2026-10` was later tightened, also without a new version number, to reject an empty `expect` (`expect: []`, `too_short`) and an empty regex in `expect` or in a `fields` entry's `match` (`string_too_short`); see [`prompts`](#prompts) and [`sendEach`](#sendeach). This only rejects prompts that could never work: `expect: []` never fires, and an empty regex fires at once, before any output. Remove the empty regex, or the prompt if nothing is left.
 
 ## CLI
 

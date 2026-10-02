@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -14,6 +14,7 @@ import pydantic
 import pytest
 from conftest import model_ok
 from test_models import (
+    EMPTY_BAD,
     RETURN_BAD,
     RETURN_OK,
     SEND_EACH_BAD,
@@ -419,3 +420,19 @@ def test_p6_53_parity_simple_prompt_accepted(both_validate: Callable, doc: dict[
 def test_p6_53_parity_removed_prompt_forms_rejected(both_validate: Callable, doc: dict[str, Any]):
     """SPEC "Migrating from 2026-08": both reject a send list, a non-string send and a grouped expect."""
     assert both_validate(doc) == (False, False)
+
+
+# -- P6-58: expect and match are never empty, model and schema agree ----------
+
+
+@pytest.mark.parametrize("doc", [c[0] for c in EMPTY_BAD.values()], ids=list(EMPTY_BAD))
+def test_p6_58_parity_empty_expect_or_match_rejected(both_validate: Callable, doc: dict[str, Any]):
+    """SPEC prompts, sendEach: `expect: []` and an empty regex are rejected by both (schema: minItems, minLength)."""
+    assert both_validate(doc) == (False, False)
+
+
+def test_p6_58_parity_whitespace_regex_accepted(both_validate: Callable):
+    """SPEC prompts: both accept a regex of a single space; only the empty string is rejected."""
+    assert both_validate(d(prompts=[{"name": "p", "expect": " ", "send": "y"}])) == (True, True)
+    fields = [{"match": [" "], "field": "u"}]
+    assert both_validate(d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": fields}}])) == (True, True)
