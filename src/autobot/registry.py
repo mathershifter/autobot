@@ -16,11 +16,14 @@ class StepRegistry:
         self._executors: dict[str, StepExecutor] = {}
         self._model_keys: dict[type, str] = {}
         self._builtins: set[str] = set()
+        self._origins: dict[str, str] = {}
         self._discovered = False
 
-    def register(self, executor: StepExecutor, *, builtin: bool = False):
+    def register(self, executor: StepExecutor, *, builtin: bool = False, origin: str = ""):
         if not builtin:
             self._check_plugin(executor)
+            self._check_unique(executor, origin)
+            self._origins[executor.key] = origin
         self._executors[executor.key] = executor
         self._model_keys[executor.model] = executor.key
         if builtin:
@@ -30,7 +33,7 @@ class StepRegistry:
         # the step model strips the common props before the plugin's model sees the step, and the
         # discriminator never routes them, or a built-in key, to a plugin: such a name could never be set
         key, model = executor.key, executor.model
-        who = f"{type(executor).__module__}.{type(executor).__qualname__}"
+        who = _describe(executor, "")
         if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
             raise TypeError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
@@ -45,6 +48,18 @@ class StepRegistry:
                 f"plugin {who}, step key {key!r}: model {model.__name__} reuses common step property names, "
                 f"which the runner handles and never passes to the plugin: {', '.join(clashes)}"
             )
+
+    def _check_unique(self, executor: StepExecutor, origin: str):
+        # the same plugin again (the instance, or another instance of its class and model) replaces itself;
+        # any other plugin with a registered key is an error rather than a silent last-one-wins
+        key = executor.key
+        prev = self._executors.get(key)
+        if prev is None or prev is executor or (type(prev) is type(executor) and prev.model is executor.model):
+            return
+        raise TypeError(
+            f"plugin {_describe(executor, origin)}: step key {key!r} is already registered by plugin "
+            f"{_describe(prev, self._origins.get(key, ''))}"
+        )
 
     def get(self, key: str) -> StepExecutor:
         if not self.has(key):
@@ -79,13 +94,19 @@ class StepRegistry:
         for ep in importlib.metadata.entry_points(group="autobot.steps"):
             obj: type[StepExecutor] = ep.load()
             executor = obj() if isinstance(obj, type) or callable(obj) else obj
-            self.register(executor)
+            dist = f"distribution {ep.dist.name}, " if ep.dist else ""
+            self.register(executor, origin=f"{dist}entry point {ep.name!r}")
 
     def plugin_executors(self) -> list[StepExecutor]:
         return [e for k, e in self._executors.items() if k not in self._builtins]
 
     def keys(self) -> list[str]:
         return list(self._executors.keys())
+
+
+def _describe(executor: StepExecutor, origin: str) -> str:
+    who = f"{type(executor).__module__}.{type(executor).__qualname__}"
+    return f"{who} ({origin})" if origin else who
 
 
 def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
