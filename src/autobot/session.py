@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import signal
 import sys
 import time
 from collections.abc import Callable
@@ -42,6 +43,18 @@ def strip_echo(text: str, sent: str) -> str:
         if not target.startswith(seen):
             break
     return text
+
+
+def _exit_note(cld: pexpect.spawn) -> str:
+    """The closed child's exit status, or the signal that ended it. SIGHUP is left out: closing the pty sends it."""
+    if cld.exitstatus is not None:
+        return f" (exit status {cld.exitstatus})"
+    if cld.signalstatus is not None and cld.signalstatus != signal.SIGHUP:
+        try:
+            return f" (killed by {signal.Signals(cld.signalstatus).name})"
+        except ValueError:
+            return f" (killed by signal {cld.signalstatus})"
+    return ""
 
 
 class CleanWriter:
@@ -179,14 +192,23 @@ class Session:
             env=dict(DEFAULT_ENV) if env is None else env,
         )
         self._cld.logfile_read = CleanWriter(sys.stdout)
+        cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
-            self._expect(r"(?=.)", timeout, f"the first output from '{spawn}' (attach.timeout)")
+            self._expect(
+                r"(?=.)",
+                timeout,
+                f"the first output from '{spawn}' (attach.timeout)",
+                closed=f"before any output from '{spawn}'",
+            )
+        except EOFError as e:
+            self.detach()  # reaps the child, so its exit status is known
+            raise EOFError(f"{e}{_exit_note(cld)}") from e.__cause__
         except BaseException:
             self.detach()
             raise
 
-    def _expect(self, patterns, timeout: float, what: str) -> int:
+    def _expect(self, patterns, timeout: float, what: str, closed: str | None = None) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
         try:
@@ -194,7 +216,7 @@ class Session:
         except pexpect.TIMEOUT as e:
             raise TimeoutError(f"timed out after {timeout}s waiting for {what}") from e
         except pexpect.EOF as e:
-            raise EOFError("connection closed") from e
+            raise EOFError(f"connection closed {closed or f'while waiting for {what}'}") from e
 
     def detach(self):
         if self._cld:
@@ -221,8 +243,7 @@ class Session:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                names = ", ".join(f"'{h.name}'" for h in self._handlers if h.is_return) or "none defined"
-                raise TimeoutError(f"timed out after {timeout}s waiting for a shell prompt ({names})")
+                raise TimeoutError(f"timed out after {timeout}s waiting for {self._prompt_what()}")
             i = self._cld.expect(self._patterns, timeout=min(5, remaining))
             before = str(self._cld.before or "")
             if i == 0:
@@ -239,7 +260,7 @@ class Session:
             if i == 1:
                 continue
             if i == len(self._patterns) - 1:
-                raise EOFError("connection closed")
+                raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
@@ -247,6 +268,10 @@ class Session:
                         return self._finish(output, sent, errors, capture)
                     self._cld.sendline(h.respond(i - h.start))
                     break
+
+    def _prompt_what(self) -> str:
+        names = ", ".join(f"'{h.name}'" for h in self._handlers if h.is_return) or "none defined"
+        return f"a shell prompt ({names})"
 
     def _finish(
         self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool

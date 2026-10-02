@@ -492,8 +492,7 @@ def test_p4_34_swap_never_starts_prompt_state(shell_session: Session):
 
 QUESTION = PromptHandler("q", [r"continue\? "], [["y"]], False)
 
-
-@pytest.mark.parametrize(
+PROMPT_NAMES = pytest.mark.parametrize(
     ("handlers", "names"),
     [
         ([PromptHandler("sh", [r"PROMPT\$ "], [], True), QUESTION, PromptHandler("root", ["# "], [], True)],
@@ -502,6 +501,9 @@ QUESTION = PromptHandler("q", [r"continue\? "], [["y"]], False)
     ],
     ids=["names", "none"],
 )
+
+
+@PROMPT_NAMES
 def test_p4_35_timeout_names_shell_prompts(handlers: list[PromptHandler], names: str):
     """SPEC get_prompt: the overall timeout names the current shell prompts, in order; answer-only prompts aren't."""
     s = Session(handlers)
@@ -510,5 +512,19 @@ def test_p4_35_timeout_names_shell_prompts(handlers: list[PromptHandler], names:
         with pytest.raises(TimeoutError) as ei:
             s.get_prompt(timeout=1)
         assert str(ei.value) == f"timed out after 1s waiting for a shell prompt {names}"
+    finally:
+        s.detach()
+
+
+@PROMPT_NAMES
+def test_p4_36_eof_names_shell_prompts(handlers: list[PromptHandler], names: str):
+    """SPEC get_prompt: the child exiting raises EOFError naming the shell prompts, as the timeout does."""
+    s = Session(handlers)
+    s.attach(BASH, env={**SHELL_ENV, "PS1": "X> "}, timeout=5)  # a prompt no handler matches
+    try:
+        s.sendline("exit")
+        with pytest.raises(EOFError) as ei:
+            s.get_prompt(timeout=10)
+        assert str(ei.value) == f"connection closed while waiting for a shell prompt {names}"
     finally:
         s.detach()
