@@ -370,6 +370,13 @@ class Config(pydantic.BaseModel):
                         "input": step.call,
                     })
                 elif isinstance(step, PluginStep):
+                    # the step's other keys reach the first plugin's model as fields, and an extra="allow"
+                    # model would take a second plugin's key as data, so that step would never run
+                    keys = [k for k in step.model_extra or {} if registry.has(k)]
+                    if len(keys) > 1:
+                        msg = f"step has more than one plugin key: {', '.join(keys)}"
+                        errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
+                        continue
                     try:
                         registry.validate_plugin_step(step)
                     except pydantic.ValidationError as e:

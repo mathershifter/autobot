@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import urllib.request
@@ -123,8 +124,15 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
     one_of = defs["step"]["oneOf"]
     for executor in executors:
         name = f"{executor.key}Step"
-        model = executor.model.model_json_schema(ref_template=f"#/$defs/{name}/$defs/{{model}}")
+        prefix = f"#/$defs/{name}/$defs/"
+        model = executor.model.model_json_schema(ref_template=f"{prefix}{{model}}")
         step: dict[str, Any] = {"$defs": model.pop("$defs")} if "$defs" in model else {}
+        # a recursive model's root is a $ref to its own def: inline a copy, so the step's root is open to
+        # the common props, and keep the closed def for the nested references
+        ref = model.get("$ref", "")
+        if ref.startswith(prefix) and ref.removeprefix(prefix) in step.get("$defs", {}):
+            del model["$ref"]
+            model |= copy.deepcopy(step["$defs"][ref.removeprefix(prefix)])
         # the plugin's model sees every key but the common props, so its closing additionalProperties
         # moves out to cover the keys neither it nor stepCommon evaluates
         rest = model.pop("additionalProperties", None)
