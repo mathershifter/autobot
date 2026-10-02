@@ -419,15 +419,17 @@ def probe(register_plugin) -> ProbeExecutor:
     return register_plugin(ProbeExecutor())
 
 
-def plugin_dist(root: Path, key: str, source: str, target: str) -> Path:
+def plugin_dist(root: Path, key: str, source: str, target: str, *, name: str | None = None) -> Path:
     """Write ``<mod>.py`` plus a dist-info with an ``autobot.steps`` entry.
 
     ``target`` is the attribute in the module the entry point loads.
+    ``name`` (default ``key``) names the module and distribution,
+    ``autobot_testplugin_<name>``, so two dists can share a step key.
     Put ``root`` on ``sys.path`` (``monkeypatch.syspath_prepend``) or on
     ``PYTHONPATH`` for CLI subprocesses. Never call ``discover()`` on the
     global registry while it is on ``sys.path``.
     """
-    mod = f"autobot_testplugin_{key}"
+    mod = f"autobot_testplugin_{name or key}"
     (root / f"{mod}.py").write_text(source)
     dist = root / f"{mod}-0.1.dist-info"
     dist.mkdir()
@@ -440,15 +442,19 @@ def run_cli(
     doc: Any,
     tmp_path: Path,
     *cli_args: str,
-    pythonpath: Path | None = None,
+    pythonpath: Path | list[Path] | None = None,
     raw: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``python -m autobot.cli`` on ``doc`` (or ``raw`` file text)."""
+    """Run ``python -m autobot.cli`` on ``doc`` (or ``raw`` file text).
+
+    ``pythonpath`` is prepended to ``PYTHONPATH``; a list keeps its order.
+    """
     path = tmp_path / "script.autobot.yaml"
     path.write_text(raw if raw is not None else yaml.safe_dump(doc))
     env = dict(os.environ)
     if pythonpath:
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (str(pythonpath), env.get("PYTHONPATH")) if p)
+        paths = [pythonpath] if isinstance(pythonpath, Path) else pythonpath
+        env["PYTHONPATH"] = os.pathsep.join([*map(str, paths), *filter(None, [env.get("PYTHONPATH")])])
     return subprocess.run(
         [sys.executable, "-m", "autobot.cli", str(path), *cli_args],
         check=False,

@@ -1,4 +1,4 @@
-"""P7-01..06, P7-13: step registry and plugin execution (SPEC.md:286)."""
+"""P7-01..06, P7-13, P7-16: step registry and plugin execution (SPEC.md:286)."""
 
 from __future__ import annotations
 
@@ -216,5 +216,105 @@ def test_p7_13_cli_fails_fast_on_clashing_plugin(tmp_path: Path, command: str):
     assert res.stderr.strip().splitlines()[-1] == (
         "TypeError: plugin autobot_testplugin_clash.ClashExecutor, step key 'clash': model ClashStep reuses "
         "common step property names, which the runner handles and never passes to the plugin: timeout"
+    )
+    assert not marker.exists()
+
+
+class EchoStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    echo: str
+
+
+class OtherEchoExecutor:
+    key = "echo"
+    model = EchoStep
+
+    def execute(self, step: Any, ctx: Any, timeout: float) -> None:  # pragma: no cover - never runs
+        pass
+
+
+def _registry_state(reg: StepRegistry) -> tuple[dict, dict, dict]:
+    return dict(reg._executors), dict(reg._model_keys), dict(reg._origins)
+
+
+def test_p7_16_second_plugin_with_same_key_rejected(isolated_registry: StepRegistry):
+    """A key registered by one plugin can't be taken by another: no silent last-one-wins dispatch."""
+    reg = isolated_registry
+    first = _Executor("echo", EchoStep)
+    reg.register(first)
+    before = _registry_state(reg)
+    # another class, and the same class with another model, are both another plugin
+    for other in (OtherEchoExecutor(), _Executor("echo", ProbeStep)):
+        with pytest.raises(TypeError) as ei:
+            reg.register(other)
+        assert str(ei.value) == (
+            f"plugin {__name__}.{type(other).__qualname__}: step key 'echo' is already registered by plugin "
+            f"{__name__}._Executor"
+        )
+        assert _registry_state(reg) == before
+    assert reg.get("echo") is first
+
+
+def test_p7_16_same_plugin_registered_again_is_harmless(isolated_registry: StepRegistry):
+    """The same instance is a no-op; another instance of the same class and model replaces it."""
+    reg = isolated_registry
+    first = _Executor("echo", EchoStep)
+    reg.register(first)
+    reg.register(first)
+    assert reg.get("echo") is first
+    again = _Executor("echo", EchoStep)
+    reg.register(again)
+    assert reg.get("echo") is again
+    assert [e.key for e in reg.plugin_executors()] == ["echo"]
+    assert reg._model_keys[EchoStep] == "echo"
+
+
+DUP_PLUGIN = '''
+import pydantic
+
+
+class EchoStep(pydantic.BaseModel):
+    echo: str
+
+
+class EchoExecutor:
+    key = "echo"
+    model = EchoStep
+
+    def execute(self, step, ctx, timeout):
+        print("ran", __name__)
+'''
+
+
+@pytest.mark.parametrize("command", ["run-builtin", "run-plugin", "schema"])
+def test_p7_16_cli_fails_fast_on_duplicate_plugin_key(tmp_path: Path, command: str):
+    """Two installed dists with the same key: discovery fails before anything runs, naming both plugins."""
+    roots = []
+    for name in ("dup_a", "dup_b"):
+        root = tmp_path / name
+        root.mkdir()
+        plugin_dist(root, "echo", DUP_PLUGIN, "EchoExecutor", name=name)
+        roots.append(root)
+    marker = tmp_path / "prepared"
+    if command == "schema":
+        path = os.pathsep.join([*map(str, roots), *filter(None, [os.environ.get("PYTHONPATH")])])
+        res = subprocess.run(
+            [sys.executable, "-m", "autobot.cli", "schema"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": path},
+            timeout=60,
+        )
+    else:
+        step = {"cmd": "true"} if command == "run-builtin" else {"echo": "x"}
+        res = run_cli(make_doc([step], prepare=f"touch {marker}"), tmp_path, pythonpath=roots)
+    assert res.returncode == 1
+    assert res.stdout == ""
+    assert "Traceback" in res.stderr
+    assert res.stderr.strip().splitlines()[-1] == (
+        "TypeError: plugin autobot_testplugin_dup_b.EchoExecutor (distribution autobot_testplugin_dup_b, "
+        "entry point 'echo'): step key 'echo' is already registered by plugin "
+        "autobot_testplugin_dup_a.EchoExecutor (distribution autobot_testplugin_dup_a, entry point 'echo')"
     )
     assert not marker.exists()
