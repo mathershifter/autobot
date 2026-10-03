@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from .protocols import StepExecutor
 
 
+class PluginError(TypeError):
+    """A plugin that can't be loaded or registered; the CLI reports it without a traceback."""
+
+
 class StepRegistry:
     def __init__(self):
         self._executors: dict[str, StepExecutor] = {}
@@ -35,7 +39,7 @@ class StepRegistry:
         key, model = executor.key, executor.model
         who = _describe(executor, "")
         if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
-            raise TypeError(
+            raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
             )
         clashes = [
@@ -44,7 +48,7 @@ class StepRegistry:
             for name in sorted(_input_names(field, info) & _COMMON_PROPS)
         ]
         if clashes:
-            raise TypeError(
+            raise PluginError(
                 f"plugin {who}, step key {key!r}: model {model.__name__} reuses common step property names, "
                 f"which the runner handles and never passes to the plugin: {', '.join(clashes)}"
             )
@@ -56,7 +60,7 @@ class StepRegistry:
         prev = self._executors.get(key)
         if prev is None or prev is executor or (type(prev) is type(executor) and prev.model is executor.model):
             return
-        raise TypeError(
+        raise PluginError(
             f"plugin {_describe(executor, origin)}: step key {key!r} is already registered by plugin "
             f"{_describe(prev, self._origins.get(key, ''))}"
         )
@@ -92,8 +96,13 @@ class StepRegistry:
             return
         self._discovered = True
         for ep in importlib.metadata.entry_points(group="autobot.steps"):
-            obj: type[StepExecutor] = ep.load()
-            executor = obj() if isinstance(obj, type) or callable(obj) else obj
+            try:
+                obj: type[StepExecutor] = ep.load()
+                executor = obj() if isinstance(obj, type) or callable(obj) else obj
+            except Exception as e:
+                dist = f" (distribution {ep.dist.name})" if ep.dist else ""
+                why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                raise PluginError(f"entry point {ep.name!r}{dist} failed to load: {why}") from e
             dist = f"distribution {ep.dist.name}, " if ep.dist else ""
             self.register(executor, origin=f"{dist}entry point {ep.name!r}")
 
