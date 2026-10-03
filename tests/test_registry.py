@@ -1,4 +1,4 @@
-"""P7-01..06, P7-13, P7-16..18: step registry and plugin execution (SPEC.md:286)."""
+"""P7-01..06, P7-13, P7-16..19: step registry and plugin execution (SPEC.md:286)."""
 
 from __future__ import annotations
 
@@ -227,8 +227,9 @@ def test_p7_13_cli_fails_fast_on_clashing_plugin(tmp_path: Path, command: str):
         step = {"cmd": "true"} if command == "run-builtin" else {"clash": "x"}
         res = run_cli(make_doc([step], prepare=f"touch {marker}"), tmp_path, pythonpath=root)
     assert _plugin_error(res) == (
-        "plugin autobot_testplugin_clash.ClashExecutor, step key 'clash': model ClashStep reuses "
-        "common step property names, which the runner handles and never passes to the plugin: timeout"
+        "plugin autobot_testplugin_clash.ClashExecutor (distribution autobot_testplugin_clash, entry point 'clash'), "
+        "step key 'clash': model ClashStep reuses common step property names, which the runner handles and never "
+        "passes to the plugin: timeout"
     )
     assert not marker.exists()
 
@@ -362,15 +363,16 @@ BAD_PLUGINS: dict[str, tuple[list[tuple[str, str, str, str]], str]] = {
     "reserved-key": (
         [("reserved", "cmd", RESERVED_PLUGIN, "CmdExecutor")],
         (
-            "plugin autobot_testplugin_reserved.CmdExecutor: step key 'cmd' is reserved "
-            "(a built-in step or a common step property)"
+            "plugin autobot_testplugin_reserved.CmdExecutor (distribution autobot_testplugin_reserved, "
+            "entry point 'cmd'): step key 'cmd' is reserved (a built-in step or a common step property)"
         ),
     ),
     "common-name-field": (
         [("clash", "clash", CLASH_PLUGIN, "ClashExecutor")],
         (
-            "plugin autobot_testplugin_clash.ClashExecutor, step key 'clash': model ClashStep reuses "
-            "common step property names, which the runner handles and never passes to the plugin: timeout"
+            "plugin autobot_testplugin_clash.ClashExecutor (distribution autobot_testplugin_clash, "
+            "entry point 'clash'), step key 'clash': model ClashStep reuses common step property names, "
+            "which the runner handles and never passes to the plugin: timeout"
         ),
     ),
     "duplicate-key": (
@@ -524,3 +526,137 @@ def test_p7_18_discover_does_not_wrap_interrupts(
     monkeypatch.syspath_prepend(str(tmp_path))
     with pytest.raises(exc):
         isolated_registry.discover()
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "source", "target", "message"),
+    [
+        (
+            "p719_reserved",
+            "cmd",
+            RESERVED_PLUGIN,
+            "CmdExecutor",
+            ": step key 'cmd' is reserved (a built-in step or a common step property)",
+        ),
+        (
+            "p719_clash",
+            "clash",
+            CLASH_PLUGIN,
+            "ClashExecutor",
+            (
+                ", step key 'clash': model ClashStep reuses common step property names, "
+                "which the runner handles and never passes to the plugin: timeout"
+            ),
+        ),
+    ],
+)
+def test_p7_19_discovered_rejection_names_origin(
+    isolated_registry: StepRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    key: str,
+    source: str,
+    target: str,
+    message: str,
+):
+    """A discovered plugin's reserved key or common-name field names its distribution and entry point."""
+    plugin_dist(tmp_path, key, source, target, name=name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    before = _registry_state(isolated_registry)
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.discover()
+    who = f"autobot_testplugin_{name}.{target} (distribution autobot_testplugin_{name}, entry point {key!r})"
+    assert str(ei.value) == f"plugin {who}{message}"
+    assert _registry_state(isolated_registry) == before
+
+
+class _Bare:
+    """An executor with only the attributes a test gives it."""
+
+    def __init__(self, **attrs: Any) -> None:
+        self.__dict__.update(attrs)
+
+
+def _run(self: Any, step: Any, ctx: Any, timeout: float) -> None:  # pragma: no cover - never runs
+    pass
+
+
+SHAPES: dict[str, tuple[dict[str, Any], str]] = {
+    "no-key": ({"model": EchoStep, "execute": _run}, "executor has no 'key' attribute (a non-empty string)"),
+    "empty-key": (
+        {"key": "", "model": EchoStep, "execute": _run},
+        "executor's 'key' must be a non-empty string, got ''",
+    ),
+    "int-key": (
+        {"key": 5, "model": EchoStep, "execute": _run},
+        "executor's 'key' must be a non-empty string, got 5",
+    ),
+    "no-model": ({"key": "shape", "execute": _run}, "executor has no 'model' attribute (a pydantic model class)"),
+    "dict-model": (
+        {"key": "shape", "model": dict, "execute": _run},
+        "executor's 'model' must be a pydantic model class (a pydantic.BaseModel subclass), got <class 'dict'>",
+    ),
+    "instance-model": (
+        {"key": "shape", "model": EchoStep(echo="x"), "execute": _run},
+        "executor's 'model' must be a pydantic model class (a pydantic.BaseModel subclass), got EchoStep(echo='x')",
+    ),
+    "no-execute": ({"key": "shape", "model": EchoStep}, "executor has no 'execute' method"),
+    "execute-not-callable": (
+        {"key": "shape", "model": EchoStep, "execute": "run"},
+        "executor's 'execute' must be callable, got 'run'",
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+def test_p7_19_executor_shape_rejected(isolated_registry: StepRegistry, shape: str):
+    """An executor without a usable key, model or execute is a `PluginError`, not an `AttributeError`."""
+    attrs, why = SHAPES[shape]
+    before = _registry_state(isolated_registry)
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(_Bare(**attrs))
+    assert str(ei.value) == f"plugin {__name__}._Bare: {why}"
+    assert _registry_state(isolated_registry) == before
+
+
+def test_p7_19_executor_shape_rejected_with_origin(isolated_registry: StepRegistry):
+    """The origin is named the same way as for the other registration errors."""
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(_Bare(key="shape", execute=_run), origin="distribution pkg, entry point 'shape'")
+    assert str(ei.value) == (
+        f"plugin {__name__}._Bare (distribution pkg, entry point 'shape'): "
+        "executor has no 'model' attribute (a pydantic model class)"
+    )
+
+
+def test_p7_19_builtins_skip_the_shape_check(isolated_registry: StepRegistry):
+    """Built-ins are registered as they are; only plugins are checked."""
+    builtin = _Bare(key="shape", model=EchoStep)
+    isolated_registry.register(builtin, builtin=True)
+    assert isolated_registry.get("shape") is builtin
+
+
+NO_MODEL_PLUGIN = """
+class BadExecutor:
+    key = "bad"
+
+    def execute(self, step, ctx, timeout):
+        pass
+"""
+
+
+@pytest.mark.parametrize("form", ["run", "schema"])
+def test_p7_19_cli_reports_shape_error_cleanly(tmp_path: Path, form: str):
+    """A plugin without a model is one `Plugin error:` line, rc 1, before prepare runs."""
+    roots = _install(tmp_path, [("p719_nomodel", "bad", NO_MODEL_PLUGIN, "BadExecutor")])
+    marker = tmp_path / "prepared"
+    script = tmp_path / "script.autobot.yaml"
+    script.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}], prepare=f"touch {marker}")))
+    argv = {"run": ["run", str(script)], "schema": ["schema"]}[form]
+    res = _autobot(roots, *argv)
+    assert _plugin_error(res) == (
+        "plugin autobot_testplugin_p719_nomodel.BadExecutor (distribution autobot_testplugin_p719_nomodel, "
+        "entry point 'bad'): executor has no 'model' attribute (a pydantic model class)"
+    )
+    assert not marker.exists()

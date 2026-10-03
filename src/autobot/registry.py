@@ -25,7 +25,8 @@ class StepRegistry:
 
     def register(self, executor: StepExecutor, *, builtin: bool = False, origin: str = ""):
         if not builtin:
-            self._check_plugin(executor)
+            _check_shape(executor, origin)
+            self._check_plugin(executor, origin)
             self._check_unique(executor, origin)
             self._origins[executor.key] = origin
         self._executors[executor.key] = executor
@@ -33,11 +34,11 @@ class StepRegistry:
         if builtin:
             self._builtins.add(executor.key)
 
-    def _check_plugin(self, executor: StepExecutor):
+    def _check_plugin(self, executor: StepExecutor, origin: str):
         # the step model strips the common props before the plugin's model sees the step, and the
         # discriminator never routes them, or a built-in key, to a plugin: such a name could never be set
         key, model = executor.key, executor.model
-        who = _describe(executor, "")
+        who = _describe(executor, origin)
         if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
             raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
@@ -111,6 +112,29 @@ class StepRegistry:
 
     def keys(self) -> list[str]:
         return list(self._executors.keys())
+
+
+def _check_shape(executor: StepExecutor, origin: str):
+    # what the registry and the runner use: a usable key, a pydantic model class and a callable `execute`
+    missing = object()
+    key = getattr(executor, "key", missing)
+    model = getattr(executor, "model", missing)
+    execute = getattr(executor, "execute", missing)
+    if key is missing:
+        why = "executor has no 'key' attribute (a non-empty string)"
+    elif not isinstance(key, str) or not key:
+        why = f"executor's 'key' must be a non-empty string, got {key!r}"
+    elif model is missing:
+        why = "executor has no 'model' attribute (a pydantic model class)"
+    elif not (isinstance(model, type) and issubclass(model, pydantic.BaseModel)):
+        why = f"executor's 'model' must be a pydantic model class (a pydantic.BaseModel subclass), got {model!r}"
+    elif execute is missing:
+        why = "executor has no 'execute' method"
+    elif not callable(execute):
+        why = f"executor's 'execute' must be callable, got {execute!r}"
+    else:
+        return
+    raise PluginError(f"plugin {_describe(executor, origin)}: {why}")
 
 
 def _describe(executor: StepExecutor, origin: str) -> str:
