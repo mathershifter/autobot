@@ -15,6 +15,7 @@ from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
 from .models import Config
+from .registry import PluginError, registry
 from .runner import Runner
 
 if TYPE_CHECKING:
@@ -78,7 +79,17 @@ def _load(path: str) -> object:
     sys.exit(1)
 
 
+def _discover() -> None:
+    # validation depends on the installed plugins, so a broken one is reported first, before the script is read
+    try:
+        registry.discover()
+    except PluginError as e:
+        console.print(f"Plugin error: {e}")
+        sys.exit(1)
+
+
 def _cmd_run(args):
+    _discover()
     config_dict = _load(args.script)
 
     try:
@@ -105,9 +116,7 @@ def _cmd_run(args):
 
 
 def _cmd_schema():
-    from .registry import registry
-
-    registry.discover()
+    _discover()
     schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
     if schema_path.exists():
         schema = json.loads(schema_path.read_text())
