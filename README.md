@@ -51,7 +51,7 @@ vars:                   # arbitrary data accessible as {{ vars.KEY }}
 
 prompts:                # interactive prompt handlers
   - name: cli
-    expect: ['\w+@\w+:.+']
+    expect: ['\w+@[\w\-\.]+:[^\r\n]*[$#] ?$']
     return: true
 
 fn:                     # reusable step sequences
@@ -140,10 +140,12 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
 ```yaml
 - name: cli
   expect:
-    - '\w+@[\w\-\.]+:[^\$]+'
-    - '(arista-)?bmc-boot=>'
+    - '\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'
+    - '(arista-)?bmc-boot=> ?$'
   return: true
 ```
+
+Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
 
 A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
 
@@ -281,7 +283,7 @@ If `cmd` is a string starting with `#!`, it is treated as an embedded script. Th
     import json
     with open("/tmp/out.json") as f:
         data = json.load(f)
-    console.print(data["version"])
+    print(data["version"])
 ```
 
 Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
@@ -427,7 +429,7 @@ Available context:
 
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
-| `env.*`          | `env` section (merged with OS env vars) |
+| `env.*`          | `env` section; an OS env var overrides a key of the same name, and OS vars not declared in `env` aren't visible |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |
@@ -456,7 +458,7 @@ script:
   - cmd: show bogus    # raises because output matches '% .*'
 ```
 
-Patterns are matched per line (`re.MULTILINE`, so `.` doesn't cross line breaks) against the captured output once the prompt returns. The echoed command itself is never matched, so a comment like `! note` in a command doesn't trigger `'! .*'`.
+Patterns are searched with `re.MULTILINE` (`^` and `$` match at each line, and `.` doesn't cross line breaks) against the captured output once the prompt returns. The echoed command itself is never matched, so a comment like `! note` in a command doesn't trigger `'! .*'`.
 
 ## Functions
 

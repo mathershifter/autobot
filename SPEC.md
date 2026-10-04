@@ -417,7 +417,7 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
     prompts:
       - name: host-cli
         expect:
-          - 'admin@host:~\$'
+          - 'admin@host:~\$ ?$'
         return: true
       - name: host-login
         send:
@@ -571,6 +571,8 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 The session is *at a shell prompt* from the moment a prompt wait ends at one until anything is sent (a command line, the `$?` check, `line`, `return`, `control`). A prompt wait while the session is at a shell prompt returns at once, without reading output, sending anything, or changing `session.before` and `session.match`. A block's prompt swap and restore can end this state but never start it (see [Prompt state across a swap](#prompt-state-across-a-swap)).
 
 While it waits, the engine also consumes each `\r\n` and each ANSI escape sequence as it arrives: the text before it goes to the captured output, and the escape sequence itself is dropped (see [ANSI escape sequences](#ansi-escape-sequences)). When several patterns match, the one that starts earliest in the unread output wins; on a tie, `\r\n` comes first, then an escape sequence, then the prompts in the order they are defined.
+
+Prompt regexes (`expect`, and the `match` regexes of `sendEach` `fields` entries) are compiled with `re.DOTALL` and searched for anywhere in the unread output; they aren't anchored at its start. There is no `re.MULTILINE`, so `.` matches line breaks and `$` matches only at the end of the unread output (or before a final `\n`). A shell prompt regex should end at the prompt character (e.g. `'\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'`): any part of the prompt it leaves unmatched stays in the stream and becomes the start of the next command's captured output, where the echo of the command is then no longer recognized and removed.
 
 The prompt engine polls the session output in 5-second intervals:
 1. If a prompt with no `send` (or `return: true`) matches → return (shell prompt reached)

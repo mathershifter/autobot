@@ -18,7 +18,7 @@ vars:
 prompts:
   - name: cli
     expect:
-      - '\w+@[\w\-\.]+:[^\$]+'
+      - '\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'
     return: true
 
   - name: login
