@@ -521,7 +521,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 - `2m` — 2 minutes
 - `1h` — 1 hour
 
-A bare number must be ≥ 0; a boolean is not a duration, and neither is `null` (so `sleep:` with no value is rejected). A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected).
+A bare number must be finite and ≥ 0: YAML's `.nan`, `.inf` and `-.inf` are rejected when the script is loaded, so there is no "wait forever" duration. A boolean is not a duration, and neither is `null` (so `sleep:` with no value is rejected). A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected). The number is written in ASCII digits `0`-`9` only (`"٥s"` is rejected), and a string whose value overflows to infinity is rejected too.
 
 ## Jinja2 Templating
 
@@ -562,7 +562,7 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 | Filter | Usage | Description |
 |--------|-------|-------------|
 | `contains` | `{{ value \| contains('substring') }}` | Returns `True` if `substring` is found in `value` |
-| `search` | `{{ value \| search('regex') }}` | Returns `True` if the regex pattern matches anywhere in `value` |
+| `search` | `{{ value \| search('regex') }}` | Returns `True` if the regex pattern matches anywhere in `value`. An invalid regex is a template error (`template error: search: invalid regex ...`) |
 
 ## Prompt Handling (`get_prompt`)
 
