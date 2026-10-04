@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from conftest import (
     BASH,
     SHELL_ENV,
@@ -23,7 +24,8 @@ from conftest import (
     run_vars,
 )
 
-from autobot.runner import Runner
+from autobot.models import SendEach
+from autobot.runner import Runner, send_each_sets
 from autobot.session import PromptHandler, Session
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
@@ -529,6 +531,47 @@ def test_p4_36_eof_names_shell_prompts(handlers: list[PromptHandler], names: str
         assert str(ei.value) == f"connection closed while waiting for a shell prompt {names}"
     finally:
         s.detach()
+
+
+# -- P4-39: sendEach items are strings, numbers or booleans ------------------
+
+NOT_SCALAR = {
+    "date": ("2026-10-04", "a timestamp"),
+    "datetime": ("2026-10-04 12:00:00", "a timestamp"),
+    "binary": ("!!binary aGk=", "binary data"),
+    "set": ("!!set {a}", "a set"),
+    "null": ("~", "null"),
+    "list": ("[a]", "a list"),
+}
+
+
+@pytest.mark.parametrize("case", NOT_SCALAR)
+def test_p4_39_send_each_item_must_be_string_number_or_boolean(case: str):
+    """SPEC sendEach: an item, or a field's value, that YAML reads as something else is an error, not its `str()`.
+
+    An unquoted date used to be sent as `2026-10-04` by accident of `str()`, and `!!binary` as `b'hi'`.
+    """
+    literal, kind = NOT_SCALAR[case]
+    pins = yaml.safe_load(f"[ok, {literal}]")
+    with pytest.raises(ValueError) as ei:
+        send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins})
+    assert str(ei.value) == (
+        f"prompt 'p': sendEach 'vars.pins': item 1 is {kind}; without fields each item must be a string, number or boolean"
+    )
+    send = SendEach.model_validate({"each": "vars.creds", "fields": [{"match": "x", "field": "pw"}]})
+    with pytest.raises(ValueError) as ei:
+        send_each_sets("p", send, {"creds": [{"pw": pins[1]}]})
+    assert str(ei.value) == (
+        f"prompt 'p': sendEach 'vars.creds': item 0 field 'pw' is {kind}, not a string, number or boolean"
+    )
+
+
+def test_p4_39_send_each_scalars_sent_as_str():
+    """SPEC sendEach: strings, numbers and booleans are accepted and converted with `str()`."""
+    pins = yaml.safe_load("['2026-10-04', 1234, 2.5, true, false, '']")
+    assert send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins}) == [
+        ["2026-10-04"], ["1234"], ["2.5"], ["True"], ["False"], [""],
+    ]
 
 
 # -- P4-37..38: no solicit newline while a command is running ----------------

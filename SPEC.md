@@ -131,7 +131,7 @@ A collection that doesn't meet these rules is an error when the prompts are load
 | A field's value isn't a string, number or boolean | `item 2 field 'password' is null, not a string, number or boolean` |
 | An item isn't a string, number or boolean (without `fields`) | `item 0 is a mapping; without fields each item must be a string, number or boolean` |
 
-Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`.
+Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`, and for the other values YAML can produce, `a timestamp`, `binary data` and `a set`. Those are never sent: an unquoted date such as `2026-10-04` is a timestamp, not a string, so `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote it to send it as written.
 
 #### Response selection
 
