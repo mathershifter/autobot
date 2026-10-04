@@ -321,7 +321,7 @@ If `cmd` is a string starting with `#!` (before rendering), it is treated as an 
     print(data["version"])
 ```
 
-Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
+Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Like any `cmd`, the script is rendered once, after the step's first prompt wait and before anything is sent, so `session.before` and `session.match` in it are what that wait set, and a template error uploads nothing. Embedded scripts must be a single string, not a list.
 
 Upload mechanism:
 - The rendered script (with a trailing newline preserved) is base64-encoded and sent in single-line chunks of at most 512 base64 characters, waiting for the prompt after each, to `/tmp/_autobot_<uuid>.b64`. It is then decoded to `/tmp/_autobot_<uuid>`.

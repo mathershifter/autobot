@@ -88,14 +88,15 @@ class CmdExecutor:
             console.print(f">> register: vars.{step.register_}")
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
-        script = ctx.render(str(step.cmd))
-        if not script.endswith("\n"):
-            script += "\n"  # jinja drops the trailing newline
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         output = ""
         interrupt = False
         if not step.after:
             ctx.session.get_prompt(timeout=timeout)
+        # rendered after the first prompt wait, like any cmd: session.* is what that wait set
+        script = ctx.render(str(step.cmd))
+        if not script.endswith("\n"):
+            script += "\n"  # jinja drops the trailing newline
         try:
             console.print(f">> script: writing to {tmp}")
             self._upload(ctx, script.encode(), tmp, timeout)
