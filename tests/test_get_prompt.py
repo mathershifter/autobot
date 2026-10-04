@@ -627,6 +627,24 @@ def test_p4_38_solicit_only_for_a_wait_not_after_a_command(device, sent: SentLog
     assert sent.lines() == [""]
 
 
+WAITS_FOR_RETURN = "sh -c 'read x; echo CONNECTED'"  # like an idle console: silent until Return is pressed
+
+
+@pytest.mark.slow
+def test_p4_41_enter_an_idle_console_with_line(sent: SentLog):
+    """SPEC "block", get_prompt: after `line`, the next `cmd` presses Return once and then runs."""
+    v = run_vars([{"cmd": "true"}, {"line": WAITS_FOR_RETURN}, {"cmd": "echo in", "register": "out", "timeout": "12s"}])
+    assert v["out"] == "in"
+    assert sent.lines().count("") == 1
+
+
+@pytest.mark.slow
+def test_p4_41_cmd_that_waits_for_return_times_out():
+    """SPEC "block", get_prompt: the same command sent with `cmd` gets no Return press and times out."""
+    with pytest.raises(TimeoutError, match=r"^timed out after 7(\.0)?s waiting for a shell prompt \('sh'\)$"):
+        run_vars([{"cmd": WAITS_FOR_RETURN, "timeout": "7s"}])
+
+
 @pytest.mark.slow
 def test_p4_40_solicit_after_a_timed_out_rc_check(device, sent: SentLog):
     """SPEC get_prompt: a `$?` check that times out counts like a timed-out wait; the next wait solicits."""
