@@ -660,3 +660,168 @@ def test_p7_19_cli_reports_shape_error_cleanly(tmp_path: Path, form: str):
         "entry point 'bad'): executor has no 'model' attribute (a pydantic model class)"
     )
     assert not marker.exists()
+
+
+def _prepend(monkeypatch: pytest.MonkeyPatch, roots: list[Path]) -> None:
+    """Put ``roots`` on ``sys.path`` in their order, so discovery finds their entry points in that order."""
+    for root in reversed(roots):
+        monkeypatch.syspath_prepend(str(root))
+
+
+def test_p7_20_failed_discovery_raises_again(
+    isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """SPEC.md:495: a broken entry point fails every discovery, not only the first, without loading it again."""
+    _prepend(monkeypatch, _install(tmp_path, BAD_PLUGINS["import"][0]))
+    reg = isolated_registry
+    with pytest.raises(PluginError) as first:
+        reg.discover()
+    with pytest.raises(PluginError) as second:
+        reg.discover()
+    assert str(first.value) == str(second.value) == BAD_PLUGINS["import"][1]
+    assert second.value.__cause__ is first.value
+    assert type(first.value.__cause__) is ModuleNotFoundError
+    assert reg.discover_calls == 1  # type: ignore[attr-defined]
+
+
+def test_p7_20_plugin_after_broken_one_is_not_silently_missing(
+    isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A plugin listed after the broken one is never reported absent: looking it up raises the discovery error."""
+    plugins = [*BAD_PLUGINS["import"][0], ("after", "echo", DUP_PLUGIN, "EchoExecutor")]
+    _prepend(monkeypatch, _install(tmp_path, plugins))
+    reg = isolated_registry
+    with pytest.raises(PluginError):
+        reg.discover()
+    assert "echo" not in reg._executors
+    for lookup in (lambda: reg.has("echo"), lambda: reg.get("echo")):
+        with pytest.raises(PluginError) as ei:
+            lookup()
+        assert str(ei.value) == BAD_PLUGINS["import"][1]
+    with pytest.raises(PluginError, match="failed to load"):
+        Config.model_validate(make_doc([{"echo": "x"}]))
+    assert reg.has("cmd")
+
+
+def test_p7_20_failed_registration_raises_again(
+    isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A plugin rejected at registration (here a duplicate key) is remembered the same way."""
+    plugins, message = BAD_PLUGINS["duplicate-key"]
+    _prepend(monkeypatch, _install(tmp_path, plugins))
+    reg = isolated_registry
+    for _ in range(2):
+        with pytest.raises(PluginError) as ei:
+            reg.discover()
+        assert str(ei.value) == message
+    with pytest.raises(PluginError) as ei:
+        reg.has("nope")
+    assert str(ei.value) == message
+    assert reg.discover_calls == 1  # type: ignore[attr-defined]
+
+
+def test_p7_20_interrupted_discovery_is_retried(
+    isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """`KeyboardInterrupt` isn't remembered: the next discovery tries the entry points again."""
+    plugin_dist(tmp_path, "bad", "raise KeyboardInterrupt\n", "Nothing", name="p720_interrupt")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    reg = isolated_registry
+    for _ in range(2):
+        with pytest.raises(KeyboardInterrupt):
+            reg.discover()
+    assert reg.discover_calls == 2  # type: ignore[attr-defined]
+
+
+class _Boom(Exception):
+    pass
+
+
+def _raising(attr: str, exc: BaseException) -> Any:
+    """An executor whose ``attr`` property raises ``exc``; its other attributes are usable."""
+
+    def boom(self: Any) -> Any:
+        raise exc
+
+    attrs: dict[str, Any] = {"key": "shape", "model": EchoStep, "execute": _run, attr: property(boom)}
+    return type("Raising", (), attrs)()
+
+
+@pytest.mark.parametrize("attr", ["key", "model", "execute"])
+def test_p7_21_raising_attribute_is_a_plugin_error(isolated_registry: StepRegistry, attr: str):
+    """An attribute that raises something other than `AttributeError` is a `PluginError` naming it, chained."""
+    cause = RuntimeError(f"no {attr} today")
+    before = _registry_state(isolated_registry)
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(_raising(attr, cause), origin="distribution pkg, entry point 'shape'")
+    assert str(ei.value) == (
+        f"plugin {__name__}.Raising (distribution pkg, entry point 'shape'): "
+        f"executor's {attr!r} attribute raised RuntimeError: no {attr} today"
+    )
+    assert ei.value.__cause__ is cause
+    assert _registry_state(isolated_registry) == before
+
+
+def test_p7_21_raising_attribute_without_message(isolated_registry: StepRegistry):
+    """An exception without a message is named by its type alone."""
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(_raising("model", _Boom()))
+    assert str(ei.value) == f"plugin {__name__}.Raising: executor's 'model' attribute raised _Boom"
+    assert type(ei.value.__cause__) is _Boom
+
+
+def test_p7_21_raising_attribute_error_is_still_missing(isolated_registry: StepRegistry):
+    """A property raising `AttributeError` still counts as a missing attribute."""
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(_raising("execute", AttributeError("gone")))
+    assert str(ei.value) == f"plugin {__name__}.Raising: executor has no 'execute' method"
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+def test_p7_21_raising_attribute_does_not_wrap_interrupts(isolated_registry: StepRegistry, exc: type[BaseException]):
+    with pytest.raises(exc):
+        isolated_registry.register(_raising("key", exc()))
+
+
+RAISING_KEY_PLUGIN = """
+class BadExecutor:
+    @property
+    def key(self):
+        raise RuntimeError("key lookup failed")
+
+    def execute(self, step, ctx, timeout):
+        pass
+"""
+
+RAISING_KEY_MESSAGE = (
+    "plugin autobot_testplugin_p721_key.BadExecutor (distribution autobot_testplugin_p721_key, "
+    "entry point 'bad'): executor's 'key' attribute raised RuntimeError: key lookup failed"
+)
+
+
+def test_p7_21_discovered_raising_attribute_is_cached(
+    isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The error comes out of discovery like any registration error, and every later discovery raises it again."""
+    plugin_dist(tmp_path, "bad", RAISING_KEY_PLUGIN, "BadExecutor", name="p721_key")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(PluginError) as first:
+        isolated_registry.discover()
+    assert str(first.value) == RAISING_KEY_MESSAGE
+    assert type(first.value.__cause__) is RuntimeError
+    with pytest.raises(PluginError) as second:
+        isolated_registry.discover()
+    assert str(second.value) == RAISING_KEY_MESSAGE
+    assert second.value.__cause__ is first.value
+
+
+def test_p7_21_cli_reports_raising_attribute_cleanly(tmp_path: Path):
+    """A plugin whose `key` property raises is one `Plugin error:` line, rc 1, before prepare runs."""
+    roots = _install(tmp_path, [("p721_key", "bad", RAISING_KEY_PLUGIN, "BadExecutor")])
+    marker = tmp_path / "prepared"
+    script = tmp_path / "script.autobot.yaml"
+    script.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}], prepare=f"touch {marker}")))
+    res = _autobot(roots, "run", str(script))
+    assert _plugin_error(res) == RAISING_KEY_MESSAGE
+    assert res.returncode == 1
+    assert not marker.exists()
