@@ -191,7 +191,7 @@ fn:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). Leading spaces, tabs, line breaks, a byte order mark (U+FEFF) and the zero-width characters U+200B and U+2060 are removed from the rendered script; what remains is written to a temp file. The script is written as UTF-8, whatever the locale's encoding. If it starts with `#!`, the script is executed directly and the shebang picks the interpreter (a `\r` ending the shebang line is dropped). Otherwise it runs under `/bin/sh`, and the progress line says so: `>> prepare: running local script (no shebang, using /bin/sh)`. Aborts if the script exits non-zero (`prepare script failed with exit code <N>`). If the script can't be started (e.g. the interpreter is missing or not executable), aborts with `prepare script could not run ('<first line>'): [Errno <n>] <reason>`, chained from the `OSError`. The temp file is removed in every case, and nothing is spawned after a failure. |
-| `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Rendered as a Jinja2 template. It must name a command: an empty or blank string (`''`, `'  '`) is a validation error (`empty_command` at `attach.spawn`: `spawn must be a command, not an empty or blank string`). A template that renders to an empty or blank string is a `ValueError` when the run starts, `attach.spawn rendered to an empty command: '<template>'`, before `attach.prepare` runs. |
+| `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Rendered as a Jinja2 template. It must name a command: an empty or blank string (`''`, `'  '`) is a validation error. Blank means nothing but whitespace, and whitespace is the same fixed set of characters in the schema and the models: U+0009 to U+000D, U+001C to U+001F, the space, U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000 (so a byte order mark, U+FEFF, isn't whitespace). The error is `empty_command` at `attach.spawn`: `spawn must be a command, not an empty or blank string`. A template that renders to an empty or blank string is a `ValueError` when the run starts, `attach.spawn rendered to an empty command: '<template>'`, before `attach.prepare` runs. |
 | `timeout` | no | Timeout for the initial spawn (duration) |
 | `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. An empty value (`env:`) is invalid, like any explicit `null`. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
 | `script` | no | Steps to run immediately after spawn (before main script) |
@@ -404,13 +404,13 @@ A block breakout's handler reset (step 4) only restarts the response selection; 
       - cmd: sonic-installer install -y image.swi
 ```
 
-With enter and breakout:
+With enter and breakout. The console is entered with `line`, not `cmd`: an idle console shows nothing until Return is pressed, and a wait that follows a `cmd` never sends that solicit newline, so `cmd: consutil connect 0` would time out (see [Prompt Handling](#prompt-handling-get_prompt)). After the `line`, the first `cmd` of the block waits for the console's prompt and presses Return if nothing shows within 5 seconds:
 
 ```yaml
 - block:
     name: Host Console
     enter:
-      - cmd: consutil connect 0
+      - line: consutil connect 0
     script:
       - call: is_system_running
       - cmd: show version
@@ -597,7 +597,7 @@ The prompt engine polls the session output in 5-second intervals:
 
 This handles idle consoles that need a return press to display a prompt.
 
-The solicit newline is for a console that is idle, not for a command that is still running. A wait that follows a command never solicits, however long the command stays silent: the wait after a `cmd` line, after the `$?` check, after each line of an embedded-script upload and its cleanup `rm`, and after a plugin's `session.sendline(...)`. A shell would answer the newline with a second prompt once the command ends, and that stale prompt would end the next wait early, so each later step would capture the output of the command before it. A wait solicits when the last thing sent before it wasn't a command: nothing at all (the first wait after the spawn, a wait after a prompt swap, or the wait after one that timed out), or a raw send, which doesn't wait for a prompt itself (`line`, `return`, `control`, the `^C` of an embedded-script cleanup). So a `cmd` after `line: consutil connect 0` still gets the return press an idle console needs. A plugin marks a raw send with `session.sendline(text, solicit=True)`.
+The solicit newline is for a console that is idle, not for a command that is still running. A wait that follows a command never solicits, however long the command stays silent: the wait after a `cmd` line, after the `$?` check, after each line of an embedded-script upload and its cleanup `rm`, and after a plugin's `session.sendline(...)`. A shell would answer the newline with a second prompt once the command ends, and that stale prompt would end the next wait early, so each later step would capture the output of the command before it. A wait solicits when the last thing sent before it wasn't a command: nothing at all (the first wait after the spawn, a wait after a prompt swap, or the wait after one that timed out), or a raw send, which doesn't wait for a prompt itself (`line`, `return`, `control`, the `^C` of an embedded-script cleanup). So a `cmd` after `line: consutil connect 0` still gets the return press an idle console needs, while `cmd: consutil connect 0` itself would wait for a prompt that never comes: start anything that shows nothing until Return is pressed with `line`. A `$?` check that fails before its result arrives (a timeout or a closed connection) counts like a prompt wait that timed out: the next wait solicits. A plugin's `session.sendline(text)` is a command; a plugin marks a raw send, one whose prompt it doesn't wait for, with `session.sendline(text, solicit=True)`.
 
 ## Migrating from 2026-08
 
@@ -679,6 +679,16 @@ A further tightening, again without a new version number, rejects more values th
 - a regex that doesn't compile, in `errors`, `expect`, `match`, and in an `assert` or `after` without Jinja2 syntax (`invalid_regex`, models only). It used to fail at its first use, after `attach.prepare` and the spawn, with a raw `re.error`.
 
 Empty lists are still accepted for `cmd`, `line`, `control` and `assert`.
+
+The same round changed four behaviors of a run. None of them changes what the schema accepts, but a script or plugin that relied on the old behavior needs a change:
+
+- **The solicit newline is no longer sent after a command** (see [Prompt Handling](#prompt-handling-get_prompt)). Before, every prompt wait pressed Return after 5 seconds of silence. Now a wait that follows a `cmd` line never does.
+  - A `cmd` whose command shows nothing until Return is pressed, e.g. `cmd: consutil connect 0` to enter an idle console, used to complete and now times out. Send it with `line`; the next `cmd` waits for the prompt and solicits it.
+  - A command that is silent for more than 5 seconds no longer gets a newline typed into it. Its captured output no longer contains that newline's echo, and the steps after it no longer capture the output of the command before them.
+  - A plugin that calls `ctx.session.sendline(text)` and then waits for a prompt gets no solicit on that wait. That is right when `text` is a command. When it is a raw send, one that needs a Return press before a prompt shows (connecting to a console, leaving a sub-CLI), pass `ctx.session.sendline(text, solicit=True)`.
+- **A `sendEach` item or field value must be a string, number or boolean** (see [`sendEach`](#sendeach)). An unquoted YAML date or timestamp (`2026-10-04`), or a `!!binary` or `!!set` value, used to be sent as the text of its Python value. It is now an error when the prompts are loaded, e.g. `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote the value to send it as written.
+- **A mapping key wins over a method of the same name in templates** (see [Jinja2 Templating](#jinja2-templating)). `{{ vars.values }}` now reads the key `values`. The other side of it: when `vars`, `env` or `args` has a key named like a method, calling that method by name fails, e.g. `vars.get('k')` or `vars.items()` with a key `get` or `items` is `template error: TypeError: 'str' object is not callable`. Before, the method was called and the key was reachable only as `vars['get']`. Use a filter (`vars | items`) or rename the key.
+- **An exception raised while a template is rendered is a template error.** `{{ 1/0 }}` used to raise `ZeroDivisionError`; it is now a `ValueError`, `template error: ZeroDivisionError: division by zero`. An embedded script is rendered after the step's first prompt wait, like every other `cmd`, so `session.before` in it is what that wait set.
 
 ## CLI
 

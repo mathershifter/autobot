@@ -244,7 +244,7 @@ Captured output (used by `register`, `assert`, `errors`, and `session.before`) i
 - ANSI escape sequences (colors, cursor movement) are removed, so `assert`, `errors` and `register` see plain text. `after` and prompt `expect` regexes, on the other hand, match the raw output, escape sequences included; see [ANSI escape sequences](SPEC.md#ansi-escape-sequences).
 - The prompt line is excluded. Because of that, any text printed without a trailing newline (it shares a line with the next prompt) is not captured — e.g. `printf 'x\ny'` captures `x`.
 
-**Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead.
+**Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead. The same goes for a command that shows nothing until Return is pressed, such as connecting to an idle console (`consutil connect 0`): autobot presses Return for a console that stays silent for 5 seconds, but never while a `cmd` is running, so that `cmd` would time out. Send it with `line`; the next `cmd` waits for the prompt and presses Return if needed.
 
 #### Multi-line commands
 
@@ -334,13 +334,13 @@ Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fa
       - cmd: sonic-installer install -y image.swi
 ```
 
-With enter and breakout:
+With enter and breakout (the console is entered with `line`: a `cmd` would wait for a prompt that an idle console shows only after Return is pressed):
 
 ```yaml
 - block:
     name: Host Console
     enter:
-      - cmd: consutil connect 0
+      - line: consutil connect 0
     script:
       - call: is_system_running
       - cmd: show version
@@ -494,6 +494,17 @@ script:
 ```
 
 Every `call` target must be defined in `fn`. This is checked when the script is loaded, like a misspelled field in a plugin step, so a typo is reported as a validation error before `prepare` runs or anything connects.
+
+## Plugins
+
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
+
+When a plugin sends text itself, it tells the session what kind of send it is:
+
+- `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
+- `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
+
+Before this distinction every prompt wait pressed Return after 5 seconds. A plugin that relied on that after its own `sendline` now needs `solicit=True` (see "Migrating from 2026-08" in SPEC.md).
 
 ## Schema
 
