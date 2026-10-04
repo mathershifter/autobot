@@ -76,3 +76,27 @@ def test_check_template_reports_syntax_errors_like_render(template: str):
     with pytest.raises(ValueError, match="^template error: "):
         check_template(template)
     check_template("{{ vars.nope }}")  # undefined names are only known when rendered
+
+
+# -- P8-17..19: non-finite durations, ASCII digits, invalid search regex -----
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 10**400, "9" * 400 + "h"])
+def test_p8_17_parse_duration_nonfinite(value: Any):
+    """SPEC "Duration Format": a duration must be finite (a NaN timeout never expired)."""
+    with pytest.raises(ValueError, match=r"^invalid duration: .* \(not a finite number\)$"):
+        parse_duration(value)
+
+
+@pytest.mark.parametrize("value", ["٥s", "5٥ms", "1.٥s", "５s"])
+def test_p8_18_parse_duration_ascii_digits_only(value: str):
+    """SPEC "Duration Format": only ASCII digits, as in the schema's pattern."""
+    with pytest.raises(ValueError, match="^invalid duration: "):
+        parse_duration(value)
+
+
+def test_p8_19_search_invalid_regex_is_template_error():
+    """SPEC "Jinja2 Templating": an invalid ``search`` regex is a template error."""
+    with pytest.raises(ValueError, match=r"^template error: search: invalid regex '\(': "):
+        render("{{ 'x' | search('(') }}", {})
+    assert render("{{ 'abc' | search('b+') }}", {}) == "True"

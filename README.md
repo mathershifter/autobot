@@ -398,7 +398,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 1h      # hours
 ```
 
-Durations can't be negative, and `true`/`false` and `null` (e.g. a bare `sleep:`) aren't durations.
+Durations must be finite and can't be negative (`.nan`, `.inf` and `-.inf` are rejected), and `true`/`false` and `null` (e.g. a bare `sleep:`) aren't durations.
 
 ## Templating
 

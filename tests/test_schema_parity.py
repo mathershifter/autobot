@@ -12,6 +12,7 @@ from typing import Any
 
 import pydantic
 import pytest
+import yaml
 from test_models import (
     EMPTY_BAD,
     RETURN_BAD,
@@ -480,3 +481,44 @@ def test_p6_60_parity_plugin_step_good_common_prop_accepted(
     """Valid common props: the static schema still accepts an unknown key (the divergence SPEC allows)."""
     assert both_validate(s({"nope": 1, **props})) == (False, True)
     assert both_validate(s({"probe": "x", **props})) == (True, True)
+
+
+# -- P6-61..62: non-finite durations and non-ASCII digits --------------------
+
+NONFINITE_YAML = {"nan": ".nan", "inf": ".inf", "-inf": "-.inf"}
+DURATION_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "sleep": lambda v: s({"sleep": v}),
+    "attach.timeout": lambda v: d(attach={"spawn": "ssh host", "timeout": v}),
+    "cmd.timeout": lambda v: s({"cmd": "x", "timeout": v}),
+    "cmd.delay_before": lambda v: s({"cmd": "x", "delay_before": v}),
+    "cmd.delay_after": lambda v: s({"cmd": "x", "delay_after": v}),
+    "block.timeout": lambda v: s({"block": {"name": "b", "script": [{"cmd": "x"}]}, "timeout": v}),
+    "block.inner.timeout": lambda v: s({"block": {"name": "b", "script": [{"cmd": "x", "timeout": v}]}}),
+    "call.timeout": lambda v: s({"call": "f", "timeout": v}),
+    "control.timeout": lambda v: s({"control": "c", "timeout": v}),
+    "line.delay_before": lambda v: s({"line": "x", "delay_before": v}),
+    "return.delay_after": lambda v: s({"return": 1, "delay_after": v}),
+    "fn.step.timeout": lambda v: d(fn={"f": {"script": [{"cmd": "x", "timeout": v}]}}),
+}
+
+
+@pytest.mark.parametrize("field", list(DURATION_FIELDS))
+@pytest.mark.parametrize("literal", list(NONFINITE_YAML.values()), ids=list(NONFINITE_YAML))
+def test_p6_61_nonfinite_duration_rejected_on_load(literal: str, field: str):
+    """SPEC "Duration Format": YAML ``.nan``/``.inf``/``-.inf`` are rejected when the script loads.
+
+    A ``timeout: .nan`` made ``get_prompt`` wait forever. JSON can't carry NaN, so
+    only the models see these, and they must reject them in every duration field.
+    """
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    assert isinstance(value, float)
+    errs = model_errors(DURATION_FIELDS[field](value))
+    assert errs, field
+    assert all("not a finite number" in e["msg"] for e in errs)
+
+
+@pytest.mark.parametrize("value", ["٥s", "1.٥s"])
+def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: str):
+    """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""
+    assert both_validate(s({"sleep": value})) == (False, False)
+    assert both_validate(s({"sleep": "5s"})) == (True, True)

@@ -285,7 +285,7 @@
     "duration": {
       "oneOf": [
         { "type": "number", "minimum": 0 },
-        { "type": "string", "pattern": "^\\d+(\\.\\d+)?(ms|s|m|h)$" }
+        { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ms|s|m|h)$" }
       ]
     },
     "regexes": {
