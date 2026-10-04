@@ -370,6 +370,8 @@ Sends text without waiting for a prompt before or after. Use for commands that w
 - control: [a, x]        # Ctrl+A then Ctrl+X
 ```
 
+Each value is one character: a letter (either case) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. Anything else (`""`, `"ab"`, `"1"`) fails validation with `control_char` when the script is loaded.
+
 ## Common Step Properties
 
 All step types except `sleep` support these optional fields:

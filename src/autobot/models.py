@@ -7,7 +7,7 @@ from typing import Annotated, Any
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, Omittable, StringOrArray
+from .types import Duration, Omittable, StringOrArray, ensure_list
 
 VERSION = "2026-10"
 
@@ -235,6 +235,10 @@ class ReturnStep(pydantic.BaseModel):
     delay_after: Omittable[Duration] = None
 
 
+# what sendcontrol maps to a control character: Ctrl+A..Z in either case, and the punctuation keys
+CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
+
+
 class ControlStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     control: StringOrArray
@@ -243,6 +247,17 @@ class ControlStep(pydantic.BaseModel):
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
     timeout: Omittable[Duration] = None
+
+    @pydantic.field_validator("control")
+    @classmethod
+    def _control(cls, v: StringOrArray) -> StringOrArray:
+        for char in ensure_list(v):
+            if not CONTROL_RE.fullmatch(char):
+                raise _custom(
+                    "control_char",
+                    f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got {char!r}",
+                )
+        return v
 
 
 class PluginStep(pydantic.BaseModel):

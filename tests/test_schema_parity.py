@@ -517,6 +517,55 @@ def test_p6_61_nonfinite_duration_rejected_on_load(literal: str, field: str):
     assert all("not a finite number" in e["msg"] for e in errs)
 
 
+# -- P6-63: control values ---------------------------------------------------
+
+CONTROL_CHARS = [*"abcdefghijklmnopqrstuvwxyz", *"ABCDEFGHIJKLMNOPQRSTUVWXYZ", *"@`[{\\|]}^~_?"]
+CONTROL_BAD = {
+    "empty": "",
+    "two": "ab",
+    "digit": "1",
+    "space": " ",
+    "newline-after": "a\n",
+    "non-ascii": "é",
+    "kelvin": "K",  # lowercases to "k"
+    "caret-name": "^C",
+    "in-list": ["a", "ab"],
+    "empty-in-list": ["a", ""],
+    "number": 3,
+}
+
+
+@pytest.mark.parametrize("value", [*CONTROL_CHARS, CONTROL_CHARS, []], ids=repr)
+def test_p6_63_parity_control_accepted(both_validate: Callable, value: Any):
+    """SPEC "control": every key with a control character is accepted by both, alone or in a list (even an empty one)."""
+    assert both_validate(s({"control": value})) == (True, True)
+
+
+@pytest.mark.parametrize("value", list(CONTROL_BAD.values()), ids=list(CONTROL_BAD))
+def test_p6_63_parity_control_rejected(both_validate: Callable, value: Any):
+    """SPEC "control": a value that isn't exactly one control key is rejected by both, at the step's control."""
+    doc = s({"control": value})
+    assert both_validate(doc) == (False, False)
+    assert all(e["loc"][:3] == ("script", 0, "control") for e in model_errors(doc))
+    if isinstance(value, (str, list)):
+        [err] = model_errors(doc)
+        assert (err["loc"], err["type"]) == (("script", 0, "control", "control"), "control_char")
+
+
+def test_p6_63_control_chars_are_what_sendcontrol_maps():
+    """SPEC "control": the accepted characters are exactly the ASCII ones pexpect's sendcontrol sends a byte for."""
+    import ptyprocess
+
+    class Pty:
+        @staticmethod
+        def _writeb(b: bytes) -> int:
+            return len(b)
+
+    sends = {c for c in map(chr, range(32, 127)) if ptyprocess.PtyProcess.sendcontrol(Pty(), c)[0]}
+    assert sends == set(CONTROL_CHARS)
+    assert {c for c in map(chr, range(32, 127)) if models.CONTROL_RE.fullmatch(c)} == sends
+
+
 @pytest.mark.parametrize("value", ["٥s", "1.٥s"])
 def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: str):
     """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""

@@ -226,7 +226,12 @@
       "required": ["control"],
       "additionalProperties": false,
       "properties": {
-        "control": { "$ref": "#/$defs/stringOrArray" },
+        "control": {
+          "oneOf": [
+            { "$ref": "#/$defs/controlChar" },
+            { "type": "array", "items": { "$ref": "#/$defs/controlChar" } }
+          ]
+        },
         "after": { "type": "string" },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
@@ -281,6 +286,11 @@
         "match": { "$ref": "#/$defs/regexes" },
         "field": { "type": "string" }
       }
+    },
+    "controlChar": {
+      "type": "string",
+      "maxLength": 1,
+      "pattern": "[A-Za-z@`\\[{\\\\|\\]}^~_?]"
     },
     "duration": {
       "oneOf": [

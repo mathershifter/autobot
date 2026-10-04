@@ -459,6 +459,8 @@ The value is required and must be an integer ≥ 1.
 - control: [a, x]        # Ctrl+A then Ctrl+X
 ```
 
+Each value is exactly one character: a letter `a`-`z` (Ctrl+A to Ctrl+Z; `A`-`Z` is the same) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. These are the keys that have a control character: `@` and `` ` `` send NUL, `[` and `{` ESC, `\` and `|` FS, `]` and `}` GS, `^` and `~` RS, `_` US, and `?` DEL. Anything else, such as `""`, `"ab"`, `"1"` or a non-ASCII letter, is a validation error (`control_char`) at the step's `control`, reported when the script is loaded: ``a control value is one character, a letter or one of @ ` [ { \ | ] } ^ ~ _ ?, got '<value>'``. An empty list is accepted and sends nothing. Quote the punctuation in YAML (`control: "]"`).
+
 ## Common Step Properties
 
 All step types except `sleep` support:
