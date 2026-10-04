@@ -44,6 +44,12 @@ class StepRegistry:
             raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
             )
+        if key == "plugin":
+            # `autobot schema` names a plugin's definition `<key>Step`, and `pluginStep` is the catch-all
+            raise PluginError(
+                f"plugin {who}: step key {key!r} is reserved (the schema's pluginStep definition "
+                "and the plugin step type in validation errors use the name)"
+            )
         clashes = [
             name if name == field else f"{name} (field {field!r})"
             for field, info in model.model_fields.items()

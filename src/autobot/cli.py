@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -133,15 +134,17 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
     one_of = defs["step"]["oneOf"]
     for executor in executors:
         name = f"{executor.key}Step"
-        prefix = f"#/$defs/{name}/$defs/"
+        # the name as a JSON pointer token in a URI fragment: `~` and `/` escaped, the rest percent-encoded
+        ref = f"#/$defs/{urllib.parse.quote(name.replace('~', '~0').replace('/', '~1'), safe='')}"
+        prefix = f"{ref}/$defs/"
         model = executor.model.model_json_schema(ref_template=f"{prefix}{{model}}")
         step: dict[str, Any] = {"$defs": model.pop("$defs")} if "$defs" in model else {}
         # a recursive model's root is a $ref to its own def: inline a copy, so the step's root is open to
         # the common props, and keep the closed def for the nested references
-        ref = model.get("$ref", "")
-        if ref.startswith(prefix) and ref.removeprefix(prefix) in step.get("$defs", {}):
+        root = model.get("$ref", "")
+        if root.startswith(prefix) and root.removeprefix(prefix) in step.get("$defs", {}):
             del model["$ref"]
-            model |= copy.deepcopy(step["$defs"][ref.removeprefix(prefix)])
+            model |= copy.deepcopy(step["$defs"][root.removeprefix(prefix)])
         # the plugin's model sees every key but the common props, so its closing additionalProperties
         # moves out to cover the keys neither it nor stepCommon evaluates
         rest = model.pop("additionalProperties", None)
@@ -149,7 +152,7 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
         if rest is not None:
             step["unevaluatedProperties"] = rest
         defs[name] = step
-        one_of.insert(-1, {"$ref": f"#/$defs/{name}"})
+        one_of.insert(-1, {"$ref": ref})
         defs["pluginStep"]["not"]["anyOf"].append({"required": [executor.key]})
     return schema
 
