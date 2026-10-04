@@ -20,6 +20,7 @@ from conftest import (
     FakeDevice,
     SentLog,
     make_runner,
+    run_vars,
 )
 
 from autobot.runner import Runner
@@ -528,3 +529,55 @@ def test_p4_36_eof_names_shell_prompts(handlers: list[PromptHandler], names: str
         assert str(ei.value) == f"connection closed while waiting for a shell prompt {names}"
     finally:
         s.detach()
+
+
+# -- P4-37..38: no solicit newline while a command is running ----------------
+
+SILENT_7S = [
+    {"cmd": "sleep 7; echo first", "register": "one", "timeout": "20s"},
+    {"cmd": "echo second", "register": "two"},
+    {"cmd": "echo third", "register": "three"},
+]
+SILENT_CHECKS = {"errors": {"errors": ["NOMATCH"]}, "rc": {}}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("check", SILENT_CHECKS)
+def test_p4_37_no_solicit_while_a_command_runs(sent: SentLog, check: str):
+    """SPEC get_prompt step 3: a command silent for more than 5 s isn't answered with a solicit newline.
+
+    The newline made the shell print a second prompt, so every later step captured the
+    output of the command before it.
+    """
+    v = run_vars(SILENT_7S, **SILENT_CHECKS[check])
+    assert (v["one"], v["two"], v["three"]) == ("first", "second", "third")
+    assert "" not in sent.lines()
+
+
+@pytest.mark.slow
+def test_p4_37_assert_sees_its_own_command_after_a_silent_one(sent: SentLog):
+    """SPEC get_prompt step 3: after a long silent command, `assert` checks its own command's output."""
+    run_vars([SILENT_7S[0], {"cmd": "echo second", "assert": "^second$"}])
+    assert "" not in sent.lines()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("send", ["command", "line", "control", "nothing"])
+def test_p4_38_solicit_only_for_a_wait_not_after_a_command(device, sent: SentLog, send: str):
+    """SPEC get_prompt step 3: a wait after a raw send (`line`, `return`, `control`) or after nothing solicits."""
+    r, _ = device([SHELL_PROMPT], "--silent", kick=False)
+    if send == "command":
+        r.session.sendline("x")
+    elif send == "line":
+        r.session.sendline("x", solicit=True)
+    elif send == "control":
+        r.session.sendcontrol("a")
+    sent.clear()
+    with pytest.raises(TimeoutError):
+        r.session.get_prompt(timeout=6)
+    assert sent.lines() == ([] if send == "command" else [""])
+    # the timed-out wait consumed the command: the next wait follows no send, so it solicits
+    sent.clear()
+    with pytest.raises(TimeoutError):
+        r.session.get_prompt(timeout=6)
+    assert sent.lines() == [""]
