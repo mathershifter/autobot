@@ -15,6 +15,10 @@ _jinja_env = jinja2.Environment(undefined=jinja2.StrictUndefined)
 _jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
 
 
+class EnvError(ValueError):
+    """An `env` reference cycle or nesting limit, found while a default is rendered; not a template error."""
+
+
 def _search(s: Any, pattern: str) -> bool:
     try:
         return bool(re.search(pattern, str(s)))
@@ -66,6 +70,12 @@ def render(template: Any, ctx: dict) -> Any:
         return _jinja_env.from_string(template).render(ctx)
     except jinja2.TemplateError as e:
         raise ValueError(f"template error: {e}") from e
+    except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
+        # already reported: by a render inside this one (an env default), or by a filter
+        if isinstance(e, EnvError) or (type(e) is ValueError and str(e).startswith("template error: ")):
+            raise
+        why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        raise ValueError(f"template error: {why}") from e
 
 
 def check_template(template: str) -> None:

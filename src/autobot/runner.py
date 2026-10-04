@@ -13,7 +13,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import check_template
+from .types import EnvError, check_template
 from .types import render as render_template
 
 # markup off: log lines echo commands, names and errors that may look like [tags]
@@ -93,9 +93,9 @@ class _EnvRefs(Mapping[str, Any]):
         if key not in self.__done:
             if key in self.__path:
                 cycle = [*self.__path[self.__path.index(key):], key]
-                raise ValueError(f"env cycle: {' -> '.join(cycle)}")
+                raise EnvError(f"env cycle: {' -> '.join(cycle)}")
             if len(self.__path) == ENV_DEPTH:
-                raise ValueError(f"env nesting deeper than {ENV_DEPTH} levels: {self.__path[0]} -> ... -> {key}")
+                raise EnvError(f"env nesting deeper than {ENV_DEPTH} levels: {self.__path[0]} -> ... -> {key}")
             self.__path.append(key)
             try:
                 self.__done[key] = render_template(self.__raw[key], self.__ctx)
