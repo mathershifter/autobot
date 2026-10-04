@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SHELL_ENV, SentLog, steps
+from conftest import SHELL_ENV, SentLog, Timeline, steps
 from conftest import run_vars as run
 
 import autobot.steps
@@ -352,6 +352,26 @@ def test_p2_19_interrupt_failure_does_not_mask_timeout(
     finally:
         tmp_path_hex.unlink(missing_ok=True)
         Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("cmd", ["#!/bin/sh\necho got-{{ session.before | trim }}\n", "echo got-{{ session.before | trim }}"])
+def test_p2_21_rendered_after_the_first_prompt_wait(cmd: str):
+    """SPEC "cmd": the whole cmd, an embedded script too, is rendered once, after the step's first prompt wait.
+
+    The `line` leaves the session away from the prompt, so the step's first wait sets `session.before`.
+    """
+    out = run([{"cmd": "echo old"}, {"line": "echo fresh"}, {"cmd": cmd, "register": "out"}])
+    assert out["out"] == "got-fresh"
+
+
+def test_p2_21_embedded_template_error_comes_after_the_prompt_wait(sent: SentLog, timeline: Timeline):
+    """SPEC "cmd": the script is rendered after the step's first prompt wait, so a template error
+    is raised once that wait is done (it used to be raised before any wait), and sends nothing."""
+    with pytest.raises(ValueError, match="^template error: "):
+        run([{"cmd": "#!/bin/sh\necho {{ vars.nope }}\n"}])
+    assert timeline.since("attach") == [("get_prompt", None)]
+    assert sent.commands() == []
+    assert sent.controls() == []
 
 
 def test_p2_20_no_interrupt_on_success_or_failure(sent: SentLog):

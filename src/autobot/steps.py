@@ -17,7 +17,7 @@ from .models import (
     SleepStep,
 )
 from .session import CommandError
-from .types import ensure_list
+from .types import check_regex, ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext
@@ -75,6 +75,10 @@ class CmdExecutor:
         assertions = ensure_list(step.assert_)
         if assertions:
             rendered = [ctx.render(a) for a in assertions]
+            for p in rendered:
+                if not p:
+                    raise ValueError("assert: a pattern rendered to an empty regex, which matches any output")
+                check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
         elif not ctx.config.errors:
@@ -88,14 +92,15 @@ class CmdExecutor:
             console.print(f">> register: vars.{step.register_}")
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
-        script = ctx.render(str(step.cmd))
-        if not script.endswith("\n"):
-            script += "\n"  # jinja drops the trailing newline
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         output = ""
         interrupt = False
         if not step.after:
             ctx.session.get_prompt(timeout=timeout)
+        # rendered after the first prompt wait, like any cmd: session.* is what that wait set
+        script = ctx.render(str(step.cmd))
+        if not script.endswith("\n"):
+            script += "\n"  # jinja drops the trailing newline
         try:
             console.print(f">> script: writing to {tmp}")
             self._upload(ctx, script.encode(), tmp, timeout)
@@ -208,7 +213,7 @@ class LineExecutor:
 
     def execute(self, step: LineStep, ctx: RunnerContext, timeout: float) -> None:
         for line in ensure_list(step.line):
-            ctx.session.sendline(ctx.render(line))
+            ctx.session.sendline(ctx.render(line), solicit=True)
 
 
 class ReturnExecutor:
@@ -217,7 +222,7 @@ class ReturnExecutor:
 
     def execute(self, step: ReturnStep, ctx: RunnerContext, timeout: float) -> None:
         for _ in range(step.newline_count):
-            ctx.session.sendline("")
+            ctx.session.sendline("", solicit=True)
 
 
 class ControlExecutor:

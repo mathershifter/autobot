@@ -9,13 +9,15 @@ YAML script → pydantic validation → Runner → Session (pexpect) → remote 
 ```
 
 - **YAML script** defines environment, credentials, prompt patterns, functions, attach config, and a step-based script.
-- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-10.json`. They also check what a JSON schema can't express: every `call` target is defined in `fn`, and every plugin step's fields are valid for its plugin model. All of this happens when the script is loaded, before `attach.prepare` runs or anything is spawned.
+- **Pydantic models** (`Config` and subtypes) validate and parse the YAML against `schemas/autobot.2026-10.json`. They also check what a JSON schema can't express: every `call` target is defined in `fn`, every plugin step's fields are valid for its plugin model, and every regex that can be checked before the run compiles. All of this happens when the script is loaded, before `attach.prepare` runs or anything is spawned.
 - **Runner** renders Jinja2 templates, dispatches steps, and manages block breakouts.
 - **Session** wraps pexpect, handles prompt detection and credential cycling.
 
 ## YAML Script Structure
 
 All fields validated by pydantic against `schemas/autobot.2026-10.json`. The JSON schema is normative: the models reject every document the schema rejects, and accept what it accepts except where a static schema can't decide. One such case is step keys. A static schema can't know which plugins are installed, so its `pluginStep` accepts any object that has no built-in step key and whose [common step properties](#common-step-properties) are valid (it applies `$defs.stepCommon`); the step's other keys aren't checked. The models accept a step key that isn't built in only if an installed plugin registers it, and otherwise reject the step (`invalid_step`). They also reject a step with more than one plugin key, which the static schema accepts as a `pluginStep` (see [Common Step Properties](#common-step-properties)).
+
+Another such case is regular expressions. A JSON schema can't check Python regex syntax, so only the models compile them. Every regex that is used as written is compiled when the script is loaded: the top-level `errors`, and a prompt's `expect` and the `match` of its `fields` entries, in top-level and block `prompts`. One that doesn't compile is a validation error of type `invalid_regex` at the value (e.g. `errors.1`, `prompts.0.expect`, `prompts.0.expect.1`, `prompts.0.send.fields.0.match.1`), with the message `invalid regex '<regex>': <reason>`, e.g. `invalid regex '(': missing ), unterminated subpattern at position 0`. `assert` and `after` are templates. One that contains no Jinja2 syntax (`{{`, `{%` or `{#`) is checked the same way when the script is loaded, at `script.N.cmd.assert` (the first bad pattern of a list) or the step's `after`. One that does is checked when it is used, once rendered: a result that isn't a valid regex is a `ValueError`, `assert: invalid regex '<rendered>': <reason>` or `after: invalid regex '<rendered>': <reason>`, chained from the `re.error`. So an invalid regex never surfaces as a raw `re.error`, and one that can be known before the run stops the script before `attach.prepare` runs or anything is spawned.
 
 An optional field is either omitted or given a value of its type. An explicit `null`, including a key with an empty YAML value (`after:`, `timeout: ~`), is invalid for every optional field, including the common step properties of plugin steps: omit the key instead to get the default. The error type is `null_value`, located at the key. A plugin's own fields follow the plugin's model.
 
@@ -27,7 +29,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 | `env` | no | String key-value defaults, overridden by OS environment variables. Supports nesting: a value may reference other keys (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), in any order. Each default is rendered once, after the values it references; the text it renders to isn't rendered again. Any read of a key's value counts as a reference, including `env.get('KEY')` and `env.items()`. An OS variable's value is used exactly as written: it isn't a template and is never rendered, so `{{` in it is plain text, and a key that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a value that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a key that isn't in `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
-| `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking. |
+| `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking. Each pattern is a valid, non-empty regex: an empty one (`''`) would match any output and fail every command, so it is a validation error (`string_too_short` at `errors.N`: `an errors pattern must not be empty: an empty regex matches any output, so every command would fail`), and one that doesn't compile is `invalid_regex`. `errors: []` is the same as no `errors`. |
 | `fn` | no | Named functions (reusable step sequences) |
 | `attach` | yes | Session spawn and lifecycle config |
 | `script` | yes | Ordered list of steps to execute |
@@ -64,8 +66,9 @@ These are validation errors at the prompt, reported like any other before anythi
 | an `expect` entry is a list | `prompts.N.expect.M` | `grouped_expect`: `each expect entry is a single regex, and the regexes are alternatives; to answer a sequence of prompts such as a login, use sendEach with fields` |
 | `expect: []` | `prompts.N.expect` | `too_short`: `expect must be a regex or a non-empty list of regexes` |
 | `expect: ''`, or an `expect` entry `''` | `prompts.N.expect`, or `prompts.N.expect.M` for an entry | `string_too_short`: `a regex must not be empty: an empty regex matches at once, before any output` |
+| `expect`, or an `expect` entry, isn't a valid regex | `prompts.N.expect`, or `prompts.N.expect.M` for an entry | `invalid_regex`: `invalid regex '<regex>': <reason>` (models only, see [YAML Script Structure](#yaml-script-structure)) |
 
-The `too_short` and `string_too_short` messages don't end with the migration hint. In a prompt whose `sendEach` has `fields`, an empty `expect` (`[]`, `''` or `['']`) is reported only as `expect_with_fields` (see [`sendEach`](#sendeach)): there `expect` must be absent. The empty-`expect` errors are reported together with the prompt's other errors, such as `return_with_send` or `grouped_expect`.
+The `too_short`, `string_too_short` and `invalid_regex` messages don't end with the migration hint. In a prompt whose `sendEach` has `fields`, an empty `expect` (`[]`, `''` or `['']`) is reported only as `expect_with_fields` (see [`sendEach`](#sendeach)): there `expect` must be absent. The empty-`expect` errors are reported together with the prompt's other errors, such as `return_with_send` or `grouped_expect`.
 
 An invalid `send` (`send_list`, `send_type`) is reported on its own: the prompt's other rules, such as `return_with_send`, `grouped_expect`, a missing or empty `expect`, are checked only once `send` is valid. So a 2026-08 login with a grouped `expect` and a `send` list reports `send_list` first. The JSON schema rejects the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...`.
 
@@ -105,13 +108,14 @@ These rules are validation errors, reported like any other before anything runs:
 | `fields: []` | `prompts.N.send.fields` | `too_short` |
 | `match: []` | `prompts.N.send.fields.K.match` | `too_short` (`match must be a regex or a non-empty list of regexes`) |
 | `match: ''`, or a `match` entry `''` | `prompts.N.send.fields.K.match`, or `prompts.N.send.fields.K.match.M` for an entry | `string_too_short` (`a regex must not be empty: an empty regex matches at once, before any output`) |
+| `match`, or a `match` entry, isn't a valid regex | `prompts.N.send.fields.K.match`, or `prompts.N.send.fields.K.match.M` for an entry | `invalid_regex` (`invalid regex '<regex>': <reason>`) |
 | a `fields` entry without `match` or `field`, or with another key | `prompts.N.send.fields.K.<key>` | `missing` / `extra_forbidden` |
 | a `fields` entry that is a string (the 2026-08 form) | `prompts.N.send.fields.K` | `fields_entry` (`since 2026-10 a fields entry pairs a regex with a field: write {match: <regex>, field: <name>} (see "Migrating from 2026-08" in SPEC.md)`) |
 | `expect` next to `fields` (even `expect: []` or `expect: ''`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
 | no `expect`, and no `sendEach` with `fields` | `prompts.N.expect` | `missing` |
 | `return: true` with a `sendEach` (with or without `fields`), or any other `send` | `prompts.N.send` | `return_with_send` (`a return prompt is a shell prompt and sends nothing; remove send or return`) |
 
-The JSON schema states all of them, so the models and the schema reject the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...` (the step's type tag comes before its key).
+The JSON schema states all of them except `invalid_regex`, which only the models can check, so apart from that the models and the schema reject the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...` (the step's type tag comes before its key).
 
 In the example, `vars.creds` is resolved, and each item becomes one credential set: the value of each entry's field, in entry order. The collection is resolved when the prompts are loaded (at script start for the top-level `prompts`, on entering the block for a block's `prompts`, so a block sees `vars` registered by earlier steps), and its values are sent as they are, never rendered as templates.
 
@@ -131,7 +135,7 @@ A collection that doesn't meet these rules is an error when the prompts are load
 | A field's value isn't a string, number or boolean | `item 2 field 'password' is null, not a string, number or boolean` |
 | An item isn't a string, number or boolean (without `fields`) | `item 0 is a mapping; without fields each item must be a string, number or boolean` |
 
-Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`.
+Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`, and for the other values YAML can produce, `a timestamp`, `binary data` and `a set`. Those are never sent: an unquoted date such as `2026-10-04` is a timestamp, not a string, so `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote it to send it as written.
 
 #### Response selection
 
@@ -187,7 +191,7 @@ fn:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `prepare` | no | Local script to run before spawning the session (e.g. authentication, tunnel setup). Rendered as a Jinja2 template first (see [Jinja2 Templating](#jinja2-templating)). Leading spaces, tabs, line breaks, a byte order mark (U+FEFF) and the zero-width characters U+200B and U+2060 are removed from the rendered script; what remains is written to a temp file. The script is written as UTF-8, whatever the locale's encoding. If it starts with `#!`, the script is executed directly and the shebang picks the interpreter (a `\r` ending the shebang line is dropped). Otherwise it runs under `/bin/sh`, and the progress line says so: `>> prepare: running local script (no shebang, using /bin/sh)`. Aborts if the script exits non-zero (`prepare script failed with exit code <N>`). If the script can't be started (e.g. the interpreter is missing or not executable), aborts with `prepare script could not run ('<first line>'): [Errno <n>] <reason>`, chained from the `OSError`. The temp file is removed in every case, and nothing is spawned after a failure. |
-| `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`) |
+| `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Rendered as a Jinja2 template. It must name a command: an empty or blank string (`''`, `'  '`) is a validation error. Blank means nothing but whitespace, and whitespace is the same fixed set of characters in the schema and the models: U+0009 to U+000D, U+001C to U+001F, the space, U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000 (so a byte order mark, U+FEFF, isn't whitespace). The error is `empty_command` at `attach.spawn`: `spawn must be a command, not an empty or blank string`. A template that renders to an empty or blank string is a `ValueError` when the run starts, `attach.spawn rendered to an empty command: '<template>'`, before `attach.prepare` runs. |
 | `timeout` | no | Timeout for the initial spawn (duration) |
 | `env` | no | Environment variables for the spawned process. Replaces the full process environment (not merged with the parent). If omitted, defaults to `TERM=dumb` and `NO_COLOR=1`. An empty map (`env: {}`) is not omitted: the process gets an empty environment. An empty value (`env:`) is invalid, like any explicit `null`. The `spawn` command is looked up in the `PATH` of `env`, or in the system default path (`/bin:/usr/bin` on Linux) when `env` has no `PATH`, as with the default; give a full path or set `PATH` for commands elsewhere. |
 | `script` | no | Steps to run immediately after spawn (before main script) |
@@ -235,6 +239,12 @@ After the last command line, the step:
 
 When `assert` is defined, it replaces the return code check — the assertion pattern is the success criteria. If top-level `errors` patterns are defined, they replace the `$?` check.
 
+`assert` is a regex or a list of regexes, each rendered as a template after the last line's prompt returns and searched for in the captured output (`re.search`, no flags). An empty pattern would match any output, so the step would check nothing:
+- `assert: ''`, or an empty entry in the list, is a validation error (`string_too_short` at the step's `assert`: `an assert pattern must not be empty: an empty regex matches any output, so the assert would check nothing`).
+- A pattern that renders to an empty string aborts the step with a `ValueError`, `assert: a pattern rendered to an empty regex, which matches any output`. Like an invalid regex, it isn't a command failure, so `ignore_error` doesn't cover it.
+
+`assert: []` is accepted and is the same as no `assert`, as `cmd: []`, `line: []` and `control: []` are accepted and send nothing. A pattern that isn't a valid regex is an error when the script is loaded or, for a template, when it is rendered (see [YAML Script Structure](#yaml-script-structure)).
+
 #### Captured output
 
 The captured output of a command line is the text the session prints between sending the line and the next shell prompt, with:
@@ -276,12 +286,12 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result. The `TimeoutError` messages are `timed out after <timeout>s waiting for a shell prompt ('<name>', ...)` (the names of the current shell prompts, or `none defined`), `... waiting for the after pattern '<pattern>'` (the rendered pattern) and `... waiting for the exit code of the command (echo $?)`
 - a closed connection (`EOFError`). The message starts with `connection closed` and names what was being waited for, as the timeouts do: `connection closed while waiting for a shell prompt ('<name>', ...)`, `... while waiting for the after pattern '<pattern>'` and `... while waiting for the exit code of the command (echo $?)`
-- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and invalid regular expressions in `assert` or `errors`
+- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and an `assert` or `after` that renders to an invalid regular expression, or an `assert` that renders to an empty one (`assert: invalid regex ...`, `after: invalid regex ...`; an invalid regex that isn't a template never gets this far, it fails validation)
 - prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
 
-Set `register` to store the command's captured output into `vars.<name>`, making it available to subsequent steps via Jinja2 templates as `{{ vars.<name> }}`. The stored value is the output text with leading and trailing whitespace stripped.
+Set `register` to store the command's captured output into `vars.<name>`, making it available to subsequent steps via Jinja2 templates as `{{ vars.<name> }}`. The stored value is the output text with leading and trailing whitespace stripped. The name is used as written (it isn't a template) and must not be empty: `register: ''` is a validation error (`string_too_short` at the step's `register`), rather than a step that silently stores nothing.
 
 ```yaml
 - cmd: show version
@@ -321,7 +331,7 @@ If `cmd` is a string starting with `#!` (before rendering), it is treated as an 
     print(data["version"])
 ```
 
-Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Embedded scripts must be a single string, not a list.
+Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Like any `cmd`, the script is rendered once, after the step's first prompt wait and before anything is sent, so `session.before` and `session.match` in it are what that wait set, and a template error uploads nothing. Embedded scripts must be a single string, not a list.
 
 Upload mechanism:
 - The rendered script (with a trailing newline preserved) is base64-encoded and sent in single-line chunks of at most 512 base64 characters, waiting for the prompt after each, to `/tmp/_autobot_<uuid>.b64`. It is then decoded to `/tmp/_autobot_<uuid>`.
@@ -376,12 +386,12 @@ The block lifecycle:
 
 The swap (step 1) and the restore (step 5) neither read from the session nor send anything. They change only whether the session counts as being at a shell prompt, that is, whether the next prompt wait (e.g. the first wait of a `cmd`) returns at once (see [Prompt Handling](#prompt-handling-get_prompt)):
 
-- If the session is at a shell prompt, the text of that prompt is checked against the new prompts the way a prompt wait would read it. The text is the prompt's line as the last prompt wait matched it: from the end of the last line break or escape sequence before the match, up to the end of the match, escape sequences in the match included. As in a prompt wait, the match that starts earliest in that text wins, among `\r\n`, escape sequences and the new prompts' regexes, with ties broken the same way. A winning line break or escape sequence is skipped and the rest of the text is checked again. If the winner belongs to a shell prompt, the session stays at the prompt: the next `cmd` sends at once, without the 5-second idle wait or a solicit newline. If it belongs to a prompt with `send`, or nothing matches, the session no longer counts as at a prompt. So does a new prompt regex that isn't valid; the next prompt wait reports the error.
+- If the session is at a shell prompt, the text of that prompt is checked against the new prompts the way a prompt wait would read it. The text is the prompt's line as the last prompt wait matched it: from the end of the last line break or escape sequence before the match, up to the end of the match, escape sequences in the match included. As in a prompt wait, the match that starts earliest in that text wins, among `\r\n`, escape sequences and the new prompts' regexes, with ties broken the same way. A winning line break or escape sequence is skipped and the rest of the text is checked again. If the winner belongs to a shell prompt, the session stays at the prompt: the next `cmd` sends at once, without the 5-second idle wait or a solicit newline. If it belongs to a prompt with `send`, or nothing matches, the session no longer counts as at a prompt. So does a new prompt regex that isn't valid; the next prompt wait reports the error. (A script's prompts can't have one, since they are checked when the script is loaded; this concerns handlers built in code, e.g. by a plugin.)
 - If the session isn't at a shell prompt (e.g. after a `line`, `return` or `control` step, or a step that timed out), it stays that way. A swap or restore never puts the session at a prompt.
 
 So a block whose prompts recognize the prompt on screen, e.g. one that only adds a handler for a confirmation question, or nests a block with the same shell prompt, costs no extra wait or newline on entry or exit. Captured output is unaffected: the check consumes no output, and `session.before` and `session.match` keep the values of the last prompt wait.
 
-When the session doesn't count as at a prompt, the next prompt wait reads new output with the new prompts, and sends its one solicit newline if nothing matches by its first poll timeout (5 seconds, or the wait's timeout if that is shorter). A prompt that the active prompts don't recognize is never used to send a command, and an idle shell answers the solicit newline with the same prompt again. So:
+When the session doesn't count as at a prompt, the next prompt wait reads new output with the new prompts, and sends its one solicit newline if nothing matches by its first poll timeout (5 seconds, or the wait's timeout if that is shorter), unless the wait follows a command (see [Prompt Handling](#prompt-handling-get_prompt)). A prompt that the active prompts don't recognize is never used to send a command, and an idle shell answers the solicit newline with the same prompt again. So:
 - A `cmd` as the first step of a block whose prompts don't recognize the current prompt times out. Enter the sub-CLI with `line` (it sends without waiting for a prompt), as in the example below, or also list the current prompt in the block's prompts.
 - On exit, the restore runs after the breakout. If the block leaves the session at a prompt that the restored prompts don't recognize (e.g. it has no breakout to leave the sub-CLI), the next `cmd` outside the block times out. A breakout that ends with `line: exit` leaves the session not at a prompt, and the next `cmd` waits for the outer prompt that the exit brings back.
 
@@ -394,13 +404,13 @@ A block breakout's handler reset (step 4) only restarts the response selection; 
       - cmd: sonic-installer install -y image.swi
 ```
 
-With enter and breakout:
+With enter and breakout. The console is entered with `line`, not `cmd`: an idle console shows nothing until Return is pressed, and a wait that follows a `cmd` never sends that solicit newline, so `cmd: consutil connect 0` would time out (see [Prompt Handling](#prompt-handling-get_prompt)). After the `line`, the first `cmd` of the block waits for the console's prompt and presses Return if nothing shows within 5 seconds:
 
 ```yaml
 - block:
     name: Host Console
     enter:
-      - cmd: consutil connect 0
+      - line: consutil connect 0
     script:
       - call: is_system_running
       - cmd: show version
@@ -459,13 +469,15 @@ The value is required and must be an integer ≥ 1.
 - control: [a, x]        # Ctrl+A then Ctrl+X
 ```
 
+Each value is exactly one character: a letter `a`-`z` (Ctrl+A to Ctrl+Z; `A`-`Z` is the same) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. These are the keys that have a control character: `@` and `` ` `` send NUL, `[` and `{` ESC, `\` and `|` FS, `]` and `}` GS, `^` and `~` RS, `_` US, and `?` DEL. Anything else, such as `""`, `"ab"`, `"1"` or a non-ASCII letter, is a validation error (`control_char`) at the step's `control`, reported when the script is loaded: ``a control value is one character, a letter or one of @ ` [ { \ | ] } ^ ~ _ ?, got '<value>'``. An empty list is accepted and sends nothing. Quote the punctuation in YAML (`control: "]"`).
+
 ## Common Step Properties
 
 All step types except `sleep` support:
 
 | Field | Description |
 |-------|-------------|
-| `after` | Expect regex — wait for this pattern before executing. Matched against the raw output, escape sequences included (see [ANSI escape sequences](#ansi-escape-sequences)). On match, populates `session.before` and `session.match` |
+| `after` | Expect regex — wait for this pattern before executing. Matched against the raw output, escape sequences included (see [ANSI escape sequences](#ansi-escape-sequences)). On match, populates `session.before` and `session.match`. An invalid regex is a validation error (`invalid_regex`) or, for a template, a `ValueError` when it is rendered, before the wait (see [YAML Script Structure](#yaml-script-structure)) |
 | `when` | Jinja2 conditional — template is rendered, step is skipped if the result is falsy (see below) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after` | Duration to wait after the step |
@@ -486,7 +498,7 @@ These properties also apply to plugin steps. They are handled by the runner; the
 
 A plugin step has exactly one plugin key. A step with keys of two or more registered plugins is a validation error of type `invalid_step` at the step's path, e.g. `script.0` with the message `step has more than one plugin key: free, loose` (the keys in the step's order), even when the first plugin's model allows extra fields. A built-in key takes precedence: in `{cmd: x, free: y}` the step is a `cmd` step and `free` is an unknown field (`extra_forbidden`).
 
-Because the runner takes the common step properties out of every plugin step, a plugin can't use their names, and neither can it use a built-in step's key. A plugin is rejected when it is registered (at discovery: at the start of `autobot run` and `autobot schema`, and otherwise when a script needs a plugin or the `Runner` is created) if its key is a built-in step key (`cmd`, `sleep`, `call`, `block`, `line`, `return`, `control`) or a common step property name, or if its model has a field that a script could set through a common step property name: the field's name, its `alias`, or any of its `validation_alias` names. The error is a `PluginError` (from `autobot.registry`, a subclass of `TypeError`) naming the plugin's class, with the distribution and entry point of a discovered plugin, its key and the fields, e.g. `plugin mypkg.TreeExecutor (distribution mypkg, entry point 'tree'), step key 'tree': model TreeStep reuses common step property names, which the runner handles and never passes to the plugin: timeout (field 'limit'), when`, or `plugin mypkg.CmdExecutor (distribution mypkg, entry point 'cmd'): step key 'cmd' is reserved (a built-in step or a common step property)`. A plugin registered in code, rather than discovered, is named by its class alone, e.g. `plugin mypkg.CmdExecutor: step key 'cmd' is reserved (a built-in step or a common step property)`. Like a plugin that fails to import, the CLI reports it as `Plugin error: <message>` on stderr, without a traceback, and exits with status 1 before `attach.prepare` runs or anything is spawned (see [CLI](#cli)).
+Because the runner takes the common step properties out of every plugin step, a plugin can't use their names, and neither can it use a built-in step's key. A plugin is rejected when it is registered (at discovery: at the start of `autobot run` and `autobot schema`, and otherwise when a script needs a plugin or the `Runner` is created) if its key is a built-in step key (`cmd`, `sleep`, `call`, `block`, `line`, `return`, `control`) or a common step property name, or if its model has a field that a script could set through a common step property name: the field's name, its `alias`, or any of its `validation_alias` names. The error is a `PluginError` (from `autobot.registry`, a subclass of `TypeError`) naming the plugin's class, with the distribution and entry point of a discovered plugin, its key and the fields, e.g. `plugin mypkg.TreeExecutor (distribution mypkg, entry point 'tree'), step key 'tree': model TreeStep reuses common step property names, which the runner handles and never passes to the plugin: timeout (field 'limit'), when`, or `plugin mypkg.CmdExecutor (distribution mypkg, entry point 'cmd'): step key 'cmd' is reserved (a built-in step or a common step property)`. A plugin registered in code, rather than discovered, is named by its class alone, e.g. `plugin mypkg.CmdExecutor: step key 'cmd' is reserved (a built-in step or a common step property)`. The key `plugin` is reserved too, and rejected the same way: `autobot schema` names a plugin's definition `<key>Step`, and `pluginStep` is the catch-all for unknown step keys (see [CLI](#cli)), and `plugin` is the step type that validation error locations show for every plugin step. Its message is `plugin mypkg.PluginExecutor: step key 'plugin' is reserved (the schema's pluginStep definition and the plugin step type in validation errors use the name)`. With it, no plugin key can produce the name of a definition of the static schema. Any other non-empty string is a valid key. Like a plugin that fails to import, the CLI reports it as `Plugin error: <message>` on stderr, without a traceback, and exits with status 1 before `attach.prepare` runs or anything is spawned (see [CLI](#cli)).
 
 A plugin is also rejected at registration, before these checks, if its executor doesn't have the shape of a `StepExecutor` (`autobot.protocols`): a `key` attribute that is a non-empty string, a `model` attribute that is a pydantic model class (a `pydantic.BaseModel` subclass), and a callable `execute`. The error is a `PluginError` naming the plugin like the errors above and the first problem found, checked in that order, e.g. `plugin mypkg.BadExecutor (distribution mypkg, entry point 'bad'): executor has no 'model' attribute (a pydantic model class)`. The other messages are `executor has no 'key' attribute (a non-empty string)`, `executor's 'key' must be a non-empty string, got <repr>`, `executor's 'model' must be a pydantic model class (a pydantic.BaseModel subclass), got <repr>`, `executor has no 'execute' method` and `executor's 'execute' must be callable, got <repr>`. Reading an attribute that raises `AttributeError` counts as a missing attribute; one that raises any other exception (e.g. a `key` property that fails) is a `PluginError` chained from it, `executor's '<attribute>' attribute raised <type>: <message>` (just `<type>` when the exception has no message), e.g. `plugin mypkg.BadExecutor (distribution mypkg, entry point 'bad'): executor's 'key' attribute raised RuntimeError: key lookup failed`. `KeyboardInterrupt` and `SystemExit` are not wrapped. The registry is left as it was. `execute`'s signature isn't checked.
 
@@ -533,7 +545,7 @@ These values are rendered as Jinja2 templates:
 
 Other values are used verbatim, e.g. `expect`, `errors`, `control`, `call`, `register` and `attach.env`. A plugin step decides which of its own fields it renders.
 
-Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` with the message `template error: ...`. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
+Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` with the message `template error: ...`. So is any other exception an expression raises while the value is rendered: the message then names the exception's type, `template error: <type>: <message>` (just `<type>` when the exception has no message), e.g. `template error: ZeroDivisionError: division by zero` for `{{ 1/0 }}`, or `template error: TypeError: can only concatenate str (not "int") to str` for `{{ 'a' + 1 }}`. The `ValueError` is chained from the original exception. An error that is already reported is not wrapped again: a template error from a render inside the render (an `env` default referenced by another, a failing `search` regex) keeps its message, and an `env` cycle or nesting error stays `env cycle: ...` (see [Top-level fields](#top-level-fields)). `KeyboardInterrupt` and `SystemExit` are not wrapped. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
 
 Because these values are templates, `{{`, `{%` and `{#` in them always start Jinja2 syntax, even inside shell code. For example, bash's array length `${#arr[@]}` contains `{#`, which opens a Jinja2 comment, so rendering fails with a template syntax error. To pass such text through literally, wrap it in `{% raw %}...{% endraw %}`, or emit the delimiter from an expression (`{{ '{#' }}`):
 
@@ -554,6 +566,8 @@ Available context:
 | `args` | CLI `--arg KEY=VALUE` arguments |
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check and embedded-script cleanup don't change it. |
 | `session.match` | Text that matched the last `after` pattern (pexpect `after`), or the text the prompt regex matched when a shell prompt is reached. After an `after` match, `session.before` and `session.match` are raw text; after a shell prompt they have ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)). |
+
+`env`, `vars`, `args` and `session` are mappings. On a mapping, `x.name` and `x['name']` both read the key `name`, and with `x.name` a key always wins over a mapping method of the same name: with `register: values`, `{{ vars.values }}` is the registered output, not the `values` method (plain Jinja2 would render `<built-in method values of dict object ...>`). The same goes for `items`, `keys`, `get`, `copy` and the rest, and for mappings nested in `vars` (`vars.site.values`). A method is reachable as `x.name` only while there is no key of that name, so `vars.items()`, `vars.get('k', 'default')` and `env.get('KEY')` work as long as no key is named `items` or `get`. Filters don't depend on key names: `vars | items`, `vars | length`, `vars | tojson`.
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
@@ -577,11 +591,13 @@ Prompt regexes (`expect`, and the `match` regexes of `sendEach` `fields` entries
 The prompt engine polls the session output in 5-second intervals:
 1. If a prompt with no `send` (or `return: true`) matches → return (shell prompt reached)
 2. If a prompt with `send` values matches → send the response chosen as described in [Response selection](#response-selection) and continue waiting
-3. On 5-second timeout with no match → send a single empty newline to solicit a prompt (once only, and only if no handler has been activated yet)
+3. On 5-second timeout with no match → send a single empty newline to solicit a prompt (once only, only if no handler has been activated yet, and never when the wait follows a command; see below)
 4. On overall timeout → raise `TimeoutError` (`timed out after <timeout>s waiting for a shell prompt ('<name>', ...)`, naming the current prompts that are shell prompts, or `none defined`)
 5. If the connection closes (the process exits) → raise `EOFError` at once (`connection closed while waiting for a shell prompt ('<name>', ...)`, with the same names)
 
 This handles idle consoles that need a return press to display a prompt.
+
+The solicit newline is for a console that is idle, not for a command that is still running. A wait that follows a command never solicits, however long the command stays silent: the wait after a `cmd` line, after the `$?` check, after each line of an embedded-script upload and its cleanup `rm`, and after a plugin's `session.sendline(...)`. A shell would answer the newline with a second prompt once the command ends, and that stale prompt would end the next wait early, so each later step would capture the output of the command before it. A wait solicits when the last thing sent before it wasn't a command: nothing at all (the first wait after the spawn, a wait after a prompt swap, or the wait after one that timed out), or a raw send, which doesn't wait for a prompt itself (`line`, `return`, `control`, the `^C` of an embedded-script cleanup). So a `cmd` after `line: consutil connect 0` still gets the return press an idle console needs, while `cmd: consutil connect 0` itself would wait for a prompt that never comes: start anything that shows nothing until Return is pressed with `line`. A `$?` check that fails before its result arrives (a timeout or a closed connection) counts like a prompt wait that timed out: the next wait solicits. A plugin's `session.sendline(text)` is a command; a plugin marks a raw send, one whose prompt it doesn't wait for, with `session.sendline(text, solicit=True)`.
 
 ## Migrating from 2026-08
 
@@ -655,6 +671,25 @@ The single-string `send` and the removal of the list forms and grouped `expect` 
 
 `2026-10` was later tightened, also without a new version number, to reject an empty `expect` (`expect: []`, `too_short`) and an empty regex in `expect` or in a `fields` entry's `match` (`string_too_short`); see [`prompts`](#prompts) and [`sendEach`](#sendeach). This only rejects prompts that could never work: `expect: []` never fires, and an empty regex fires at once, before any output. Remove the empty regex, or the prompt if nothing is left.
 
+A further tightening, again without a new version number, rejects more values that could never work, all when the script is loaded:
+- a `control` value that isn't exactly one control key (`control_char`; see [`control`](#control--send-control-characters)). `""` and `"ab"` used to fail in the run with a `TypeError`, and a character such as `"1"` sent nothing.
+- an empty `assert` pattern or `errors` pattern (`string_too_short`): the first made the step check nothing, the second made every command fail.
+- `register: ''` (`string_too_short`): nothing was stored.
+- an empty or blank `attach.spawn` (`empty_command`).
+- a regex that doesn't compile, in `errors`, `expect`, `match`, and in an `assert` or `after` without Jinja2 syntax (`invalid_regex`, models only). It used to fail at its first use, after `attach.prepare` and the spawn, with a raw `re.error`.
+
+Empty lists are still accepted for `cmd`, `line`, `control` and `assert`.
+
+The same round changed four behaviors of a run. None of them changes what the schema accepts, but a script or plugin that relied on the old behavior needs a change:
+
+- **The solicit newline is no longer sent after a command** (see [Prompt Handling](#prompt-handling-get_prompt)). Before, every prompt wait pressed Return after 5 seconds of silence. Now a wait that follows a `cmd` line never does.
+  - A `cmd` whose command shows nothing until Return is pressed, e.g. `cmd: consutil connect 0` to enter an idle console, used to complete and now times out. Send it with `line`; the next `cmd` waits for the prompt and solicits it.
+  - A command that is silent for more than 5 seconds no longer gets a newline typed into it. Its captured output no longer contains that newline's echo, and the steps after it no longer capture the output of the command before them.
+  - A plugin that calls `ctx.session.sendline(text)` and then waits for a prompt gets no solicit on that wait. That is right when `text` is a command. When it is a raw send, one that needs a Return press before a prompt shows (connecting to a console, leaving a sub-CLI), pass `ctx.session.sendline(text, solicit=True)`.
+- **A `sendEach` item or field value must be a string, number or boolean** (see [`sendEach`](#sendeach)). An unquoted YAML date or timestamp (`2026-10-04`), or a `!!binary` or `!!set` value, used to be sent as the text of its Python value. It is now an error when the prompts are loaded, e.g. `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote the value to send it as written.
+- **A mapping key wins over a method of the same name in templates** (see [Jinja2 Templating](#jinja2-templating)). `{{ vars.values }}` now reads the key `values`. The other side of it: when `vars`, `env` or `args` has a key named like a method, calling that method by name fails, e.g. `vars.get('k')` or `vars.items()` with a key `get` or `items` is `template error: TypeError: 'str' object is not callable`. Before, the method was called and the key was reachable only as `vars['get']`. Use a filter (`vars | items`) or rename the key.
+- **An exception raised while a template is rendered is a template error.** `{{ 1/0 }}` used to raise `ZeroDivisionError`; it is now a `ValueError`, `template error: ZeroDivisionError: division by zero`. An embedded script is rendered after the step's first prompt wait, like every other `cmd`, so `session.before` in it is what that wait set.
+
 ## CLI
 
 ```
@@ -678,7 +713,7 @@ Options of `run`:
 
 `autobot -h` prints the list of subcommands and exits with status 0. `autobot` with no arguments prints the same help to stdout and exits with status 1.
 
-`autobot schema` prints the `2026-10` JSON schema, indented, to stdout, extended with the step types of installed plugins. It reads `schemas/autobot.2026-10.json` from the source tree the CLI runs from (a checkout or an editable install). When that file doesn't exist, as in an installed package, it downloads the schema from `https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json`, the `main` branch on GitHub, so it needs network access then. It then loads the plugins registered in the `autobot.steps` entry-point group. For each plugin it adds `$defs.<key>Step`, and a `$ref` to it in `$defs.step.oneOf` just before the final `pluginStep` entry. `<key>Step` requires the plugin's key and combines the [common step properties](#common-step-properties), from the static schema's `$defs.stepCommon`, with the plugin model's pydantic JSON schema, which describes the plugin's own fields. Any other key is rejected, unless the plugin's model allows extra fields (the model's `additionalProperties` becomes the definition's `unevaluatedProperties`). Definitions nested in the plugin's schema stay under `$defs.<key>Step.$defs`. When the model refers to itself, its pydantic schema is a `$ref` to its own definition; a copy of that definition takes the `$ref`'s place in `<key>Step`, so the step accepts the common step properties, and the definition stays under `$defs.<key>Step.$defs` for the nested references, which accept only the model's own fields. The plugin's key is also added to the keys `pluginStep` excludes, so a step with that key matches only `<key>Step`: it is checked against the plugin's model and the common step properties, and an invalid one is rejected rather than accepted as an unknown plugin step. A step with a key no installed plugin registers still matches `pluginStep`, which applies `stepCommon` in both the static and the generated schema: its common step properties are checked, and its other keys are not.
+`autobot schema` prints the `2026-10` JSON schema, indented, to stdout, extended with the step types of installed plugins. It reads `schemas/autobot.2026-10.json` from the source tree the CLI runs from (a checkout or an editable install). When that file doesn't exist, as in an installed package, it downloads the schema from `https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json`, the `main` branch on GitHub, so it needs network access then. It then loads the plugins registered in the `autobot.steps` entry-point group. For each plugin it adds `$defs.<key>Step`, and a `$ref` to it in `$defs.step.oneOf` just before the final `pluginStep` entry. `<key>Step` requires the plugin's key and combines the [common step properties](#common-step-properties), from the static schema's `$defs.stepCommon`, with the plugin model's pydantic JSON schema, which describes the plugin's own fields. Any other key is rejected, unless the plugin's model allows extra fields (the model's `additionalProperties` becomes the definition's `unevaluatedProperties`). Definitions nested in the plugin's schema stay under `$defs.<key>Step.$defs`. The definition is named with the key as it is. In the `$ref`s that point to it or into it, the name is escaped as a JSON pointer in a URI fragment requires (`~` as `~0`, `/` as `~1`, and other characters outside letters, digits and `-._~` percent-encoded), so a key such as `a/b` or `a b` gets a working definition (`#/$defs/a~1bStep`, `#/$defs/a%20bStep`). When the model refers to itself, its pydantic schema is a `$ref` to its own definition; a copy of that definition takes the `$ref`'s place in `<key>Step`, so the step accepts the common step properties, and the definition stays under `$defs.<key>Step.$defs` for the nested references, which accept only the model's own fields. The plugin's key is also added to the keys `pluginStep` excludes, so a step with that key matches only `<key>Step`: it is checked against the plugin's model and the common step properties, and an invalid one is rejected rather than accepted as an unknown plugin step. A step with a key no installed plugin registers still matches `pluginStep`, which applies `stepCommon` in both the static and the generated schema: its common step properties are checked, and its other keys are not.
 
 A run that completes exits with status 0.
 

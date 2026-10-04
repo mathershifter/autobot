@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from typing import Annotated, Any
 
 import jinja2
@@ -11,8 +12,20 @@ from pydantic_core import PydanticCustomError
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
-_jinja_env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+class _Environment(jinja2.Environment):
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        # `x.name` on a mapping is the key `name` when there is one: `vars.values` is the key, not dict.values
+        if isinstance(obj, Mapping) and attribute in obj:
+            return obj[attribute]
+        return super().getattr(obj, attribute)
+
+
+_jinja_env = _Environment(undefined=jinja2.StrictUndefined)
 _jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
+
+
+class EnvError(ValueError):
+    """An `env` reference cycle or nesting limit, found while a default is rendered; not a template error."""
 
 
 def _search(s: Any, pattern: str) -> bool:
@@ -66,6 +79,12 @@ def render(template: Any, ctx: dict) -> Any:
         return _jinja_env.from_string(template).render(ctx)
     except jinja2.TemplateError as e:
         raise ValueError(f"template error: {e}") from e
+    except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
+        # already reported: by a render inside this one (an env default), or by a filter
+        if isinstance(e, EnvError) or (type(e) is ValueError and str(e).startswith("template error: ")):
+            raise
+        why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        raise ValueError(f"template error: {why}") from e
 
 
 def check_template(template: str) -> None:
@@ -74,6 +93,14 @@ def check_template(template: str) -> None:
         _jinja_env.parse(template)
     except jinja2.TemplateError as e:
         raise ValueError(f"template error: {e}") from e
+
+
+def check_regex(pattern: str, what: str) -> None:
+    """Report a rendered pattern that isn't a valid regex as a script error, not a raw `re.error`."""
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"{what}: invalid regex {pattern!r}: {e}") from e
 
 
 def ensure_list(value: StringOrArray | None) -> list[str]:

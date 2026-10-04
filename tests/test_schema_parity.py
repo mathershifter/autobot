@@ -517,6 +517,172 @@ def test_p6_61_nonfinite_duration_rejected_on_load(literal: str, field: str):
     assert all("not a finite number" in e["msg"] for e in errs)
 
 
+# -- P6-63: control values ---------------------------------------------------
+
+CONTROL_CHARS = [*"abcdefghijklmnopqrstuvwxyz", *"ABCDEFGHIJKLMNOPQRSTUVWXYZ", *"@`[{\\|]}^~_?"]
+CONTROL_BAD = {
+    "empty": "",
+    "two": "ab",
+    "digit": "1",
+    "space": " ",
+    "newline-after": "a\n",
+    "non-ascii": "é",
+    "kelvin": chr(0x212A),  # lowercases to "k"
+    "caret-name": "^C",
+    "in-list": ["a", "ab"],
+    "empty-in-list": ["a", ""],
+    "number": 3,
+}
+
+
+@pytest.mark.parametrize("value", [*CONTROL_CHARS, CONTROL_CHARS, []], ids=repr)
+def test_p6_63_parity_control_accepted(both_validate: Callable, value: Any):
+    """SPEC "control": every key with a control character is accepted by both, alone or in a list (even an empty one)."""
+    assert both_validate(s({"control": value})) == (True, True)
+
+
+@pytest.mark.parametrize("value", list(CONTROL_BAD.values()), ids=list(CONTROL_BAD))
+def test_p6_63_parity_control_rejected(both_validate: Callable, value: Any):
+    """SPEC "control": a value that isn't exactly one control key is rejected by both, at the step's control."""
+    doc = s({"control": value})
+    assert both_validate(doc) == (False, False)
+    assert all(e["loc"][:3] == ("script", 0, "control") for e in model_errors(doc))
+    if isinstance(value, (str, list)):
+        [err] = model_errors(doc)
+        assert (err["loc"], err["type"]) == (("script", 0, "control", "control"), "control_char")
+
+
+@pytest.mark.parametrize("value", ["", "ab", "1", "'", '"', "a\n", "\\n", "{x}"])
+def test_p6_63_control_message_quotes_the_value_as_written(value: str):
+    """SPEC "control": the message ends `got '<value>'` for every value, also one with a quote or a backslash."""
+    [err] = model_errors(s({"control": value}))
+    assert err["msg"] == (
+        f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got '{value}'"
+    )
+
+
+def test_p6_63_control_chars_are_what_sendcontrol_maps():
+    """SPEC "control": the accepted characters are exactly the ASCII ones pexpect's sendcontrol sends a byte for."""
+    import ptyprocess
+
+    class Pty:
+        @staticmethod
+        def _writeb(b: bytes) -> int:
+            return len(b)
+
+    sends = {c for c in map(chr, range(32, 127)) if ptyprocess.PtyProcess.sendcontrol(Pty(), c)[0]}
+    assert sends == set(CONTROL_CHARS)
+    assert {c for c in map(chr, range(32, 127)) if models.CONTROL_RE.fullmatch(c)} == sends
+
+
+# -- P6-64..66: empty patterns and names, invalid regexes, empty lists --------
+
+FIELDS_BAD_RE = [{"match": ["ok", "("], "field": "u"}]
+# doc -> (location of the model's error, its type)
+EMPTY_VALUE_BAD: dict[str, tuple[dict[str, Any], tuple, str]] = {
+    "assert-empty": (s({"cmd": "x", "assert": ""}), ("script", 0, "cmd", "assert"), "string_too_short"),
+    "assert-empty-in-list": (s({"cmd": "x", "assert": ["ok", ""]}), ("script", 0, "cmd", "assert"), "string_too_short"),
+    "errors-empty": (d(errors=["% .*", ""]), ("errors", 1), "string_too_short"),
+    "register-empty": (s({"cmd": "x", "register": ""}), ("script", 0, "cmd", "register"), "string_too_short"),
+    "spawn-empty": (d(attach={"spawn": ""}), ("attach", "spawn"), "empty_command"),
+    "spawn-blank": (d(attach={"spawn": "  "}), ("attach", "spawn"), "empty_command"),
+    "spawn-newline": (d(attach={"spawn": "\n"}), ("attach", "spawn"), "empty_command"),
+    # whitespace for Python (and pexpect's command-line split) but not for an ECMA `\s`, or the other way round
+    "spawn-file-separator": (d(attach={"spawn": "\x1c"}), ("attach", "spawn"), "empty_command"),
+    "spawn-c0-separators": (d(attach={"spawn": " \x1d\x1e\x1f"}), ("attach", "spawn"), "empty_command"),
+    "spawn-unicode-spaces": (
+        d(attach={"spawn": "".join(map(chr, [0x85, 0xA0, 0x1680, 0x2003, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]))}),
+        ("attach", "spawn"),
+        "empty_command",
+    ),
+}
+INVALID_REGEX: dict[str, tuple[dict[str, Any], tuple]] = {
+    "errors": (d(errors=["% .*", "("]), ("errors", 1)),
+    "expect": (d(prompts=[{"name": "p", "expect": "("}]), ("prompts", 0, "expect")),
+    "expect-in-list": (d(prompts=[{"name": "p", "expect": ["ok", "[a"]}]), ("prompts", 0, "expect", 1)),
+    "match": (
+        d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "(", "field": "u"}]}}]),
+        ("prompts", 0, "send", "fields", 0, "match"),
+    ),
+    "match-in-list": (
+        d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": FIELDS_BAD_RE}}]),
+        ("prompts", 0, "send", "fields", 0, "match", 1),
+    ),
+    "block-expect": (
+        s({"block": {"name": "b", "prompts": [{"name": "p", "expect": ["*"]}]}}),
+        ("script", 0, "block", "block", "prompts", 0, "expect", 0),
+    ),
+    "assert": (s({"cmd": "x", "assert": "("}), ("script", 0, "cmd", "assert")),
+    "assert-in-list": (s({"cmd": "x", "assert": ["ok", "a{2,1}"]}), ("script", 0, "cmd", "assert")),
+    "after-cmd": (s({"cmd": "x", "after": "("}), ("script", 0, "cmd", "after")),
+    "after-line": (s({"line": "x", "after": "(?P<n"}), ("script", 0, "line", "after")),
+    "after-in-fn": (d(fn={"f": {"script": [{"control": "c", "after": ")"}]}}), ("fn", "f", "script", 0, "control", "after")),
+}
+STILL_ACCEPTED = {
+    "assert-empty-list": s({"cmd": "x", "assert": []}),
+    "cmd-empty-list": s({"cmd": []}),
+    "cmd-empty-string": s({"cmd": ""}),
+    "line-empty-list": s({"line": []}),
+    "control-empty-list": s({"control": []}),
+    "errors-empty-list": d(errors=[]),
+    "assert-blank": s({"cmd": "x", "assert": " "}),
+    "assert-template-of-invalid-regex": s({"cmd": "x", "assert": "{{ '(' }}"}),
+    "assert-template-invalid-as-written": s({"cmd": "x", "assert": ["({{ vars.x }}"]}),
+    "after-template-invalid-as-written": s({"cmd": "x", "after": "{% if vars.x %}({% endif %}"}),
+    "spawn-template": d(attach={"spawn": "{{ args.spawn }}"}),
+    "spawn-bom": d(attach={"spawn": chr(0xFEFF)}),  # whitespace for an ECMA `\s`, not for Python: not blank
+    "spawn-zero-width-space": d(attach={"spawn": chr(0x200B)}),
+    "register-any-name": s({"cmd": "x", "register": "values"}),
+    "valid-regexes": d(
+        errors=["^% .*", "(?i)error"],
+        prompts=[{"name": "p", "expect": [r"[\w.-]+[$#] ?$", r"\(config[^)]*\)# $"]}],
+        script=[{"cmd": "x", "assert": [r"a{2}", r"\d+ packets"], "after": r"login: $"}],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", EMPTY_VALUE_BAD)
+def test_p6_64_parity_empty_pattern_name_or_command_rejected(both_validate: Callable, case: str):
+    """SPEC cmd, top-level fields, attach: an empty assert or errors pattern, register name or spawn is rejected by both."""
+    doc, loc, type_ = EMPTY_VALUE_BAD[case]
+    assert both_validate(doc) == (False, False)
+    assert [(e["loc"], e["type"]) for e in model_errors(doc)] == [(loc, type_)]
+
+
+def test_p6_64_blank_spawn_class_is_shared_and_is_python_whitespace(schema: dict[str, Any]):
+    """SPEC "attach": schema and model use one explicit character class, not each engine's own `\\S`.
+
+    It is exactly `str.isspace`, which is what pexpect splits the command on and what the runner
+    strips from a rendered spawn.
+    """
+    import re
+    import sys
+
+    assert schema["$defs"]["attach"]["properties"]["spawn"]["pattern"] == models.NOT_BLANK
+    not_blank = re.compile(models.NOT_BLANK)
+    differ = [hex(c) for c in range(sys.maxunicode + 1) if bool(not_blank.fullmatch(chr(c))) == chr(c).isspace()]
+    assert differ == []
+
+
+@pytest.mark.parametrize("case", INVALID_REGEX)
+def test_p6_65_invalid_regex_rejected_on_load(both_validate: Callable, case: str):
+    """SPEC "YAML Script Structure": a regex that doesn't compile is rejected when the script is loaded.
+
+    A static schema can't check Python regex syntax, so only the models reject it.
+    """
+    doc, loc = INVALID_REGEX[case]
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (loc, "invalid_regex")
+    assert err["msg"].startswith("invalid regex '")
+
+
+@pytest.mark.parametrize("doc", list(STILL_ACCEPTED.values()), ids=list(STILL_ACCEPTED))
+def test_p6_66_parity_empty_lists_and_templates_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """Empty lists stay valid for cmd, line, control and assert, and a templated regex is checked only once rendered."""
+    assert both_validate(doc) == (True, True)
+
+
 @pytest.mark.parametrize("value", ["٥s", "1.٥s"])
 def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: str):
     """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""

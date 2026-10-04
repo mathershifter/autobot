@@ -100,3 +100,52 @@ def test_p8_19_search_invalid_regex_is_template_error():
     with pytest.raises(ValueError, match=r"^template error: search: invalid regex '\(': "):
         render("{{ 'x' | search('(') }}", {})
     assert render("{{ 'abc' | search('b+') }}", {}) == "True"
+
+
+# -- P8-20: any exception from an expression is a template error -------------
+
+NON_JINJA = {
+    "zero-division": ("{{ 1/0 }}", "template error: ZeroDivisionError: division by zero"),
+    "type-error": ("{{ 'a' + 1 }}", 'template error: TypeError: can only concatenate str (not "int") to str'),
+    "search-non-string": (
+        "{{ 'x' | search(5) }}",
+        "template error: TypeError: first argument must be string or compiled pattern",
+    ),
+    "no-message": ("{{ boom() }}", "template error: KeyError"),
+}
+
+
+@pytest.mark.parametrize("case", NON_JINJA)
+def test_p8_20_non_jinja_exception_is_template_error(case: str):
+    """SPEC "Jinja2 Templating": an expression that raises is a template error, not a raw exception."""
+    def boom() -> None:
+        raise KeyError
+
+    template, message = NON_JINJA[case]
+    with pytest.raises(ValueError) as ei:
+        render(template, {"boom": boom})
+    assert str(ei.value) == message
+    assert type(ei.value.__cause__).__name__ in message
+
+
+def test_p8_20_nested_render_error_is_not_wrapped_twice():
+    """SPEC "Jinja2 Templating": an error from a render inside a render keeps its message."""
+    def inner(template: str) -> str:
+        return render(template, {})
+
+    for template in ("{{ 1/0 }}", "{{ nope }}", "{{ 'x' | search('(') }}"):
+        with pytest.raises(ValueError) as outer:
+            render("{{ inner(t) }}", {"inner": inner, "t": template})
+        with pytest.raises(ValueError) as direct:
+            render(template, {})
+        assert str(outer.value) == str(direct.value)
+        assert str(outer.value).count("template error: ") == 1
+
+
+def test_p8_20_keyboard_interrupt_is_not_wrapped():
+    """Only `Exception`s are template errors: an operator interrupt during a render propagates."""
+    def interrupt() -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        render("{{ interrupt() }}", {"interrupt": interrupt})

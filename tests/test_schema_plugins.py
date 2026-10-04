@@ -256,6 +256,69 @@ def test_p7_14_recursive_plugin_schema_shape(edge_generated: dict[str, Any], edg
     assert tree["$defs"]["TreeStep"]["properties"]["children"]["items"] == {"$ref": ref}
 
 
+# -- P7-22..23: definition names that can't collide or break a $ref ----------
+
+ODD_KEYS = ["a/b", "a~b", "~1", "a b", "a%41", "a#b", "a{b}", "{model}", "é", 'a"b', "a?b=c"]
+
+
+def _odd_executor(key: str, recursive: bool) -> _Executor:
+    fields: dict[str, Any] = {"value": (str, pydantic.Field(alias=key)), "opts": (Opts | None, None)}
+    if recursive:
+        fields["children"] = (list["OddStep"], [])
+    model = pydantic.create_model("OddStep", __config__=pydantic.ConfigDict(extra="forbid"), **fields)
+    return _Executor(key, model)
+
+
+@pytest.mark.parametrize("recursive", [False, True], ids=["nested", "recursive"])
+@pytest.mark.parametrize("key", ODD_KEYS)
+def test_p7_22_plugin_key_escaped_in_schema_refs(schema: dict[str, Any], register_plugin, key: str, recursive: bool):
+    """SPEC "CLI": a key with `/`, `~` or other URI characters still gets a working `$defs.<key>Step`.
+
+    The `$ref`s are JSON pointers in a URI fragment, so the name is escaped there (`a/b` was a broken pointer).
+    """
+    jsonschema = pytest.importorskip("jsonschema", reason="jsonschema not installed; parity tests skipped")
+    executor = register_plugin(_odd_executor(key, recursive))
+    generated = add_plugin_steps(copy.deepcopy(schema), [executor])
+    assert f"{key}Step" in generated["$defs"]
+    validator = jsonschema.Draft202012Validator(generated)
+    type(validator).check_schema(generated)
+    good = {key: "x", "opts": {"level": 1}, "timeout": 5}
+    if recursive:
+        good["children"] = [{key: "y", "opts": {"level": 2}}]
+    assert both(validator, s(good)) == (True, True)
+    for bad in ({key: 1}, {key: "x", "opts": {"level": "high"}}, {key: "x", "bogus": 1}, {key: "x", "timeout": "5 s"}):
+        assert both(validator, s(bad)) == (False, False)
+
+
+def test_p7_23_plugin_key_plugin_is_reserved(isolated_registry: Any):
+    """SPEC "Common Step Properties": `plugin` would name its definition `pluginStep`, the catch-all's name.
+
+    `add_plugin_steps` used to overwrite the catch-all and then fail with `KeyError: 'not'`.
+    """
+    from autobot.registry import PluginError
+
+    executor = _Executor("plugin", pydantic.create_model("PStep", plugin=(str, ...)))
+    with pytest.raises(PluginError) as ei:
+        isolated_registry.register(executor)
+    assert str(ei.value) == (
+        f"plugin {__name__}._Executor: step key 'plugin' is reserved (the schema's pluginStep definition "
+        "and the plugin step type in validation errors use the name)"
+    )
+    assert not isolated_registry.plugin_executors()
+
+
+def test_p7_23_no_plugin_key_can_take_a_static_def_name(schema: dict[str, Any], isolated_registry: Any):
+    """Every static `$defs` name that a `<key>Step` could equal belongs to a key the registry rejects."""
+    from autobot.registry import PluginError
+
+    names = [n for n in schema["$defs"] if n.endswith("Step")]
+    assert "pluginStep" in names and "cmdStep" in names
+    for name in names:
+        key = name.removesuffix("Step")
+        with pytest.raises(PluginError, match="is reserved"):
+            isolated_registry.register(_Executor(key, pydantic.create_model("KStep", value=(str, ...))))
+
+
 TWO_KEYS = {
     "plain": ({"free": "x", "loose": "y"}, ("script", 0), "free, loose"),
     "reversed": ({"loose": "y", "free": "x"}, ("script", 0), "loose, free"),

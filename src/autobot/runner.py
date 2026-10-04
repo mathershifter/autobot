@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 import subprocess
 import tempfile
@@ -13,7 +14,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import check_template
+from .types import EnvError, check_regex, check_template
 from .types import render as render_template
 
 # markup off: log lines echo commands, names and errors that may look like [tags]
@@ -25,7 +26,10 @@ register_builtins(registry)
 # and the zero-width characters that copy and paste leave behind.
 _PREPARE_JUNK = " \t\r\n\ufeff\u200b\u2060"
 
-_KINDS = {dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean"}
+_KINDS = {
+    dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
+    datetime.date: "a timestamp", datetime.datetime: "a timestamp", bytes: "binary data", set: "a set",
+}
 
 
 def _kind(value: Any) -> str:
@@ -33,7 +37,7 @@ def _kind(value: Any) -> str:
 
 
 def _scalar(value: Any) -> bool:
-    return value is not None and not isinstance(value, (dict, list))
+    return isinstance(value, (str, int, float, bool))
 
 
 def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list[str]]:
@@ -93,9 +97,9 @@ class _EnvRefs(Mapping[str, Any]):
         if key not in self.__done:
             if key in self.__path:
                 cycle = [*self.__path[self.__path.index(key):], key]
-                raise ValueError(f"env cycle: {' -> '.join(cycle)}")
+                raise EnvError(f"env cycle: {' -> '.join(cycle)}")
             if len(self.__path) == ENV_DEPTH:
-                raise ValueError(f"env nesting deeper than {ENV_DEPTH} levels: {self.__path[0]} -> ... -> {key}")
+                raise EnvError(f"env nesting deeper than {ENV_DEPTH} levels: {self.__path[0]} -> ... -> {key}")
             self.__path.append(key)
             try:
                 self.__done[key] = render_template(self.__raw[key], self.__ctx)
@@ -212,6 +216,8 @@ class Runner:
     def run(self):
         attach = self._config.attach
         spawn = self.render(attach.spawn)
+        if not spawn.strip():
+            raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
@@ -248,6 +254,7 @@ class Runner:
         after = getattr(step, "after", None)
         if after:
             pattern = self.render(after)
+            check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 
         when = getattr(step, "when", None)

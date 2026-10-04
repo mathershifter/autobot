@@ -163,11 +163,12 @@ def test_p1_17_session_before_not_clobbered_by_rc_probe():
 def test_p1_18_output_spanning_idle_poll_not_duplicated():
     """SPEC.md:111-114: output printed across a 5s idle poll is captured once.
 
-    The session prints ``abc``, then (after the solicit newline's echo)
-    ``def``; the captured text is exactly what was printed.
+    The session prints ``abc``, then, more than one poll later, ``def``; the captured text is
+    exactly what was printed. No solicit newline is sent while the command runs (P4-37), so
+    its echo no longer splits the output into ``abc\\ndef``.
     """
     out = run_vars([{"cmd": "printf abc; sleep 6; echo def", "register": "out", "timeout": "15s"}])
-    assert out["out"] == "abc\ndef"
+    assert out["out"] == "abcdef"
 
 
 def test_p1_19_session_before_cleared_by_empty_output(attached_runner: Callable[..., Runner]):
@@ -240,9 +241,23 @@ def test_p1_20_ignore_error_does_not_swallow_template_error(probe: ProbeExecutor
 
 
 def test_p1_20_ignore_error_does_not_swallow_invalid_regex(probe: ProbeExecutor):
-    """SPEC "cmd" ignore_error: an invalid regular expression in assert aborts."""
-    r = aborting_runner({"cmd": "echo hi", "assert": "("})
-    with pytest.raises(re.error):
+    """SPEC "cmd" ignore_error: an assert that renders to an invalid regular expression aborts.
+
+    It is a ``ValueError`` naming the pattern, not a raw ``re.error``; one that isn't a template is
+    rejected when the script is loaded (P6-65).
+    """
+    r = aborting_runner({"cmd": "echo hi", "assert": "{{ '(' }}"})
+    with pytest.raises(ValueError, match=r"^assert: invalid regex '\(': missing \), unterminated subpattern") as ei:
+        r.run()
+    assert isinstance(ei.value.__cause__, re.error)
+    assert_aborted(r, probe)
+
+
+def test_p1_21_assert_rendering_to_an_empty_regex_aborts(probe: ProbeExecutor):
+    """SPEC "cmd": an assert pattern that renders to nothing would match any output; it aborts instead."""
+    r = aborting_runner({"cmd": "echo hi", "assert": ["hi", "{{ vars.empty }}"]})
+    r.config.vars["empty"] = ""
+    with pytest.raises(ValueError, match="^assert: a pattern rendered to an empty regex, which matches any output$"):
         r.run()
     assert_aborted(r, probe)
 

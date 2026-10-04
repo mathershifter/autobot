@@ -178,12 +178,17 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
     ("env", "prompts", "message"),
     [
         ({"A": "{{ nope( }}"}, None, "template error: unexpected '}', expected ')'"),
+        ({"A": "{{ 1/0 }}"}, None, "template error: ZeroDivisionError: division by zero"),
+        ({"A": "{{ env.B }}", "B": "{{ 'a' + 1 }}"}, None, 'template error: TypeError: can only concatenate str (not "int") to str'),
         (None, [{"name": "p", "expect": ["x"], "send": "{{ x "}], "template error: unexpected end of template, expected 'end of print statement'."),
         ({"A": "{{ env.A }}x"}, None, "env cycle: A -> A"),
         ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, None, "env cycle: A -> B -> A"),
         ({"A": "{{ env.B }}", "B": "{{ env.C }}", "C": "{{ env.A }}"}, None, "env cycle: A -> B -> C -> A"),
     ],
-    ids=["env-template", "send-template", "env-cycle-self", "env-cycle-mutual", "env-cycle-three"],
+    ids=[
+        "env-template", "env-zero-division", "env-nested-type-error",
+        "send-template", "env-cycle-self", "env-cycle-mutual", "env-cycle-three",
+    ],
 )
 def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     tmp_path: Path, env: dict[str, str] | None, prompts: list | None, message: str
@@ -197,6 +202,39 @@ def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     assert _load_error(res) == f"Script error in {path}: {message}"
     assert not prepared.exists()
     assert not spawned.exists()
+
+
+LOAD_HOLES = {
+    "errors-invalid-regex": ({"errors": ["("]}, "invalid_regex"),
+    "errors-empty": ({"errors": [""]}, "string_too_short"),
+    "expect-invalid-regex": ({"prompts": [{"name": "sh", "expect": "("}]}, "invalid_regex"),
+    "assert-empty": ({"script": [{"cmd": "true", "assert": ""}]}, "string_too_short"),
+    "register-empty": ({"script": [{"cmd": "true", "register": ""}]}, "string_too_short"),
+    "control-two-chars": ({"script": [{"control": "ab"}]}, "control_char"),
+}
+
+
+@pytest.mark.parametrize("case", LOAD_HOLES)
+def test_p6_67_cli_bad_pattern_is_validation_error_before_prepare(tmp_path: Path, case: str):
+    """SPEC "CLI": these used to pass validation and fail (or check nothing) after prepare and spawn."""
+    change, type_ = LOAD_HOLES[case]
+    prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
+    doc = make_doc([GOT], prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}") | change
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 1
+    assert "Validation errors:" in res.stderr and f'"type": "{type_}"' in res.stderr
+    assert "Traceback" not in res.stderr
+    assert not prepared.exists() and not spawned.exists()
+
+
+def test_p6_67_cli_empty_spawn_is_validation_error(tmp_path: Path):
+    """SPEC "attach": `spawn: ""` reached `pexpect.spawn('')` and died with an IndexError after prepare."""
+    prepared = tmp_path / "prepared"
+    res = run_cli(make_doc([GOT], prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=""), tmp_path)
+    assert res.returncode == 1
+    assert "Validation errors:" in res.stderr and '"type": "empty_command"' in res.stderr
+    assert "Traceback" not in res.stderr
+    assert not prepared.exists()
 
 
 def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):

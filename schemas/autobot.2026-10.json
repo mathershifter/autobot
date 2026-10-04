@@ -21,7 +21,7 @@
     },
     "errors": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": { "type": "string", "minLength": 1 }
     },
     "fn": {
       "type": "object",
@@ -84,7 +84,10 @@
       "additionalProperties": false,
       "properties": {
         "prepare": { "type": "string" },
-        "spawn": { "type": "string" },
+        "spawn": {
+          "type": "string",
+          "pattern": "[^\\u0009-\\u000d\\u001c-\\u001f\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
+        },
         "timeout": { "$ref": "#/$defs/duration" },
         "env": {
           "type": "object",
@@ -126,9 +129,14 @@
         "cmd": { "$ref": "#/$defs/stringOrArray" },
         "after": { "type": "string" },
         "when": { "type": "string" },
-        "assert": { "$ref": "#/$defs/stringOrArray" },
+        "assert": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          ]
+        },
         "ignore_error": { "type": "boolean", "default": false },
-        "register": { "type": "string" },
+        "register": { "type": "string", "minLength": 1 },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
         "timeout": { "$ref": "#/$defs/duration" }
@@ -226,7 +234,12 @@
       "required": ["control"],
       "additionalProperties": false,
       "properties": {
-        "control": { "$ref": "#/$defs/stringOrArray" },
+        "control": {
+          "oneOf": [
+            { "$ref": "#/$defs/controlChar" },
+            { "type": "array", "items": { "$ref": "#/$defs/controlChar" } }
+          ]
+        },
         "after": { "type": "string" },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
@@ -281,6 +294,11 @@
         "match": { "$ref": "#/$defs/regexes" },
         "field": { "type": "string" }
       }
+    },
+    "controlChar": {
+      "type": "string",
+      "maxLength": 1,
+      "pattern": "[A-Za-z@`\\[{\\\\|\\]}^~_?]"
     },
     "duration": {
       "oneOf": [

@@ -149,6 +149,7 @@ class Session:
         self._at_prompt = False
         self._prompt = ""
         self._sent: str | None = None
+        self._solicit = True
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._set_handlers(handlers)
 
@@ -235,11 +236,12 @@ class Session:
             raise RuntimeError("not attached")
 
         sent, self._sent = self._sent, None
+        # a command that is still running would answer a solicit newline with a second prompt
+        solicited, self._solicit = not self._solicit, True
         for h in self._handlers:
             h.reset()
         output: list[str] = []
         deadline = time.monotonic() + timeout
-        solicited = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -308,11 +310,14 @@ class Session:
         self._ctx["match"] = str(self._cld.after or "")
         return idx
 
-    def sendline(self, line: str = ""):
+    def sendline(self, line: str = "", *, solicit: bool = False):
+        """Send a line. `solicit` lets the next prompt wait send its solicit newline: for a raw
+        send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
         self._sent = line
+        self._solicit = solicit
         self._cld.sendline(line)
 
     def check_rc(self, timeout: float = 300) -> int:
@@ -320,7 +325,11 @@ class Session:
             raise RuntimeError("not attached")
 
         self.sendline("echo __AUTOBOT_RC=$?")
-        self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+        try:
+            self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+        except BaseException:
+            self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
+            raise
 
         rc = int(self._cld.match.group(1))  # type: ignore
         self.get_prompt(timeout=timeout, capture=False)
@@ -330,6 +339,7 @@ class Session:
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
+        self._solicit = True
         self._cld.sendcontrol(char)
 
     def sleep(self, seconds: float):
