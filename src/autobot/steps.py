@@ -17,7 +17,7 @@ from .models import (
     SleepStep,
 )
 from .session import CommandError
-from .types import ensure_list
+from .types import check_regex, ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext
@@ -75,6 +75,10 @@ class CmdExecutor:
         assertions = ensure_list(step.assert_)
         if assertions:
             rendered = [ctx.render(a) for a in assertions]
+            for p in rendered:
+                if not p:
+                    raise ValueError("assert: a pattern rendered to an empty regex, which matches any output")
+                check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
         elif not ctx.config.errors:

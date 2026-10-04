@@ -24,13 +24,53 @@ def _error(type_: str, msg: str, loc: tuple, input_: Any) -> dict[str, Any]:
 _EMPTY_REGEX = "a regex must not be empty: an empty regex matches at once, before any output"
 
 
+_TEMPLATE_RE = re.compile(r"\{[{%#]")
+
+
+def _regex_error(v: str) -> str | None:
+    try:
+        re.compile(v)
+    except re.error as e:
+        return f"invalid regex {v!r}: {e}"
+    return None
+
+
+def _compiles(v: str) -> str:
+    if msg := _regex_error(v):
+        raise _custom("invalid_regex", msg)
+    return v
+
+
 def _regex(v: str) -> str:
     if v == "":
         raise _custom("string_too_short", _EMPTY_REGEX)
+    return _compiles(v)
+
+
+def _error_regex(v: str) -> str:
+    if v == "":
+        raise _custom(
+            "string_too_short",
+            "an errors pattern must not be empty: an empty regex matches any output, so every command would fail",
+        )
+    return _compiles(v)
+
+
+def _template_regex(v: str) -> str:
+    # a template is a regex only once it is rendered; it is checked then
+    return v if _TEMPLATE_RE.search(v) else _compiles(v)
+
+
+def _spawn(v: str) -> str:
+    if not re.search(r"\S", v):
+        raise _custom("empty_command", "spawn must be a command, not an empty or blank string")
     return v
 
 
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
+ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
+# `after`: a regex once rendered
+After = Annotated[str, pydantic.AfterValidator(_template_regex)]
 
 
 class FieldEntry(pydantic.BaseModel):
@@ -145,6 +185,8 @@ class Prompt(pydantic.BaseModel):
                     ))
                 elif entry == "":
                     errors.append(_error("string_too_short", _EMPTY_REGEX, ("expect",) if single else ("expect", i), ""))
+                elif msg := _regex_error(entry):
+                    errors.append(_error("invalid_regex", msg, ("expect",) if single else ("expect", i), entry))
         if errors:
             raise pydantic.ValidationError.from_exception_data(cls.__name__, errors)
         return self
@@ -158,7 +200,7 @@ class Function(pydantic.BaseModel):
 class Attach(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     prepare: Omittable[str] = None
-    spawn: str
+    spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
     env: Omittable[dict[str, str]] = None
     script: list[Step] = []
@@ -168,14 +210,29 @@ class Attach(pydantic.BaseModel):
 class CmdStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     cmd: StringOrArray
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     assert_: Omittable[StringOrArray] = pydantic.Field(None, alias="assert")
     ignore_error: bool = pydantic.Field(False, strict=True)
-    register_: Omittable[str] = pydantic.Field(None, alias="register")
+    register_: Omittable[Annotated[str, pydantic.StringConstraints(min_length=1)]] = pydantic.Field(
+        None, alias="register"
+    )
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
     timeout: Omittable[Duration] = None
+
+    @pydantic.field_validator("assert_")
+    @classmethod
+    def _assert(cls, v: StringOrArray | None) -> StringOrArray | None:
+        for pattern in ensure_list(v):
+            if pattern == "":
+                raise _custom(
+                    "string_too_short",
+                    "an assert pattern must not be empty: an empty regex matches any output, "
+                    "so the assert would check nothing",
+                )
+            _template_regex(pattern)
+        return v
 
 
 class SleepStep(pydantic.BaseModel):
@@ -186,7 +243,7 @@ class SleepStep(pydantic.BaseModel):
 class CallStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     call: str
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -210,7 +267,7 @@ class Block(pydantic.BaseModel):
 class BlockStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     block: Block
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -220,7 +277,7 @@ class BlockStep(pydantic.BaseModel):
 class LineStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     line: StringOrArray
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -229,7 +286,7 @@ class LineStep(pydantic.BaseModel):
 class ReturnStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     newline_count: int = pydantic.Field(alias="return", ge=1, strict=True)
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -242,7 +299,7 @@ CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
 class ControlStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     control: StringOrArray
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -263,7 +320,7 @@ class ControlStep(pydantic.BaseModel):
 class PluginStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="allow")
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
-    after: Omittable[str] = None
+    after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
@@ -355,7 +412,7 @@ class Config(pydantic.BaseModel):
     vars: dict[str, Any] = {}
     prompts: list[Prompt] = []
     fn: dict[str, Function] = {}
-    errors: list[str] = []
+    errors: list[ErrorRegex] = []
     attach: Attach
     script: list[Step]
 

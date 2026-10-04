@@ -975,6 +975,17 @@ def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected
     assert kwargs["timeout"] == expected
 
 
+@pytest.mark.parametrize("value", ["", "  ", "\n"], ids=["empty", "blank", "newline"])
+def test_p5_53_spawn_rendering_empty_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
+    """SPEC "attach": a spawn that renders to nothing is a ValueError; prepare doesn't run and nothing is spawned."""
+    prepared = tmp_path / "prepared"
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+        runner.run()
+    assert not prepared.exists()
+    assert "attach" not in timeline.names()
+
+
 def test_p5_24_attach_timeout_default_and_spawn_templated(
     timeline: Timeline, monkeypatch: pytest.MonkeyPatch
 ):

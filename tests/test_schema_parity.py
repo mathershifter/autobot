@@ -566,6 +566,89 @@ def test_p6_63_control_chars_are_what_sendcontrol_maps():
     assert {c for c in map(chr, range(32, 127)) if models.CONTROL_RE.fullmatch(c)} == sends
 
 
+# -- P6-64..66: empty patterns and names, invalid regexes, empty lists --------
+
+FIELDS_BAD_RE = [{"match": ["ok", "("], "field": "u"}]
+# doc -> (location of the model's error, its type)
+EMPTY_VALUE_BAD: dict[str, tuple[dict[str, Any], tuple, str]] = {
+    "assert-empty": (s({"cmd": "x", "assert": ""}), ("script", 0, "cmd", "assert"), "string_too_short"),
+    "assert-empty-in-list": (s({"cmd": "x", "assert": ["ok", ""]}), ("script", 0, "cmd", "assert"), "string_too_short"),
+    "errors-empty": (d(errors=["% .*", ""]), ("errors", 1), "string_too_short"),
+    "register-empty": (s({"cmd": "x", "register": ""}), ("script", 0, "cmd", "register"), "string_too_short"),
+    "spawn-empty": (d(attach={"spawn": ""}), ("attach", "spawn"), "empty_command"),
+    "spawn-blank": (d(attach={"spawn": "  "}), ("attach", "spawn"), "empty_command"),
+    "spawn-newline": (d(attach={"spawn": "\n"}), ("attach", "spawn"), "empty_command"),
+}
+INVALID_REGEX: dict[str, tuple[dict[str, Any], tuple]] = {
+    "errors": (d(errors=["% .*", "("]), ("errors", 1)),
+    "expect": (d(prompts=[{"name": "p", "expect": "("}]), ("prompts", 0, "expect")),
+    "expect-in-list": (d(prompts=[{"name": "p", "expect": ["ok", "[a"]}]), ("prompts", 0, "expect", 1)),
+    "match": (
+        d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "(", "field": "u"}]}}]),
+        ("prompts", 0, "send", "fields", 0, "match"),
+    ),
+    "match-in-list": (
+        d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": FIELDS_BAD_RE}}]),
+        ("prompts", 0, "send", "fields", 0, "match", 1),
+    ),
+    "block-expect": (
+        s({"block": {"name": "b", "prompts": [{"name": "p", "expect": ["*"]}]}}),
+        ("script", 0, "block", "block", "prompts", 0, "expect", 0),
+    ),
+    "assert": (s({"cmd": "x", "assert": "("}), ("script", 0, "cmd", "assert")),
+    "assert-in-list": (s({"cmd": "x", "assert": ["ok", "a{2,1}"]}), ("script", 0, "cmd", "assert")),
+    "after-cmd": (s({"cmd": "x", "after": "("}), ("script", 0, "cmd", "after")),
+    "after-line": (s({"line": "x", "after": "(?P<n"}), ("script", 0, "line", "after")),
+    "after-in-fn": (d(fn={"f": {"script": [{"control": "c", "after": ")"}]}}), ("fn", "f", "script", 0, "control", "after")),
+}
+STILL_ACCEPTED = {
+    "assert-empty-list": s({"cmd": "x", "assert": []}),
+    "cmd-empty-list": s({"cmd": []}),
+    "cmd-empty-string": s({"cmd": ""}),
+    "line-empty-list": s({"line": []}),
+    "control-empty-list": s({"control": []}),
+    "errors-empty-list": d(errors=[]),
+    "assert-blank": s({"cmd": "x", "assert": " "}),
+    "assert-template-of-invalid-regex": s({"cmd": "x", "assert": "{{ '(' }}"}),
+    "assert-template-invalid-as-written": s({"cmd": "x", "assert": ["({{ vars.x }}"]}),
+    "after-template-invalid-as-written": s({"cmd": "x", "after": "{% if vars.x %}({% endif %}"}),
+    "spawn-template": d(attach={"spawn": "{{ args.spawn }}"}),
+    "register-any-name": s({"cmd": "x", "register": "values"}),
+    "valid-regexes": d(
+        errors=["^% .*", "(?i)error"],
+        prompts=[{"name": "p", "expect": [r"[\w.-]+[$#] ?$", r"\(config[^)]*\)# $"]}],
+        script=[{"cmd": "x", "assert": [r"a{2}", r"\d+ packets"], "after": r"login: $"}],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", EMPTY_VALUE_BAD)
+def test_p6_64_parity_empty_pattern_name_or_command_rejected(both_validate: Callable, case: str):
+    """SPEC cmd, top-level fields, attach: an empty assert or errors pattern, register name or spawn is rejected by both."""
+    doc, loc, type_ = EMPTY_VALUE_BAD[case]
+    assert both_validate(doc) == (False, False)
+    assert [(e["loc"], e["type"]) for e in model_errors(doc)] == [(loc, type_)]
+
+
+@pytest.mark.parametrize("case", INVALID_REGEX)
+def test_p6_65_invalid_regex_rejected_on_load(both_validate: Callable, case: str):
+    """SPEC "YAML Script Structure": a regex that doesn't compile is rejected when the script is loaded.
+
+    A static schema can't check Python regex syntax, so only the models reject it.
+    """
+    doc, loc = INVALID_REGEX[case]
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (loc, "invalid_regex")
+    assert err["msg"].startswith("invalid regex '")
+
+
+@pytest.mark.parametrize("doc", list(STILL_ACCEPTED.values()), ids=list(STILL_ACCEPTED))
+def test_p6_66_parity_empty_lists_and_templates_accepted(both_validate: Callable, doc: dict[str, Any]):
+    """Empty lists stay valid for cmd, line, control and assert, and a templated regex is checked only once rendered."""
+    assert both_validate(doc) == (True, True)
+
+
 @pytest.mark.parametrize("value", ["٥s", "1.٥s"])
 def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: str):
     """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""

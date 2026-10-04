@@ -14,7 +14,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, check_template
+from .types import EnvError, check_regex, check_template
 from .types import render as render_template
 
 # markup off: log lines echo commands, names and errors that may look like [tags]
@@ -216,6 +216,8 @@ class Runner:
     def run(self):
         attach = self._config.attach
         spawn = self.render(attach.spawn)
+        if not spawn.strip():
+            raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
@@ -252,6 +254,7 @@ class Runner:
         after = getattr(step, "after", None)
         if after:
             pattern = self.render(after)
+            check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 
         when = getattr(step, "when", None)

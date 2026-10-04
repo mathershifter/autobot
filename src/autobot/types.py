@@ -95,6 +95,14 @@ def check_template(template: str) -> None:
         raise ValueError(f"template error: {e}") from e
 
 
+def check_regex(pattern: str, what: str) -> None:
+    """Report a rendered pattern that isn't a valid regex as a script error, not a raw `re.error`."""
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"{what}: invalid regex {pattern!r}: {e}") from e
+
+
 def ensure_list(value: StringOrArray | None) -> list[str]:
     if value is None:
         return []

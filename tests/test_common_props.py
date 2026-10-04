@@ -237,6 +237,13 @@ def test_p3_18_after_eof_names_pattern():
         run_script([{"line": "exit"}, {"cmd": "true", "after": "login: {{ 'x' }}", "timeout": 5}])
 
 
+def test_p3_20_after_rendering_to_an_invalid_regex_is_a_script_error(sent: SentLog):
+    """SPEC "Common Step Properties": an `after` that renders to an invalid regex is a ValueError, and the step sends nothing."""
+    with pytest.raises(ValueError, match=r"^after: invalid regex 'x\(': missing \), unterminated subpattern"):
+        run_script([{"cmd": "echo hi", "after": "x{{ '(' }}"}])
+    assert sent.commands() == []
+
+
 # -- P3-19: keys named like dict methods -------------------------------------
 
 DICT_METHODS = ["values", "items", "keys", "get", "copy", "update", "pop", "clear"]

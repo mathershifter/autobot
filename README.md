@@ -92,7 +92,7 @@ The `attach` block controls how autobot connects to the remote console.
 | Field      | Required | Description                                                                                                                         |
 |------------|----------|-------------------------------------------------------------------------------------------------------------------------------------|
 | `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
-| `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`)                                                                  |
+| `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must not be empty or blank, as written or once rendered         |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
 | `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
@@ -212,6 +212,8 @@ After each command line, the step waits for a shell prompt and, if top-level `er
 After the last command line, the step:
 1. If `assert` is defined, checks the captured output of all lines for a matching pattern — raises if none match
 2. Otherwise, if no top-level `errors` are defined, checks the return code of the last line via `echo $?` — raises on non-zero
+
+An `assert` or `errors` pattern can't be empty (an empty regex matches any output), and `register` can't be an empty name; both fail validation. An `assert` that renders to an empty or invalid regex aborts the step.
 
 Set `ignore_error: true` to continue on failure:
 
@@ -495,6 +497,6 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. A step has at most one plugin key, and a plugin can't use a built-in step key or a common step property name, as its key or as a field of its model, its key can't be `plugin` (the generated definition would take the name of the `pluginStep` catch-all), and two installed plugins can't share a key (see SPEC.md, "Common Step Properties"). It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step (it still checks the step's common properties, such as `timeout` and `when`), while autobot rejects a key that no installed plugin provides.
+The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. A step has at most one plugin key, and a plugin can't use a built-in step key or a common step property name, as its key or as a field of its model, its key can't be `plugin` (the generated definition would take the name of the `pluginStep` catch-all), and two installed plugins can't share a key (see SPEC.md, "Common Step Properties"). It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step (it still checks the step's common properties, such as `timeout` and `when`), while autobot rejects a key that no installed plugin provides. Autobot also compiles the regexes when it loads the script, which a JSON schema can't do: one that doesn't compile in `errors`, a prompt's `expect` or `match`, or an `assert` or `after` without template syntax, fails validation with `invalid_regex` before anything runs.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).
