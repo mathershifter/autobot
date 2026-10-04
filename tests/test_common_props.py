@@ -235,3 +235,45 @@ def test_p3_18_after_eof_names_pattern():
     """SPEC "cmd" ignore_error: the connection closing during the after wait names the rendered pattern."""
     with pytest.raises(EOFError, match=r"^connection closed while waiting for the after pattern 'login: x'$"):
         run_script([{"line": "exit"}, {"cmd": "true", "after": "login: {{ 'x' }}", "timeout": 5}])
+
+
+# -- P3-19: keys named like dict methods -------------------------------------
+
+DICT_METHODS = ["values", "items", "keys", "get", "copy", "update", "pop", "clear"]
+
+
+@pytest.mark.parametrize("name", DICT_METHODS)
+def test_p3_19_key_named_like_a_dict_method_renders_the_key(monkeypatch: pytest.MonkeyPatch, name: str):
+    """SPEC "Jinja2 Templating": `vars.values` is the key `values`, not `<built-in method values of dict ...>`."""
+    monkeypatch.delenv(name, raising=False)
+    env = {name: "e-{{ 'x' }}", "REF": f"{{{{ env.{name} }}}}!"}
+    r = make_runner([], vars={name: "v"}, env=env, args={name: "a"})
+    assert r.render(f"{{{{ vars.{name} }}}} {{{{ env.{name} }}}} {{{{ args.{name} }}}}") == "v e-x a"
+    assert r.render(f"{{{{ vars['{name}'] }}}} {{{{ env['{name}'] }}}}") == "v e-x"
+    assert r.render("{{ env.REF }}") == "e-x!"  # while env is resolved, too
+    # filters and nested mappings aren't affected by the key's name
+    assert r.render("{{ vars | items | list }} {{ vars | tojson }} {{ vars | length }}") == (
+        f"[('{name}', 'v')] {{\"{name}\": \"v\"}} 1"
+    )
+    nested = make_runner([], vars={"site": {name: 1}})
+    assert nested.render(f"{{{{ vars.site.{name} }}}}") == "1"
+
+
+def test_p3_19_dict_methods_still_work_without_such_a_key():
+    """SPEC "Jinja2 Templating": with no key of that name, `vars.items()` and the like are the dict methods."""
+    r = make_runner([], vars={"a": 1, "b": {"c": 2}}, env={"E": "{{ env.get('NOPE', 'd') }}"}, args={"k": "v"})
+    assert r.render("{% for k, v in vars.items() %}{{ k }}={{ v }};{% endfor %}") == "a=1;b={'c': 2};"
+    assert r.render("{{ vars.keys() | list }} {{ vars.get('nope', 'd') }} {{ vars | length }}") == "['a', 'b'] d 2"
+    assert r.render("{{ vars }} {{ vars | tojson }}") == "{'a': 1, 'b': {'c': 2}} {\"a\": 1, \"b\": {\"c\": 2}}"
+    assert r.render("{{ 'a' in vars }} {{ vars == {'a': 1, 'b': {'c': 2}} }}") == "True True"
+    assert r.render("{{ env.E }} {{ env.items() | list }} {{ args.get('k') }}") == "d [('E', 'd')] v"
+    with pytest.raises(ValueError, match="^template error: "):
+        r.render("{{ vars.nope }}")
+
+
+@pytest.mark.parametrize("name", ["values", "items"])
+def test_p3_19_register_under_a_dict_method_name(name: str):
+    """SPEC "register": `register: values` is readable as `{{ vars.values }}` in later steps."""
+    out = run_vars([{"cmd": "echo out", "register": name}, {"cmd": f"echo got-{{{{ vars.{name} }}}}", "register": "r"}])
+    assert out["r"] == "got-out"
+    assert type(out) is dict

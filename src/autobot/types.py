@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from typing import Annotated, Any
 
 import jinja2
@@ -11,7 +12,15 @@ from pydantic_core import PydanticCustomError
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
-_jinja_env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+class _Environment(jinja2.Environment):
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        # `x.name` on a mapping is the key `name` when there is one: `vars.values` is the key, not dict.values
+        if isinstance(obj, Mapping) and attribute in obj:
+            return obj[attribute]
+        return super().getattr(obj, attribute)
+
+
+_jinja_env = _Environment(undefined=jinja2.StrictUndefined)
 _jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
 
 

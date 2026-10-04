@@ -557,6 +557,8 @@ Available context:
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check and embedded-script cleanup don't change it. |
 | `session.match` | Text that matched the last `after` pattern (pexpect `after`), or the text the prompt regex matched when a shell prompt is reached. After an `after` match, `session.before` and `session.match` are raw text; after a shell prompt they have ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)). |
 
+`env`, `vars`, `args` and `session` are mappings. On a mapping, `x.name` and `x['name']` both read the key `name`, and with `x.name` a key always wins over a mapping method of the same name: with `register: values`, `{{ vars.values }}` is the registered output, not the `values` method (plain Jinja2 would render `<built-in method values of dict object ...>`). The same goes for `items`, `keys`, `get`, `copy` and the rest, and for mappings nested in `vars` (`vars.site.values`). A method is reachable as `x.name` only while there is no key of that name, so `vars.items()`, `vars.get('k', 'default')` and `env.get('KEY')` work as long as no key is named `items` or `get`. Filters don't depend on key names: `vars | items`, `vars | length`, `vars | tojson`.
+
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
 ### Custom Filters

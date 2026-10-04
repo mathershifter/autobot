@@ -437,6 +437,10 @@ Available context:
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |
 | `session.match`  | Text that matched the last `after` pattern or shell prompt |
 
+A key wins over a mapping method of the same name: after `register: values`, `{{ vars.values }}` is the registered output. `vars.items()` and `vars.get('k', 'default')` work as long as no key is named `items` or `get`.
+
+An expression that fails while a template is rendered, such as `{{ 1/0 }}`, is a template error like a syntax error or an undefined variable: `template error: ZeroDivisionError: division by zero`.
+
 ## Error Handling
 
 By default, `cmd` steps check the return code via `echo $?` and raise on non-zero. You can change this behavior in two ways:
