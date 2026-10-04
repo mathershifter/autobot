@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SHELL_ENV, SentLog, steps
+from conftest import SHELL_ENV, SentLog, Timeline, steps
 from conftest import run_vars as run
 
 import autobot.steps
@@ -364,10 +364,12 @@ def test_p2_21_rendered_after_the_first_prompt_wait(cmd: str):
     assert out["out"] == "got-fresh"
 
 
-def test_p2_21_embedded_template_error_sends_nothing(sent: SentLog):
-    """SPEC "cmd": a template error is raised after the first prompt wait and sends nothing."""
+def test_p2_21_embedded_template_error_comes_after_the_prompt_wait(sent: SentLog, timeline: Timeline):
+    """SPEC "cmd": the script is rendered after the step's first prompt wait, so a template error
+    is raised once that wait is done (it used to be raised before any wait), and sends nothing."""
     with pytest.raises(ValueError, match="^template error: "):
         run([{"cmd": "#!/bin/sh\necho {{ vars.nope }}\n"}])
+    assert timeline.since("attach") == [("get_prompt", None)]
     assert sent.commands() == []
     assert sent.controls() == []
 
