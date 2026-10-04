@@ -61,8 +61,16 @@ def _template_regex(v: str) -> str:
     return v if _TEMPLATE_RE.search(v) else _compiles(v)
 
 
+# a character that isn't whitespace (the characters of str.isspace, written out so that the schema's
+# pattern, an ECMA regex, means the same; the schema uses this exact pattern)
+_BLANK = [(0x09, 0x0D), (0x1C, 0x1F), 0x20, 0x85, 0xA0, 0x1680, (0x2000, 0x200A), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
+NOT_BLANK = "[^%s]" % "".join(
+    "-".join(f"\\u{c:04x}" for c in (r if isinstance(r, tuple) else (r,))) for r in _BLANK
+)
+
+
 def _spawn(v: str) -> str:
-    if not re.search(r"\S", v):
+    if not re.search(NOT_BLANK, v):
         raise _custom("empty_command", "spawn must be a command, not an empty or blank string")
     return v
 
@@ -312,7 +320,7 @@ class ControlStep(pydantic.BaseModel):
             if not CONTROL_RE.fullmatch(char):
                 raise _custom(
                     "control_char",
-                    f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got {char!r}",
+                    f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got '{char}'",
                 )
         return v
 

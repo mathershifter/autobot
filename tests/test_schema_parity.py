@@ -527,7 +527,7 @@ CONTROL_BAD = {
     "space": " ",
     "newline-after": "a\n",
     "non-ascii": "é",
-    "kelvin": "K",  # lowercases to "k"
+    "kelvin": chr(0x212A),  # lowercases to "k"
     "caret-name": "^C",
     "in-list": ["a", "ab"],
     "empty-in-list": ["a", ""],
@@ -550,6 +550,15 @@ def test_p6_63_parity_control_rejected(both_validate: Callable, value: Any):
     if isinstance(value, (str, list)):
         [err] = model_errors(doc)
         assert (err["loc"], err["type"]) == (("script", 0, "control", "control"), "control_char")
+
+
+@pytest.mark.parametrize("value", ["", "ab", "1", "'", '"', "a\n", "\\n", "{x}"])
+def test_p6_63_control_message_quotes_the_value_as_written(value: str):
+    """SPEC "control": the message ends `got '<value>'` for every value, also one with a quote or a backslash."""
+    [err] = model_errors(s({"control": value}))
+    assert err["msg"] == (
+        f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got '{value}'"
+    )
 
 
 def test_p6_63_control_chars_are_what_sendcontrol_maps():
@@ -578,6 +587,14 @@ EMPTY_VALUE_BAD: dict[str, tuple[dict[str, Any], tuple, str]] = {
     "spawn-empty": (d(attach={"spawn": ""}), ("attach", "spawn"), "empty_command"),
     "spawn-blank": (d(attach={"spawn": "  "}), ("attach", "spawn"), "empty_command"),
     "spawn-newline": (d(attach={"spawn": "\n"}), ("attach", "spawn"), "empty_command"),
+    # whitespace for Python (and pexpect's command-line split) but not for an ECMA `\s`, or the other way round
+    "spawn-file-separator": (d(attach={"spawn": "\x1c"}), ("attach", "spawn"), "empty_command"),
+    "spawn-c0-separators": (d(attach={"spawn": " \x1d\x1e\x1f"}), ("attach", "spawn"), "empty_command"),
+    "spawn-unicode-spaces": (
+        d(attach={"spawn": "".join(map(chr, [0x85, 0xA0, 0x1680, 0x2003, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]))}),
+        ("attach", "spawn"),
+        "empty_command",
+    ),
 }
 INVALID_REGEX: dict[str, tuple[dict[str, Any], tuple]] = {
     "errors": (d(errors=["% .*", "("]), ("errors", 1)),
@@ -613,6 +630,8 @@ STILL_ACCEPTED = {
     "assert-template-invalid-as-written": s({"cmd": "x", "assert": ["({{ vars.x }}"]}),
     "after-template-invalid-as-written": s({"cmd": "x", "after": "{% if vars.x %}({% endif %}"}),
     "spawn-template": d(attach={"spawn": "{{ args.spawn }}"}),
+    "spawn-bom": d(attach={"spawn": chr(0xFEFF)}),  # whitespace for an ECMA `\s`, not for Python: not blank
+    "spawn-zero-width-space": d(attach={"spawn": chr(0x200B)}),
     "register-any-name": s({"cmd": "x", "register": "values"}),
     "valid-regexes": d(
         errors=["^% .*", "(?i)error"],
@@ -628,6 +647,21 @@ def test_p6_64_parity_empty_pattern_name_or_command_rejected(both_validate: Call
     doc, loc, type_ = EMPTY_VALUE_BAD[case]
     assert both_validate(doc) == (False, False)
     assert [(e["loc"], e["type"]) for e in model_errors(doc)] == [(loc, type_)]
+
+
+def test_p6_64_blank_spawn_class_is_shared_and_is_python_whitespace(schema: dict[str, Any]):
+    """SPEC "attach": schema and model use one explicit character class, not each engine's own `\\S`.
+
+    It is exactly `str.isspace`, which is what pexpect splits the command on and what the runner
+    strips from a rendered spawn.
+    """
+    import re
+    import sys
+
+    assert schema["$defs"]["attach"]["properties"]["spawn"]["pattern"] == models.NOT_BLANK
+    not_blank = re.compile(models.NOT_BLANK)
+    differ = [hex(c) for c in range(sys.maxunicode + 1) if bool(not_blank.fullmatch(chr(c))) == chr(c).isspace()]
+    assert differ == []
 
 
 @pytest.mark.parametrize("case", INVALID_REGEX)
