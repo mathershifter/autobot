@@ -325,7 +325,11 @@ class Session:
             raise RuntimeError("not attached")
 
         self.sendline("echo __AUTOBOT_RC=$?")
-        self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+        try:
+            self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+        except BaseException:
+            self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
+            raise
 
         rc = int(self._cld.match.group(1))  # type: ignore
         self.get_prompt(timeout=timeout, capture=False)

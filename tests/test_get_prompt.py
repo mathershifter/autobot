@@ -16,6 +16,7 @@ import pytest
 import yaml
 from conftest import (
     BASH,
+    RC_PROBE,
     SHELL_ENV,
     SHELL_PROMPT,
     FakeDevice,
@@ -620,6 +621,19 @@ def test_p4_38_solicit_only_for_a_wait_not_after_a_command(device, sent: SentLog
         r.session.get_prompt(timeout=6)
     assert sent.lines() == ([] if send == "command" else [""])
     # the timed-out wait consumed the command: the next wait follows no send, so it solicits
+    sent.clear()
+    with pytest.raises(TimeoutError):
+        r.session.get_prompt(timeout=6)
+    assert sent.lines() == [""]
+
+
+@pytest.mark.slow
+def test_p4_40_solicit_after_a_timed_out_rc_check(device, sent: SentLog):
+    """SPEC get_prompt: a `$?` check that times out counts like a timed-out wait; the next wait solicits."""
+    r, _ = device([SHELL_PROMPT], "--silent", kick=False)
+    with pytest.raises(TimeoutError, match=r"waiting for the exit code of the command \(echo \$\?\)$"):
+        r.session.check_rc(timeout=1)
+    assert sent.lines() == [RC_PROBE]
     sent.clear()
     with pytest.raises(TimeoutError):
         r.session.get_prompt(timeout=6)
