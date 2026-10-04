@@ -22,6 +22,7 @@ class StepRegistry:
         self._builtins: set[str] = set()
         self._origins: dict[str, str] = {}
         self._discovered = False
+        self._discover_error: PluginError | None = None
 
     def register(self, executor: StepExecutor, *, builtin: bool = False, origin: str = ""):
         if not builtin:
@@ -93,9 +94,19 @@ class StepRegistry:
         return executor.model.model_validate(raw)
 
     def discover(self):
+        if self._discover_error is not None:
+            # a broken plugin is never skipped: every later attempt fails the same way
+            raise PluginError(str(self._discover_error)) from self._discover_error
         if self._discovered:
             return
+        try:
+            self._load_entry_points()
+        except PluginError as e:
+            self._discover_error = e
+            raise
         self._discovered = True
+
+    def _load_entry_points(self):
         for ep in importlib.metadata.entry_points(group="autobot.steps"):
             try:
                 obj: type[StepExecutor] = ep.load()
@@ -117,9 +128,18 @@ class StepRegistry:
 def _check_shape(executor: StepExecutor, origin: str):
     # what the registry and the runner use: a usable key, a pydantic model class and a callable `execute`
     missing = object()
-    key = getattr(executor, "key", missing)
-    model = getattr(executor, "model", missing)
-    execute = getattr(executor, "execute", missing)
+
+    def attr(name: str) -> Any:
+        try:
+            return getattr(executor, name, missing)
+        except Exception as e:
+            why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            who = _describe(executor, origin)
+            raise PluginError(f"plugin {who}: executor's {name!r} attribute raised {why}") from e
+
+    key = attr("key")
+    model = attr("model")
+    execute = attr("execute")
     if key is missing:
         why = "executor has no 'key' attribute (a non-empty string)"
     elif not isinstance(key, str) or not key:
