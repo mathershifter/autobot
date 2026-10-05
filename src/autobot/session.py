@@ -57,17 +57,39 @@ def _exit_note(cld: pexpect.spawn) -> str:
     return ""
 
 
+# the start of a sequence ANSI_ESCAPE_RE removes, cut off by the end of a read: ESC, or an unfinished CSI
+_PARTIAL_ESCAPE_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*)?\Z")
+# longer than any real sequence; a longer run after an ESC is written out rather than held
+ESCAPE_HOLD = 64
+
+
 class CleanWriter:
+    """The operator echo: what is read from the session, without the escape sequences ANSI_ESCAPE_RE removes."""
+
     def __init__(self, stream):
         self._stream = stream
+        self._held = ""
 
     def write(self, data):
-        data = ANSI_ESCAPE_RE.sub("", data)
+        data = ANSI_ESCAPE_RE.sub("", self._held + data)
+        self._held = ""
+        # a sequence may arrive in two reads: keep its start back until the next one completes it
+        m = _PARTIAL_ESCAPE_RE.search(data)
+        if m and len(data) - m.start() <= ESCAPE_HOLD:
+            data, self._held = data[: m.start()], data[m.start() :]
         if data:
             self._stream.write(data)
             self._stream.flush()
 
     def flush(self):
+        # pexpect flushes after every read, so this must not release what is held
+        self._stream.flush()
+
+    def close(self):
+        """Write out what is still held: nothing more will come to complete it. The stream stays open."""
+        held, self._held = self._held, ""
+        if held:
+            self._stream.write(held)
         self._stream.flush()
 
 
@@ -146,6 +168,7 @@ class SimpleHandler(PromptHandler):
 class Session:
     def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
+        self._echo: CleanWriter | None = None
         self._at_prompt = False
         self._prompt = ""
         self._sent: str | None = None
@@ -192,7 +215,7 @@ class Session:
             codec_errors="replace",
             env=dict(DEFAULT_ENV) if env is None else env,
         )
-        self._cld.logfile_read = CleanWriter(sys.stdout)
+        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
         cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
@@ -221,7 +244,12 @@ class Session:
 
     def detach(self):
         if self._cld:
-            self._cld.close()
+            try:
+                self._cld.close()
+            finally:
+                if self._echo:
+                    self._echo.close()
+                    self._echo = None
             self._cld = None
 
     def get_prompt(

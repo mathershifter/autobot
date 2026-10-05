@@ -26,8 +26,8 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P5 | attach / block lifecycles, env | 54 | 0 | 0 | 54 | 0 |
 | P6 | model / schema / example / CLI parity | 70 | 0 | 0 | 70 | 0 |
 | P7 | registry and plugins | 23 | 0 | 0 | 23 | 0 |
-| P8 | Low priority: types, strip_echo, simple steps, log output | 20 | 0 | 0 | 20 | 0 |
-| **Total** | | **269** | **0** | **0** | **269** | **8** |
+| P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
+| **Total** | | **270** | **0** | **0** | **270** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -501,8 +501,9 @@ Files: `tests/test_types.py` (new), `tests/test_output_capture.py` (extend the s
 | P8-18 | `test_p8_18_parse_duration_ascii_digits_only` (parametrized) | Duration Format | unit | `"٥s"`, `"5٥ms"`, `"1.٥s"`, `"５s"` → `ValueError` (`\d` used to accept them) | pass |
 | P8-19 | `test_p8_19_search_invalid_regex_is_template_error` | Jinja2 Templating | unit | `{{ 'x' \| search('(') }}` → `ValueError` `template error: search: invalid regex '(': ...` (was a bare `re.error`); a valid regex still works | pass |
 | P8-20 | `test_p8_20_non_jinja_exception_is_template_error` (parametrized: `{{ 1/0 }}`, `{{ 'a' + 1 }}`, `search(5)`, an exception with no message), `test_p8_20_nested_render_error_is_not_wrapped_twice`, `test_p8_20_keyboard_interrupt_is_not_wrapped` | Jinja2 Templating | unit | `ValueError` exactly `template error: <type>: <message>` (just `<type>` without a message), chained from the exception; an error from a render inside a render keeps its message, with one `template error: ` prefix; `KeyboardInterrupt` propagates | pass (review finding 6) (x3) |
+| P8-21 | `test_p8_21_echo_removes_sequences`, `test_p8_21_echo_removes_a_sequence_split_across_two_reads` (parametrized over every cut of a line with five sequences), `test_p8_21_echo_removes_a_sequence_that_arrives_byte_by_byte`, `test_p8_21_echo_split_sequence_from_the_audit`, `test_p8_21_echo_writes_text_before_a_held_start_at_once`, `test_p8_21_echo_held_start_is_written_on_close` (parametrized: `ESC`, `ESC[`, `ESC[3`, `ESC[?2004`, `ESC[1;3 `), `test_p8_21_echo_keeps_what_the_stripping_regex_keeps` (parametrized: `ESC ( B`, `ESC =`, `ESC 7`, `ESC ESC [0m`, an OSC title, a two-byte sequence, a newline inside a CSI), `test_p8_21_echo_held_start_is_bounded`, `test_p8_21_session_echo_on_stdout_has_no_split_sequence`, `test_p8_21_session_echo_strips_color_from_a_real_shell` | ANSI escape sequences | unit: `CleanWriter` over a `StringIO`, flushed after every write as pexpect does; a device script in `tmp_path` that prints `ab ESC[3`, waits 0.3 s, then `1mcd ESC[0m`, and ends with a lone `ESC`; F1 with `capsys` | whole, cut anywhere or byte by byte, the echo is the text without the sequences (`ab ESC[3` + `1mcd ESC[0m` → `abcd`, it was `ab ESC[31mcd`); the text before a held start is written at once; a start nothing completes is written by `close()`, once; split or whole, the echo equals `ANSI_ESCAPE_RE.sub("", text)`; the held text never exceeds `ESCAPE_HOLD` over 1000 writes of garbage, and a sequence of exactly that length is still removed; end to end, stdout is `abcd\r\nPROMPT$ ` ... `bye ESC` with that one `ESC` written at detach, and a colored `printf` from bash reaches stdout as `ABC` with no `ESC` and no `>> ` line | pass (audit 2, finding 7) (x10) |
 
-Totals: 20 pass (P8-01..20).
+Totals: 21 pass (P8-01..21).
 
 ## Implementation status
 
@@ -517,8 +518,8 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P5 | 54 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 70 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 23 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
-| P8 | 20 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **269** | **0** | **8** | |
+| P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
+| **Total** | **270** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -576,6 +577,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 4: an explicit null on a field with a non-`None` default wasn't `null_value` | P6-41 (assertion widened to every optional field) | 12 cases fail: `Config.env`, `.vars`, `.prompts`, `.fn`, `.errors`, `Attach.script`, `Breakout.script`, `Prompt.return`, `Block.prompts`, `.enter`, `.script`, `CmdStep.ignore_error` |
 | 5: schema and models disagreed on `return: 1.0`, non-finite and huge durations, `!!binary` strings | P6-68, P6-69, P6-70 | with the old schema and models 85 of the 136 cases fail: the 4 whole floats (`(False, True)`), 48 of the 72 too-large durations (the negative ones were rejected by `minimum`), the `maximum` check, and 32 binary cases (`(True, False)`); the up-to-a-double and model-only cases pass before and after |
 | 6: a `spawn` of only quotes or a backslash crashed after `prepare` | P5-54, P6-71 | the 8 rendered cases fail (5 `IndexError: list index out of range`, 3 `ExceptionPexpect: The command was not found or was not executable`), the 10 load cases are `(True, True)`, and `names_command` doesn't exist; the 13 accepted cases pass before and after |
+| 7: `CleanWriter` leaked a sequence split across two reads | P8-21 (the first tests of `CleanWriter` and the stdout echo) | 35 of the 60 cases fail: 23 of the 43 cuts (those inside a sequence), byte by byte, the audit's case (`'ab\x1b[31mcd' == 'abcd'`), the held-start, close and bound tests (no `close`, no `ESCAPE_HOLD`), two of the keep cases (`ESC ESC [0m` and `ESC M` split) and the device test; whole-text and real-shell cases pass before and after |
 
 ### Deviations from the plan
 

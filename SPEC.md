@@ -276,7 +276,7 @@ The session removes ANSI escape sequences that match `types.ANSI_ESCAPE_RE`: CSI
 
 Stripped text, which never contains a removed sequence:
 - The captured output of a command (see above), and so the text `assert` and `errors` patterns are matched against, the value `register` stores, and `session.before` after a shell prompt.
-- The session output echoed to the operator. Everything read from the session is written to stdout with the sequences removed (`session.CleanWriter`), while autobot's own `>> ...` messages and errors go to stderr.
+- The session output echoed to the operator. Everything read from the session is written to stdout with the sequences removed (`session.CleanWriter`), while autobot's own `>> ...` messages and errors go to stderr. A sequence that arrives in two reads is removed like any other: when a read ends in the start of a sequence (an `ESC`, or `ESC [` with parameter and intermediate bytes but no final byte yet), the echo writes the text before it and holds the start back until the next read completes it. What is still held when the session is closed is written out then, as it is. At most 64 characters are held; a longer run after an `ESC` is no real sequence and is written out at once.
 
 Raw text, with escape sequences as received:
 - `after` patterns are matched against the raw output stream, and the `session.before` and `session.match` set by an `after` match are raw: escape sequences, `\r\n` line endings and the command echo are all kept. A pattern such as `AABBCC` doesn't match output printed as `AA ESC[1m BB ESC[0m CC`; match around the sequence instead (e.g. `AA.*CC`).
