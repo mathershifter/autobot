@@ -7,7 +7,6 @@ Import helpers with ``from conftest import ...``; pytest puts ``tests/`` on
 from __future__ import annotations
 
 import copy
-import importlib
 import importlib.metadata
 import json
 import os
@@ -22,16 +21,14 @@ import pydantic
 import pytest
 import yaml
 
+import autobot.registry as registry_mod
+import autobot.runner as runner_mod
 from autobot.models import Config
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
 from autobot.session import PromptHandler, Session
 from autobot.steps import register_builtins
 
-# ``autobot/__init__.py`` re-exports the ``registry`` instance, which shadows
-# the ``autobot.registry`` submodule attribute; go through sys.modules.
-registry_mod = importlib.import_module("autobot.registry")
-runner_mod = importlib.import_module("autobot.runner")
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "schemas" / "autobot.2026-10.json"

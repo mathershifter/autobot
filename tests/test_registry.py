@@ -427,6 +427,69 @@ def test_p7_24_cli_reports_a_reused_builtin_model(tmp_path: Path):
     assert not marker.exists()
 
 
+# -- P7-25: `autobot.registry` is the module --------------------------------------
+
+IMPORT_FORMS = {
+    "import-as": "import autobot.registry as reg; print(type(reg).__name__, reg.PluginError.__mro__[1].__name__)",
+    "from-import": "from autobot.registry import PluginError; print('module', PluginError.__mro__[1].__name__)",
+    "plain-import": "import autobot.registry; print(type(autobot.registry).__name__, "
+    "autobot.registry.PluginError.__mro__[1].__name__)",
+    "package-first": "import autobot; import autobot.registry as reg; print(type(reg).__name__, "
+    "reg.PluginError.__mro__[1].__name__)",
+    "from-package": "from autobot import registry as reg; print(type(reg).__name__, reg.PluginError.__mro__[1].__name__)",
+}
+
+
+@pytest.mark.parametrize("form", list(IMPORT_FORMS))
+def test_p7_25_plugin_error_is_importable_from_autobot_registry(form: str):
+    """SPEC "Common Step Properties": `PluginError` is "from `autobot.registry`", however that is imported.
+
+    `import autobot.registry as reg; reg.PluginError` raised `AttributeError: 'StepRegistry' object has
+    no attribute 'PluginError'`: the package bound the registry instance to the submodule's name.
+    Each form runs in a fresh interpreter, so nothing this suite imported is in the way.
+    """
+    res = subprocess.run(
+        [sys.executable, "-c", IMPORT_FORMS[form]], check=False, capture_output=True, text=True, timeout=60
+    )
+    assert (res.returncode, res.stdout.strip(), res.stderr) == (0, "module TypeError", "")
+
+
+def test_p7_25_autobot_registry_is_the_module():
+    """In this process too: the package attribute, `sys.modules` and the import statement agree."""
+    import autobot
+    import autobot.registry as reg
+
+    assert reg is sys.modules["autobot.registry"] is autobot.registry
+    assert reg.PluginError is PluginError
+    assert reg.StepRegistry is StepRegistry
+    assert isinstance(reg.registry, StepRegistry)
+    for name in autobot.__all__:
+        assert hasattr(autobot, name), name
+
+
+def test_p7_25_registry_methods_stay_reachable_on_the_module(isolated_registry: StepRegistry):
+    """`from autobot import registry; registry.register(...)` worked on the instance, and still works."""
+    from autobot import registry
+
+    for name in ("register", "get", "has", "keys", "key_for_step", "discover", "plugin_executors", "validate_plugin_step"):
+        assert getattr(registry, name) == getattr(isolated_registry, name), name
+    executor = _Executor("echo", EchoStep)
+    registry.register(executor)
+    assert registry.has("echo") and registry.get("echo") is executor
+    assert isolated_registry.get("echo") is executor
+    assert "cmd" in registry.keys()
+
+
+@pytest.mark.parametrize("name", ["PluginErorr", "nope", "_executors", "__wrapped__"])
+def test_p7_25_unknown_module_attribute_is_a_module_error(name: str):
+    """A typo is reported for the module, not as a missing attribute of a `StepRegistry` object."""
+    import autobot.registry as reg
+
+    with pytest.raises(AttributeError) as ei:
+        getattr(reg, name)
+    assert str(ei.value) == f"module 'autobot.registry' has no attribute '{name}'"
+
+
 DUP_PLUGIN = '''
 import pydantic
 

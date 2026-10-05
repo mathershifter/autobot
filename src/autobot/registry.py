@@ -195,3 +195,11 @@ def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
 
 
 registry = StepRegistry()
+
+
+def __getattr__(name: str) -> Any:
+    # `from autobot import registry` was this instance until the name stopped shadowing the module:
+    # the instance's methods stay reachable on the module, so `registry.register(...)` still works
+    if not name.startswith("_") and hasattr(StepRegistry, name):
+        return getattr(registry, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
