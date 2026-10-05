@@ -43,10 +43,9 @@ attach:
       after: "attached to"
   timeout: 300s
   breakout:
-    script:
-      - line: logout
-      - control: "]"
-      - line: logout
+    - line: logout
+    - control: "]"
+    - line: logout
 
 errors:
   - '% .*'
@@ -79,15 +78,13 @@ script:
         exit
 
   # - block:
-  #   name: run 'uname -a' from bash
-  #   enter:
-  #     script:
+  #     name: run 'uname -a' from bash
+  #     enter:
   #       - line: bash
+  #     script:
+  #       - cmd: |
+  #           #!/bin/sh
+  #           uname -a
   #     breakout:
-  #       script:
-  #         - line: exit
-  #   script:
-  #     - cmd: |
-  #         #!/bin/sh
-  #         uname -a
+  #       - line: exit
 

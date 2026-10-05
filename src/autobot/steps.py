@@ -213,11 +213,11 @@ class BlockExecutor:
                     ctx.run_steps(step.block.enter)
                 ctx.run_steps(step.block.script)
             finally:
-                if step.block.breakout and step.block.breakout.script:
+                if step.block.breakout:
                     console.print(f">> block breakout: {step.block.name}")
                     try:
                         ctx.session.reset_handlers()
-                        ctx.run_steps(step.block.breakout.script)
+                        ctx.run_steps(step.block.breakout)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
                         console.print(f">> block breakout error ({type(e).__name__}): {e}")
         finally:

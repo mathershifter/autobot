@@ -65,9 +65,8 @@ attach:                 # session spawn and lifecycle
   script:
     - line: connect-to-device
   breakout:
-    script:
-      - control: "]"
-      - line: q
+    - control: "]"
+    - line: q
 
 script:                 # main steps to execute
   - cmd: show version
@@ -104,7 +103,7 @@ The `attach` block controls how autobot connects to the remote console.
 2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
-5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
+5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
 The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
@@ -125,10 +124,9 @@ attach:
       after: "attached to"
   timeout: 300s
   breakout:
-    script:
-      - line: logout
-      - control: "]"
-      - line: logout
+    - line: logout
+    - control: "]"
+    - line: logout
 ```
 
 ## Prompts
@@ -320,7 +318,7 @@ The block lifecycle:
 1. If `prompts` is defined, swap session handlers to the block's prompts
 2. `enter` steps execute (if defined)
 3. `script` steps execute
-4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
+4. `breakout` steps execute in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
 When the session is sitting at a shell prompt, the swap and the restore keep it there if the new prompts recognize that prompt, so the next `cmd` sends at once: no 5s idle wait and no extra newline. If they don't, the next `cmd` waits for one of the new prompts, and an idle shell never prints one. So enter a sub-CLI whose prompt the block's prompts expect with `line`, not `cmd`, and leave it in the breakout (e.g. `line: exit`). See [SPEC.md](SPEC.md#prompt-state-across-a-swap).
@@ -345,8 +343,7 @@ With enter and breakout (the console is entered with `line`: a `cmd` would wait 
       - call: is_system_running
       - cmd: show version
     breakout:
-      script:
-        - line: exit
+      - line: exit
 ```
 
 ### `line` — Raw send (no prompt wait)

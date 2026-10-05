@@ -246,11 +246,11 @@ class Runner:
                     self.run_steps(attach.script)
                 self.run_steps(self._config.script)
             finally:
-                if attach.breakout and attach.breakout.script:
+                if attach.breakout:
                     console.print(">> breakout: detaching")
                     try:
                         self._session.reset_handlers()
-                        self.run_steps(attach.breakout.script)
+                        self.run_steps(attach.breakout)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
                         console.print(f">> breakout error ({type(e).__name__}): {e}")
         except BaseException:

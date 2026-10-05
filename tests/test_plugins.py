@@ -228,15 +228,15 @@ NOPE = {"call": "nope"}
         ({"script": [NOPE]}, ("script", 0, "call")),
         ({"script": [{**NOPE, "when": "false"}]}, ("script", 0, "call")),
         ({"attach_script": [NOPE]}, ("attach", "script", 0, "call")),
-        ({"breakout": [NOPE]}, ("attach", "breakout", "script", 0, "call")),
+        ({"breakout": [NOPE]}, ("attach", "breakout", 0, "call")),
         ({"fn": {"f": {"script": [NOPE]}}}, ("fn", "f", "script", 0, "call")),
         (
             {"script": [{"block": {"name": "b", "enter": [NOPE]}}]},
             ("script", 0, "block", "enter", 0, "call"),
         ),
         (
-            {"script": [{"block": {"name": "b", "breakout": {"script": [NOPE]}}}]},
-            ("script", 0, "block", "breakout", "script", 0, "call"),
+            {"script": [{"block": {"name": "b", "breakout": [NOPE]}}]},
+            ("script", 0, "block", "breakout", 0, "call"),
         ),
     ],
     ids=["script", "when-skipped", "attach-script", "attach-breakout", "fn-body",

@@ -72,14 +72,12 @@ def test_p6_02_python_field_names_rejected(key: str):
 EXTRA_CASES = {
     "top-level": with_("bogus", 1),
     "attach": with_("attach.bogus", 1),
-    "breakout": with_("attach.breakout", {"script": [], "bogus": 1}),
     "prompt": with_("prompts", [{"name": "p", "expect": ["x"], "bogus": 1}]),
     "sendEach": with_(
         "prompts", [{"name": "p", "expect": ["x"], "send": {"each": "vars.x", "bogus": 1}}]
     ),
     "fn": with_("fn", {"f": {"script": [], "bogus": 1}}),
     "block": with_("script", [{"block": {"name": "b", "bogus": 1}}]),
-    "block-breakout": with_("script", [{"block": {"name": "b", "breakout": {"bogus": 1}}}]),
     "cmd": with_("script", [{"cmd": "x", "bogus": 1}]),
     "sleep": with_("script", [{"sleep": 1, "bogus": 1}]),
     "call": with_("script", [{"call": "f", "bogus": 1}]),

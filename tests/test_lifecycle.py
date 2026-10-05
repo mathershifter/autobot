@@ -157,7 +157,7 @@ def test_sleep_and_check_rc_eof_is_builtin_eof():
 def test_block_breakout_after_timeout_restores_handlers(attached, capsys):
     r = attached()
     try:
-        r.run_steps(steps([block(script=[{"cmd": "true"}], breakout={"script": [STUCK]})]))
+        r.run_steps(steps([block(script=[{"cmd": "true"}], breakout=[STUCK])]))
         assert handler_names(r) == ["top"]
         # session still usable with the restored top-level prompts
         r.run_steps(steps([{"cmd": "true"}]))
@@ -174,7 +174,7 @@ def test_block_failing_enter_runs_breakout_and_restores(attached, capsys):
                 steps([block(
                     enter=[{"cmd": "false"}],
                     script=[{"cmd": "echo SHOULD_NOT_RUN"}],
-                    breakout={"script": [{"cmd": "echo BREAKOUT_RAN"}]},
+                    breakout=[{"cmd": "echo BREAKOUT_RAN"}],
                 )])
             )
         assert handler_names(r) == ["top"]
@@ -190,7 +190,7 @@ def test_block_original_error_preserved_when_breakout_fails(attached):
     r = attached()
     try:
         with pytest.raises(RuntimeError, match="exit code 1"):
-            r.run_steps(steps([block(script=[{"cmd": "false"}], breakout={"script": [STUCK]})]))
+            r.run_steps(steps([block(script=[{"cmd": "false"}], breakout=[STUCK])]))
         assert handler_names(r) == ["top"]
     finally:
         r.session.detach()
@@ -200,7 +200,7 @@ def test_block_breakout_template_error_is_best_effort(attached, capsys):
     r = attached()
     try:
         r.run_steps(
-            steps([block(script=[{"cmd": "true"}], breakout={"script": [{"line": "{{ oops("}]})])
+            steps([block(script=[{"cmd": "true"}], breakout=[{"line": "{{ oops("}])])
         )
         assert handler_names(r) == ["top"]
     finally:
@@ -883,7 +883,7 @@ def test_p5_10_block_prompts_active_inside_block(probe: ProbeExecutor):
                         {"probe": "inside"},
                         {"cmd": "echo x", "register": "x", "timeout": "5s"},
                     ],
-                    "breakout": {"script": [{"line": "PS1='PROM''PT$ '"}]},
+                    "breakout": [{"line": "PS1='PROM''PT$ '"}],
                 },
                 "timeout": "5s",
             },
@@ -909,7 +909,7 @@ def test_p5_11_block_prompts_restored_on_failure(attached, phase: str, with_brea
     else:
         blk["script"] = fail
     if with_breakout:
-        blk["breakout"] = {"script": [{"line": "true"}]}
+        blk["breakout"] = [{"line": "true"}]
     r = attached()
     with pytest.raises(RuntimeError, match="exit code 1"):
         r.run_steps(steps([{"block": blk}]))
@@ -935,7 +935,7 @@ def test_p5_12_nested_block_restore(probe: ProbeExecutor, inner_fails: bool):
             "name": "outer",
             "prompts": [{"name": "o", "expect": shell, "return": True}],
             "script": [inner, {"probe": "after_inner"}],
-            "breakout": {"script": [{"probe": "outer_breakout"}]},
+            "breakout": [{"probe": "outer_breakout"}],
         }
     }
     runner = make_runner([outer, {"probe": "top"}])
@@ -973,7 +973,7 @@ def test_p5_14_block_breakout_resets_handlers_first(timeline: Timeline):
                 "block": {
                     "name": "b",
                     "script": [{"line": "echo s"}],
-                    "breakout": {"script": [{"line": "echo bo"}]},
+                    "breakout": [{"line": "echo bo"}],
                 }
             }
         ]
@@ -997,7 +997,7 @@ def test_p5_15_block_step_order(tmp_path: Path):
                     "name": "b",
                     "enter": [tag("enter")],
                     "script": [tag("script")],
-                    "breakout": {"script": [tag("breakout")]},
+                    "breakout": [tag("breakout")],
                 }
             }
         ]
@@ -1005,12 +1005,25 @@ def test_p5_15_block_step_order(tmp_path: Path):
     assert log.read_text().split() == ["enter", "script", "breakout"]
 
 
+@pytest.mark.parametrize("breakout", [None, []], ids=["omitted", "empty"])
+def test_p5_60_breakout_without_steps_is_no_breakout(sent: SentLog, capsys, breakout: list | None):
+    """SPEC "attach", "block": `breakout: []` is no breakout, like leaving the key out: nothing runs or is logged."""
+    blk: dict = {"name": "b", "script": [{"cmd": "echo in"}]}
+    if breakout is not None:
+        blk["breakout"] = breakout
+    run_script([{"block": blk}], breakout=breakout)
+    err = capsys.readouterr().err
+    assert ">> block enter: b" in err and ">> block completed: b" in err
+    assert ">> block breakout" not in err and ">> breakout" not in err
+    assert sent.lines() == ["echo in", RC_PROBE]
+
+
 def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
     """SPEC.md:203, README:304: a failing block breakout is logged; handlers restored."""
     r = attached()
     try:
         r.run_steps(
-            steps([block(script=[{"cmd": "true"}], breakout={"script": [{"cmd": "false"}]})])
+            steps([block(script=[{"cmd": "true"}], breakout=[{"cmd": "false"}])])
         )
         assert handler_names(r) == ["top"]
     finally:
@@ -1033,7 +1046,7 @@ def _send_each_block(each: str, log: Path) -> dict:
             "prompts": [*BLOCK_PROMPTS, login],
             "enter": [tag("enter")],
             "script": [tag("script")],
-            "breakout": {"script": [tag("block-breakout")]},
+            "breakout": [tag("block-breakout")],
         }
     }
 
@@ -1148,7 +1161,7 @@ def test_p5_37_block_prompt_change_waits_for_new_prompt(sent: SentLog):
     runner = top_runner([
         reg("echo before", "b"),
         {"block": {"name": "b", "prompts": BLK_ONLY, "enter": [TO_BLK], "script": [reg("echo in1", "i1")],
-                   "breakout": {"script": [TO_TOP]}}},
+                   "breakout": [TO_TOP]}},
         reg("echo after", "a"),
     ])
     assert timed(runner) < FAST
@@ -1203,7 +1216,7 @@ def test_p5_41_restore_after_error_keeps_recognized_prompt(sent: SentLog):
     """SPEC "Prompt state across a swap": a failure at a prompt leaves the session at it for both breakouts."""
     runner = top_runner(
         [reg("echo before", "b"),
-         block(script=[{"cmd": "false", "timeout": "5s"}], breakout={"script": [reg("echo bbo", "bbo")]})],
+         block(script=[{"cmd": "false", "timeout": "5s"}], breakout=[reg("echo bbo", "bbo")])],
         breakout=[reg("echo bo", "bo")],
     )
     start = time.monotonic()
