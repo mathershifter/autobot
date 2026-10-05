@@ -76,7 +76,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `autobot` | yes      | Schema version: `2026-10`. Scripts written for `2026-08` need changes to their prompts, see [Migrating from 2026-08](SPEC.md#migrating-from-2026-08) |
+| `autobot` | yes      | Schema version: `2026-10` |
 | `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
@@ -508,7 +508,7 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
 
-Before this distinction every prompt wait pressed Return after 5 seconds. A plugin that relied on that after its own `sendline` now needs `solicit=True` (see "Migrating from 2026-08" in SPEC.md).
+A plugin's own `ctx.session.sendline(text)` counts as a command, so the wait after it doesn't press Return; a plugin that sends something raw passes `solicit=True`.
 
 ## Schema
 

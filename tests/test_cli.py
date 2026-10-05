@@ -423,8 +423,8 @@ def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
     assert "got-2-hi" in res.stdout
 
 
-def test_p6_46_cli_old_fields_list_is_validation_error_with_hint(tmp_path: Path):
-    """SPEC "Migrating from 2026-08": `fields: [username, password]` fails validation and names the new form."""
+def test_p6_46_cli_fields_list_of_names_is_validation_error_with_hint(tmp_path: Path):
+    """SPEC "sendEach": `fields: [username, password]` fails validation and names the form an entry has."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pairs", "fields": ["username", "password"]})
     doc["prompts"][1]["expect"] = [["login:", "Password:"]]
     res = run_cli(doc, tmp_path)
@@ -435,24 +435,21 @@ def test_p6_46_cli_old_fields_list_is_validation_error_with_hint(tmp_path: Path)
         (["prompts", 1, "send", "fields", 1], "fields_entry"),
     ]
     assert errs[1]["msg"] == (
-        "since 2026-10 a fields entry pairs a regex with a field: "
-        'write {match: <regex>, field: password} (see "Migrating from 2026-08" in SPEC.md)'
+        "a fields entry pairs a regex with a field: write {match: <regex>, field: password}"
     )
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 
 
 def test_p6_47_cli_old_version_is_validation_error_with_hint(tmp_path: Path):
-    """SPEC "Top-level fields": `autobot: 2026-08` fails validation and points to the migration section."""
+    """SPEC "Top-level fields": `autobot: 2026-08` fails validation and names the version to use."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
     doc["autobot"] = "2026-08"
     res = run_cli(doc, tmp_path)
     assert _load_error(res) == "Validation errors:"
     [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
     assert (err["loc"], err["type"]) == (["autobot"], "unsupported_version")
-    assert err["msg"] == (
-        'autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)'
-    )
+    assert err["msg"] == "autobot 2026-08 is no longer supported; use 2026-10"
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 
@@ -510,7 +507,7 @@ def test_p6_55_cli_unquoted_send_scalar_is_validation_error_with_hint(
 def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     tmp_path: Path, prompt: dict[str, Any], loc: list[Any], type_: str
 ):
-    """SPEC "Migrating from 2026-08": a send list and a grouped expect fail validation and point to sendEach."""
+    """SPEC "prompts": a send list and a grouped expect fail validation and point to sendEach."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
     doc["prompts"][1] = prompt
     res = run_cli(doc, tmp_path)
@@ -518,7 +515,7 @@ def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
     assert (err["loc"], err["type"]) == (loc, type_)
     assert SEQUENCE_HINT in err["msg"]
-    assert 'see "Migrating from 2026-08" in SPEC.md' in err["msg"]
+    assert "SPEC.md" not in err["msg"]
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 

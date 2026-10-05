@@ -139,8 +139,7 @@ class FieldEntry(pydantic.BaseModel):
         if isinstance(data, str):
             raise _custom(
                 "fields_entry",
-                "since 2026-10 a fields entry pairs a regex with a field: "
-                f"write {{match: <regex>, field: {data}}} (see \"Migrating from 2026-08\" in SPEC.md)",
+                f"a fields entry pairs a regex with a field: write {{match: <regex>, field: {data}}}",
             )
         return data
 
@@ -167,9 +166,6 @@ class SendEach(pydantic.BaseModel):
         return v
 
 
-_MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
-
-
 class Prompt(pydantic.BaseModel):
     model_config = _STRICT
     name: str
@@ -194,7 +190,7 @@ class Prompt(pydantic.BaseModel):
                 "send_list",
                 "send is a single string: for a simple prompt write send: '<response>'; "
                 "to answer a sequence of prompts such as a login, use sendEach with fields "
-                f"and keep the values in vars {_MIGRATE}",
+                "and keep the values in vars",
             )
         if v is not None and not isinstance(v, str):
             raise _custom(
@@ -235,7 +231,7 @@ class Prompt(pydantic.BaseModel):
                     errors.append(_error(
                         "grouped_expect",
                         "each expect entry is a single regex, and the regexes are alternatives; "
-                        f"to answer a sequence of prompts such as a login, use sendEach with fields {_MIGRATE}",
+                        "to answer a sequence of prompts such as a login, use sendEach with fields",
                         ("expect", i), entry,
                     ))
                 elif entry == "":
@@ -462,7 +458,7 @@ class Config(pydantic.BaseModel):
         if v == "2026-08":
             raise _custom(
                 "unsupported_version",
-                f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
+                f"autobot 2026-08 is no longer supported; use {VERSION}",
             )
         if not isinstance(v, str) or v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")

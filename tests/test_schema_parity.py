@@ -420,7 +420,7 @@ def test_p6_53_parity_simple_prompt_accepted(both_validate: Callable, doc: dict[
 
 @pytest.mark.parametrize("doc", [c[0] for c in SIMPLE_BAD.values()], ids=list(SIMPLE_BAD))
 def test_p6_53_parity_removed_prompt_forms_rejected(both_validate: Callable, doc: dict[str, Any]):
-    """SPEC "Migrating from 2026-08": both reject a send list, a non-string send and a grouped expect."""
+    """SPEC "prompts": both reject a send list, a non-string send and a grouped expect."""
     assert both_validate(doc) == (False, False)
 
 
