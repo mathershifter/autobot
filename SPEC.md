@@ -231,6 +231,13 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
 
 `cmd` accepts a string or list of strings. A string is rendered as a Jinja2 template as a whole, then split into lines on newlines, and blank lines of the result are skipped. So a Jinja2 block (e.g. `{% for %}`...`{% endfor %}`) may span lines, and a template that expands to several lines sends each of them. A string that renders to nothing but blank lines sends one empty line (like `cmd: ""`). Each item of a list is rendered on its own and split the same way, and the lines of all items are sent in order; a Jinja2 block can't span items. The whole `cmd` is rendered once, after the step's first prompt wait and before its first line is sent, so a template error sends nothing and no line sees the output of an earlier line of the same step. Each line waits for a prompt before sending.
 
+`cmd: []` has no lines, and it is the only `cmd` that has none: an empty or blank string, also as an item of a list (`cmd: ""`, `cmd: [""]`, a template that renders to nothing), is one empty line. A step with no lines sends nothing at all:
+- It makes no prompt wait, not even the step's first one: a prompt wait may send a solicit newline or answer a prompt with `send` (see [Prompt Handling](#prompt-handling-get_prompt)). `session.before` and `session.match` keep their values.
+- There is no `$?` check, since there is no last line whose return code it would read, and no `errors` check, since no line has output.
+- The captured output is empty. `assert`, if defined, is rendered and checked against that empty output as usual, so the step fails with `assertion failed` unless a pattern matches the empty string (e.g. `^$`); `ignore_error` covers that failure. Without `assert` the step can't fail.
+- `register` stores the empty string.
+- The [common step properties](#common-step-properties) apply as for any step: `when`, `delay_before` and `delay_after`, and `after`, which is waited for before the step and is then the only thing the step waits for.
+
 After each command line, the step waits for a shell prompt. If top-level `errors` patterns are defined, that line's captured output is checked against them; on a match the step raises and no further lines are sent.
 
 After the last command line, the step:
@@ -243,7 +250,7 @@ When `assert` is defined, it replaces the return code check — the assertion pa
 - `assert: ''`, or an empty entry in the list, is a validation error (`string_too_short` at the step's `assert`: `an assert pattern must not be empty: an empty regex matches any output, so the assert would check nothing`).
 - A pattern that renders to an empty string aborts the step with a `ValueError`, `assert: a pattern rendered to an empty regex, which matches any output`. Like an invalid regex, it isn't a command failure, so `ignore_error` doesn't cover it.
 
-`assert: []` is accepted and is the same as no `assert`, as `cmd: []`, `line: []` and `control: []` are accepted and send nothing. A pattern that isn't a valid regex is an error when the script is loaded or, for a template, when it is rendered (see [YAML Script Structure](#yaml-script-structure)).
+`assert: []` is accepted and is the same as no `assert`, as `cmd: []`, `line: []` and `control: []` are accepted and send nothing (for `cmd: []`, see above). A pattern that isn't a valid regex is an error when the script is loaded or, for a template, when it is rendered (see [YAML Script Structure](#yaml-script-structure)).
 
 #### Captured output
 
@@ -291,7 +298,7 @@ Every other error aborts the step, and with it the script, even with `ignore_err
 
 #### Capturing output with `register`
 
-Set `register` to store the command's captured output into `vars.<name>`, making it available to subsequent steps via Jinja2 templates as `{{ vars.<name> }}`. The stored value is the output text with leading and trailing whitespace stripped. The name is used as written (it isn't a template) and must not be empty: `register: ''` is a validation error (`string_too_short` at the step's `register`), rather than a step that silently stores nothing.
+Set `register` to store the command's captured output into `vars.<name>`, making it available to subsequent steps via Jinja2 templates as `{{ vars.<name> }}`. The stored value is the output text with leading and trailing whitespace stripped. A step that sent nothing (`cmd: []`) stores the empty string. The name is used as written (it isn't a template) and must not be empty: `register: ''` is a validation error (`string_too_short` at the step's `register`), rather than a step that silently stores nothing.
 
 ```yaml
 - cmd: show version
@@ -678,7 +685,7 @@ A further tightening, again without a new version number, rejects more values th
 - an empty or blank `attach.spawn` (`empty_command`).
 - a regex that doesn't compile, in `errors`, `expect`, `match`, and in an `assert` or `after` without Jinja2 syntax (`invalid_regex`, models only). It used to fail at its first use, after `attach.prepare` and the spawn, with a raw `re.error`.
 
-Empty lists are still accepted for `cmd`, `line`, `control` and `assert`.
+Empty lists are still accepted for `cmd`, `line`, `control` and `assert`. `cmd: []` sends nothing, as it was documented to: it used to wait for a prompt and send the `$?` check, so it failed on the exit code of an earlier command (see [`cmd`](#cmd--send-commands-to-the-shell)).
 
 The same round changed four behaviors of a run. None of them changes what the schema accepts, but a script or plugin that relied on the old behavior needs a change:
 

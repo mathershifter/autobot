@@ -47,18 +47,21 @@ class CmdExecutor:
             return
         errors = ctx.config.errors or None
         output: list[str] = []
-        if not step.after:
+        items = ensure_list(step.cmd)
+        # `cmd: []` sends nothing: a prompt wait could press Return or answer a prompt
+        if items and not step.after:
             ctx.session.get_prompt(timeout=timeout)
         # render before splitting: a Jinja block may span lines or add lines
-        lines = [l for item in ensure_list(step.cmd) for l in self._lines(ctx.render(item))]
+        lines = [l for item in items for l in self._lines(ctx.render(item))]
         try:
             for i, cmd in enumerate(lines):
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
                 ctx.session.sendline(cmd)
                 console.print(f">> cmd: {cmd}")
-            output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
-            self._check(step, ctx, "".join(output), timeout)
+            if lines:
+                output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
+            self._check(step, ctx, "".join(output), timeout, probe=bool(lines))
         except (CommandError, StepFailure) as e:
             if isinstance(e, CommandError):
                 output.append(e.output)
@@ -71,7 +74,9 @@ class CmdExecutor:
     def _lines(text: str) -> list[str]:
         return [l for l in text.splitlines() if l.strip()] or [""]
 
-    def _check(self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float) -> None:
+    def _check(
+        self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float, probe: bool = True
+    ) -> None:
         assertions = ensure_list(step.assert_)
         if assertions:
             rendered = [ctx.render(a) for a in assertions]
@@ -81,7 +86,7 @@ class CmdExecutor:
                 check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
-        elif not ctx.config.errors:
+        elif probe and not ctx.config.errors:
             rc = ctx.session.check_rc(timeout=timeout)
             if rc != 0:
                 raise StepFailure(f"command returned exit code {rc}")
