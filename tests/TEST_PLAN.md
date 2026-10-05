@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 23 | 0 | 0 | 23 | 1 |
 | P3 | Common step properties, templating context | 22 | 0 | 0 | 22 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 39 | 0 | 0 | 39 | 7 |
-| P5 | attach / block lifecycles, env | 57 | 0 | 0 | 57 | 0 |
+| P5 | attach / block lifecycles, env | 58 | 0 | 0 | 58 | 0 |
 | P6 | model / schema / example / CLI parity | 78 | 0 | 0 | 78 | 0 |
 | P7 | registry and plugins | 26 | 0 | 0 | 26 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **289** | **0** | **0** | **289** | **9** |
+| **Total** | | **290** | **0** | **0** | **290** | **9** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-05, branch `fix/open-items`, which added five rows: P2-23, P5-56, P6-75, P6-76, P6-77, and one slow test, in P2-23; before it 2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -350,8 +350,9 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-55 | `test_p5_55_prepare_temp_file_removed_when_the_write_fails` (parametrized: `\ud800`, `\udcff`), `test_p5_55_run_prepare_removes_the_file_when_the_write_fails`, `test_p5_55_prepare_temp_file_removed_when_chmod_fails` | attach `prepare` | F5, `prep_tmp`; `prepare: "#!/bin/sh\necho {{ args.x }}\n"` with a lone surrogate in `args.x`; `Runner._run_prepare("echo \ud800")`; `os.chmod` patched to raise | `UnicodeEncodeError` propagates, the temp dir is empty (it held `_autobot_*.sh`), no `attach` call and no `>> prepare: done`; a failing `chmod` leaves nothing either (it passed before the fix too) | pass (audit 2, finding 8) (x3) |
 | P5-56 | `test_p5_56_close_failure_does_not_replace_the_script_error` (parametrized: a step failure, a timeout, a template error, a step failure with a failing breakout), `test_p5_56_close_failure_does_not_replace_a_spawn_wait_error` (parametrized: `attach.timeout`, the process exits before any output), `test_p5_56_close_failure_alone_is_the_runs_error`, `test_p5_56_detach_forgets_the_child_when_close_fails`, `test_p5_56_interrupt_during_close_is_not_swallowed`, `test_p5_56_echo_is_flushed_when_close_fails` | attach (closing the session) | F1; `unkillable`: `pexpect.spawn.close` closes the child and then raises `ExceptionPexpect("Could not terminate the child.")`, as it does for a child that survives SIGKILL | the script's own error is what `run()` raises (`command returned exit code 1`, the `after` timeout, `template error: ...`, the spawn-wait `TimeoutError` and `EOFError` with its exit status), stderr has `>> close error (ExceptionPexpect): Could not terminate the child.`, and `session._cld` and `_echo` are `None`; with no other error `run()` raises the `ExceptionPexpect`, logs no close error, and a second `detach()` closes nothing; `detach()` raises and `detach(failing=True)` logs, both leaving the session `not attached`; a `KeyboardInterrupt` from the close propagates; the echo's held text is written out | pass (open item D) (x6) |
 | P5-57 | `test_p5_57_spawn_with_leading_whitespace_runs` (parametrized: a space, a tab and newline, a wrapper template that renders to nothing, one that renders `env`), `test_p5_57_messages_name_the_command_without_the_whitespace`, `test_p5_57_rendered_quotes_behind_whitespace_still_stop_the_run` (parametrized: `" ''"`, `"  '' ls"`, `" \"`) | attach (`spawn`) | F1, F5; `spawn: " bash ..."` and `"{{ args.wrapper \| default('') }} bash ..."` | the script runs and registers `hi`, and `Session.attach` gets the command line without the whitespace; `spawn: "  true"` raises `connection closed before any output from 'true' (exit status 0)`; whitespace and quotes still raise `attach.spawn rendered to an empty command` before anything is spawned | pass (follow-up H.2) (x3) |
+| P5-58 | `test_p5_58_get_prompt_after_detach_is_not_attached`, `test_p5_58_session_that_never_attached_is_not_attached`, `test_p5_58_reattached_session_waits_for_its_own_prompt` | Prompt Handling (at a shell prompt) | raw `Session` on bash, F4 | after a prompt wait and `detach()`, `_at_prompt` is false and `get_prompt` and `check_rc` raise `RuntimeError` `not attached` (`get_prompt` returned `""`); the same with the flag set on a session that never attached; a session attached a second time reads the new child's prompt and captures `two\n` for `echo two` (it sent at once, before the new prompt, and captured nothing) | pass (follow-up I.1) (x3) |
 
-Totals: 57 pass (P5-01..57).
+Totals: 58 pass (P5-01..58).
 
 ## P6: model, schema, example and CLI parity
 
@@ -536,11 +537,11 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P2 | 23 | 0 | 1 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 22 | 0 | 0 | `test_common_props.py` |
 | P4 | 39 | 0 | 7 | `test_get_prompt.py` |
-| P5 | 57 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P5 | 58 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 78 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 26 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **289** | **0** | **9** | |
+| **Total** | **290** | **0** | **9** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -635,6 +636,7 @@ The same branch then takes the owner's decision on boolean spelling (G), the fol
 | H.2: a `spawn` with leading whitespace was rejected, and failed in pexpect when rendered | P5-57, P6-79 | 13 of the 22 fail: the eight accepted values are `(False, True)` with the quotes message, the three runs that render to a leading space raise `attach.spawn rendered to an empty command`, the message test raises that too, and `names_command(" ssh host")` is false. The `env` wrapper run and the eight still-rejected cases pass before and after |
 | H.3, H.4: SPEC was wrong about carriage returns before a line break, and "Migrating" left out three changes | none: SPEC only. P4-42's `cr-at-end` case already pins the capture, and the three migration facts were checked against the models by hand | - |
 | H.5: the EOS example's comment said a prompt after `printf foo` isn't recognised | `test_p6_74_eos_prompt_after_output_with_no_final_newline` (7 texts), added to P6-74 | a comment changed, not a regex, so the seven cases pass before and after: `fooswitch#` is matched whole by the EOS regex, and `done. switch#`, `foobash-5.1$ ` and `foo[admin@switch ~]$ ` are not matched |
+| I.1: `get_prompt` on a detached session returned `""` | P5-58 | all three fail: no `RuntimeError` is raised (twice), and the reattached session captures `''` instead of `two\n` |
 
 ### Deviations from the plan
 

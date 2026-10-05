@@ -33,7 +33,7 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import Session
+from autobot.session import PromptHandler, Session
 
 TOP_PROMPTS = [{"name": "top", "expect": [r"PROMPT\$ "], "return": True}]
 BLOCK_PROMPTS = [{"name": "blk", "expect": [r"PROMPT\$ "], "return": True}]
@@ -354,6 +354,49 @@ def test_p5_56_echo_is_flushed_when_close_fails(unkillable: list, capsys):
     s._echo.write("tail\x1b[")
     s.detach(failing=True)
     assert capsys.readouterr().out.endswith("tail\x1b[")
+
+
+# -- P5-58: nothing can be done with a detached session -------------------------
+
+
+def test_p5_58_get_prompt_after_detach_is_not_attached():
+    """A session that was at a shell prompt when it was detached isn't at one any more.
+
+    `get_prompt` returned `""` at once for it, as if a prompt were waiting, instead of raising `not attached`.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
+    s.get_prompt(timeout=5)
+    assert s.get_prompt(timeout=5) == ""  # at the prompt: returns at once
+    s.detach()
+    assert s._at_prompt is False
+    with pytest.raises(RuntimeError, match="^not attached$"):
+        s.get_prompt(timeout=5)
+    with pytest.raises(RuntimeError, match="^not attached$"):
+        s.check_rc(timeout=5)
+
+
+def test_p5_58_session_that_never_attached_is_not_attached():
+    """The same for a session whose prompt state was set without a child: the check for one comes first."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    s._at_prompt = True
+    with pytest.raises(RuntimeError, match="^not attached$"):
+        s.get_prompt()
+
+
+def test_p5_58_reattached_session_waits_for_its_own_prompt(sent: SentLog):
+    """A session attached again starts away from a prompt: its first wait reads the new child's prompt."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        for word in ("one", "two"):
+            s.attach(BASH, env=SHELL_ENV, timeout=5)
+            s.get_prompt(timeout=5)
+            s.sendline(f"echo {word}")
+            assert s.get_prompt(timeout=5) == f"{word}\n"
+            s.detach()
+    finally:
+        s.detach()
+    assert sent.lines() == ["echo one", "echo two"]
 
 
 # -- P5: spawn failure (attach lifecycle step 2) ------------------------------

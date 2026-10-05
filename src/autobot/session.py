@@ -262,6 +262,7 @@ class Session:
         """
         cld, self._cld = self._cld, None
         echo, self._echo = self._echo, None
+        self._at_prompt = False  # there is no session to be at a prompt of
         if not cld:
             return
         try:
@@ -281,10 +282,10 @@ class Session:
         errors: list[str] | None = None,
         capture: bool = True,
     ) -> str:
-        if self._at_prompt:
-            return ""
         if not self._cld:
             raise RuntimeError("not attached")
+        if self._at_prompt:
+            return ""
 
         sent, self._sent = self._sent, None
         # a command that is still running would answer a solicit newline with a second prompt
