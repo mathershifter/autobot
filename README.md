@@ -388,7 +388,7 @@ All step types except `sleep` support these optional fields:
 
 `line` and `return` steps do not support `timeout`.
 
-`after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. `line`, `return` and `control` send as soon as the pattern matches. Don't use the shell prompt itself as a `cmd`'s `after` pattern: the match takes the prompt, and the step has to press Return for another one.
+`after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. That wait never presses Return, since a Return could answer a question or reach a running command; if no shell prompt comes within the step's `timeout`, the step fails. An `after` that ends at the shell prompt itself is fine: the command is sent at once. `line`, `return` and `control` send as soon as the pattern matches, so use `line` to answer something that isn't a shell prompt.
 
 For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 

@@ -205,8 +205,11 @@ class Session:
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
         self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
 
-    def _is_shell_prompt(self, text: str) -> bool:
-        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers."""
+    def _is_shell_prompt(self, text: str, whole: bool = False) -> bool:
+        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
+
+        `whole`: and the prompt's match ends where `text` ends, so nothing was read past the prompt.
+        """
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
@@ -217,7 +220,8 @@ class Session:
                 return False
             _, i, end = min(found)
             if 1 < i < self._stray:
-                return next(h for h in self._handlers if h.start <= i < h.end).is_return
+                is_return = next(h for h in self._handlers if h.start <= i < h.end).is_return
+                return is_return and (not whole or end == len(text))
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
@@ -281,7 +285,9 @@ class Session:
         timeout: float = 300,
         errors: list[str] | None = None,
         capture: bool = True,
+        solicit: bool = True,
     ) -> str:
+        """Wait for a shell prompt. `solicit=False`: never press Return for one, whatever was sent last."""
         if not self._cld:
             raise RuntimeError("not attached")
         if self._at_prompt:
@@ -289,7 +295,7 @@ class Session:
 
         sent, self._sent = self._sent, None
         # a command that is still running would answer a solicit newline with a second prompt
-        solicited, self._solicit = not self._solicit, True
+        solicited, self._solicit = not (self._solicit and solicit), True
         for h in self._handlers:
             h.reset()
         output: list[str] = []
@@ -360,6 +366,11 @@ class Session:
         idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
+        # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
+        # session is at it, as after a prompt wait
+        line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")[2]
+        if not self._at_prompt and not self._cld.buffer and self._is_shell_prompt(line, whole=True):
+            self._at_prompt, self._prompt = True, line
         return idx
 
     def sendline(self, line: str = "", *, solicit: bool = False):

@@ -1,10 +1,14 @@
-"""P2-01..06, P2-22, P2-23: ``cmd`` forms (SPEC.md:99, 162, 278, 317)."""
+"""P2-01..06, P2-22..24: ``cmd`` forms (SPEC.md:99, 162, 278, 317)."""
 
 from __future__ import annotations
+
+import time
+from pathlib import Path
 
 import pytest
 from conftest import RC_PROBE, SentLog, Timeline, run_vars
 
+from autobot.session import PromptHandler, Session
 from autobot.steps import CmdExecutor
 
 
@@ -96,12 +100,101 @@ def test_p2_23_raw_sends_with_after_wait_for_no_prompt(timeline: Timeline, step:
     assert "get_prompt" not in timeline.names()
 
 
-@pytest.mark.slow
-def test_p2_23_after_that_takes_the_prompt_waits_for_the_next_one(sent: SentLog):
-    """SPEC "cmd": an `after` that matches the prompt itself takes it, so the step solicits another one."""
-    out = run_vars([{"cmd": "echo hi", "after": r"PROMPT\$ ", "register": "out", "timeout": "15s"}])
+@pytest.mark.parametrize(
+    "script",
+    [
+        [{"cmd": "echo hi", "after": r"PROMPT\$ ", "register": "out"}],
+        [{"line": "echo one"}, {"cmd": "echo hi", "after": r"one\r\nPROMPT\$ ", "register": "out"}],
+        [{"line": "echo one"}, {"cmd": "#!/bin/sh\necho hi\n", "after": r"one\r\nPROMPT\$ $", "register": "out"}],
+    ],
+    ids=["first-prompt", "prompt-after-output", "embedded"],
+)
+def test_p2_24_after_that_ends_at_the_prompt_sends_at_once(sent: SentLog, timeline: Timeline, script: list):
+    """SPEC "cmd": an `after` match that ends at a shell prompt has read that prompt; the command is sent there.
+
+    No Return is pressed and nothing is waited for: the step would otherwise wait for a prompt that was already read.
+    """
+    start = time.monotonic()
+    out = run_vars(script)
     assert out["out"] == "hi"
-    assert sent.lines() == ["", "echo hi", RC_PROBE]
+    assert "" not in sent.lines()
+    assert time.monotonic() - start < 4
+
+
+# the line is silent for 7 s after MARK, longer than the 5 s after which an idle console gets a Return
+LONG_LINE = {"line": "sleep 1; echo MA''RK; sleep 7; echo tail"}
+AFTER_MARK = {"cmd": "echo hi", "after": r"MARK\r\n", "register": "out", "timeout": "20s"}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("step", "errors"),
+    [(AFTER_MARK, None), ({**AFTER_MARK, "assert": "^hi$"}, None), (AFTER_MARK, ["% .*"])],
+    ids=["rc-check", "assert", "errors"],
+)
+def test_p2_24_no_return_is_pressed_while_waiting_for_the_prompt_after_after(
+    sent: SentLog, step: dict, errors: list[str] | None
+):
+    """SPEC "cmd": the prompt wait that follows an `after` match never solicits, however long the prompt takes.
+
+    After 5 s it pressed Return into the line still running; the shell answered with a second prompt,
+    which ended the command's own wait: `register` stored '', `assert: hi` failed, and with `errors`
+    every later step captured the output of the one before.
+    """
+    out = run_vars(
+        [{"cmd": "true"}, LONG_LINE, step, {"cmd": "echo two", "register": "two"}, {"cmd": "echo three", "register": "three"}],
+        errors=errors,
+    )
+    assert (out["out"], out["two"], out["three"]) == ("hi", "two", "three")
+    assert "" not in sent.lines()
+
+
+@pytest.mark.slow
+def test_p2_24_question_after_after_is_not_answered_with_a_return(sent: SentLog, tmp_path: Path):
+    """A `cmd` whose `after` matches a question, not a prompt, types nothing into it and times out.
+
+    It pressed Return after 5 s, answering the question with an empty line, and then ran `y` as a command.
+    """
+    answer = tmp_path / "answer"
+    question = {"line": f"read -p 'Pro''ceed? ' a; echo \"got=[$a]\" > {answer}"}
+    with pytest.raises(TimeoutError) as ei:
+        run_vars([{"cmd": "true"}, question, {"cmd": "y", "after": r"Proceed\? $", "timeout": "7s"}])
+    assert str(ei.value) == (
+        "timed out after 7.0s waiting for a shell prompt ('sh') after the after pattern matched "
+        "(a cmd is sent at a shell prompt; use line to send without one)"
+    )
+    assert sent.commands() == ["true", question["line"]]
+    assert "" not in sent.lines()
+    assert not answer.exists()
+
+
+def test_p2_24_line_answers_the_question(sent: SentLog, tmp_path: Path):
+    """What the timeout's message says to do: `line` sends on the match, with no shell prompt."""
+    answer = tmp_path / "answer"
+    question = {"line": f"read -p 'Pro''ceed? ' a; echo \"got=[$a]\" > {answer}"}
+    out = run_vars([{"cmd": "true"}, question, {"line": "y", "after": r"Proceed\? $"}, {"cmd": "echo done", "register": "out"}])
+    assert out["out"] == "done"
+    assert answer.read_text() == "got=[y]\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("PROMPT$ ", True),
+        ("\x1b[?2004hPROMPT$ ", True),
+        ("\rPROMPT$ ", True),
+        ("PROMPT$ echo MARK", False),  # the echo of a line: the prompt is there, but more was read after it
+        ("PROMPT$ \x1b[0m", False),
+        ("MARK", False),
+        ("", False),
+        ("Proceed? ", False),
+    ],
+    ids=repr,
+)
+def test_p2_24_match_ends_at_a_shell_prompt(text: str, expected: bool):
+    """The check behind it: the text read ends with a shell prompt's match, and nothing follows the prompt."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True), PromptHandler("q", [r"Proceed\? "], [["y"]], False)])
+    assert s._is_shell_prompt(text, whole=True) is expected
 
 
 def test_p2_05_multiline_lines_rendered_individually():

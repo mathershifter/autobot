@@ -72,8 +72,17 @@ class CmdExecutor:
 
     @staticmethod
     def _first_prompt(step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
-        # after `after` too: its match is no prompt. session.* then stays what `after` set
-        ctx.session.get_prompt(timeout=timeout, capture=step.after is None)
+        if step.after is None:
+            ctx.session.get_prompt(timeout=timeout)
+            return
+        # `after` matched output, so the console isn't idle: a Return pressed here would go to whatever is
+        # running. session.* stays what `after` set
+        try:
+            ctx.session.get_prompt(timeout=timeout, capture=False, solicit=False)
+        except TimeoutError as e:
+            raise TimeoutError(
+                f"{e} after the after pattern matched (a cmd is sent at a shell prompt; use line to send without one)"
+            ) from e
 
     @staticmethod
     def _lines(text: str) -> list[str]:
