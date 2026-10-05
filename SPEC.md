@@ -104,7 +104,7 @@ Iterates over a collection from `vars` to build responses. With `fields`, each e
 
 A prompt whose `sendEach` has `fields` has no `expect`: its patterns are the `match` regexes of the entries, in order. So each field is sent only in answer to its own prompt, and the number of values sent per item always matches the prompts that ask for them.
 
-Without `fields`, each item is sent as text (see below) in answer to any of the prompt's `expect` patterns, e.g. a PIN list:
+Without `fields`, each item is converted to a string and sent in answer to any of the prompt's `expect` patterns, e.g. a PIN list:
 ```yaml
 - name: pin
   expect: ['PIN:', 'Passcode:']
@@ -133,9 +133,9 @@ In the example, `vars.creds` is resolved, and each item becomes one credential s
 
 `each` is a path under `vars`: `vars` followed by one or more `.`-separated keys (e.g. `vars.creds`, `vars.site.creds`). Each key names a key of a mapping; list indexes, attributes, `env`, `args` and `session` can't be used. Any other form is a validation error.
 
-The collection must be a list. Without `fields`, each item must be a string, number or boolean. With `fields`, each item must be a mapping with the `field` of every entry, and each field's value must be a string, number or boolean. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
+The collection must be a list. Without `fields`, each item must be a string or number. With `fields`, each item must be a mapping with the `field` of every entry, and each field's value must be a string or number. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
 
-A value is sent as text: a string as it is, a number as YAML's loader reads it (`1234`, `2.5`; `007` is the number 7 and is sent as `7`), and a boolean as YAML writes it, `true` or `false`. So `password: true`, and also `yes`, `on` or `True`, which YAML reads as the same boolean, sends `true`. Quote a value to send it as written: `'True'`, `'yes'`, `'007'`.
+A string is sent as it is, and a number as YAML's loader reads it (`1234`, `2.5`; `007` is the number 7 and is sent as `7`). A boolean is never sent: unquoted `true`, `false`, `yes`, `no`, `on`, `off` and their capitalized forms are booleans in YAML, there is no one text for them, and an item or field value that is one is an error (see below). Quote a value to send it as written: `'true'`, `'yes'`, `'007'`.
 
 A collection that doesn't meet these rules is an error when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts` (reported by the CLI as a `Script error`), and on entering the block, before its `enter` steps, for a block's `prompts` (the run stops; the block's `breakout` doesn't run, and `attach.breakout` does). The message is `prompt '<name>': sendEach '<each>': <problem>`, where `<problem>` is one of:
 
@@ -146,10 +146,12 @@ A collection that doesn't meet these rules is an error when the prompts are load
 | The collection isn't a list | `'vars.creds' is a mapping, not a list` |
 | An item isn't a mapping (with `fields`) | `item 2 is a string, not a mapping` |
 | An item lacks a field | `item 2 has no field 'password'` |
-| A field's value isn't a string, number or boolean | `item 2 field 'password' is null, not a string, number or boolean` |
-| An item isn't a string, number or boolean (without `fields`) | `item 0 is a mapping; without fields each item must be a string, number or boolean` |
+| A field's value isn't a string or number | `item 2 field 'password' is null, not a string or number` |
+| An item isn't a string or number (without `fields`) | `item 0 is a mapping; without fields each item must be a string or number` |
+| An item is a boolean (without `fields`) | `item 1 is a boolean (true), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'` |
+| A field's value is a boolean | `item 2 field 'password' is a boolean (false), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'` |
 
-Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`, and for the other values YAML can produce, `a timestamp`, `binary data` and `a set`. Those are never sent: an unquoted date such as `2026-10-04` is a timestamp, not a string, so `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote it to send it as written.
+Items are counted from 0. Types are named as in YAML: `a mapping`, `a list`, `a string`, `a number`, `a boolean`, `null`, and for the other values YAML can produce, `a timestamp`, `binary data` and `a set`. Those are never sent: an unquoted date such as `2026-10-04` is a timestamp, not a string, so `item 1 is a timestamp; without fields each item must be a string or number`. Quote it to send it as written.
 
 #### Response selection
 
@@ -160,7 +162,7 @@ A **`sendEach`** is a list of *credential sets*, each an ordered list of respons
 | `sendEach` form | Credential sets |
 |-----------------|-----------------|
 | with `fields` | One set per item: the value of each entry's `field`, in entry order |
-| without `fields` | One set per item, holding the item as text |
+| without `fields` | One set per item, holding the item converted to a string |
 
 Responses come from the current set, starting with the first. When a pattern of the prompt matches:
 - **With `fields`:** a regex of entry k (the first entry is 0) sends item k of the current set, the entry's field. The regexes of one entry are the same prompt.
@@ -741,7 +743,7 @@ The same round changed five behaviors of a run. None of them changes what the sc
   - A `cmd` whose command shows nothing until Return is pressed, e.g. `cmd: consutil connect 0` to enter an idle console, used to complete and now times out. Send it with `line`; the next `cmd` waits for the prompt and solicits it.
   - A command that is silent for more than 5 seconds no longer gets a newline typed into it. Its captured output no longer contains that newline's echo, and the steps after it no longer capture the output of the command before them.
   - A plugin that calls `ctx.session.sendline(text)` and then waits for a prompt gets no solicit on that wait. That is right when `text` is a command. When it is a raw send, one that needs a Return press before a prompt shows (connecting to a console, leaving a sub-CLI), pass `ctx.session.sendline(text, solicit=True)`.
-- **A `sendEach` item or field value must be a string, number or boolean** (see [`sendEach`](#sendeach)). An unquoted YAML date or timestamp (`2026-10-04`), or a `!!binary` or `!!set` value, used to be sent as the text of its Python value. It is now an error when the prompts are loaded, e.g. `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote the value to send it as written.
+- **A `sendEach` item or field value must be a string or number** (see [`sendEach`](#sendeach)). An unquoted YAML date or timestamp (`2026-10-04`), or a `!!binary` or `!!set` value, used to be sent as the text of its Python value. It is now an error when the prompts are loaded, e.g. `item 1 is a timestamp; without fields each item must be a string or number`. Quote the value to send it as written.
 - **A mapping key wins over a method of the same name in templates** (see [Jinja2 Templating](#jinja2-templating)). `{{ vars.values }}` now reads the key `values`. The other side of it: when `vars`, `env` or `args` has a key named like a method, calling that method by name fails, e.g. `vars.get('k')` or `vars.items()` with a key `get` or `items` is `template error: TypeError: 'str' object is not callable`. Before, the method was called and the key was reachable only as `vars['get']`. Use a filter (`vars | items`) or rename the key.
 - **An exception raised while a template is rendered is a template error.** `{{ 1/0 }}` used to raise `ZeroDivisionError`; it is now a `ValueError`, `template error: ZeroDivisionError: division by zero`.
 - **An embedded script is rendered after the step's first prompt wait**, like every other `cmd`, so `session.before` and `session.match` in it are what that wait set. It used to be rendered before the wait, with the values of the step before.
@@ -766,7 +768,7 @@ It also accepts one thing that the models used to reject: `return: 1.0` (a numbe
 
 The messages `unsupported autobot version 'True'` and `invalid duration: True` now say `true`.
 
-**A boolean that a `sendEach` sends is `true` or `false`** (see [`sendEach`](#sendeach)), as YAML writes it. An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`. A device that expects one of those spellings needs the value quoted: `password: 'True'`.
+**A `sendEach` no longer sends a boolean** (see [`sendEach`](#sendeach)). An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`, whatever was written. It is now an error when the prompts are loaded, e.g. `prompt 'login': sendEach 'vars.creds': item 0 field 'password' is a boolean (true), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'`. Quote the value with the text the device expects: `password: 'True'` sends what `password: true` used to.
 
 A round after that, still `2026-10`, changed one behavior of a run: **a `cmd` with `after` waits for a prompt after the match** (see [`cmd`](#cmd--send-commands-to-the-shell)). It used to send the command on the match, without its first prompt wait. When the pattern matched before the prompt of an earlier command or `line`, that prompt was taken for the command's own: `register` stored an empty string, `assert` saw no output, and the `$?` check was sent while the command was still running. A script where the match came with the session already at a shell prompt runs as before. What needs a change:
 - A `cmd` that relied on being sent where there is no shell prompt, e.g. `cmd: boot` with `after: 'Aboot#'` when no prompt in `prompts` matches `Aboot#`. It now waits for a shell prompt, presses Return after 5 seconds and times out. Send it with `line` (`line: boot`, `after: 'Aboot#'`); the next `cmd` waits for the prompt that follows.
