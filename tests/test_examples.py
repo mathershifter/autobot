@@ -13,7 +13,7 @@ from conftest import ROOT, SHELL_ENV, run_vars
 
 from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
-from autobot.session import STRAY_RE
+from autobot.session import STRAY_RE, PromptHandler, Session
 from autobot.types import ANSI_ESCAPE_RE
 
 EXAMPLES = sorted((ROOT / "examples").glob("*.yaml"))
@@ -172,18 +172,39 @@ def test_p6_74_example_prompt_regex_ignores_output_ending_in_a_prompt_char(name:
 @pytest.mark.parametrize("lead", ["\r", "\x00", "\x07", "\r\x00\x00"], ids=["cr", "nul", "bel", "cr-nul-nul"])
 @pytest.mark.parametrize("prompt", PROMPT_SAMPLES["eos-bootstrap.autobot.yaml"], ids=repr)
 def test_p6_74_eos_prompt_after_a_control_character_is_still_a_prompt(prompt: str, lead: str):
-    """The line-start check allows control characters before the prompt: a lone CR, NUL padding or a bell of a console server."""
+    """A lone CR, NUL padding or a bell of a console server before the prompt doesn't defeat `^`: the engine discards them."""
     found = read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), f"output\r\n{lead}{prompt}")
     assert found is not None
     match, leftover = found
     assert (match, leftover) == (prompt, "")
 
 
+@pytest.mark.parametrize("lead", ["", "\r", "\x00", "\x07", "\r\x00\x00", "\r\n", "\x1b[?2004h", "\x1b[0m\r"], ids=repr)
+@pytest.mark.parametrize("prompt", PROMPT_SAMPLES["eos-bootstrap.autobot.yaml"], ids=repr)
+def test_p6_74_eos_prompts_through_the_engine(prompt: str, lead: str):
+    """The engine itself, not this file's copy of its reading: `^` finds each prompt behind what the engine consumes."""
+    s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
+    assert s._is_shell_prompt(lead + prompt) is True
+    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["--More--\r        \rswitch# ", "abc\rswitch# ", "abc\x07switch# ", "abc\x00bash-5.1$ ", "foo[admin@switch ~]$ "],
+    ids=repr,
+)
+def test_p6_74_eos_prompt_behind_text_on_its_line_is_not_a_prompt(text: str):
+    """What `^` costs: a prompt with text before it on its line, also text ended by a CR, NUL or BEL, isn't matched."""
+    assert read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), text) is None
+    s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
+    assert s._is_shell_prompt(text) is False
+
+
 def test_p6_74_eos_regexes_start_at_the_line_and_each_has_a_prompt():
-    """Every shell regex of the EOS example is anchored the same way, and each sample is matched by one of them."""
+    """Every shell regex of the EOS example starts with `^`, and each sample is matched by one of them."""
     regexes = shell_regexes("eos-bootstrap.autobot.yaml")
     assert len(regexes) == 3
-    assert all(r.startswith(r"(?<![^\x00-\x1f])") and r.endswith(" ?$") for r in regexes)
+    assert all(r.startswith("^") and r.endswith(" ?$") for r in regexes)
     matched = {i for p in PROMPT_SAMPLES["eos-bootstrap.autobot.yaml"] for i, r in enumerate(regexes) if re.search(r, p)}
     assert matched == {0, 1, 2}
     # no regex can match the empty string or a lone prompt character any more
