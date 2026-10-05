@@ -629,7 +629,17 @@ The rule is about the value a `{{ ... }}` writes out, and only when that value i
 - A null is not a boolean: it is written `None` (`{{ vars.v }}` when `v` is `null`), as Jinja2 does it.
 - `when` is a condition and is rendered without this rule (see [Conditional execution with `when`](#conditional-execution-with-when)). A plugin renders a condition of its own with `ctx.render(template, condition=True)`.
 
-The engine doesn't turn a boolean of the document into text anywhere else either: a `sendEach` refuses one (see [`sendEach`](#sendeach)). The `contains` and `search` filters read the value they look in as `str()` gives it, which matters only for a boolean passed to them directly (`{{ vars.debug | contains('True') }}`).
+The engine doesn't turn a boolean of the document into text anywhere else either:
+- Every value of the script that is text is a string, and a YAML boolean there is a validation error when the script is loaded (`string_type`, in the schema and the models): `cmd: yes`, `line: on`, `register: true`, `when: true`, `attach.spawn`, a prompt's `name` or `expect`, and so on. A prompt's `send` has its own error with a quoting hint (`send_type`, see [`prompts`](#prompts)).
+- A value of `env` or `attach.env` is a string. A boolean there (`DEBUG: true`, `NO_COLOR: yes`) is `string_type` too, and the models say what to do: `an environment value is a string, and unquoted this one is a boolean (true); quote it to set it as written, e.g. 'true' or 'yes'`.
+- A `sendEach` refuses a boolean item or field value when the prompts are loaded (see [`sendEach`](#sendeach)).
+- `--arg` values are always strings: `--arg debug=true` is the text `true`.
+
+A boolean stays a boolean where that is what is meant: `ignore_error`, a prompt's `return`, and any value in `vars`, which templates use in conditions. Numbers are not concerned by any of this: a number in `vars` renders as its digits, and a number where a string goes was and is `string_type`.
+
+An error message that shows a boolean of the document shows it as YAML writes it: `unsupported autobot version 'true'`, `invalid duration: true`, `a boolean (true)`. YAML reads `yes`, `on` and `True` as the same value, so the message can't show which of them was written.
+
+The `contains` and `search` filters read the value they look in as `str()` gives it, which matters only for a boolean passed to them directly (`{{ vars.debug | contains('True') }}`).
 
 ### Custom Filters
 
@@ -771,7 +781,7 @@ It also accepts one thing that the models used to reject: `return: 1.0` (a numbe
 - a template that writes out a real boolean: say which text is meant. `{{ vars.flag | string }}` and `{{ (a == b) | string }}` are `True` or `False` as before, `| tojson` gives `true` or `false`, and `{{ 'on' if vars.flag else 'off' }}` anything else.
 - a plugin that renders a condition field through `ctx.render(...)` and reads the text: pass `condition=True`, as the runner does for `when`.
 
-The messages `unsupported autobot version 'True'` and `invalid duration: True` now show the value as YAML writes it, `true`.
+The messages `unsupported autobot version 'True'` and `invalid duration: True` now show the value as YAML writes it, `true`. A boolean as a value of `env` or `attach.env` was already a validation error; its message now says to quote it.
 
 **A `sendEach` no longer sends a boolean** (see [`sendEach`](#sendeach)). An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`, whatever was written. It is now an error when the prompts are loaded, e.g. `prompt 'login': sendEach 'vars.creds': item 0 field 'password' is a boolean (true), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'`. Quote the value with the text the device expects: `password: 'True'` sends what `password: true` used to.
 

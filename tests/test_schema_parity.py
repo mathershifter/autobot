@@ -1114,3 +1114,58 @@ def test_p6_75_non_string_key_is_a_validation_error_on_load(tmp_path: Any):
     res = run_cli(None, tmp_path, raw="autobot: 2026-10\nattach: {spawn: 'true'}\nvars: {1: x}\nscript: []\n")
     assert res.returncode == 1
     assert "Validation errors:" in res.stderr and "string_type" in res.stderr and "Traceback" not in res.stderr
+
+
+# -- P6-78: a YAML boolean is never text ---------------------------------------
+
+# unquoted, YAML reads each of these as a boolean
+BOOLEAN_LITERALS = ["true", "True", "yes", "on", "false", "No", "off"]
+ENV_HINT = (
+    "an environment value is a string, and unquoted this one is a boolean ({}); "
+    "quote it to set it as written, e.g. 'true' or 'yes'"
+)
+
+
+@pytest.mark.parametrize("literal", BOOLEAN_LITERALS)
+@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
+def test_p6_78_boolean_env_value_says_to_quote_it(both_validate: Callable, where: str, literal: str):
+    """SPEC "Booleans are not text": `DEBUG: true` or `NO_COLOR: yes` is rejected by both, and the models say to quote it.
+
+    It was always `string_type`; the message used to be only `Input should be a valid string`.
+    """
+    value = yaml.safe_load(literal)
+    assert isinstance(value, bool)
+    doc = STRING_FIELDS[where](value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    loc = ("env", "A") if where == "env-value" else ("attach", "env", "A")
+    assert (err["loc"], err["type"], err["msg"]) == (loc, "string_type", ENV_HINT.format(str(value).lower()))
+    # quoted, it is the text as written
+    assert both_validate(STRING_FIELDS[where](literal)) == (True, True)
+
+
+@pytest.mark.parametrize("value", [1, 2.5], ids=repr)
+@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
+def test_p6_78_number_env_value_keeps_its_error(both_validate: Callable, where: str, value: Any):
+    """Only booleans get the hint: a number is still the plain `string_type` it was."""
+    doc = STRING_FIELDS[where](value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["type"], err["msg"]) == ("string_type", "Input should be a valid string")
+
+
+@pytest.mark.parametrize("value", [True, False], ids=repr)
+@pytest.mark.parametrize("field", [f for f in STRING_FIELDS if f != "duration"])
+def test_p6_78_parity_boolean_is_not_a_string(both_validate: Callable, field: str, value: bool):
+    """Wherever a script holds a string, a boolean is rejected by both when the script is loaded:
+    `cmd: yes`, `line: on`, `register: true`, `when: true`, `spawn: no`. It is never turned into text."""
+    assert both_validate(STRING_FIELDS[field](value)) == (False, False)
+
+
+@pytest.mark.parametrize("value", [True, False], ids=repr)
+def test_p6_78_boolean_flags_and_data_are_still_booleans(both_validate: Callable, value: bool):
+    """Where a boolean is the value that is meant, nothing changes: the two flags, and `vars`."""
+    assert both_validate(s({"cmd": "x", "ignore_error": value})) == (True, True)
+    assert both_validate(d(prompts=[{"name": "p", "expect": "x", "return": value}])) == (True, True)
+    assert both_validate(d(vars={"debug": value, "flags": [value], "site": {"up": value}})) == (True, True)
+    assert Config.model_validate(d(vars={"debug": value})).vars["debug"] is value

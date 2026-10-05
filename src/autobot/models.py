@@ -106,6 +106,18 @@ def _whole(v: Any) -> Any:
     return int(v) if isinstance(v, float) and v.is_integer() else v
 
 
+def _env_value(v: Any) -> Any:
+    # `DEBUG: true` and `NO_COLOR: yes` look like text and are booleans: say so, rather than "not a string"
+    if isinstance(v, bool):
+        raise _custom(
+            "string_type",
+            f"an environment value is a string, and unquoted this one is a boolean ({text(v)}); "
+            "quote it to set it as written, e.g. 'true' or 'yes'",
+        )
+    return v
+
+
+EnvValue = Annotated[str, pydantic.BeforeValidator(_env_value)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -241,7 +253,7 @@ class Attach(pydantic.BaseModel):
     prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
-    env: Omittable[dict[str, str]] = None
+    env: Omittable[dict[str, EnvValue]] = None
     script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
@@ -451,7 +463,7 @@ class Config(pydantic.BaseModel):
         if not isinstance(v, str) or v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
-    env: NotNull[dict[str, str]] = {}
+    env: NotNull[dict[str, EnvValue]] = {}
     vars: NotNull[dict[str, Any]] = {}
     prompts: NotNull[list[Prompt]] = []
     fn: NotNull[dict[str, Function]] = {}
