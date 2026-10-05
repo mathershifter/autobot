@@ -13,6 +13,7 @@ from conftest import ROOT, SHELL_ENV, run_vars
 
 from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
+from autobot.session import STRAY_RE
 from autobot.types import ANSI_ESCAPE_RE
 
 EXAMPLES = sorted((ROOT / "examples").glob("*.yaml"))
@@ -120,13 +121,14 @@ def shell_regexes(name: str) -> list[str]:
 def read_prompt(patterns: list[str], text: str) -> tuple[str, str] | None:
     """Read `text` as get_prompt does; return (match, leftover) of the first shell prompt."""
     # pexpect compiles string patterns with re.DOTALL and searches the unread output
-    regexes = [re.compile(r"\r\n"), ANSI_ESCAPE_RE, *(re.compile(p, re.DOTALL) for p in patterns)]
+    # then the stray CR, NUL and BEL at the start of the unread output, which lose a tie to the prompts
+    regexes = [re.compile(r"\r\n"), ANSI_ESCAPE_RE, *(re.compile(p, re.DOTALL) for p in patterns), STRAY_RE]
     while True:
         found = [(m.start(), i, m) for i, r in enumerate(regexes) if (m := r.search(text))]
         if not found:
             return None
         _, i, m = min(found, key=lambda f: f[:2])
-        if i > 1:
+        if 1 < i < len(regexes) - 1:
             return m.group(0), text[m.end() :]
         text = text[m.end() :]
 

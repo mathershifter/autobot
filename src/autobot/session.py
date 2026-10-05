@@ -13,6 +13,12 @@ from .types import ANSI_ESCAPE_RE
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
 
+# Stray carriage returns, NULs and BELs at the start of the unread output: a prompt wait drops them, so
+# `^` in a prompt regex means the start of a line. The lookahead needs the next character to be there and
+# to be none of these or a line break, so a `\r` whose `\n` is still to come is never taken for a stray one.
+STRAY_RE = re.compile(r"\A[\r\x00\x07]+(?=[^\r\n\x00\x07])")
+
+
 class CommandError(RuntimeError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
@@ -187,6 +193,9 @@ class Session:
             h.start = len(self._patterns)
             h.end = h.start + len(h.patterns)
             self._patterns.extend(h.patterns)
+        # after the prompts: on a tie (a prompt regex that itself starts at a leading `\r`) the prompt wins
+        self._stray = len(self._patterns)
+        self._patterns.append(STRAY_RE)
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
@@ -203,9 +212,9 @@ class Session:
             if not found:
                 return False
             _, i, end = min(found)
-            if i > 1:
+            if 1 < i < self._stray:
                 return next(h for h in self._handlers if h.start <= i < h.end).is_return
-            text = text[end:]  # a line break or escape sequence, consumed as get_prompt does
+            text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         self._cld = pexpect.spawn(
@@ -287,7 +296,7 @@ class Session:
                 continue
             if before:
                 output.append(before)
-            if i == 1:
+            if i == 1 or i == self._stray:
                 continue
             if i == len(self._patterns) - 1:
                 raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
