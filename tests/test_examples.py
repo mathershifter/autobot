@@ -217,6 +217,27 @@ def test_p6_74_eos_prompt_behind_text_on_its_line_is_not_a_prompt(text: str):
     assert s._is_shell_prompt(text) is False
 
 
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        # the example's comment: output with no final newline in front of the prompt
+        ("fooswitch#", "fooswitch#"),  # reads as a hostname, so the EOS regex takes all of it
+        ("fooswitch(config)# ", "fooswitch(config)# "),
+        ("done. switch#", None),
+        ("100% switch> ", None),
+        ("foobash-5.1$ ", None),
+        ("foo-bash-4.2$ ", None),
+        ("foo[admin@switch ~]$ ", None),
+    ],
+    ids=repr,
+)
+def test_p6_74_eos_prompt_after_output_with_no_final_newline(text: str, match: str | None):
+    """What the example's comment says of `printf foo`: the bash prompts aren't recognised behind output, and
+    the EOS prompt only when the output could be part of a hostname, in which case it is matched with it."""
+    found = read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), text)
+    assert (found and found[0]) == match
+
+
 def test_p6_74_eos_regexes_start_at_the_line_and_each_has_a_prompt():
     """Every shell regex of the EOS example starts with `^`, and each sample is matched by one of them."""
     regexes = shell_regexes("eos-bootstrap.autobot.yaml")

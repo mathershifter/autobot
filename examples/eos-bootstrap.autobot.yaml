@@ -12,8 +12,10 @@ vars:
 prompts:
   - name: cli
     # Each regex starts with ^, so a prompt must begin its line. Without it, output that ends a
-    # read with '>', '#' or '$' is taken for a prompt. The cost: a prompt printed right after
-    # output with no final newline (printf foo) is not recognised.
+    # read with '>', '#' or '$' is taken for a prompt. The cost: after output with no final
+    # newline, that output is in front of the prompt. The bash prompts are then not recognised.
+    # The EOS prompt is, but only if the output could be part of a hostname: after printf foo,
+    # 'fooswitch#' is matched whole, while 'done. switch#' is not matched.
     expect:
       # EOS CLI: 'switch>', 'switch#', 'switch(config-if-Et1)#'
       - '^[\w+\-\.:\/\[\]]+(?:\([^)\r\n]+\)){,3}(?:>|#) ?$'
