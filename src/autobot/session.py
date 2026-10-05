@@ -326,7 +326,8 @@ class Session:
 
         self.sendline("echo __AUTOBOT_RC=$?")
         try:
-            self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+            # the lookahead waits for what follows the digits: a code split across two reads is read whole
+            self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
         except BaseException:
             self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
             raise

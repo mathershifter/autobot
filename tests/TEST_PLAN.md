@@ -19,7 +19,7 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
-| P1 | `cmd` success semantics, register, ignore_error | 22 | 0 | 0 | 22 | 1 |
+| P1 | `cmd` success semantics, register, ignore_error | 23 | 0 | 0 | 23 | 1 |
 | P2 | `cmd` forms, embedded scripts | 22 | 0 | 0 | 22 | 0 |
 | P3 | Common step properties, templating context | 20 | 0 | 0 | 20 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
@@ -27,7 +27,7 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P6 | model / schema / example / CLI parity | 66 | 0 | 0 | 66 | 0 |
 | P7 | registry and plugins | 23 | 0 | 0 | 23 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 20 | 0 | 0 | 20 | 0 |
-| **Total** | | **263** | **0** | **0** | **263** | **8** |
+| **Total** | | **264** | **0** | **0** | **264** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -164,8 +164,9 @@ File: `tests/test_cmd_semantics.py` (new). SPEC.md:101-138.
 | P1-20 | `test_p1_20_ignore_error_does_not_swallow_{timeout,eof,template_error,invalid_regex,responses_exhausted}` (5 tests) | 118 | F1 (see the P1-20 deviation) | each with `ignore_error: true` and `register: r` (`vars.r` preset): timeout → `TimeoutError` propagates; EOF → `EOFError` propagates; undefined variable → `ValueError` `template error: ...` propagates; an `assert` that renders to an invalid regex (`{{ '(' }}`) → `ValueError` `assert: invalid regex '(': ...`, chained from the `re.error`, propagates (it was a raw `re.error`; an `assert: "("` that isn't a template is now rejected at load, P6-65); a `responses exhausted` raised by a prompt wait inside the command → `RuntimeError` propagates (it used to be swallowed). In all five the next step doesn't run and `vars.r` is unchanged | pass (was todo #10) (x5) |
 | P1-21 | `test_p1_21_assert_rendering_to_an_empty_regex_aborts` | `cmd` (assert) | F1, F6 probe; `assert: [hi, "{{ vars.empty }}"]`, `ignore_error: true` | `ValueError` `assert: a pattern rendered to an empty regex, which matches any output`; the next step doesn't run and `vars.r` is unchanged | pass (review finding 9) |
 | P1-22 | `test_p1_22_empty_cmd_list_sends_no_exit_code_check`, `test_p1_22_empty_cmd_list_waits_for_no_prompt` (parametrized: no `errors`, `errors: ['% .*']`), `test_p1_22_empty_cmd_list_keeps_after_and_delays`, `test_p1_22_empty_cmd_list_assert_checks_empty_output`, `test_p1_22_empty_line_is_still_sent_and_checked` (parametrized: `""`, `[""]`, `"{{ '' }}"`, `"\n  \n"`, `["", "{{ '' }}"]`) | `cmd` (`cmd: []`) | F1, F4, F5, F6 probe | `cmd: "echo hi; false"`, `assert: hi`, then `cmd: []`, `register: r` passes: the only line sent is `echo hi; false` (no `echo __AUTOBOT_RC=$?`), `vars.r == ""`; `cmd: []` alone sends nothing and makes no `get_prompt`; with `after`, `delay_before` and `delay_after` the timeline after `expect([preREADY])` is `sleep(1), sleep(2)`; `assert: hi` raises `assertion failed`, is swallowed by `ignore_error`, and `assert: "^$"` passes, all without a send; the empty and blank strings still send one empty line per item and the RC probe | pass (audit of 359a8a2, bug 1) (x5) |
+| P1-23 | `test_p1_23_exit_code_split_across_reads_is_read_whole` (parametrized: the digits followed by `\r\n`, `\n`, an escape sequence, the prompt), `test_p1_23_split_exit_code_fails_the_step_with_the_real_code`, `test_p1_23_echoed_probe_is_not_taken_for_the_marker` | `cmd` (the `$?` check) | a device script in `tmp_path` that answers the RC probe with `__AUTOBOT_RC=1`, a 0.5 s pause, then `27` and a tail; F1 `shell_session` | `check_rc()` returns 127 (it returned 1), and the next command's captured output is exactly `out\n`; a `cmd` step raises `StepFailure` exactly `command returned exit code 127`; against bash, `(exit 3)`, `true` and `(exit 127)` give 3, 0 and 127 and the next `echo next` captures `next\n` | pass (audit 2, finding 3) (x3) |
 
-Totals: 22 pass (P1-01..22). Slow: P1-18.
+Totals: 23 pass (P1-01..23). Slow: P1-18.
 
 ## P2: `cmd` forms and embedded scripts
 
@@ -504,7 +505,7 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
-| P1 | 22 | 0 | 1 | `test_cmd_semantics.py` |
+| P1 | 23 | 0 | 1 | `test_cmd_semantics.py` |
 | P2 | 22 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 20 | 0 | 0 | `test_common_props.py` |
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
@@ -512,7 +513,7 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P6 | 66 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 23 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 20 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **263** | **0** | **8** | |
+| **Total** | **264** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -559,6 +560,14 @@ Branch `fix/cmd-empty-and-line-split` fixes two bugs of `CmdExecutor` found by a
 P1-22 was run against the unfixed `steps.py`. Four of its tests fail there: `sends_no_exit_code_check` with `StepFailure: command returned exit code 1`, both `waits_for_no_prompt` cases (the RC probe is sent; with `errors`, two `get_prompt` calls are made) and `keeps_after_and_delays` (a `get_prompt` between the sleeps, then the probe). The assert test and the five empty-line cases pass before and after: they pin down behavior the fix must not change.
 
 P2-22 was run against the unfixed `steps.py` too. The eight `only_line_breaks` cases fail there (`['echo a', 'echo b'] == ['echo a\x1eecho b']`, and so on), and the three `separator_inside_a_command_is_sent` cases fail with `TimeoutError`: only `printf '%s\n' 'A` was sent, which left the shell at its continuation prompt. The 13 `line_breaks_and_blank_lines` cases pass before and after: they are what `str.splitlines()` did for `\n`, `\r\n` and `\r`, which the fix keeps.
+
+### Second audit of 359a8a2
+
+Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numbered 3 to 13 there. Their tests are rows of the section tables above, with the status `pass (audit 2, finding N)`. Each test was run against the code without its fix; what failed there is noted per finding:
+
+| Finding | Rows | Without the fix |
+|---------|------|-----------------|
+| 3: exit code truncated when the `$?` marker arrives in two reads | P1-23 | the four split cases fail with `assert 1 == 127`, the step test with `command returned exit code 1`; the bash test passes before and after (the echoed probe never matched) |
 
 ### Deviations from the plan
 

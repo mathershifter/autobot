@@ -7,7 +7,9 @@ test plan rows (tests/TEST_PLAN.md).
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from conftest import (
@@ -22,7 +24,7 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import CommandError
+from autobot.session import CommandError, PromptHandler, Session
 from autobot.steps import StepFailure
 
 PCT_ERR = ["% .*"]
@@ -326,3 +328,63 @@ def test_p1_22_empty_line_is_still_sent_and_checked(sent: SentLog, cmd):
     run_vars([{"cmd": cmd}])
     n = len(cmd) if isinstance(cmd, list) else 1
     assert sent.lines() == [""] * n + [RC_PROBE]
+
+
+# -- P1-23: the `$?` marker arriving in pieces --------------------------------
+
+SPLIT_RC_DEVICE = """
+import os, sys, time
+tail = b"" if sys.argv[1] == "-" else sys.argv[1].encode().decode("unicode_escape").encode()
+os.write(1, b"PROMPT$ ")
+while data := os.read(0, 4096):
+    if b"__AUTOBOT_RC" in data:
+        os.write(1, b"__AUTOBOT_RC=1")
+        time.sleep(0.5)
+        os.write(1, b"27" + tail)
+    else:
+        os.write(1, b"out\\r\\n")
+    os.write(1, b"PROMPT$ ")
+"""
+
+
+@pytest.fixture
+def split_rc_device(tmp_path: Path) -> Callable[[str], str]:
+    """A device whose exit code is 127, printed as `1`, a 0.5s pause, then `27` and `tail`."""
+    path = tmp_path / "split_rc.py"
+    path.write_text(SPLIT_RC_DEVICE)
+    return lambda tail: f"{sys.executable} {path} '{tail or '-'}'"
+
+
+@pytest.mark.parametrize("tail", [r"\r\n", r"\n", r"\x1b[0m\r\n", ""], ids=["crlf", "lf", "ansi", "prompt"])
+def test_p1_23_exit_code_split_across_reads_is_read_whole(split_rc_device: Callable[[str], str], tail: str):
+    """SPEC "cmd": the `$?` check reads the whole exit code, also when its digits arrive in two reads."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    s.attach(split_rc_device(tail), env={"PATH": "/usr/bin:/bin"}, timeout=5)
+    try:
+        s.get_prompt(timeout=5)
+        s.sendline("x")
+        assert s.get_prompt(timeout=5) == "out\n"
+        assert s.check_rc(timeout=5) == 127
+        # the rest of the marker's line is consumed: the next command's output starts clean
+        s.sendline("y")
+        assert s.get_prompt(timeout=5) == "out\n"
+    finally:
+        s.detach()
+
+
+def test_p1_23_split_exit_code_fails_the_step_with_the_real_code(split_rc_device: Callable[[str], str]):
+    """SPEC "cmd": the step reports the command's exit code, not its first digit."""
+    with pytest.raises(StepFailure, match=r"^command returned exit code 127$"):
+        run_vars([{"cmd": "x"}], spawn=split_rc_device(r"\r\n"), attach_env={"PATH": "/usr/bin:/bin"})
+
+
+def test_p1_23_echoed_probe_is_not_taken_for_the_marker(shell_session: Session):
+    """The echo of `echo __AUTOBOT_RC=$?` has no digits, so only the printed marker matches."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    for cmd, rc in [("(exit 3)", 3), ("true", 0), ("(exit 127)", 127)]:
+        s.sendline(cmd)
+        s.get_prompt(timeout=5)
+        assert s.check_rc(timeout=5) == rc
+        s.sendline("echo next")
+        assert s.get_prompt(timeout=5) == "next\n"

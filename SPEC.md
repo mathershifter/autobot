@@ -246,6 +246,8 @@ After the last command line, the step:
 
 When `assert` is defined, it replaces the return code check — the assertion pattern is the success criteria. If top-level `errors` patterns are defined, they replace the `$?` check.
 
+The `$?` check sends `echo __AUTOBOT_RC=$?` and reads the digits that follow the marker in the output. It waits for the character after the last digit (the line break, usually) before it takes the number, so an exit code that arrives in pieces (`1`, then `27`) is read whole, as 127. The echo of the check itself has no digit after the marker and is never taken for the result.
+
 `assert` is a regex or a list of regexes, each rendered as a template after the last line's prompt returns and searched for in the captured output (`re.search`, no flags). An empty pattern would match any output, so the step would check nothing:
 - `assert: ''`, or an empty entry in the list, is a validation error (`string_too_short` at the step's `assert`: `an assert pattern must not be empty: an empty regex matches any output, so the assert would check nothing`).
 - A pattern that renders to an empty string aborts the step with a `ValueError`, `assert: a pattern rendered to an empty regex, which matches any output`. Like an invalid regex, it isn't a command failure, so `ignore_error` doesn't cover it.
