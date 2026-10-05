@@ -192,12 +192,13 @@ class Runner:
         else:
             argv = ["/bin/sh"]
             console.print(">> prepare: running local script (no shebang, using /bin/sh)")
-        with tempfile.NamedTemporaryFile(
+        f = tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
-        ) as f:
-            f.write(script)
-            tmp = f.name
+        )
+        tmp = f.name
         try:
+            with f:
+                f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
             os.chmod(tmp, 0o700)
             try:
                 result = subprocess.run([*argv, tmp], check=False)

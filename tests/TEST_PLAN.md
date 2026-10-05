@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 22 | 0 | 0 | 22 | 0 |
 | P3 | Common step properties, templating context | 20 | 0 | 0 | 20 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
-| P5 | attach / block lifecycles, env | 54 | 0 | 0 | 54 | 0 |
+| P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
 | P6 | model / schema / example / CLI parity | 70 | 0 | 0 | 70 | 0 |
 | P7 | registry and plugins | 23 | 0 | 0 | 23 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **270** | **0** | **0** | **270** | **8** |
+| **Total** | | **271** | **0** | **0** | **271** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -341,8 +341,9 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-52 | `test_prepare_written_as_utf8` | attach `prepare` | `prep_tmp`; `tempfile._io` replaced by a shim whose `open` turns the default encoding (`None` or `"locale"`, which `NamedTemporaryFile` passes via `io.text_encoding`) into `latin-1`, as under an ISO-8859-1 locale; prepare `#!/bin/sh` + `echo 'é ✓ 日本' > out` | `out` is exactly the UTF-8 bytes of `é ✓ 日本\n`; temp file removed | pass (was `UnicodeEncodeError`: `'latin-1' codec can't encode character '\u2713'`) |
 | P5-53 | `test_p5_53_spawn_rendering_empty_stops_before_prepare` (parametrized: empty, blank, newline) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; the marker doesn't exist; no `attach` in the timeline | pass (review finding 9) |
 | P5-54 | `test_p5_54_spawn_rendering_to_quotes_stops_before_prepare` (parametrized: `''`, `""`, a backslash, a lone `'`, `''""`, `'' ''`, `'' ls`, `"" --version`), `test_p5_54_quoted_command_still_spawns` (parametrized: `'true'`, `"true"`, `tr''ue`, `\true`, `'/bin/true' ''`) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` exactly `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; no marker; no `attach` call (the first five raised `IndexError: list index out of range` from `pexpect.spawn`, the others `ExceptionPexpect`, all after `prepare`). A quoted or escaped command still reaches the spawn wait: `EOFError` `connection closed before any output from ... (exit status 0)` | pass (audit 2, finding 6) (x2) |
+| P5-55 | `test_p5_55_prepare_temp_file_removed_when_the_write_fails` (parametrized: `\ud800`, `\udcff`), `test_p5_55_run_prepare_removes_the_file_when_the_write_fails`, `test_p5_55_prepare_temp_file_removed_when_chmod_fails` | attach `prepare` | F5, `prep_tmp`; `prepare: "#!/bin/sh\necho {{ args.x }}\n"` with a lone surrogate in `args.x`; `Runner._run_prepare("echo \ud800")`; `os.chmod` patched to raise | `UnicodeEncodeError` propagates, the temp dir is empty (it held `_autobot_*.sh`), no `attach` call and no `>> prepare: done`; a failing `chmod` leaves nothing either (it passed before the fix too) | pass (audit 2, finding 8) (x3) |
 
-Totals: 54 pass (P5-01..54).
+Totals: 55 pass (P5-01..55).
 
 ## P6: model, schema, example and CLI parity
 
@@ -515,11 +516,11 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P2 | 22 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 20 | 0 | 0 | `test_common_props.py` |
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
-| P5 | 54 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 70 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 23 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **270** | **0** | **8** | |
+| **Total** | **271** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -578,6 +579,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 5: schema and models disagreed on `return: 1.0`, non-finite and huge durations, `!!binary` strings | P6-68, P6-69, P6-70 | with the old schema and models 85 of the 136 cases fail: the 4 whole floats (`(False, True)`), 48 of the 72 too-large durations (the negative ones were rejected by `minimum`), the `maximum` check, and 32 binary cases (`(True, False)`); the up-to-a-double and model-only cases pass before and after |
 | 6: a `spawn` of only quotes or a backslash crashed after `prepare` | P5-54, P6-71 | the 8 rendered cases fail (5 `IndexError: list index out of range`, 3 `ExceptionPexpect: The command was not found or was not executable`), the 10 load cases are `(True, True)`, and `names_command` doesn't exist; the 13 accepted cases pass before and after |
 | 7: `CleanWriter` leaked a sequence split across two reads | P8-21 (the first tests of `CleanWriter` and the stdout echo) | 35 of the 60 cases fail: 23 of the 43 cuts (those inside a sequence), byte by byte, the audit's case (`'ab\x1b[31mcd' == 'abcd'`), the held-start, close and bound tests (no `close`, no `ESCAPE_HOLD`), two of the keep cases (`ESC ESC [0m` and `ESC M` split) and the device test; whole-text and real-shell cases pass before and after |
+| 8: `prepare` temp file left behind when the write fails | P5-55 | the three write cases fail with `[PosixPath('.../_autobot_*.sh')] == []`; the `chmod` case passes before and after |
 
 ### Deviations from the plan
 
