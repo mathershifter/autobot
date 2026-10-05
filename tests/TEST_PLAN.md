@@ -25,9 +25,9 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
 | P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
 | P6 | model / schema / example / CLI parity | 70 | 0 | 0 | 70 | 0 |
-| P7 | registry and plugins | 23 | 0 | 0 | 23 | 0 |
+| P7 | registry and plugins | 24 | 0 | 0 | 24 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **271** | **0** | **0** | **271** | **8** |
+| **Total** | | **272** | **0** | **0** | **272** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -459,8 +459,9 @@ Files: `tests/test_registry.py` (new), `tests/test_plugins.py` (extend) and `tes
 | P7-21 | `test_raising_attribute_is_a_plugin_error` (parametrized: `key`, `model`, `execute`), `test_raising_attribute_without_message`, `test_raising_attribute_error_is_still_missing`, `test_raising_attribute_does_not_wrap_interrupts` (parametrized), `test_discovered_raising_attribute_is_cached`, `test_cli_reports_raising_attribute_cleanly` | Common Step Properties, CLI | F6 `isolated_registry`; executors with one raising property; `plugin_dist` on `sys.path` for discovery; the CLI half uses a dist-info plugin whose `key` property raises and a built-in-only script whose `prepare` touches a marker file | A property raising `RuntimeError` → `PluginError` exactly `plugin <module>.Raising (<origin>): executor's '<attr>' attribute raised RuntimeError: <msg>`, `__cause__` is the original, registry unchanged; a message-less exception is named by its type alone; a property raising `AttributeError` is still `executor has no 'execute' method`; `KeyboardInterrupt` and `SystemExit` pass through. Discovered: the same message from the first and second `discover()`, the first chained from the `RuntimeError`, the second from the first. CLI: rc 1, stderr exactly `Plugin error: <message>`, no marker | pass |
 | P7-22 | `test_p7_22_plugin_key_escaped_in_schema_refs` (parametrized: 11 keys with `/`, `~`, a space, `%`, `#`, braces, a quote, `?`, non-ASCII; each with a nested and a recursive model) | CLI (`autobot schema`) | F6, F7 | `$defs` has `<key>Step` under the key as written; the generated schema is valid 2020-12; a good step → `(True, True)`; a wrong field type, a wrong nested type, an unknown key, a bad `timeout` → `(False, False)` | pass (review finding 4) |
 | P7-23 | `test_p7_23_plugin_key_plugin_is_reserved`, `test_p7_23_no_plugin_key_can_take_a_static_def_name` | Common Step Properties | F6 | registering key `plugin` raises `PluginError` with the exact message, and the registry has no plugin; for every static `$defs` name ending in `Step`, the key before `Step` is rejected as reserved | pass (review finding 4) (x2) |
+| P7-24 | `test_p7_24_plugin_with_a_builtin_model_is_rejected`, `test_p7_24_sleep_step_still_runs_the_builtin`, `test_p7_24_every_builtin_model_is_taken` (parametrized: the six other built-in models), `test_p7_24_plugin_with_another_plugins_model_is_rejected`, `test_p7_24_plugin_step_model_is_rejected`, `test_p7_24_own_model_and_reregistration_still_work`, `test_p7_24_cli_reports_a_reused_builtin_model` | Common Step Properties | F6, F5; a plugin with `key = "nap"`, `model = SleepStep`; a dist-info copy of it for the CLI | registering it raises `PluginError` exactly `plugin test_registry.NapExecutor, step key 'nap': model SleepStep is already the model of the built-in step 'sleep'; a plugin needs a model of its own`, the registry is unchanged and `key_for_step(SleepStep(...))` is `sleep` (it was `nap`); a `sleep: 10ms` step sleeps and the plugin's `execute` never runs; every other built-in model gets the same message (not the common-names one); a second key with another plugin's model names that plugin with its origin; `PluginStep` is refused with its own message; a subclass of `SleepStep` registers, twice; the CLI prints `Plugin error: ...` with the distribution and entry point, rc 1, no marker | pass (audit 2, finding 9) (x7) |
 
-Totals: 23 pass (P7-01..23).
+Totals: 24 pass (P7-01..24).
 
 P7-09..12 were added with the fix for the generated schema found in the PR #23 review: a plain plugin step matched both `<key>Step` and `pluginStep`, so `oneOf` rejected it, and a plugin step with a common prop or an invalid field fell through to `pluginStep` and was accepted unchecked. P7-12 came with it: `PluginStep`'s before-validator wrote `plugin_key_` into the caller's dict, and accepted (then overwrote) a `plugin_key_` set in the script, which the schema rejects. It now works on a copy and rejects a script-set `plugin_key_`.
 
@@ -518,9 +519,9 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 70 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
-| P7 | 23 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
+| P7 | 24 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **271** | **0** | **8** | |
+| **Total** | **272** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -580,6 +581,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 6: a `spawn` of only quotes or a backslash crashed after `prepare` | P5-54, P6-71 | the 8 rendered cases fail (5 `IndexError: list index out of range`, 3 `ExceptionPexpect: The command was not found or was not executable`), the 10 load cases are `(True, True)`, and `names_command` doesn't exist; the 13 accepted cases pass before and after |
 | 7: `CleanWriter` leaked a sequence split across two reads | P8-21 (the first tests of `CleanWriter` and the stdout echo) | 35 of the 60 cases fail: 23 of the 43 cuts (those inside a sequence), byte by byte, the audit's case (`'ab\x1b[31mcd' == 'abcd'`), the held-start, close and bound tests (no `close`, no `ESCAPE_HOLD`), two of the keep cases (`ESC ESC [0m` and `ESC M` split) and the device test; whole-text and real-shell cases pass before and after |
 | 8: `prepare` temp file left behind when the write fails | P5-55 | the three write cases fail with `[PosixPath('.../_autobot_*.sh')] == []`; the `chmod` case passes before and after |
+| 9: a plugin could take over a built-in step by reusing its model | P7-24 | 11 of the 12 cases fail: the registrations don't raise (`DID NOT RAISE PluginError`), the six other built-in models are refused only for their common property names, and the CLI run exits 0; the own-model case passes before and after |
 
 ### Deviations from the plan
 

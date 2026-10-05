@@ -497,7 +497,7 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields, a class of the plugin's own: not a built-in step's model or another plugin's) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 
 When a plugin sends text itself, it tells the session what kind of send it is:
 
