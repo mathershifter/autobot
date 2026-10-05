@@ -724,7 +724,7 @@ def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
     assert out.out == ""
 
 
-@pytest.mark.slow
+@pytest.mark.build
 def test_p6_80_built_wheel_and_sdist_contain_the_schema(tmp_path: Path):
     """The build itself: the wheel has the schema inside the package, and the sdist has it at both paths."""
     import shutil
@@ -739,6 +739,9 @@ def test_p6_80_built_wheel_and_sdist_contain_the_schema(tmp_path: Path):
     res = subprocess.run(
         [uv, "build", "--offline", "-o", str(tmp_path), str(ROOT)], check=False, capture_output=True, text=True, timeout=300
     )
+    if res.returncode != 0 and "network was disabled" in res.stderr:
+        # the build backend isn't in uv's cache, and this test doesn't go and fetch it
+        pytest.skip("uv build --offline: the build backend (uv_build) isn't in uv's cache")
     assert res.returncode == 0, res.stderr
     canonical = (ROOT / "schemas" / SCHEMA_NAME).read_bytes()
     [wheel] = tmp_path.glob("*.whl")

@@ -12,6 +12,7 @@ The plan only covers tests. It changes no product code. It adds to the existing 
 | `xfail #N` | Encodes SPEC; current code disagrees. Mark `@pytest.mark.xfail(strict=True, reason="finding #N")`. |
 | `todo #N` | Was blocked on spec decision #N. The decision has landed in SPEC.md (see [Spec decisions](#spec-decisions)), and the Assertion column gives the target. Not written yet; expected to be `pass`. |
 | `slow` | Needs the fixed 5 s idle poll in `get_prompt` (can't be shortened without a product change). Mark `@pytest.mark.slow`. |
+| `build` | Runs `uv build` and checks the wheel and sdist. Mark `@pytest.mark.build`; it is part of the default selection and of `-m "not slow"`. |
 
 Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I found them while writing this plan (see [New findings](#new-findings-from-planning)). #20 came up while fixing #19.
 
@@ -24,10 +25,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 22 | 0 | 0 | 22 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 39 | 0 | 0 | 39 | 7 |
 | P5 | attach / block lifecycles, env | 58 | 0 | 0 | 58 | 0 |
-| P6 | model / schema / example / CLI parity | 79 | 0 | 0 | 79 | 1 |
+| P6 | model / schema / example / CLI parity | 79 | 0 | 0 | 79 | 0 |
 | P7 | registry and plugins | 26 | 0 | 0 | 26 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **292** | **0** | **0** | **292** | **10** |
+| **Total** | | **292** | **0** | **0** | **292** | **9** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-05, branch `fix/open-items`, which added thirteen rows and removed one: P2-23, P5-56, P6-75, P6-76 and P6-77 for the open items, then P3-22, P4-43, P5-57, P5-58, P6-78, P6-79, P6-80 and P7-26 for the follow-ups, with P6-77 removed again when the schema download went; it added two slow tests, one in P2-23 and one in P6-80; before it 2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08, P6-77) are not counted.
 
@@ -41,7 +42,10 @@ Register the marker in `pyproject.toml`:
 
 ```toml
 [tool.pytest.ini_options]
-markers = ["slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'"]
+markers = [
+    "slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'",
+    "build: runs `uv build` and checks the wheel and sdist; skipped without uv or its cached build backend",
+]
 ```
 
 ### F1: real local shell (`tests/conftest.py`)
@@ -441,10 +445,10 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-77 | removed: the tests of the schema download (its timeout, its one-line errors, a body that isn't the schema). `autobot schema` no longer downloads anything, see P6-80 | CLI (`autobot schema`) | - | - | removed |
 | P6-78 | `test_p6_78_boolean_env_value_says_to_quote_it` (parametrized: `env`, `attach.env` × `true`, `True`, `yes`, `on`, `false`, `No`, `off`), `test_p6_78_number_env_value_keeps_its_error` (parametrized: `env`, `attach.env` × `1`, `2.5`), `test_p6_78_parity_boolean_is_not_a_string` (parametrized: every string field of P6-70 but the duration × `true`, `false`), `test_p6_78_boolean_flags_and_data_are_still_booleans` (parametrized: `true`, `false`) | Jinja2 Templating (Booleans are not text) | F7; values as `yaml.safe_load` gives them | a boolean `env` or `attach.env` value → `(False, False)`, one model error `string_type` at the value with `an environment value is a string, and unquoted this one is a boolean (true); quote it to set it as written, e.g. 'true' or 'yes'`, and the same spelling quoted → `(True, True)`; a number there keeps `Input should be a valid string`; a boolean in any string field → `(False, False)`; `ignore_error`, a prompt's `return` and `vars` values accept a boolean and keep it | pass (follow-up G.3) (x4) |
 | P6-79 | `test_p6_79_spawn_with_leading_whitespace_accepted` (parametrized: a space, two, a tab, newlines, a no-break space, a quoted command, a template, a split quote), `test_p6_79_quotes_behind_leading_whitespace_still_rejected` (parametrized, 5 values), `test_p6_79_names_command_is_what_pexpect_spawns_once_stripped` | attach (`spawn`) | F7; `models.names_command` | `" ssh host"` and the like → `(True, True)`; `" ''"`, `"  '' ls"`, `" \"` → `(False, True)` with `empty_command` and the quotes message showing the value as written; `names_command(v)` is what pexpect finds in `v.lstrip()` | pass (follow-up H.2) (x3) |
-| P6-80 | `test_p6_80_packaged_schema_is_the_one_in_schemas`, `test_p6_80_load_schema_returns_a_fresh_copy`, `test_p6_80_schema_command_needs_no_network`, `test_p6_80_source_tree_without_the_packaged_file_reads_schemas`, `test_p6_80_cli_has_no_download_left`, `test_p6_80_broken_plugin_is_reported_before_the_schema_is_read`, `test_p6_80_built_wheel_and_sdist_contain_the_schema` (`slow`: it runs `uv build`, and is skipped where `uv` isn't installed) | CLI (`autobot schema`) | in-process `cli.load_schema()` and `cli._cmd_schema()`; `no_network` makes `urlopen`, `socket.create_connection`, `socket.connect` and `getaddrinfo` raise; `uv build --offline` into `tmp_path` | the resource `autobot/autobot.2026-10.json` exists, has the bytes of `schemas/autobot.2026-10.json` and is a link to it in the source tree; each `load_schema()` is a new object; the command prints the schema with no network call; with the resource missing the loader reads `schemas/`; `cli.py` has no `urlopen`, URL or `Cannot download`; a broken plugin is reported before the schema is read; the wheel has `autobot/autobot.2026-10.json` and no `schemas/`, and the sdist has the file at both paths, all byte-identical | pass (follow-up J) (x7) |
+| P6-80 | `test_p6_80_packaged_schema_is_the_one_in_schemas`, `test_p6_80_load_schema_returns_a_fresh_copy`, `test_p6_80_schema_command_needs_no_network`, `test_p6_80_source_tree_without_the_packaged_file_reads_schemas`, `test_p6_80_cli_has_no_download_left`, `test_p6_80_broken_plugin_is_reported_before_the_schema_is_read`, `test_p6_80_built_wheel_and_sdist_contain_the_schema` (marked `build`, not `slow`: it runs `uv build --offline`, and is skipped where `uv` isn't installed or its build backend isn't in uv's cache) | CLI (`autobot schema`) | in-process `cli.load_schema()` and `cli._cmd_schema()`; `no_network` makes `urlopen`, `socket.create_connection`, `socket.connect` and `getaddrinfo` raise; `uv build --offline` into `tmp_path` | the resource `autobot/autobot.2026-10.json` exists, has the bytes of `schemas/autobot.2026-10.json` and is a link to it in the source tree; each `load_schema()` is a new object; the command prints the schema with no network call; with the resource missing the loader reads `schemas/`; `cli.py` has no `urlopen`, URL or `Cannot download`; a broken plugin is reported before the schema is read; the wheel has `autobot/autobot.2026-10.json` and no `schemas/`, and the sdist has the file at both paths, all byte-identical | pass (follow-up J) (x7) |
 | P6-81 | `test_p6_81_packaged_file_that_is_not_the_schema_falls_back_to_schemas` (parametrized: the link's text, an empty file, bytes that aren't UTF-8, a JSON list, a JSON string), `test_p6_81_no_schema_anywhere_is_a_clean_error` | CLI (`autobot schema`) | `importlib.resources.files` pointed at a directory whose `autobot.2026-10.json` holds that content; for the second, `cli.__file__` moved as well, so `schemas/` isn't found either | `load_schema()` returns the schema of `schemas/` and `_cmd_schema()` prints it with nothing on stderr; with the schema in neither place `load_schema()` raises `SchemaError` and the command prints exactly `Cannot read the schema: neither <packaged> nor <schemas> holds the JSON schema`, rc 1, nothing on stdout | pass (review fix 3) (x2) |
 
-Totals: 79 pass (P6-01..81 without the removed P6-08 and P6-77). Slow: one test of P6-80.
+Totals: 79 pass (P6-01..81 without the removed P6-08 and P6-77). One test of P6-80 has the `build` marker.
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -541,10 +545,10 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 22 | 0 | 0 | `test_common_props.py` |
 | P4 | 39 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 58 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 79 | 0 | 1 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 79 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 26 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **292** | **0** | **10** | |
+| **Total** | **292** | **0** | **9** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -651,6 +655,7 @@ A review of the branch asked for seven fixes. Each test was run against the `src
 |-----|------|-------------------|
 | 1: the prompt wait after an `after` match pressed Return after 5 s | P2-24; one test of P2-23 removed (it pinned the Return) | 15 of the 16 fail: the three long-line variants register `''` or fail their `assert` (a `""` is sent), the question step sends `""` and `y` and the file holds `got=[]`, the three ends-at-the-prompt cases send `""` first or time out, and `_is_shell_prompt` has no `whole` argument. The `line` test passes before and after |
 | 2: the README's plugin rules disagreed with SPEC | none: README only | - |
+| 5: the wheel-build test was marked `slow`, so `-m "not slow"` deselected the only test of the built artifacts | no new test: `test_p6_80_built_wheel_and_sdist_contain_the_schema` has the `build` marker, registered in `pyproject.toml` | - |
 | 3: `autobot schema` died with a `JSONDecodeError` where the packaged schema is the text of the link | P6-81; one assertion added to P6-80 | all six fail: `JSONDecodeError` (or `UnicodeDecodeError`, or the JSON list or string returned as the schema) for the five contents, and no `SchemaError` |
 
 ### Deviations from the plan
@@ -840,4 +845,4 @@ These are not in the list of blocking decisions. None of them is tested in this 
 4. P3, P6, P7, P8.
 5. Write the `todo` rows (all six decisions are in SPEC.md). Done.
 
-Speed target: the non-slow suite should run in under the current ~70 s after the helpers stop paying the solicit wait. The four slow tests add about 29 s.
+Speed target: the non-slow suite should run in under the current ~70 s after the helpers stop paying the solicit wait. The 18 `slow` tests take about 153 s (`-m slow`); each waits out at least one 5 s idle poll.

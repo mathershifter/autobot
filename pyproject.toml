@@ -23,7 +23,10 @@ build-backend = "uv_build"
 source-include = ["schemas/autobot.2026-10.json"]
 
 [tool.pytest.ini_options]
-markers = ["slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'"]
+markers = [
+    "slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'",
+    "build: runs `uv build` and checks the wheel and sdist; skipped without uv or its cached build backend",
+]
 
 [dependency-groups]
 dev = [
