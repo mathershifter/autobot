@@ -244,6 +244,51 @@ def test_p3_20_after_rendering_to_an_invalid_regex_is_a_script_error(sent: SentL
     assert sent.commands() == []
 
 
+# -- P3-21: an `after` that renders to nothing ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "after", ["{{ vars.p }}", "{{ '' }}", "{# nothing #}", "{% if vars.p %}READY{% endif %}"], ids=["var", "literal", "comment", "if"]
+)
+def test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error(sent: SentLog, timeline: Timeline, after: str):
+    """SPEC "Common Step Properties": an `after` that renders to nothing is a ValueError, as for `assert`.
+
+    It used to skip the wait: the `cmd` was sent before the first prompt and `register` stored `''`.
+    """
+    r = make_runner([{"cmd": "echo hi", "after": after, "register": "out"}], vars={"p": "", "out": "unset"})
+    with pytest.raises(ValueError, match=r"^after: the pattern rendered to an empty regex, which matches at once$"):
+        r.run()
+    assert sent.lines() == []
+    assert "expect" not in timeline.names() and "get_prompt" not in timeline.names()
+    assert r.config.vars["out"] == "unset"
+
+
+@pytest.mark.parametrize("step", [{"line": "echo hi"}, {"return": 1}, {"control": "c"}, {"call": "f"}, {"block": {"name": "b"}}], ids=lambda s: next(iter(s)))
+def test_p3_21_empty_rendered_after_aborts_every_step_type(sent: SentLog, step: dict[str, Any]):
+    """The runner checks `after` before any step type runs, and `when` isn't evaluated first."""
+    with pytest.raises(ValueError, match=r"^after: the pattern rendered to an empty regex"):
+        run_script([{**step, "after": "{{ vars.p }}", "when": "{{ nope }}"}], vars={"p": ""}, fn={"f": {"script": []}})
+    assert sent == []
+
+
+def test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs(sent: SentLog):
+    """Like a template error it aborts the step even with `ignore_error`; the attach breakout still runs."""
+    with pytest.raises(ValueError, match=r"^after: the pattern rendered to an empty regex"):
+        run_script(
+            [{"cmd": "echo hi", "after": "{{ vars.p }}", "ignore_error": True}],
+            vars={"p": ""},
+            breakout=[{"line": "echo bye"}],
+        )
+    assert sent.lines() == ["echo bye"]
+
+
+def test_p3_21_after_rendering_to_a_pattern_still_waits(timeline: Timeline):
+    """The same template with a value waits for it, and the command's output is registered."""
+    out = run_vars([{"cmd": "echo hi", "after": "{{ vars.p }}", "register": "out"}], vars={"p": r"PROMPT\$ "})
+    assert out["out"] == "hi"
+    assert ("expect", [r"PROMPT\$ "]) in timeline
+
+
 # -- P3-19: keys named like dict methods -------------------------------------
 
 DICT_METHODS = ["values", "items", "keys", "get", "copy", "update", "pop", "clear"]

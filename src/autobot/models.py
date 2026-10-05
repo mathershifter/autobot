@@ -66,6 +66,15 @@ def _template_regex(v: str) -> str:
     return v if _TEMPLATE_RE.search(v) else _compiles(v)
 
 
+def _after(v: str) -> str:
+    if v == "":
+        raise _custom(
+            "string_too_short",
+            "an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing",
+        )
+    return _template_regex(v)
+
+
 # a character that isn't whitespace (the characters of str.isspace, written out so that the schema's
 # pattern, an ECMA regex, means the same; the schema uses this exact pattern)
 _BLANK = [(0x09, 0x0D), (0x1C, 0x1F), 0x20, 0x85, 0xA0, 0x1680, (0x2000, 0x200A), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
@@ -99,8 +108,8 @@ def _whole(v: Any) -> Any:
 
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
-# `after`: a regex once rendered
-After = Annotated[str, pydantic.AfterValidator(_template_regex)]
+# `after`: a non-empty regex once rendered
+After = Annotated[str, pydantic.AfterValidator(_after)]
 
 
 class FieldEntry(pydantic.BaseModel):

@@ -301,7 +301,7 @@ An ignored failure is logged (`>> error ignored: ...`), and the script continues
 Every other error aborts the step, and with it the script, even with `ignore_error: true`:
 - timeouts: waiting for a prompt, for the `after` pattern, or for the `$?` result. The `TimeoutError` messages are `timed out after <timeout>s waiting for a shell prompt ('<name>', ...)` (the names of the current shell prompts, or `none defined`), `... waiting for the after pattern '<pattern>'` (the rendered pattern) and `... waiting for the exit code of the command (echo $?)`
 - a closed connection (`EOFError`). The message starts with `connection closed` and names what was being waited for, as the timeouts do: `connection closed while waiting for a shell prompt ('<name>', ...)`, `... while waiting for the after pattern '<pattern>'` and `... while waiting for the exit code of the command (echo $?)`
-- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and an `assert` or `after` that renders to an invalid regular expression, or an `assert` that renders to an empty one (`assert: invalid regex ...`, `after: invalid regex ...`; an invalid regex that isn't a template never gets this far, it fails validation)
+- template errors (`template error: ...`, see [Jinja2 Templating](#jinja2-templating)), including in a prompt `send` response, and an `assert` or `after` that renders to an invalid regular expression or to an empty one (`assert: invalid regex ...`, `after: invalid regex ...`, `assert: a pattern rendered to an empty regex ...`, `after: the pattern rendered to an empty regex ...`; an invalid regex that isn't a template never gets this far, it fails validation)
 - prompt-response failures (`responses exhausted`, `no response available`)
 
 #### Capturing output with `register`
@@ -492,13 +492,19 @@ All step types except `sleep` support:
 
 | Field | Description |
 |-------|-------------|
-| `after` | Expect regex — wait for this pattern before executing. Matched against the raw output, escape sequences included (see [ANSI escape sequences](#ansi-escape-sequences)). On match, populates `session.before` and `session.match`. An invalid regex is a validation error (`invalid_regex`) or, for a template, a `ValueError` when it is rendered, before the wait (see [YAML Script Structure](#yaml-script-structure)) |
+| `after` | Expect regex — wait for this pattern before executing. Matched against the raw output, escape sequences included (see [ANSI escape sequences](#ansi-escape-sequences)). On match, populates `session.before` and `session.match`. An invalid regex is a validation error (`invalid_regex`) or, for a template, a `ValueError` when it is rendered, before the wait (see [YAML Script Structure](#yaml-script-structure)). The pattern must not be empty: see below |
 | `when` | Jinja2 conditional — template is rendered, step is skipped if the result is falsy (see below) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after` | Duration to wait after the step |
 | `timeout` | Duration that bounds each wait of this step (default 300s); see below |
 
 `line` and `return` steps do not support `timeout`.
+
+An empty `after` pattern would match at once, before any output, so the step would wait for nothing. It is treated like an empty `assert` pattern (see [`cmd`](#cmd--send-commands-to-the-shell)):
+- `after: ''` is a validation error, in the schema and the models (`string_too_short` at the step's `after`: `an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing`), also on a plugin step.
+- An `after` that renders to an empty string (e.g. `after: "{{ vars.p }}"` with `p: ""`) aborts the step with a `ValueError`, `after: the pattern rendered to an empty regex, which matches at once`, before anything is waited for or sent and before `when` is evaluated. Like an invalid regex it isn't a command failure, so `ignore_error` doesn't cover it.
+
+To run a step without waiting, omit `after`. Only the empty string is rejected: `after: ' '` waits for a space.
 
 `timeout` bounds each wait of the step separately; it isn't a deadline for the step as a whole, and it doesn't bound `delay_before` or `delay_after`. It applies to:
 - `after`: the wait for the pattern, in every step type that has `after`. In `line` and `return`, which have no `timeout`, this wait uses the 300s default.
@@ -711,6 +717,7 @@ The same round changed five behaviors of a run. None of them changes what the sc
 A later round, again without a new version number, closed gaps between SPEC, the schema and the models. What it rejects that used to load:
 - a `!!binary` value where a string goes (`string_type`; see [YAML Script Structure](#yaml-script-structure)). The models used to decode it, so `cmd: !!binary aGk=` sent `hi`, while the schema rejected the document. Write the text as a string.
 - an `attach.spawn` whose first word is empty, such as `"''"` or `'\'` (`empty_command`, models only; see [`attach`](#attach)). It used to fail after `attach.prepare` had run, with an `IndexError` from pexpect or `The command was not found or was not executable`.
+- an empty `after` (`string_too_short`, schema and models; see [Common Step Properties](#common-step-properties)). `after: ''` used to be accepted and skipped, so the step ran without waiting. Remove the key. An `after` template that renders to an empty string used to skip the wait too, so a `cmd` was sent before the first prompt and `register` stored an empty string; it is now a `ValueError` that aborts the step. If the wait is meant to be optional, give the template a pattern that always matches something the device prints, or put the step under a `when`.
 
 The same round rejects a plugin that used to register: one whose `model` is the model of another step key, a built-in step's or another plugin's, or `PluginStep` (a `PluginError`; see [Common Step Properties](#common-step-properties)). It took over the other key's steps. Give the plugin a model class of its own; a subclass will do.
 

@@ -926,3 +926,71 @@ def test_p6_72_version_null_and_missing_keep_their_errors(both_validate: Callabl
     [err] = model_errors(missing)
     assert (err["loc"], err["type"]) == (("autobot",), "missing")
     assert both_validate(d(autobot=yaml.safe_load("v: 2026-10")["v"])) == (True, True)
+
+
+# -- P6-73: an empty `after` -----------------------------------------------------
+
+EMPTY_AFTER: dict[str, tuple[dict[str, Any], tuple]] = {
+    "cmd": (s({"cmd": "x", "after": ""}), ("script", 0, "cmd", "after")),
+    "call": (d(fn=FN, script=[{"call": "f", "after": ""}]), ("script", 0, "call", "after")),
+    "block": (s({"block": {"name": "b"}, "after": ""}), ("script", 0, "block", "after")),
+    "line": (s({"line": "x", "after": ""}), ("script", 0, "line", "after")),
+    "return": (s({"return": 1, "after": ""}), ("script", 0, "return", "after")),
+    "control": (s({"control": "c", "after": ""}), ("script", 0, "control", "after")),
+    "in-fn": (d(fn={"f": {"script": [{"cmd": "x", "after": ""}]}}), ("fn", "f", "script", 0, "cmd", "after")),
+    "in-attach-script": (
+        d(attach={"spawn": "ssh host", "script": [{"line": "x", "after": ""}]}),
+        ("attach", "script", 0, "line", "after"),
+    ),
+    "in-breakout": (
+        d(attach={"spawn": "ssh host", "breakout": {"script": [{"line": "x", "after": ""}]}}),
+        ("attach", "breakout", "script", 0, "line", "after"),
+    ),
+    "in-block": (
+        s({"block": {"name": "b", "enter": [{"cmd": "x", "after": ""}]}}),
+        ("script", 0, "block", "block", "enter", 0, "cmd", "after"),
+    ),
+}
+EMPTY_AFTER_MSG = "an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing"
+
+
+@pytest.mark.parametrize("case", EMPTY_AFTER)
+def test_p6_73_parity_empty_after_rejected(both_validate: Callable, case: str):
+    """SPEC "Common Step Properties": `after: ''` is rejected by both, like an empty `assert` pattern.
+
+    It used to be accepted and silently skipped: the step ran without waiting for anything.
+    """
+    doc, loc = EMPTY_AFTER[case]
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (loc, "string_too_short", EMPTY_AFTER_MSG)
+
+
+def test_p6_73_parity_empty_after_on_a_plugin_step_rejected(both_validate: Callable, probe: Any):
+    """The common step properties of a plugin step follow the same rule (the schema's `stepCommon`)."""
+    doc = s({"probe": "x", "after": ""})
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (("script", 0, "plugin", "after"), "string_too_short", EMPTY_AFTER_MSG)
+    # a key no plugin registers: the static schema checks stepCommon, the model rejects the step
+    assert both_validate(s({"nope": 1, "after": ""})) == (False, False)
+    assert both_validate(s({"nope": 1, "after": "x"})) == (False, True)
+
+
+def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
+    """Every definition with an `after` has the same one, so no step type is left out."""
+    found = [
+        (name, definition["properties"]["after"])
+        for name, definition in schema["$defs"].items()
+        if "after" in definition.get("properties", {})
+    ]
+    assert sorted(name for name, _ in found) == [
+        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "stepCommon",
+    ]
+    assert all(prop == {"type": "string", "minLength": 1} for _, prop in found)
+
+
+@pytest.mark.parametrize("value", [" ", "x", "{{ vars.p }}", "{{ '' }}", "{# only a comment #}", "^$"])
+def test_p6_73_parity_blank_and_templated_after_accepted(both_validate: Callable, value: str):
+    """Only the empty string is rejected at load; a template that renders to nothing is caught when it is used (P3-21)."""
+    assert both_validate(s({"cmd": "x", "after": value})) == (True, True)

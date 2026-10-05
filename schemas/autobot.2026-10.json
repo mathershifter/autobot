@@ -127,7 +127,7 @@
       "additionalProperties": false,
       "properties": {
         "cmd": { "$ref": "#/$defs/stringOrArray" },
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "assert": {
           "oneOf": [
@@ -156,7 +156,7 @@
       "additionalProperties": false,
       "properties": {
         "call": { "type": "string" },
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
@@ -168,7 +168,7 @@
       "required": ["block"],
       "additionalProperties": false,
       "properties": {
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
@@ -211,7 +211,7 @@
       "additionalProperties": false,
       "properties": {
         "line": { "$ref": "#/$defs/stringOrArray" },
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
@@ -223,7 +223,7 @@
       "additionalProperties": false,
       "properties": {
         "return": { "type": "integer", "minimum": 1 },
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" }
@@ -240,7 +240,7 @@
             { "type": "array", "items": { "$ref": "#/$defs/controlChar" } }
           ]
         },
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },
@@ -266,7 +266,7 @@
     "stepCommon": {
       "type": "object",
       "properties": {
-        "after": { "type": "string" },
+        "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
         "delay_before": { "$ref": "#/$defs/duration" },
         "delay_after": { "$ref": "#/$defs/duration" },

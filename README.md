@@ -380,7 +380,7 @@ All step types except `sleep` support these optional fields:
 
 | Field          | Description                                                    |
 |----------------|----------------------------------------------------------------|
-| `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match` |
+| `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match`. Must not be empty, as written or once rendered; omit the key to skip the wait |
 | `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |

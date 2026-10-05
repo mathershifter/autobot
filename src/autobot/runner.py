@@ -253,8 +253,10 @@ class Runner:
         timeout = self._get_timeout(step)
 
         after = getattr(step, "after", None)
-        if after:
+        if after is not None:
             pattern = self.render(after)
+            if not pattern:
+                raise ValueError("after: the pattern rendered to an empty regex, which matches at once")
             check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 
