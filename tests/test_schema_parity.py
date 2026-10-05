@@ -339,9 +339,9 @@ def test_p6_41_parity_null_optional_field(both_validate: Callable, model: type[p
     assert both_validate(doc) == (False, False)
     # the send union also reports its list members for a sendEach error; keep the one at the key
     [err] = [e for e in model_errors(doc) if e["loc"][-1] == key]
-    if optional_fields(model)[key][1] is None:
-        assert err["type"] == "null_value"
-        assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
+    # every optional field, whatever its default: `env:`, `prompts:`, `ignore_error:` as much as `timeout:`
+    assert err["type"] == "null_value"
+    assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
 
 
 @pytest.mark.parametrize(("model", "key"), OPTIONAL, ids=OPTIONAL_IDS)

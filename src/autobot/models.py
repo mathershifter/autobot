@@ -7,7 +7,7 @@ from typing import Annotated, Any
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, Omittable, StringOrArray, ensure_list
+from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list
 
 VERSION = "2026-10"
 
@@ -129,7 +129,7 @@ class Prompt(pydantic.BaseModel):
     # entries are single non-empty regexes; a grouped or empty entry is kept here so _check_expect can name it
     expect: Omittable[list[str | list[str]]] = None
     send: Omittable[str | SendEach] = None
-    is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
+    is_shell_prompt: NotNull[bool] = pydantic.Field(False, alias="return", strict=True)
 
     @pydantic.field_validator("expect", mode="before")
     @classmethod
@@ -211,7 +211,7 @@ class Attach(pydantic.BaseModel):
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
     env: Omittable[dict[str, str]] = None
-    script: list[Step] = []
+    script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
 
@@ -221,7 +221,7 @@ class CmdStep(pydantic.BaseModel):
     after: Omittable[After] = None
     when: Omittable[str] = None
     assert_: Omittable[StringOrArray] = pydantic.Field(None, alias="assert")
-    ignore_error: bool = pydantic.Field(False, strict=True)
+    ignore_error: NotNull[bool] = pydantic.Field(False, strict=True)
     register_: Omittable[Annotated[str, pydantic.StringConstraints(min_length=1)]] = pydantic.Field(
         None, alias="register"
     )
@@ -260,15 +260,15 @@ class CallStep(pydantic.BaseModel):
 
 class Breakout(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
-    script: list[Step] = []
+    script: NotNull[list[Step]] = []
 
 
 class Block(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
     name: str
-    prompts: list[Prompt] = []
-    enter: list[Step] = []
-    script: list[Step] = []
+    prompts: NotNull[list[Prompt]] = []
+    enter: NotNull[list[Step]] = []
+    script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
 
@@ -416,11 +416,11 @@ class Config(pydantic.BaseModel):
         if v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {v!r}; expected {VERSION}")
         return v
-    env: dict[str, str] = {}
-    vars: dict[str, Any] = {}
-    prompts: list[Prompt] = []
-    fn: dict[str, Function] = {}
-    errors: list[ErrorRegex] = []
+    env: NotNull[dict[str, str]] = {}
+    vars: NotNull[dict[str, Any]] = {}
+    prompts: NotNull[list[Prompt]] = []
+    fn: NotNull[dict[str, Function]] = {}
+    errors: NotNull[list[ErrorRegex]] = []
     attach: Attach
     script: list[Step]
 

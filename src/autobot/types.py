@@ -70,6 +70,8 @@ Duration = Annotated[float, pydantic.BeforeValidator(parse_duration)]
 StringOrArray = str | list[str]
 # an optional field: the key may be omitted (the field is then None), but an explicit null is rejected
 type Omittable[T] = Annotated[T | None, pydantic.BeforeValidator(reject_null)]
+# an optional field whose default isn't None (a list, a mapping, a flag): the same rule for an explicit null
+type NotNull[T] = Annotated[T, pydantic.BeforeValidator(reject_null)]
 
 
 def render(template: Any, ctx: dict) -> Any:
