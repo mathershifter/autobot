@@ -77,7 +77,7 @@ def test_p5_27_env_nesting_any_order_and_forms():
         "AB_X": "{{ env.AB_NOPE | default('dflt') }}-{{ 'AB_A' in env }}",
     }
     r = make_runner([], env=env, vars={"v": "a"}, args={"a": "arg"})
-    assert r.render("{{ env.AB_C }} {{ env.AB_X }}") == "A-B-ARG-c dflt-True"
+    assert r.render("{{ env.AB_C }} {{ env.AB_X }}") == "A-B-ARG-c dflt-true"
 
 
 def test_p5_28_env_os_override_breaks_cycle(monkeypatch: pytest.MonkeyPatch):

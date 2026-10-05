@@ -8,7 +8,7 @@ import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list
+from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
 VERSION = "2026-10"
 
@@ -449,7 +449,7 @@ class Config(pydantic.BaseModel):
                 f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
             )
         if not isinstance(v, str) or v != VERSION:
-            raise _custom("unsupported_version", f"unsupported autobot version {str(v)!r}; expected {VERSION}")
+            raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
     env: NotNull[dict[str, str]] = {}
     vars: NotNull[dict[str, Any]] = {}

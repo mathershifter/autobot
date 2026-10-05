@@ -553,7 +553,7 @@ Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> exec
 
 ### Conditional execution with `when`
 
-The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: it is falsy if, with surrounding whitespace removed and lowercased, it is `""`, `"false"`, `"0"` or `"none"`. A falsy result skips the step entirely. So `False`, `FALSE`, `None` (how Jinja2 renders a null value, e.g. `{{ vars.v }}` when `v` is `null`) and `" false "` are all falsy. Any other result, including `"no"` and `"off"`, runs the step.
+The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: it is falsy if, with surrounding whitespace removed and lowercased, it is `""`, `"false"`, `"0"` or `"none"`. A falsy result skips the step entirely. So `false` (how a boolean expression such as `{{ vars.flag }}` or `{{ a == b }}` is rendered, see [Jinja2 Templating](#jinja2-templating)), `False`, `FALSE`, `None` (how Jinja2 renders a null value, e.g. `{{ vars.v }}` when `v` is `null`) and `" false "` are all falsy. Any other result, including `"no"` and `"off"`, runs the step.
 
 The `session.before` and `session.match` context variables are populated both by `after` (explicit expect) and by `get_prompt` (on shell prompt match). Commonly used with `when`:
 
@@ -614,12 +614,22 @@ Available context:
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
+### Booleans in output
+
+An expression whose value is a boolean is written as YAML writes it, `true` or `false`: `{{ vars.flag }}` with `flag: true`, `{{ a == b }}`, `{{ x is defined }}`, `{{ value | contains('x') }}`. This is only about how the value of a `{{ ... }}` is written out, in every templated value:
+- Conditions and expressions work on the value itself: `{% if vars.flag %}`, `vars.flag == true` and `vars.flag | int` are unaffected, and so is the `when` gate, which reads `true` and `false` as it read `True` and `False`.
+- Only a value that is exactly a boolean changes. Text an expression builds itself is what Python makes of it: `{{ vars.flag | string }}`, `{{ vars.flag ~ '' }}` and `{{ [vars.flag] | join(',') }}` give `True`. So is a boolean inside a list or a mapping that is written out whole: `{{ vars.flags }}` with `flags: [true, false]` is `[True, False]`. Use `tojson` for those: `{{ vars.flags | tojson }}` is `[true, false]`.
+- A string is never changed: `word: 'True'` renders `True`.
+- A null is still written `None` (`{{ vars.v }}` when `v` is `null`), as Jinja2 does it.
+
+Where the engine itself turns a boolean of the document into text, it uses the same spelling: the values a `sendEach` sends (see [`sendEach`](#sendeach)), the value the `contains` and `search` filters look in (`{{ vars.flag | contains('true') }}`), and the messages `unsupported autobot version 'true'` and `invalid duration: true`.
+
 ### Custom Filters
 
 | Filter | Usage | Description |
 |--------|-------|-------------|
-| `contains` | `{{ value \| contains('substring') }}` | Returns `True` if `substring` is found in `value` |
-| `search` | `{{ value \| search('regex') }}` | Returns `True` if the regex pattern matches anywhere in `value`. An invalid regex is a template error (`template error: search: invalid regex ...`) |
+| `contains` | `{{ value \| contains('substring') }}` | True if `substring` is found in `value`. Written out, the result is `true` or `false` |
+| `search` | `{{ value \| search('regex') }}` | True if the regex pattern matches anywhere in `value`. An invalid regex is a template error (`template error: search: invalid regex ...`) |
 
 ## Prompt Handling (`get_prompt`)
 
@@ -748,6 +758,13 @@ For plugin code, `autobot.registry` is now always the module. The package used t
 That round also changed one thing about captured output: a prompt wait discards carriage returns, NULs and BELs at the start of the unread output, so that `^` in a prompt regex anchors a prompt to its line (see [Prompt Handling](#prompt-handling-get_prompt)). A line of output that begins with one of them, or has one right after an escape sequence, used to be captured with it and no longer is (`\rtwo\rthree` is now `two\rthree`), which shows in `register`, `session.before` and what `assert` and `errors` see. Output without such a character is captured exactly as before, and the operator's echo on stdout is unchanged. A prompt regex anchored with `^` that used to time out behind a stray `\r` now matches.
 
 It also accepts one thing that the models used to reject: `return: 1.0` (a number with a zero fraction), which the schema always accepted.
+
+**A boolean that a template writes out is `true` or `false`** (see [Booleans in output](#booleans-in-output)). `{{ vars.flag }}`, `{{ a == b }}` and `{{ value | contains('x') }}` used to render Python's `True` or `False`. `when` is unaffected, and so are `{% if %}` and comparisons inside an expression. What needs a change is text that goes somewhere the spelling matters:
+- a command or script that passes the value to something that wants Python's spelling, e.g. `cmd: python3 -c "print({{ vars.flag }})"`: write `{{ vars.flag | string }}`, which is still `True`.
+- an `assert`, `after` or `search` pattern, or a comparison in a later step, that looks for `True` or `False` in text an earlier template produced (e.g. `echo {{ vars.flag }}` with `assert: True`).
+- `{{ vars.flag | contains('True') }}` or `search('True')` on a boolean: the filters now look in `true` / `false`.
+
+The messages `unsupported autobot version 'True'` and `invalid duration: True` now say `true`.
 
 **A boolean that a `sendEach` sends is `true` or `false`** (see [`sendEach`](#sendeach)), as YAML writes it. An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`. A device that expects one of those spellings needs the value quoted: `password: 'True'`.
 

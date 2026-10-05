@@ -74,7 +74,7 @@ def test_p2_23_cmd_with_after_keeps_the_values_of_the_match():
     """SPEC "cmd": the first prompt wait of a `cmd` with `after` leaves `session.before` and `session.match` alone."""
     cmd = "echo got-{{ session.match }}-{{ session.before | contains('printf') }}"
     out = run_vars([SLOW_LINE, {"cmd": cmd, "after": "pre[A-Z]+", "register": "out"}])
-    assert out["out"] == "got-preREADY-True"
+    assert out["out"] == "got-preREADY-true"
 
 
 def test_p2_23_cmd_with_after_sends_at_once_at_a_prompt(sent: SentLog):

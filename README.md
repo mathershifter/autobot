@@ -443,6 +443,8 @@ Available context:
 
 A key wins over a mapping method of the same name: after `register: values`, `{{ vars.values }}` is the registered output. `vars.items()` and `vars.get('k', 'default')` work as long as no key is named `items` or `get`.
 
+A boolean is written as YAML writes it: `{{ vars.flag }}`, `{{ a == b }}` and `{{ value | contains('x') }}` render `true` or `false`. Conditions (`when`, `{% if %}`, comparisons) work on the value and are unaffected. A boolean inside a list or mapping written out whole, and a null, are still Python's (`[True, False]`, `None`); use `tojson` for those.
+
 An expression that fails while a template is rendered, such as `{{ 1/0 }}`, is a template error like a syntax error or an undefined variable: `template error: ZeroDivisionError: division by zero`.
 
 ## Error Handling

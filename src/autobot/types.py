@@ -25,8 +25,19 @@ class _Environment(jinja2.Environment):
         return super().getattr(obj, attribute)
 
 
-_jinja_env = _Environment(undefined=jinja2.StrictUndefined)
-_jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
+def text(value: Any) -> str:
+    """A scalar of the script as text: a boolean as YAML writes it, `true` or `false`."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _finalize(value: Any) -> Any:
+    # what `{{ ... }}` puts out: a boolean as YAML writes it. Only the expression's own value: a boolean
+    # inside a list or mapping is written as Python does, and conditions never see this
+    return text(value) if isinstance(value, bool) else value
+
+
+_jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_finalize)
+_jinja_env.filters["contains"] = lambda s, substring: substring in text(s)
 
 
 class EnvError(ValueError):
@@ -35,7 +46,7 @@ class EnvError(ValueError):
 
 def _search(s: Any, pattern: str) -> bool:
     try:
-        return bool(re.search(pattern, str(s)))
+        return bool(re.search(pattern, text(s)))
     except re.error as e:
         raise ValueError(f"template error: search: invalid regex {pattern!r}: {e}") from e
 
@@ -60,12 +71,7 @@ def parse_duration(value: Any) -> float:
         if not math.isfinite(seconds):
             raise ValueError(f"invalid duration: {value} (not a finite number)")
         return seconds
-    raise ValueError(f"invalid duration: {value}")
-
-
-def text(value: Any) -> str:
-    """A scalar of the script as text: a boolean as YAML writes it, `true` or `false`."""
-    return str(value).lower() if isinstance(value, bool) else str(value)
+    raise ValueError(f"invalid duration: {text(value)}")
 
 
 def reject_null(value: Any) -> Any:

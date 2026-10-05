@@ -21,13 +21,13 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 23 | 0 | 0 | 23 | 1 |
 | P2 | `cmd` forms, embedded scripts | 23 | 0 | 0 | 23 | 1 |
-| P3 | Common step properties, templating context | 21 | 0 | 0 | 21 | 0 |
+| P3 | Common step properties, templating context | 22 | 0 | 0 | 22 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 38 | 0 | 0 | 38 | 7 |
 | P5 | attach / block lifecycles, env | 56 | 0 | 0 | 56 | 0 |
 | P6 | model / schema / example / CLI parity | 76 | 0 | 0 | 76 | 0 |
 | P7 | registry and plugins | 25 | 0 | 0 | 25 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **283** | **0** | **0** | **283** | **9** |
+| **Total** | | **284** | **0** | **0** | **284** | **9** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-05, branch `fix/open-items`, which added five rows: P2-23, P5-56, P6-75, P6-76, P6-77, and one slow test, in P2-23; before it 2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -211,8 +211,8 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-03 | `test_when_falsy_values` (parametrized) | 279, 292 | F1, F4 | `""`, `"false"`, `"False"`, `"0"`, `"none"`, `"{{ '' }}"`, `"false\n"` (Jinja drops a single trailing newline) → step skipped | pass |
 | P3-04 | `test_when_truthy_values` (parametrized) | 292 | F1, F4 | `"true"`, `"True"`, `"1"`, `"yes"`, `"no"`, `"{{ 1 == 1 }}"` → step runs | pass |
 | P3-05 | `test_when_none_value` / `test_when_surrounding_whitespace` (2 tests) | 292 | F1, `vars: {v: null}` | `when: "{{ vars.v }}"` (renders `None`) → skipped; `when: " false "` → skipped (also `FALSE`, `NONE`); `"no"`/`"off"` still run | pass (was todo #6) (x2) |
-| P3-06 | `test_filter_contains` | 333 | `Runner(...).render` (no spawn) | `{{ 'abc' \| contains('b') }}` → `True`; `'x'` → `False`; non-string value is coerced | pass |
-| P3-07 | `test_filter_search` | 334 | as P3-06 | `{{ 'v1.2' \| search('\\d+\\.\\d+') }}` → `True`; no match → `False` | pass |
+| P3-06 | `test_filter_contains` | 333 | `Runner(...).render` (no spawn) | `{{ 'abc' \| contains('b') }}` → `true`; `'x'` → `false` (`True` / `False` until follow-up G.2); non-string value is coerced | pass |
+| P3-07 | `test_filter_search` | 334 | as P3-06 | `{{ 'v1.2' \| search('\\d+\\.\\d+') }}` → `true`; no match → `false` (`True` / `False` until follow-up G.2) | pass |
 | P3-08 | `test_range_global` | 327 | F1 | `cmd: "echo {{ range(3) \| list \| length }}"` registers `3` | pass |
 | P3-09 | `test_after_sets_session_before_and_match` | 278, 324-325 | F1 `attached_runner` | `line: "printf 'Version: %s\\n' V42"`; `{cmd: "true", after: "V\\d+"}` → `ctx["match"] == "V42"`, `"Version: " in` the `before` seen by a `when` on the same step (`contains('Version')` runs) | pass |
 | P3-10 | `test_template_context_env_vars_args` | 319-323 | F1, `env: {A: a}`, `vars: {b: b}`, cli args `{c: c}` | `echo {{ env.A }}-{{ vars.b }}-{{ args.c }}` registers `a-b-c` | pass |
@@ -228,7 +228,9 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-20 | `test_p3_20_after_rendering_to_an_invalid_regex_is_a_script_error` | Common Step Properties (`after`) | F1, F4; `after: "x{{ '(' }}"` | `ValueError` `after: invalid regex 'x(': ...`; no command sent | pass (review finding 9) |
 | P3-21 | `test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error` (parametrized: `{{ vars.p }}` with `p: ""`, `{{ '' }}`, a comment, an `if` block), `test_p3_21_empty_rendered_after_aborts_every_step_type` (parametrized: `line`, `return`, `control`, `call`, `block`), `test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs`, `test_p3_21_after_rendering_to_a_pattern_still_waits` | Common Step Properties (`after`) | F1, F4, F5; `cmd: echo hi`, `register: out`, `vars.out` preset | `ValueError` exactly `after: the pattern rendered to an empty regex, which matches at once`; nothing sent, no `expect` and no `get_prompt`, `vars.out` unchanged (the wait was skipped, the `cmd` sent before the first prompt and `register` stored `''`); the same for every step type, before `when` is rendered; `ignore_error: true` doesn't swallow it and the attach breakout runs; after `line: "printf 'pre%s\\n' READY"`, with `p: preREADY` the step waits and registers `hi` (it was `p: 'PROMPT\$ '` until open item A: an `after` that takes the prompt now makes the step wait 5 s for another one, see P2-23) | pass (audit 2, finding 12) (x4) |
 
-Totals: 21 pass (P3-01..21).
+| P3-22 | `test_p3_22_boolean_output_is_yaml_spelling` (parametrized, 8 templates), `test_p3_22_only_a_boolean_value_of_an_expression_changes` (parametrized, 7 templates), `test_p3_22_conditions_use_the_value_not_the_text`, `test_p3_22_when_gate_is_unchanged` (parametrized: `true`, `false`), `test_p3_22_boolean_reaches_the_device_as_yaml`, `test_p3_22_duration_error_names_a_boolean_as_yaml_writes_it` (parametrized: `true`, `false`; in `test_types.py`); expectations changed in P2-23, P3-06, P3-07, P3-19, P5-27, P6-72 (one case added) and P8-19 | Jinja2 Templating (Booleans in output) | `Runner(...).render` with `vars` holding booleans, a null, a string `True`, a list and a mapping; F1, F4 for the `when` and device tests | `{{ vars.on }}`, `{{ 1 == 1 }}`, `{{ true }}`, `is defined`, `in`, `contains`, `search`, a conditional expression → `true` / `false`; a string, a number, `\| string`, `~`, `format`, `join`, a list or mapping written whole (`[True, False, None]`), `tojson`, a null (`None`) and plain text are as before; `{% if %}`, `== false`, `is sameas true`, `\| int`, `select` see the value; `when` runs or skips the same three steps; a `cmd`, its `assert`, an `env` default, a `line` and a prompt's `send` carry `true` / `false`; `invalid duration: true` | pass (follow-up G.2) (x6) |
+
+Totals: 22 pass (P3-01..22).
 
 ## P4: `get_prompt`, prompts and credential cycling
 
@@ -526,13 +528,13 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 |----------|-----:|------:|-----:|-------|
 | P1 | 23 | 0 | 1 | `test_cmd_semantics.py` |
 | P2 | 23 | 0 | 1 | `test_cmd_forms.py`, `test_embedded_script.py` |
-| P3 | 21 | 0 | 0 | `test_common_props.py` |
+| P3 | 22 | 0 | 0 | `test_common_props.py` |
 | P4 | 38 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 56 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 76 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 25 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **283** | **0** | **9** | |
+| **Total** | **284** | **0** | **9** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -618,6 +620,7 @@ The same branch then takes the owner's decision on boolean spelling (G), the fol
 | Item | Rows | Before the change |
 |------|------|-------------------|
 | G.1: a `sendEach` sent a boolean as `True` / `False` | P4-22 and P4-39, expectations changed | both fail: `PASSWORD=True` is sent and not accepted, and `['True'] != ['true']` |
+| G.2: a boolean that a template wrote out, or that an error message showed, was `True` / `False` | P3-22; expectations changed in P2-23, P3-06, P3-07, P3-19, P5-27, P6-72 and P8-19 | 20 fail: the eight spelling templates, the conditions test (its last lines), the device test, both duration messages, the two `autobot` cases (`'True'`, `'False'`) and the six changed tests. The seven only-a-boolean templates and both `when` cases pass before and after: they pin what must not change |
 
 ### Deviations from the plan
 
