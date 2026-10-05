@@ -30,7 +30,7 @@ autobot schema
 
 `autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
 
-A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, or it reuses another plugin's key; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
+A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
 
 Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
 
@@ -501,14 +501,14 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields, a class of the plugin's own: not a built-in step's model or another plugin's) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`.
+
+`ctx.render(template)` renders text that is sent or stored, where an expression that gives a boolean is a template error (see [Templating](#templating)). A plugin that renders a condition, to read the result as a yes or no, calls `ctx.render(template, condition=True)`, as the runner does for `when`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 
 When a plugin sends text itself, it tells the session what kind of send it is:
 
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
-
-A plugin's own `ctx.session.sendline(text)` counts as a command, so the wait after it doesn't press Return; a plugin that sends something raw passes `solicit=True`.
 
 ## Schema
 
