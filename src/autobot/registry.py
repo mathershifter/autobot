@@ -31,7 +31,8 @@ class StepRegistry:
             self._check_unique(executor, origin)
             self._origins[executor.key] = origin
         self._executors[executor.key] = executor
-        self._model_keys[executor.model] = executor.key
+        # two plugins may share a model: their steps are dispatched by key, so the first key keeps the entry
+        self._model_keys.setdefault(executor.model, executor.key)
         if builtin:
             self._builtins.add(executor.key)
 
@@ -50,23 +51,18 @@ class StepRegistry:
                 f"plugin {who}: step key {key!r} is reserved (the schema's pluginStep definition "
                 "and the plugin step type in validation errors use the name)"
             )
-        # a step is dispatched by its model's class: a model another key has would send that key's steps here
+        # a built-in step is dispatched by its model's class: a plugin with that model would take its steps.
+        # A plugin step is dispatched by its key, so plugins may share a model with each other
         owner = self._model_keys.get(model)
         if model is PluginStep:
             raise PluginError(
                 f"plugin {who}, step key {key!r}: model PluginStep is the runner's own model of every plugin step; "
                 "a plugin needs a model of its own"
             )
-        if owner is not None and owner != key:
-            whose = (
-                f"the built-in step {owner!r}"
-                if owner in self._builtins
-                else f"step key {owner!r}, registered by plugin "
-                f"{_describe(self._executors[owner], self._origins.get(owner, ''))}"
-            )
+        if owner in self._builtins:
             raise PluginError(
-                f"plugin {who}, step key {key!r}: model {model.__name__} is already the model of {whose}; "
-                "a plugin needs a model of its own"
+                f"plugin {who}, step key {key!r}: model {model.__name__} is already the model of "
+                f"the built-in step {owner!r}; a plugin needs a model of its own"
             )
         clashes = [
             name if name == field else f"{name} (field {field!r})"
