@@ -219,6 +219,13 @@ The attach lifecycle:
 
 Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`.
 
+Closing the session (step 6, and the close after a failed spawn wait) closes the process's pty and terminates a process that is still running. It can fail: pexpect raises `ExceptionPexpect` (`Could not terminate the child.`) for a process that survives `SIGHUP`, `SIGINT` and `SIGKILL`. Then:
+- The session forgets the process either way. It isn't closed a second time, and nothing more can be sent to it.
+- If an error is already propagating (from the spawn wait, `attach.script` or `script`), the close failure never replaces it. It is logged to stderr, `>> close error (ExceptionPexpect): Could not terminate the child.`, and the original error propagates, as with a breakout error.
+- If nothing else failed, the close failure is the run's error: it propagates, and the CLI prints its traceback and exits with status 1. The script's steps all ran, but a process that couldn't be terminated may still hold the line, so the run doesn't report success.
+
+A `KeyboardInterrupt` during the close is not held back in either case.
+
 If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI prints a traceback and exits with status 1). The spawn wait fails when:
 - `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`, with the rendered `spawn` command). The process is still running until it is closed.
 - the process exits before any output: `EOFError` (`connection closed before any output from '<spawn>'`, with the rendered `spawn` command). Once the process is closed, its exit status or the signal that ended it is appended: ` (exit status <n>)` or ` (killed by <SIGNAL>)`, e.g. ` (killed by SIGKILL)`. `SIGHUP` isn't reported, because closing the pty sends it as well; a process ended by it gets no suffix.

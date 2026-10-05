@@ -238,8 +238,10 @@ class Runner:
                         self.run_steps(attach.breakout.script)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
                         console.print(f">> breakout error ({type(e).__name__}): {e}")
-        finally:
-            self._session.detach()
+        except BaseException:
+            self._session.detach(failing=True)  # a close that fails must not replace this error
+            raise
+        self._session.detach()
 
     def run_steps(self, steps: list[Step]):
         for step in steps:

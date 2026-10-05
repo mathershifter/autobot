@@ -164,10 +164,10 @@ def children(monkeypatch: pytest.MonkeyPatch) -> list[pexpect.spawn]:
     seen: list[pexpect.spawn] = []
     orig = Session.detach
 
-    def detach(self):
+    def detach(self, *args, **kwargs):
         if self._cld is not None:
             seen.append(self._cld)
-        orig(self)
+        orig(self, *args, **kwargs)
 
     monkeypatch.setattr(Session, "detach", detach)
     return seen

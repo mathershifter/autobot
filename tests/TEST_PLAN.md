@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 23 | 0 | 0 | 23 | 1 |
 | P3 | Common step properties, templating context | 21 | 0 | 0 | 21 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 38 | 0 | 0 | 38 | 7 |
-| P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
+| P5 | attach / block lifecycles, env | 56 | 0 | 0 | 56 | 0 |
 | P6 | model / schema / example / CLI parity | 75 | 0 | 0 | 75 | 0 |
 | P7 | registry and plugins | 25 | 0 | 0 | 25 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **281** | **0** | **0** | **281** | **9** |
+| **Total** | | **282** | **0** | **0** | **282** | **9** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -345,8 +345,9 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-53 | `test_p5_53_spawn_rendering_empty_stops_before_prepare` (parametrized: empty, blank, newline) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; the marker doesn't exist; no `attach` in the timeline | pass (review finding 9) |
 | P5-54 | `test_p5_54_spawn_rendering_to_quotes_stops_before_prepare` (parametrized: `''`, `""`, a backslash, a lone `'`, `''""`, `'' ''`, `'' ls`, `"" --version`), `test_p5_54_quoted_command_still_spawns` (parametrized: `'true'`, `"true"`, `tr''ue`, `\true`, `'/bin/true' ''`) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` exactly `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; no marker; no `attach` call (the first five raised `IndexError: list index out of range` from `pexpect.spawn`, the others `ExceptionPexpect`, all after `prepare`). A quoted or escaped command still reaches the spawn wait: `EOFError` `connection closed before any output from ... (exit status 0)` | pass (audit 2, finding 6) (x2) |
 | P5-55 | `test_p5_55_prepare_temp_file_removed_when_the_write_fails` (parametrized: `\ud800`, `\udcff`), `test_p5_55_run_prepare_removes_the_file_when_the_write_fails`, `test_p5_55_prepare_temp_file_removed_when_chmod_fails` | attach `prepare` | F5, `prep_tmp`; `prepare: "#!/bin/sh\necho {{ args.x }}\n"` with a lone surrogate in `args.x`; `Runner._run_prepare("echo \ud800")`; `os.chmod` patched to raise | `UnicodeEncodeError` propagates, the temp dir is empty (it held `_autobot_*.sh`), no `attach` call and no `>> prepare: done`; a failing `chmod` leaves nothing either (it passed before the fix too) | pass (audit 2, finding 8) (x3) |
+| P5-56 | `test_p5_56_close_failure_does_not_replace_the_script_error` (parametrized: a step failure, a timeout, a template error, a step failure with a failing breakout), `test_p5_56_close_failure_does_not_replace_a_spawn_wait_error` (parametrized: `attach.timeout`, the process exits before any output), `test_p5_56_close_failure_alone_is_the_runs_error`, `test_p5_56_detach_forgets_the_child_when_close_fails`, `test_p5_56_interrupt_during_close_is_not_swallowed`, `test_p5_56_echo_is_flushed_when_close_fails` | attach (closing the session) | F1; `unkillable`: `pexpect.spawn.close` closes the child and then raises `ExceptionPexpect("Could not terminate the child.")`, as it does for a child that survives SIGKILL | the script's own error is what `run()` raises (`command returned exit code 1`, the `after` timeout, `template error: ...`, the spawn-wait `TimeoutError` and `EOFError` with its exit status), stderr has `>> close error (ExceptionPexpect): Could not terminate the child.`, and `session._cld` and `_echo` are `None`; with no other error `run()` raises the `ExceptionPexpect`, logs no close error, and a second `detach()` closes nothing; `detach()` raises and `detach(failing=True)` logs, both leaving the session `not attached`; a `KeyboardInterrupt` from the close propagates; the echo's held text is written out | pass (open item D) (x6) |
 
-Totals: 55 pass (P5-01..55).
+Totals: 56 pass (P5-01..56).
 
 ## P6: model, schema, example and CLI parity
 
@@ -526,11 +527,11 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P2 | 23 | 0 | 1 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 21 | 0 | 0 | `test_common_props.py` |
 | P4 | 38 | 0 | 7 | `test_get_prompt.py` |
-| P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P5 | 56 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 75 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 25 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **281** | **0** | **9** | |
+| **Total** | **282** | **0** | **9** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -606,6 +607,7 @@ Branch `fix/open-items` works through six items left open after PR #46, lettered
 | A: a `cmd` with `after` skipped its first prompt wait | P2-23; P2-04 inverted, one case of P3-21 changed | 4 of the 8 P2-23 tests fail: both `waits_for_the_pending_prompt` cases and `keeps_the_values_of_the_match` (`'' == 'hi'`, `'' == 'got-preREADY-True'`: the line's prompt was taken for the command's), and `takes_the_prompt` (`['echo hi', probe]`, no `""`); the new P2-04 fails (`sendline` right after `expect`). The at-a-prompt test and the three raw-send cases pass before and after: they pin what the fix must not change |
 | B: the schema accepted a non-string key in `env`, `vars`, `fn`, `attach.env` and a plugin step | P6-75; four cases added to P7-09 | with the old schema 31 of the 140 P6-75 tests fail: the 24 free-form cases and the six plugin-step cases are `(False, True)`, and the schema check finds no `propertyNames`; the two `extra="allow"` cases added to P7-09 fail the same way. The 102 fixed-mapping cases, the six nested-`vars` cases, the CLI test and the other two P7-09 cases pass before and after: the models always rejected these, and a closed object rejects the key as an additional property |
 | C: the SONiC example's prompt regex wasn't anchored | P6-76; samples added to P6-74 and the prompt samples | with the old example 33 of the 130 added tests fail: the six texts with `user@host:` inside a line in each of the four contexts (24), seven of the eight behind-text cases (the unanchored regex found the prompt), the `^` check and the SPEC/README check. The 64 engine cases, the `fooadmin` case, the five look-alike texts and the 12 sample cases pass before and after. It can't be run against a real device |
+| D: a close that fails in `finally` replaced the script's error | P5-56; the `children` fixture passes `detach`'s arguments on | all 10 tests fail on the code before the fix: the six replace cases raise `ExceptionPexpect: Could not terminate the child.` instead of the script's or the spawn wait's error; in the alone, forgets and interrupt tests `session._cld` is still the child after the failed close; `detach` has no `failing` argument (`TypeError`), which is also what fails the echo test. An unkillable child was never reproduced for real: the failure is injected at `pexpect.spawn.close` |
 
 ### Deviations from the plan
 

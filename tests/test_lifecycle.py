@@ -228,6 +228,134 @@ def test_attach_original_error_preserved_when_breakout_fails(children):
     assert not children[0].isalive()
 
 
+# -- P5-56: a close that fails (attach lifecycle step 6) -----------------------
+
+CLOSE_FAILED = "Could not terminate the child."
+CLOSE_LOG = f">> close error (ExceptionPexpect): {CLOSE_FAILED}"
+
+
+@pytest.fixture
+def unkillable(monkeypatch: pytest.MonkeyPatch) -> list[pexpect.spawn]:
+    """`pexpect.spawn.close` raises what it raises for a child that survives SIGHUP, SIGINT and SIGKILL.
+
+    The child is really closed first, so the test leaves nothing behind.
+    """
+    closed: list[pexpect.spawn] = []
+    orig = pexpect.spawn.close
+
+    def close(self, force=True):
+        orig(self, force)
+        closed.append(self)
+        raise pexpect.ExceptionPexpect(CLOSE_FAILED)
+
+    monkeypatch.setattr(pexpect.spawn, "close", close)
+    return closed
+
+
+def detached(r: Runner) -> bool:
+    return r.session._cld is None and r.session._echo is None
+
+
+@pytest.mark.parametrize(
+    ("script", "breakout", "error", "message"),
+    [
+        ([{"cmd": "false"}], None, RuntimeError, r"^command returned exit code 1$"),
+        ([STUCK], None, TimeoutError, r"^timed out after 1(\.0)?s waiting for the after pattern 'NEVER_APPEARS'$"),
+        ([{"cmd": "echo {{ vars.nope }}"}], None, ValueError, r"^template error: "),
+        ([{"cmd": "false"}], [STUCK], RuntimeError, r"^command returned exit code 1$"),
+    ],
+    ids=["step-failure", "timeout", "template-error", "with-failing-breakout"],
+)
+def test_p5_56_close_failure_does_not_replace_the_script_error(
+    unkillable: list, capsys, script: list, breakout: list | None, error: type[Exception], message: str
+):
+    """SPEC "attach": a session that can't be closed never replaces the error the script raised.
+
+    `detach` ran in a `finally`, so pexpect's `Could not terminate the child.` took the place of the
+    script's own error, which was left only as its `__context__`.
+    """
+    r = top_runner(script, breakout=breakout)
+    with pytest.raises(error, match=message):
+        r.run()
+    assert len(unkillable) == 1
+    assert detached(r)
+    assert CLOSE_LOG in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("spawn", "error", "message"),
+    [
+        ("sleep 30", TimeoutError, r"^timed out after 0\.5s waiting for the first output from 'sleep 30' \(attach\.timeout\)$"),
+        ("true", EOFError, r"^connection closed before any output from 'true' \(exit status 0\)$"),
+    ],
+    ids=["timeout", "eof"],
+)
+def test_p5_56_close_failure_does_not_replace_a_spawn_wait_error(
+    unkillable: list, capsys, spawn: str, error: type[Exception], message: str
+):
+    """The same for the close that follows a failed spawn wait, inside `Session.attach`."""
+    r = top_runner([], spawn=spawn, timeout=0.5)
+    with pytest.raises(error, match=message):
+        r.run()
+    assert len(unkillable) == 1  # closed once: the runner's own detach finds nothing left
+    assert detached(r)
+    assert CLOSE_LOG in capsys.readouterr().err
+
+
+def test_p5_56_close_failure_alone_is_the_runs_error(unkillable: list, capsys):
+    """With no other error, the close failure is raised, not swallowed, and the session still forgets the child."""
+    r = top_runner([{"cmd": "true"}], breakout=[{"line": "exit"}])
+    with pytest.raises(pexpect.ExceptionPexpect, match=f"^{CLOSE_FAILED}$"):
+        r.run()
+    assert len(unkillable) == 1
+    assert detached(r)
+    assert ">> close error" not in capsys.readouterr().err
+    r.session.detach()  # nothing left to close: no second attempt, no error
+    assert len(unkillable) == 1
+
+
+def test_p5_56_detach_forgets_the_child_when_close_fails(unkillable: list, capsys):
+    """`Session.detach`: the state is cleared whether or not the close fails, and `failing` only logs it."""
+    for failing in (False, True):
+        s = Session([])
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        if failing:
+            s.detach(failing=True)
+        else:
+            with pytest.raises(pexpect.ExceptionPexpect, match=f"^{CLOSE_FAILED}$"):
+                s.detach()
+        assert s._cld is None and s._echo is None
+        assert (CLOSE_LOG in capsys.readouterr().err) is failing
+        with pytest.raises(RuntimeError, match="^not attached$"):
+            s.sendline("x")
+    assert len(unkillable) == 2
+
+
+def test_p5_56_interrupt_during_close_is_not_swallowed(monkeypatch: pytest.MonkeyPatch):
+    """A `KeyboardInterrupt` while closing propagates even when another error is in flight."""
+    orig = pexpect.spawn.close
+
+    def close(self, force=True):
+        orig(self, force)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pexpect.spawn, "close", close)
+    r = top_runner([{"cmd": "false"}])
+    with pytest.raises(KeyboardInterrupt):
+        r.run()
+    assert detached(r)
+
+
+def test_p5_56_echo_is_flushed_when_close_fails(unkillable: list, capsys):
+    """What the operator echo still holds is written out even though the close fails."""
+    s = Session([])
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
+    assert s._echo is not None
+    s._echo.write("tail\x1b[")
+    s.detach(failing=True)
+    assert capsys.readouterr().out.endswith("tail\x1b[")
+
+
 # -- P5: spawn failure (attach lifecycle step 2) ------------------------------
 
 # case -> (spawn, error, message); the spawn wait fails before any output

@@ -7,8 +7,12 @@ import time
 from collections.abc import Callable
 
 import pexpect
+from rich.console import Console
 
 from .types import ANSI_ESCAPE_RE
+
+# markup off: log lines echo errors that may look like [tags]
+console = Console(stderr=True, markup=False, soft_wrap=True)
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
@@ -235,10 +239,10 @@ class Session:
                 closed=f"before any output from '{spawn}'",
             )
         except EOFError as e:
-            self.detach()  # reaps the child, so its exit status is known
+            self.detach(failing=True)  # reaps the child, so its exit status is known
             raise EOFError(f"{e}{_exit_note(cld)}") from e.__cause__
         except BaseException:
-            self.detach()
+            self.detach(failing=True)
             raise
 
     def _expect(self, patterns, timeout: float, what: str, closed: str | None = None) -> int:
@@ -251,15 +255,25 @@ class Session:
         except pexpect.EOF as e:
             raise EOFError(f"connection closed {closed or f'while waiting for {what}'}") from e
 
-    def detach(self):
-        if self._cld:
+    def detach(self, failing: bool = False):
+        """Close the child and forget it, whether or not the close works.
+
+        A close that fails raises, unless `failing`: an error is already on its way, so this one is only logged.
+        """
+        cld, self._cld = self._cld, None
+        echo, self._echo = self._echo, None
+        if not cld:
+            return
+        try:
             try:
-                self._cld.close()
+                cld.close()
             finally:
-                if self._echo:
-                    self._echo.close()
-                    self._echo = None
-            self._cld = None
+                if echo:
+                    echo.close()
+        except Exception as e:  # noqa: BLE001 - must not replace the error that is propagating
+            if not failing:
+                raise
+            console.print(f">> close error ({type(e).__name__}): {e}")
 
     def get_prompt(
         self,
