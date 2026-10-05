@@ -230,7 +230,8 @@ class Runner:
 
     def run(self):
         attach = self._config.attach
-        spawn = self.render(attach.spawn)
+        # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
+        spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
             raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)

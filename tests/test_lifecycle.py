@@ -1175,6 +1175,43 @@ def test_p5_54_quoted_command_still_spawns(value: str):
         runner.run()
 
 
+@pytest.mark.parametrize(
+    ("spawn", "args"),
+    [
+        (f" {BASH}", {}),
+        (f"\t \n{BASH}", {}),
+        ("{{ args.wrapper | default('') }} " + BASH, {}),
+        ("{{ args.wrapper | default('') }} bash --norc --noprofile -i", {"wrapper": "env"}),
+    ],
+    ids=["space", "tab-newline", "empty-wrapper", "wrapper"],
+)
+def test_p5_57_spawn_with_leading_whitespace_runs(timeline: Timeline, spawn: str, args: dict[str, str]):
+    """SPEC "attach": leading whitespace is removed from the command line before it is spawned.
+
+    `pexpect.spawn(' bash')` looks up an empty command name (`The command was not found or was not
+    executable`), and a wrapper template that renders to nothing leaves exactly that space.
+    """
+    r = run_script([{"cmd": "echo hi", "register": "out"}], spawn=spawn, args=args)
+    assert r.config.vars["out"] == "hi"
+    [(_, call, _)] = [c for c in timeline.calls if c[0] == "attach"]
+    assert call[0] == ("env " if args else "") + BASH
+
+
+def test_p5_57_messages_name_the_command_without_the_whitespace():
+    """The spawn-wait errors show the command line that was spawned."""
+    with pytest.raises(EOFError, match=r"^connection closed before any output from 'true' \(exit status 0\)$"):
+        make_runner([], spawn="  true").run()
+
+
+@pytest.mark.parametrize("value", [" ''", "  '' ls", " \\"])
+def test_p5_57_rendered_quotes_behind_whitespace_still_stop_the_run(timeline: Timeline, value: str):
+    """A rendered `spawn` that is whitespace and then quotes still names no command."""
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+        runner.run()
+    assert "attach" not in timeline.names()
+
+
 def test_p5_24_attach_timeout_default_and_spawn_templated(
     timeline: Timeline, monkeypatch: pytest.MonkeyPatch
 ):

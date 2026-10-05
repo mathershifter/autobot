@@ -84,8 +84,12 @@ NOT_BLANK = "[^%s]" % "".join(
 
 
 def names_command(spawn: str) -> bool:
-    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none."""
-    words = pexpect.split_command_line(spawn)
+    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none.
+
+    Leading whitespace doesn't count: the runner strips it before it spawns (pexpect would take it for an
+    empty first word).
+    """
+    words = pexpect.split_command_line(spawn.lstrip())
     return bool(words and words[0])
 
 

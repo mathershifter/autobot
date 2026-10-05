@@ -1169,3 +1169,43 @@ def test_p6_78_boolean_flags_and_data_are_still_booleans(both_validate: Callable
     assert both_validate(d(prompts=[{"name": "p", "expect": "x", "return": value}])) == (True, True)
     assert both_validate(d(vars={"debug": value, "flags": [value], "site": {"up": value}})) == (True, True)
     assert Config.model_validate(d(vars={"debug": value})).vars["debug"] is value
+
+
+# -- P6-79: leading whitespace in spawn -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [" ssh host", "  ssh host", "\tssh host", "\n  ssh host\n", " ssh host", " 'ssh' host", " {{ args.cmd }}", " s''sh"],
+    ids=repr,
+)
+def test_p6_79_spawn_with_leading_whitespace_accepted(both_validate: Callable, value: str):
+    """SPEC "attach": whitespace before the command is not part of it; both accept such a `spawn`.
+
+    The models used to reject `" ssh host"` with the message about quotes: pexpect splits it into
+    `['', 'ssh', 'host']`, an empty first word.
+    """
+    assert both_validate(d(attach={"spawn": value})) == (True, True)
+    assert models.names_command(value)
+
+
+@pytest.mark.parametrize("value", [" ''", "  '' ls", '\t"" --version', " \\", "\n''\n"], ids=repr)
+def test_p6_79_quotes_behind_leading_whitespace_still_rejected(both_validate: Callable, value: str):
+    """What is left after the whitespace must still name a command; the message shows the value as written."""
+    doc = d(attach={"spawn": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("attach", "spawn"), "empty_command")
+    assert err["msg"] == (
+        f"spawn must name a command: the first word of {value!r} is empty "
+        "(quotes or a backslash with nothing in them)"
+    )
+
+
+def test_p6_79_names_command_is_what_pexpect_spawns_once_stripped():
+    """`names_command` is about the command line the runner spawns: the value without its leading whitespace."""
+    import pexpect
+
+    for value in [" ssh host", "\tssh", " ''", "  '' ls", " ", "", " 'a b' c", "ssh "]:
+        words = pexpect.split_command_line(value.lstrip())
+        assert models.names_command(value) == bool(words and words[0]), value
