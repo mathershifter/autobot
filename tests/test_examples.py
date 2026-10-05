@@ -1,4 +1,5 @@
-"""P6-19/20: every example validates against the models and the schema, and its shell prompt regexes read whole prompts."""
+"""P6-19/20, P6-74: every example validates against the models and the schema, and its shell prompt regexes read whole
+prompts and nothing else."""
 
 from __future__ import annotations
 
@@ -51,8 +52,58 @@ PROMPT_SAMPLES = {
         "switch(config-if-Et1/1)# ",
         "switch(config-s-sess)(s1)# ",
         "[admin@switch ~]$ ",
+        "[admin@switch ~]# ",
+        "[root@lab-sw1.example.net /var/log]# ",
         "bash-4.2# ",
+        "bash-5.1# ",
+        "bash-5.1$ ",
         "-bash-4.2$ ",
+        "-bash-4.2# ",
+        "bash-5.12$ ",
+        "bash$ ",
+    ],
+}
+
+# P6-74: text that ends a read with a prompt character and isn't a prompt
+NOT_PROMPTS = {
+    "sonic.autobot.yaml": [
+        "disk usage 5 > ",
+        "price in $",
+        "! comment #",
+        "<html>",
+        "$ ",
+        "# ",
+        "admin@sonic",
+    ],
+    "eos-bootstrap.autobot.yaml": [
+        # the four of the audit: every part of the old bash regex was optional
+        "disk usage 5 > ",
+        "price in $",
+        "! comment #",
+        "<html>",
+        # the bare prompt characters it matched as well
+        "$ ",
+        "# ",
+        "> ",
+        "$",
+        "#",
+        ">",
+        " # ",
+        "-$ ",
+        # things that only look like the bash prompts (a line of the hostname characters and '>' or '#'
+        # is an EOS prompt, so 'bash> ' or '/bin/bash# ' on a line of its own still is one)
+        "-4.2$ ",
+        "bash-5.1 $ ",
+        "/bin/bash$ ",
+        "bash-5.1 # ",
+        "which bash$ ",
+        "see [admin@switch ~]$ ",
+        "[not a prompt]$ ",
+        "[admin@switch]$ ",
+        "Total: 5 items> ",
+        "<rpc-reply>",
+        "x = a>",
+        "100% #",
     ],
 }
 
@@ -81,7 +132,7 @@ def read_prompt(patterns: list[str], text: str) -> tuple[str, str] | None:
 
 
 def test_prompt_samples_cover_examples():
-    assert sorted(PROMPT_SAMPLES) == sorted(p.name for p in EXAMPLES)
+    assert sorted(PROMPT_SAMPLES) == sorted(NOT_PROMPTS) == sorted(p.name for p in EXAMPLES)
 
 
 @pytest.mark.parametrize("before", ["", "hello\r\n", "\x1b[?2004l\rhello\r\n"], ids=["bare", "output", "ansi"])
@@ -100,6 +151,44 @@ def test_example_prompt_regex_ends_at_prompt_char(name: str, prompt: str, before
     assert prompt.endswith(match)
 
 
+@pytest.mark.parametrize("before", ["", "hello\r\n", "\x1b[?2004l\rhello\r\n", "show version\r\n\r\n"])
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [(n, t) for n, ts in NOT_PROMPTS.items() for t in ts],
+    ids=repr,
+)
+def test_p6_74_example_prompt_regex_ignores_output_ending_in_a_prompt_char(name: str, text: str, before: str):
+    """A read that ends in `>`, `#` or `$` isn't a prompt unless the line is one.
+
+    The EOS example's second regex was all optional parts and a prompt character, so it matched
+    `disk usage 5 > `, `price in $`, `! comment #` and `<html>`: the engine took output for a
+    shell prompt and sent the next command into a command that was still running.
+    """
+    assert read_prompt(shell_regexes(name), before + text) is None
+
+
+@pytest.mark.parametrize("lead", ["\r", "\x00", "\x07", "\r\x00\x00"], ids=["cr", "nul", "bel", "cr-nul-nul"])
+@pytest.mark.parametrize("prompt", PROMPT_SAMPLES["eos-bootstrap.autobot.yaml"], ids=repr)
+def test_p6_74_eos_prompt_after_a_control_character_is_still_a_prompt(prompt: str, lead: str):
+    """The line-start check allows control characters before the prompt: a lone CR, NUL padding or a bell of a console server."""
+    found = read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), f"output\r\n{lead}{prompt}")
+    assert found is not None
+    match, leftover = found
+    assert (match, leftover) == (prompt, "")
+
+
+def test_p6_74_eos_regexes_start_at_the_line_and_each_has_a_prompt():
+    """Every shell regex of the EOS example is anchored the same way, and each sample is matched by one of them."""
+    regexes = shell_regexes("eos-bootstrap.autobot.yaml")
+    assert len(regexes) == 3
+    assert all(r.startswith(r"(?<![^\x00-\x1f])") and r.endswith(" ?$") for r in regexes)
+    matched = {i for p in PROMPT_SAMPLES["eos-bootstrap.autobot.yaml"] for i, r in enumerate(regexes) if re.search(r, p)}
+    assert matched == {0, 1, 2}
+    # no regex can match the empty string or a lone prompt character any more
+    for r in regexes:
+        assert not any(re.fullmatch(r, t) for t in ["", "$", "#", ">", "$ ", "# ", "> "])
+
+
 @pytest.mark.parametrize("name", sorted(PROMPT_SAMPLES))
 def test_example_prompt_regex_skips_command_lines(name: str):
     """A line that only starts like a prompt (an echoed command) isn't a prompt."""
@@ -113,6 +202,9 @@ def test_example_prompt_regex_skips_command_lines(name: str):
         ("sonic.autobot.yaml", "admin@sonic:~$ "),
         ("sonic.autobot.yaml", "root@sonic:~# "),
         ("eos-bootstrap.autobot.yaml", "switch(config)# "),
+        ("eos-bootstrap.autobot.yaml", "[admin@switch ~]$ "),
+        ("eos-bootstrap.autobot.yaml", "-bash-4.2$ "),
+        ("eos-bootstrap.autobot.yaml", r"\s-\v\$ "),  # bash's own default: bash-<version>$
     ],
 )
 def test_example_prompt_regex_registers_clean_output(name: str, ps1: str):

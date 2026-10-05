@@ -11,9 +11,18 @@ vars:
 
 prompts:
   - name: cli
+    # Every regex starts at the beginning of a line: (?<![^\x00-\x1f]) means that nothing printable
+    # comes before it on the line (the engine consumes line breaks and escape sequences as they
+    # arrive, so a prompt is normally the first thing in the unread output). Without it, any output
+    # that happens to end a read with '>', '#' or '$' is taken for a prompt. The price: a prompt
+    # printed right after output that has no final newline (printf foo) is not recognized.
     expect:
-      - '[\w+\-\.:\/\[\]]+(?:\([^)\r\n]+\)){,3}(?:>|#) ?$'
-      - '\-?(?:bash)?(?:\-\d\.\d)? ?[>#\$] ?$'
+      # EOS CLI: 'switch>', 'switch#', 'switch(config-if-Et1)#'
+      - '(?<![^\x00-\x1f])[\w+\-\.:\/\[\]]+(?:\([^)\r\n]+\)){,3}(?:>|#) ?$'
+      # bash without a PS1: 'bash-5.1# ', '-bash-4.2$ '
+      - '(?<![^\x00-\x1f])\-?bash(?:\-\d+\.\d+)?[#\$] ?$'
+      # bash from the EOS CLI: '[admin@switch ~]$ '
+      - '(?<![^\x00-\x1f])\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'
     return: true
 
   - name: login

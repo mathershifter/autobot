@@ -24,10 +24,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 21 | 0 | 0 | 21 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
 | P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
-| P6 | model / schema / example / CLI parity | 72 | 0 | 0 | 72 | 0 |
+| P6 | model / schema / example / CLI parity | 73 | 0 | 0 | 73 | 0 |
 | P7 | registry and plugins | 25 | 0 | 0 | 25 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **276** | **0** | **0** | **276** | **8** |
+| **Total** | | **277** | **0** | **0** | **277** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -134,7 +134,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20 |
 | CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..37, P7-07, P7-09..11 |
 | Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..19 |
-| Examples | none | P6-19/20 |
+| Examples | none | P6-19/20, P6-74 |
 
 ## P1: `cmd` success semantics
 
@@ -426,8 +426,9 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-71 | `test_p6_71_spawn_of_quotes_or_a_backslash_rejected_on_load` (parametrized: the P5-54 values, a lone `"` and `''` between spaces), `test_p6_71_spawn_with_a_command_or_a_template_accepted` (parametrized: quoted and escaped command names, `ssh ''`, templates), `test_p6_71_names_command_is_what_pexpect_spawns` | attach `spawn`, YAML Script Structure | F7 | `(False, True)`: one model error `empty_command` at `attach.spawn` with exactly `spawn must name a command: the first word of <repr> is empty (quotes or a backslash with nothing in them)`; the schema's pattern can't split a command line; a quoted command and a template (also `''{{ args.cmd }}`) → `(True, True)`; `models.names_command` agrees with `pexpect.split_command_line` having a non-empty first word | pass (audit 2, finding 6) (x3) |
 | P6-72 | `test_p6_72_parity_version_of_another_type_is_unsupported` (parametrized: `2026`, `2026.10`, `2026-10-04`, `202610`, `true`, a list, a mapping, `!!binary`, `0`, `''`), `test_p6_72_version_null_and_missing_keep_their_errors` | Top-level fields | F7; values loaded from YAML | `(False, False)`; one model error at `autobot` of type `unsupported_version`, `unsupported autobot version '<value as text>'; expected 2026-10` (a non-string was `string_type`, `Input should be a valid string`); `autobot: null` stays `string_type` and a missing key `missing`; an unquoted `2026-10` is a string and is accepted by both | pass (audit 2, finding 10) (x2) |
 | P6-73 | `test_p6_73_parity_empty_after_rejected` (parametrized: `cmd`, `call`, `block`, `line`, `return`, `control`, and a step in `fn`, `attach.script`, `attach.breakout` and a block's `enter`), `test_p6_73_parity_empty_after_on_a_plugin_step_rejected`, `test_p6_73_schema_after_is_non_empty_everywhere`, `test_p6_73_parity_blank_and_templated_after_accepted` (parametrized: `' '`, `x`, three templates that render to nothing, `^$`) | Common Step Properties (`after`) | F7, F6 `probe` | `after: ''` → `(False, False)`; one model error at the step's `after`, `string_too_short`, exactly `an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing`; the same on a plugin step, and for an unregistered key the schema's `stepCommon` rejects it too; the seven schema definitions with `after` all say `{type: string, minLength: 1}`; a blank string and a template are accepted by both (a template is checked when it is rendered, P3-21) | pass (audit 2, finding 12) (x4) |
+| P6-74 | `test_p6_74_example_prompt_regex_ignores_output_ending_in_a_prompt_char` (parametrized: 24 texts for the EOS example and 7 for the SONiC one × no output before, a line, an escape sequence and a line, a blank line), `test_p6_74_eos_prompt_after_a_control_character_is_still_a_prompt` (parametrized: the 16 EOS prompt samples × a CR, a NUL, a bell, CR and two NULs before the prompt), `test_p6_74_eos_regexes_start_at_the_line_and_each_has_a_prompt`; seven prompt samples and three real-shell `PS1` cases added to the existing example tests | Prompt Handling; `examples/eos-bootstrap.autobot.yaml` | unit: `read_prompt`, which reads text as `get_prompt` does; F1 with the example's prompts and a `PS1` | `disk usage 5 > `, `price in $`, `! comment #` and `<html>` (the audit's four), the bare `$ `, `# `, `> `, and text that only resembles a prompt (`which bash$ `, `see [admin@switch ~]$ `, `Total: 5 items> `, `<rpc-reply>`) → no shell prompt; a prompt after control characters is matched whole with nothing left over; the three EOS regexes all start with `(?<![^\x00-\x1f])`, each matches a sample, and none matches a lone prompt character; `bash-5.1$ `, `-bash-4.2# `, `[admin@switch ~]# ` and a real bash with its default `PS1` (`\s-\v\$ `) register clean output | pass (audit 2, finding 13) (x3) |
 
-Totals: 72 pass (P6-01..73 without the removed P6-08).
+Totals: 73 pass (P6-01..74 without the removed P6-08).
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -522,10 +523,10 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 21 | 0 | 0 | `test_common_props.py` |
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 72 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 73 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 25 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **276** | **0** | **8** | |
+| **Total** | **277** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -589,6 +590,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 10: `autobot: 2026` was `string_type`, not `unsupported_version` | P6-72 | the nine non-string values fail (`string_type`); the empty string, the null and the missing key pass before and after |
 | 11: `import autobot.registry` gave the registry instance, not the module | P7-25; the `conftest.py` workaround is removed | with the old package (and the new `conftest.py`) four import forms fail with `AttributeError: 'StepRegistry' object has no attribute 'PluginError'`, the module test and the four attribute cases fail, and the methods test errors in its fixture (`registry_mod` is the instance); `from autobot.registry import PluginError` passes before and after |
 | 12: an empty `after`, as written or once rendered, skipped the wait | P3-21, P6-73; one case added to P6-67 | with the old schema and code 23 of the 30 cases fail: the ten `after: ''` documents and the plugin step are `(True, True)`, the schema check finds `{type: string}`, the ten rendered cases raise nothing (`DID NOT RAISE ValueError`; the `cmd` is sent and `vars.out` becomes `''`), and the CLI case runs the script; the accepted cases and the still-waits test pass before and after |
+| 13: the EOS example's second prompt regex matched any read ending in `>`, `#` or `$` | P6-74; samples added to the existing example tests | with the old example 113 of the 262 tests of `test_examples.py` fail: all 24 EOS texts in each of the four contexts (96), 16 control-character cases (the `[user@host dir]` prompts and `bash-5.12$ ` were matched only by their last character, so the match wasn't the whole prompt) and the anchoring test; the SONiC cases and the real-shell cases pass before and after. It can't be run against a real switch |
 
 ### Deviations from the plan
 
