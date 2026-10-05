@@ -25,7 +25,7 @@ A fourth case is the command line of `attach.spawn`: the schema's pattern reject
 
 A fifth case is mapping keys. Every key of a script is a string. YAML has other keys as well: `1:` is an integer, `1.5:` a number, `true:` a boolean, `~:` a null, `2026-01-01:` a date, and a `!!binary` key is binary data. Like a value, a key is never converted from another type, so `vars: {1: x}` is a validation error and not the key `"1"`; quote the key (`"1": x`) to get that. This holds for every mapping the script's structure defines:
 - The mappings whose keys the script chooses: `env`, `vars`, `fn` and `attach.env`. The models report `string_type` at the key, e.g. `vars.1.[key]`.
-- The mappings with fixed keys: the top level, `attach`, a prompt, a `sendEach`, a `fields` entry, a function, a block, a breakout and every step, plugin steps included. A key that isn't a string can't be one of their keys, and the models report `invalid_key`.
+- The mappings with fixed keys: the top level, `attach`, a prompt, a `sendEach`, a `fields` entry, a function, a block and every step, plugin steps included. A key that isn't a string can't be one of their keys, and the models report `invalid_key`.
 
 The mappings inside a `vars` value are data, not structure, and their keys are whatever YAML makes of them: `vars: {ports: {1: up}}` is valid, and `{{ vars.ports[1] }}` reads it. JSON has only string keys, so a JSON schema says nothing about a key's type by itself. The schema states the rule with `propertyNames: {type: string}`, on the four mappings above and on `$defs.stepCommon` (for plugin steps; the other mappings are closed, and a key that isn't a string is an additional property). That rejects the same documents as the models when the schema is applied to the document as YAML loads it, with a validator that hands it each key as it is (Python's `jsonschema` does). A validator that reads the document as JSON first, or an editor that takes `1:` for the key `"1"`, sees only strings and accepts it; there only the models reject it.
 
@@ -218,7 +218,7 @@ The attach lifecycle:
 2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
-5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
+5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
 Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`.
@@ -418,7 +418,7 @@ The block lifecycle:
 1. If `prompts` is defined, swap session handlers to the block's prompts
 2. `enter` steps execute (if defined)
 3. `script` steps execute
-4. `breakout.script` executes in `finally` (best-effort, errors logged to stderr)
+4. `breakout` steps execute in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
 #### Prompt state across a swap
@@ -454,8 +454,7 @@ With enter and breakout. The console is entered with `line`, not `cmd`: an idle 
       - call: is_system_running
       - cmd: show version
     breakout:
-      script:
-        - line: exit
+      - line: exit
 ```
 
 With block-scoped prompts (e.g. a sub-console with different prompt patterns):
@@ -482,8 +481,7 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
     script:
       - cmd: show version
     breakout:
-      script:
-        - line: exit
+      - line: exit
 ```
 
 ### `line` — Raw send (no prompt wait)

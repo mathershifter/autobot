@@ -77,7 +77,7 @@ def make_doc(
     if attach_script:
         attach["script"] = copy.deepcopy(attach_script)
     if breakout is not None:
-        attach["breakout"] = {"script": breakout}
+        attach["breakout"] = breakout
     if prepare is not None:
         attach["prepare"] = prepare
     doc: dict[str, Any] = {

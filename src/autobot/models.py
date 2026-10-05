@@ -255,7 +255,7 @@ class Attach(pydantic.BaseModel):
     timeout: Omittable[Duration] = None
     env: Omittable[dict[str, EnvValue]] = None
     script: NotNull[list[Step]] = []
-    breakout: Omittable[Breakout] = None
+    breakout: NotNull[list[Step]] = []
 
 
 class CmdStep(pydantic.BaseModel):
@@ -301,18 +301,13 @@ class CallStep(pydantic.BaseModel):
     timeout: Omittable[Duration] = None
 
 
-class Breakout(pydantic.BaseModel):
-    model_config = _STRICT
-    script: NotNull[list[Step]] = []
-
-
 class Block(pydantic.BaseModel):
     model_config = _STRICT
     name: str
     prompts: NotNull[list[Prompt]] = []
     enter: NotNull[list[Step]] = []
     script: NotNull[list[Step]] = []
-    breakout: Omittable[Breakout] = None
+    breakout: NotNull[list[Step]] = []
 
 
 class BlockStep(pydantic.BaseModel):
@@ -428,7 +423,6 @@ Step = Annotated[
 ]
 
 Attach.model_rebuild()
-Breakout.model_rebuild()
 Block.model_rebuild()
 Function.model_rebuild()
 
@@ -440,8 +434,7 @@ def _walk_steps(loc: tuple, steps: list[Step]) -> Iterator[tuple[tuple, Step]]:
             block, here = step.block, (*loc, i, "block")
             yield from _walk_steps((*here, "enter"), block.enter)
             yield from _walk_steps((*here, "script"), block.script)
-            if block.breakout:
-                yield from _walk_steps((*here, "breakout", "script"), block.breakout.script)
+            yield from _walk_steps((*here, "breakout"), block.breakout)
 
 
 class Config(pydantic.BaseModel):
@@ -478,9 +471,8 @@ class Config(pydantic.BaseModel):
         roots: list[tuple[tuple, list[Step]]] = [
             (("attach", "script"), self.attach.script),
             (("script",), self.script),
+            (("attach", "breakout"), self.attach.breakout),
         ]
-        if self.attach.breakout:
-            roots.append((("attach", "breakout", "script"), self.attach.breakout.script))
         roots += [(("fn", name, "script"), f.script) for name, f in self.fn.items()]
 
         errors: list[Any] = []

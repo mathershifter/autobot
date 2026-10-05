@@ -45,9 +45,8 @@ attach:
     - control: c
   timeout: 300s
   breakout:
-    script:
-      - line: logout
-      - control: "]"
+    - line: logout
+    - control: "]"
 
 fn:
   is_system_running:
@@ -93,8 +92,7 @@ script:
         #         after: 'Press Control-C now to enter Aboot shell'
         #       - cmd: uname -a
         #     breakout:
-        #       script:
-        #         - line: exit
+        #       - line: exit
       
   - call: is_system_running
 

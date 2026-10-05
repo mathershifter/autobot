@@ -43,10 +43,9 @@ attach:
       after: "attached to"
   timeout: 300s
   breakout:
-    script:
-      - line: logout
-      - control: "]"
-      - line: logout
+    - line: logout
+    - control: "]"
+    - line: logout
 
 errors:
   - '% .*'
@@ -84,8 +83,7 @@ script:
   #     script:
   #       - line: bash
   #     breakout:
-  #       script:
-  #         - line: exit
+  #       - line: exit
   #   script:
   #     - cmd: |
   #         #!/bin/sh

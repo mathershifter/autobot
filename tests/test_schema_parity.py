@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73, P6-75: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73, P6-75, P6-82: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -60,7 +60,7 @@ ACCEPT = {
             "timeout": "30s",
             "env": {"TERM": "dumb"},
             "script": [{"line": "x"}],
-            "breakout": {"script": [{"control": "]"}]},
+            "breakout": [{"control": "]"}],
         },
     ),
     "cmd-full": s(
@@ -101,7 +101,7 @@ ACCEPT = {
                 "prompts": [{"name": "o", "expect": ["x"], "return": True}],
                 "enter": [{"line": "x"}],
                 "script": [{"block": {"name": "inner", "script": [{"cmd": "y"}]}}],
-                "breakout": {"script": [{"line": "exit"}]},
+                "breakout": [{"line": "exit"}],
             }
         }
     ),
@@ -289,7 +289,6 @@ def _prompt_host(fields: dict[str, Any]) -> dict[str, Any]:
 HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
     models.Config: (lambda f: d(**f), lambda c: c),
     models.Attach: (lambda f: d(attach={"spawn": "ssh host", **f}), lambda c: c.attach),
-    models.Breakout: (lambda f: d(attach={"spawn": "ssh host", "breakout": f}), lambda c: c.attach.breakout),
     models.Prompt: (lambda f: _prompt_host(f), lambda c: c.prompts[0]),
     models.SendEach: (lambda f: prompt(send={"each": "vars.c", **f}), lambda c: c.prompts[0].send),
     models.Block: (lambda f: s({"block": {"name": "b", **f}}), lambda c: c.script[0].block),
@@ -944,8 +943,8 @@ EMPTY_AFTER: dict[str, tuple[dict[str, Any], tuple]] = {
         ("attach", "script", 0, "line", "after"),
     ),
     "in-breakout": (
-        d(attach={"spawn": "ssh host", "breakout": {"script": [{"line": "x", "after": ""}]}}),
-        ("attach", "breakout", "script", 0, "line", "after"),
+        d(attach={"spawn": "ssh host", "breakout": [{"line": "x", "after": ""}]}),
+        ("attach", "breakout", 0, "line", "after"),
     ),
     "in-block": (
         s({"block": {"name": "b", "enter": [{"cmd": "x", "after": ""}]}}),
@@ -1018,7 +1017,6 @@ FREE_KEYS: dict[str, tuple[Callable[[Any], dict[str, Any]], tuple]] = {
 FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "top-level": lambda k: {**d(), k: "x"},
     "attach": lambda k: d(attach={"spawn": "ssh host", k: "x"}),
-    "attach-breakout": lambda k: d(attach={"spawn": "ssh host", "breakout": {"script": [], k: "x"}}),
     "function": lambda k: d(fn={"f": {"script": [], k: "x"}}),
     "prompt": lambda k: d(prompts=[{"name": "p", "expect": "x", k: "x"}]),
     "send-each": lambda k: d(prompts=[{"name": "p", "expect": "x", "send": {"each": "vars.c", k: "x"}}]),
@@ -1030,7 +1028,6 @@ FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "call": lambda k: d(fn=FN, script=[{"call": "f", k: "x"}]),
     "block-step": lambda k: s({"block": {"name": "b"}, k: "x"}),
     "block": lambda k: s({"block": {"name": "b", k: "x"}}),
-    "block-breakout": lambda k: s({"block": {"name": "b", "breakout": {"script": [], k: "x"}}}),
     "line": lambda k: s({"line": "x", k: "x"}),
     "return": lambda k: s({"return": 1, k: "x"}),
     "control": lambda k: s({"control": "a", k: "x"}),
@@ -1209,3 +1206,119 @@ def test_p6_79_names_command_is_what_pexpect_spawns_once_stripped():
     for value in [" ssh host", "\tssh", " ''", "  '' ls", " ", "", " 'a b' c", "ssh "]:
         words = pexpect.split_command_line(value.lstrip())
         assert models.names_command(value) == bool(words and words[0]), value
+
+
+# -- P6-82: breakout is a list of steps ----------------------------------------
+
+# where -> (doc(breakout), the path of `breakout`, its path in the `call` check, the validated field)
+BREAKOUT_HOSTS: dict[str, tuple[Callable[[Any], dict[str, Any]], tuple, tuple, Callable[[Config], Any]]] = {
+    "attach": (
+        lambda v: d(fn=FN, attach={"spawn": "ssh host", "breakout": v}),
+        ("attach", "breakout"),
+        ("attach", "breakout"),
+        lambda c: c.attach.breakout,
+    ),
+    "block": (
+        lambda v: d(fn=FN, script=[{"block": {"name": "b", "breakout": v}}]),
+        ("script", 0, "block", "block", "breakout"),
+        ("script", 0, "block", "breakout"),
+        lambda c: c.script[0].block.breakout,
+    ),
+}
+BREAKOUT_LISTS = {
+    "one": [{"line": "exit"}],
+    "several": [{"control": "]"}, {"line": "q"}, {"cmd": "true", "timeout": "5s"}, {"call": "f"}],
+    "nested-block": [{"block": {"name": "inner", "breakout": [{"line": "exit"}]}}],
+}
+BREAKOUT_NOT_A_LIST = {
+    "script-mapping": {"script": [{"line": "exit"}]},
+    "empty-script-mapping": {"script": []},
+    "empty-mapping": {},
+    "step": {"line": "exit"},
+    "string": "exit",
+}
+# a step that isn't valid -> (the step, the error's path below the step, its type; None: several errors)
+BREAKOUT_BAD_STEPS: dict[str, tuple[dict[str, Any], tuple, str | None]] = {
+    "unknown-step": ({"bogus": 1}, (), "invalid_step"),
+    "extra-key": ({"cmd": "x", "bogus": 1}, ("cmd", "bogus"), "extra_forbidden"),
+    "empty-after": ({"line": "x", "after": ""}, ("line", "after"), "string_too_short"),
+    "bad-value": ({"line": 1}, (), None),
+}
+
+
+@pytest.mark.parametrize("steps", list(BREAKOUT_LISTS.values()), ids=list(BREAKOUT_LISTS))
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_parity_breakout_list_accepted(both_validate: Callable, where: str, steps: list):
+    """SPEC "attach", "block": `breakout` is a list of steps, like `enter` and every `script`."""
+    build, _, _, get = BREAKOUT_HOSTS[where]
+    assert both_validate(build(steps)) == (True, True)
+    got = get(Config.model_validate(build(steps)))
+    assert isinstance(got, list) and len(got) == len(steps)
+
+
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_parity_empty_and_omitted_breakout_are_no_breakout(both_validate: Callable, where: str):
+    """`breakout: []` and no `breakout` key both validate, and the models read both as no steps."""
+    build, _, _, get = BREAKOUT_HOSTS[where]
+    empty, omitted = build([]), _drop_omitted(build(OMIT))
+    assert both_validate(empty) == both_validate(omitted) == (True, True)
+    assert get(Config.model_validate(empty)) == get(Config.model_validate(omitted)) == []
+
+
+@pytest.mark.parametrize("value", list(BREAKOUT_NOT_A_LIST.values()), ids=list(BREAKOUT_NOT_A_LIST))
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_parity_breakout_that_is_not_a_list_rejected(both_validate: Callable, where: str, value: Any):
+    """A mapping with a `script` key is not a list of steps: both reject it, with the ordinary type error."""
+    build, loc, _, _ = BREAKOUT_HOSTS[where]
+    doc = build(value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (loc, "list_type", "Input should be a valid list")
+
+
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_parity_null_breakout_rejected(both_validate: Callable, where: str):
+    """An explicit null is `null_value`, as for every optional field (P6-41)."""
+    build, loc, _, _ = BREAKOUT_HOSTS[where]
+    doc = build(None)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (loc, "null_value")
+    assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
+
+
+@pytest.mark.parametrize("case", list(BREAKOUT_BAD_STEPS))
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_parity_invalid_breakout_step_reported_at_its_index(both_validate: Callable, where: str, case: str):
+    """A step of a breakout is at `<breakout>.<index>`: nothing stands between the key and the index."""
+    build, loc, _, _ = BREAKOUT_HOSTS[where]
+    step, tail, kind = BREAKOUT_BAD_STEPS[case]
+    doc = build([{"line": "ok"}, step])
+    # the static schema takes a step with an unknown key for a plugin step; only the models know the plugins
+    assert both_validate(doc) == (False, case == "unknown-step")
+    errs = model_errors(doc)
+    assert {e["loc"][: len(loc) + 1] for e in errs} == {(*loc, 1)}
+    if kind is not None:
+        [err] = errs
+        assert (err["loc"], err["type"]) == ((*loc, 1, *tail), kind)
+
+
+@pytest.mark.parametrize("where", list(BREAKOUT_HOSTS))
+def test_p6_82_undefined_call_in_a_breakout_reported_at_its_index(both_validate: Callable, where: str):
+    """The `call` check reports the step the same way (only the models know the functions)."""
+    build, _, loc, _ = BREAKOUT_HOSTS[where]
+    doc = build([{"line": "ok"}, {"call": "nope"}])
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == ((*loc, 1, "call"), "undefined_function")
+
+
+def test_p6_82_schema_and_models_give_breakout_the_shape_of_enter(schema: dict[str, Any]):
+    """Both breakouts are an array of steps in the schema and a list of steps in the models, like `enter`."""
+    steps = {"type": "array", "items": {"$ref": "#/$defs/step"}}
+    block = schema["$defs"]["blockStep"]["properties"]["block"]["properties"]
+    assert schema["$defs"]["attach"]["properties"]["breakout"] == steps
+    assert block["breakout"] == block["enter"] == steps
+    fields = models.Block.model_fields
+    assert fields["breakout"].annotation == fields["enter"].annotation
+    assert models.Attach.model_fields["breakout"].annotation == models.Attach.model_fields["script"].annotation
