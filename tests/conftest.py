@@ -408,7 +408,6 @@ def register_plugin() -> Iterator[Callable[[Any], Any]]:
     yield register
     for reg, ex in added:
         reg._executors.pop(ex.key, None)
-        reg._model_keys.pop(ex.model, None)
 
 
 @pytest.fixture
