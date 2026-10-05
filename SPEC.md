@@ -104,7 +104,7 @@ Iterates over a collection from `vars` to build responses. With `fields`, each e
 
 A prompt whose `sendEach` has `fields` has no `expect`: its patterns are the `match` regexes of the entries, in order. So each field is sent only in answer to its own prompt, and the number of values sent per item always matches the prompts that ask for them.
 
-Without `fields`, each item is converted to a string and sent in answer to any of the prompt's `expect` patterns, e.g. a PIN list:
+Without `fields`, each item is sent as text (see below) in answer to any of the prompt's `expect` patterns, e.g. a PIN list:
 ```yaml
 - name: pin
   expect: ['PIN:', 'Passcode:']
@@ -135,6 +135,8 @@ In the example, `vars.creds` is resolved, and each item becomes one credential s
 
 The collection must be a list. Without `fields`, each item must be a string, number or boolean. With `fields`, each item must be a mapping with the `field` of every entry, and each field's value must be a string, number or boolean. An empty list is allowed; the prompt then has no credential sets (see [Response selection](#response-selection)).
 
+A value is sent as text: a string as it is, a number as YAML's loader reads it (`1234`, `2.5`; `007` is the number 7 and is sent as `7`), and a boolean as YAML writes it, `true` or `false`. So `password: true`, and also `yes`, `on` or `True`, which YAML reads as the same boolean, sends `true`. Quote a value to send it as written: `'True'`, `'yes'`, `'007'`.
+
 A collection that doesn't meet these rules is an error when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts` (reported by the CLI as a `Script error`), and on entering the block, before its `enter` steps, for a block's `prompts` (the run stops; the block's `breakout` doesn't run, and `attach.breakout` does). The message is `prompt '<name>': sendEach '<each>': <problem>`, where `<problem>` is one of:
 
 | Problem | Example |
@@ -158,7 +160,7 @@ A **`sendEach`** is a list of *credential sets*, each an ordered list of respons
 | `sendEach` form | Credential sets |
 |-----------------|-----------------|
 | with `fields` | One set per item: the value of each entry's `field`, in entry order |
-| without `fields` | One set per item, holding the item converted to a string |
+| without `fields` | One set per item, holding the item as text |
 
 Responses come from the current set, starting with the first. When a pattern of the prompt matches:
 - **With `fields`:** a regex of entry k (the first entry is 0) sends item k of the current set, the entry's field. The regexes of one entry are the same prompt.
@@ -746,6 +748,8 @@ For plugin code, `autobot.registry` is now always the module. The package used t
 That round also changed one thing about captured output: a prompt wait discards carriage returns, NULs and BELs at the start of the unread output, so that `^` in a prompt regex anchors a prompt to its line (see [Prompt Handling](#prompt-handling-get_prompt)). A line of output that begins with one of them, or has one right after an escape sequence, used to be captured with it and no longer is (`\rtwo\rthree` is now `two\rthree`), which shows in `register`, `session.before` and what `assert` and `errors` see. Output without such a character is captured exactly as before, and the operator's echo on stdout is unchanged. A prompt regex anchored with `^` that used to time out behind a stray `\r` now matches.
 
 It also accepts one thing that the models used to reject: `return: 1.0` (a number with a zero fraction), which the schema always accepted.
+
+**A boolean that a `sendEach` sends is `true` or `false`** (see [`sendEach`](#sendeach)), as YAML writes it. An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`. A device that expects one of those spellings needs the value quoted: `password: 'True'`.
 
 A round after that, still `2026-10`, changed one behavior of a run: **a `cmd` with `after` waits for a prompt after the match** (see [`cmd`](#cmd--send-commands-to-the-shell)). It used to send the command on the match, without its first prompt wait. When the pattern matched before the prompt of an earlier command or `line`, that prompt was taken for the command's own: `register` stored an empty string, `assert` saw no output, and the `$?` check was sent while the command was still running. A script where the match came with the session already at a shell prompt runs as before. What needs a change:
 - A `cmd` that relied on being sent where there is no shell prompt, e.g. `cmd: boot` with `after: 'Aboot#'` when no prompt in `prompts` matches `Aboot#`. It now waits for a shell prompt, presses Return after 5 seconds and times out. Send it with `line` (`line: boot`, `after: 'Aboot#'`); the next `cmd` waits for the prompt that follows.

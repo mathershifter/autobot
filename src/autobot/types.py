@@ -63,6 +63,11 @@ def parse_duration(value: Any) -> float:
     raise ValueError(f"invalid duration: {value}")
 
 
+def text(value: Any) -> str:
+    """A scalar of the script as text: a boolean as YAML writes it, `true` or `false`."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
 def reject_null(value: Any) -> Any:
     if value is None:
         raise PydanticCustomError("null_value", "null (an empty value) is not allowed; omit the key instead")

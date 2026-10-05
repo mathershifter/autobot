@@ -188,12 +188,12 @@ def test_p4_21_send_each_nested_path_ignores_other_keys(device):
 
 
 def test_p4_22_send_each_scalar_items_without_fields(device):
-    """SPEC sendEach: without fields, a string, number or boolean item is sent as a string."""
+    """SPEC sendEach: without fields, a string, number or boolean item is sent as text, a boolean as YAML's `true`."""
     pin = {"name": "pin", "expect": ["Password:"], "send": {"each": "vars.pins"}}
     r, log = device([SHELL_PROMPT, pin], "--wait-enter", "--order", "password",
-                    "--accept", ":True", vars={"pins": ["1111", 2.5, True]})
+                    "--accept", ":true", vars={"pins": ["1111", 2.5, True]})
     r.session.get_prompt(timeout=10)
-    assert log_of(log) == ["ENTER=", "PASSWORD=1111", "PASSWORD=2.5", "PASSWORD=True"]
+    assert log_of(log) == ["ENTER=", "PASSWORD=1111", "PASSWORD=2.5", "PASSWORD=true"]
 
 
 def test_p4_23_send_each_empty_list_fails_at_send_time(device):
@@ -567,12 +567,16 @@ def test_p4_39_send_each_item_must_be_string_number_or_boolean(case: str):
     )
 
 
-def test_p4_39_send_each_scalars_sent_as_str():
-    """SPEC sendEach: strings, numbers and booleans are accepted and converted with `str()`."""
-    pins = yaml.safe_load("['2026-10-04', 1234, 2.5, true, false, '']")
+def test_p4_39_send_each_scalars_sent_as_text():
+    """SPEC sendEach: strings and numbers are sent as their text, and a boolean as YAML writes it, `true` or `false`."""
+    pins = yaml.safe_load("['2026-10-04', 1234, 2.5, true, false, yes, 'True', '']")
     assert send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins}) == [
-        ["2026-10-04"], ["1234"], ["2.5"], ["True"], ["False"], [""],
+        ["2026-10-04"], ["1234"], ["2.5"], ["true"], ["false"], ["true"], ["True"], [""],
     ]
+    # the same for a field's value
+    send = SendEach.model_validate({"each": "vars.creds", "fields": [{"match": "x", "field": "u"}, {"match": "y", "field": "pw"}]})
+    creds = yaml.safe_load("[{u: admin, pw: true}, {u: 7, pw: false}]")
+    assert send_each_sets("p", send, {"creds": creds}) == [["admin", "true"], ["7", "false"]]
 
 
 # -- P4-37..38: no solicit newline while a command is running ----------------

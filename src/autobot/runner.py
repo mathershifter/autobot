@@ -14,7 +14,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, check_regex, check_template
+from .types import EnvError, check_regex, check_template, text
 from .types import render as render_template
 
 # markup off: log lines echo commands, names and errors that may look like [tags]
@@ -63,7 +63,7 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
         if not fields:
             if not _scalar(item):
                 raise fail(f"item {i} is {_kind(item)}; without fields each item must be a string, number or boolean")
-            sets.append([str(item)])
+            sets.append([text(item)])
             continue
         if not isinstance(item, dict):
             raise fail(f"item {i} is {_kind(item)}, not a mapping")
@@ -72,7 +72,7 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
                 raise fail(f"item {i} has no field '{f}'")
             if not _scalar(item[f]):
                 raise fail(f"item {i} field '{f}' is {_kind(item[f])}, not a string, number or boolean")
-        sets.append([str(item[f]) for f in fields])
+        sets.append([text(item[f]) for f in fields])
     return sets
 
 
