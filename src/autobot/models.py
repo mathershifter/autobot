@@ -12,6 +12,10 @@ from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list
 VERSION = "2026-10"
 
 
+# strict: a value has the type the schema names, so YAML's !!binary isn't a string
+_STRICT = pydantic.ConfigDict(extra="forbid", strict=True)
+
+
 def _custom(type_: str, msg: str) -> PydanticCustomError:
     # the text goes through ctx, so braces in it survive
     return PydanticCustomError(type_, "{msg}", {"msg": msg})
@@ -75,6 +79,11 @@ def _spawn(v: str) -> str:
     return v
 
 
+def _whole(v: Any) -> Any:
+    # as in JSON, a number with a zero fraction is that integer: `return: 1.0` is 1
+    return int(v) if isinstance(v, float) and v.is_integer() else v
+
+
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a regex once rendered
@@ -82,7 +91,7 @@ After = Annotated[str, pydantic.AfterValidator(_template_regex)]
 
 
 class FieldEntry(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     match: list[Regex]
     field: str
 
@@ -108,7 +117,7 @@ class FieldEntry(pydantic.BaseModel):
 
 
 class SendEach(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     each: str
     fields: Omittable[Annotated[list[FieldEntry], pydantic.Field(min_length=1)]] = None
 
@@ -124,7 +133,7 @@ _MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
 
 
 class Prompt(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     name: str
     # entries are single non-empty regexes; a grouped or empty entry is kept here so _check_expect can name it
     expect: Omittable[list[str | list[str]]] = None
@@ -201,12 +210,12 @@ class Prompt(pydantic.BaseModel):
 
 
 class Function(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     script: list[Step]
 
 
 class Attach(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
@@ -216,7 +225,7 @@ class Attach(pydantic.BaseModel):
 
 
 class CmdStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     cmd: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -244,12 +253,12 @@ class CmdStep(pydantic.BaseModel):
 
 
 class SleepStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     sleep: Duration
 
 
 class CallStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     call: str
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -259,12 +268,12 @@ class CallStep(pydantic.BaseModel):
 
 
 class Breakout(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     script: NotNull[list[Step]] = []
 
 
 class Block(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     name: str
     prompts: NotNull[list[Prompt]] = []
     enter: NotNull[list[Step]] = []
@@ -273,7 +282,7 @@ class Block(pydantic.BaseModel):
 
 
 class BlockStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     block: Block
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -283,7 +292,7 @@ class BlockStep(pydantic.BaseModel):
 
 
 class LineStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     line: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -292,8 +301,8 @@ class LineStep(pydantic.BaseModel):
 
 
 class ReturnStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    newline_count: int = pydantic.Field(alias="return", ge=1, strict=True)
+    model_config = _STRICT
+    newline_count: Annotated[int, pydantic.BeforeValidator(_whole)] = pydantic.Field(alias="return", ge=1, strict=True)
     after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
@@ -305,7 +314,7 @@ CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
 
 
 class ControlStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     control: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -326,7 +335,7 @@ class ControlStep(pydantic.BaseModel):
 
 
 class PluginStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="allow")
+    model_config = pydantic.ConfigDict(extra="allow", strict=True)
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -402,7 +411,7 @@ def _walk_steps(loc: tuple, steps: list[Step]) -> Iterator[tuple[tuple, Step]]:
 
 
 class Config(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     autobot: str
 
     @pydantic.field_validator("autobot")

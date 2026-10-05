@@ -688,3 +688,155 @@ def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: s
     """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""
     assert both_validate(s({"sleep": value})) == (False, False)
     assert both_validate(s({"sleep": "5s"})) == (True, True)
+
+
+# -- P6-68..70: values a YAML file can hold and JSON can't, or holds differently ----
+
+
+@pytest.mark.parametrize("literal", ["1.0", "2.0", "3.0e+0", "1.0e+1"])
+def test_p6_68_parity_return_whole_float_accepted(both_validate: Callable, literal: str):
+    """SPEC "return": a number with a zero fraction is that integer, as in JSON; both accept it."""
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    assert isinstance(value, float)
+    doc = s({"return": value})
+    assert both_validate(doc) == (True, True)
+    count = Config.model_validate(doc).script[0].newline_count
+    assert (count, type(count)) == (int(value), int)
+
+
+@pytest.mark.parametrize("literal", ["1.5", "0.0", "-1.0", "0.999", ".inf", "-.inf", ".nan", "1.0e+400"])
+def test_p6_68_parity_return_other_float_rejected(both_validate: Callable, literal: str):
+    """SPEC "return": a fraction, a whole number below 1 and a non-finite number are rejected by both."""
+    doc = s({"return": yaml.safe_load(f"v: {literal}")["v"]})
+    assert both_validate(doc) == (False, False)
+    assert all(e["loc"][:3] == ("script", 0, "return") for e in model_errors(doc))
+
+
+FLOAT_MAX = 1.7976931348623157e308
+# the first integer above the largest double; `float()` would round it down to FLOAT_MAX
+ABOVE_FLOAT_MAX = int(FLOAT_MAX) + 1
+TOO_LARGE = {
+    "inf": float("inf"),
+    "-inf": float("-inf"),
+    "10**400": 10**400,
+    "-10**400": -(10**400),
+    "2**1024": 2**1024,
+    "above-float-max": ABOVE_FLOAT_MAX,
+}
+
+
+def test_p6_69_schema_duration_maximum_is_the_largest_double(schema: dict[str, Any]):
+    """SPEC "Duration Format": the schema's bound and the model's are the same number."""
+    import sys
+
+    from autobot import types
+
+    [number] = [alt for alt in schema["$defs"]["duration"]["oneOf"] if alt["type"] == "number"]
+    assert number == {"type": "number", "minimum": 0, "maximum": sys.float_info.max}
+    assert types.DURATION_MAX == sys.float_info.max == FLOAT_MAX
+
+
+@pytest.mark.parametrize("field", list(DURATION_FIELDS))
+@pytest.mark.parametrize("value", list(TOO_LARGE.values()), ids=list(TOO_LARGE))
+def test_p6_69_parity_duration_beyond_a_double_rejected(both_validate: Callable, value: Any, field: str):
+    """SPEC "Duration Format": `.inf`, `-.inf` and a number above the largest double are rejected by both.
+
+    The schema used to accept `timeout: .inf` and an integer of 400 digits (`minimum: 0` only).
+    """
+    doc = DURATION_FIELDS[field](value)
+    if field == "call.timeout":
+        doc["fn"] = {"f": {"script": []}}
+    assert both_validate(doc) == (False, False)
+    errs = model_errors(doc)
+    assert errs and all("invalid duration" in e["msg"] for e in errs)
+
+
+@pytest.mark.parametrize("value", [FLOAT_MAX, int(FLOAT_MAX), 1e308, 10**308, 0, 0.0], ids=repr)
+def test_p6_69_parity_duration_up_to_a_double_accepted(both_validate: Callable, value: Any):
+    """SPEC "Duration Format": the bound is inclusive, and nothing below it is cut off."""
+    doc = s({"sleep": value})
+    assert both_validate(doc) == (True, True)
+    assert Config.model_validate(doc).script[0].sleep == float(value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), "9" * 400 + "s", "1" + "0" * 310 + "h"], ids=["nan", "400-digits", "hours"])
+def test_p6_69_duration_only_the_models_can_reject(both_validate: Callable, value: Any):
+    """SPEC "YAML Script Structure": `.nan`, and a string that overflows, are the stated model-only cases.
+
+    No `minimum` or `maximum` compares with NaN, and a pattern can't compute a string's value.
+    """
+    doc = s({"sleep": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert "not a finite number" in err["msg"]
+
+
+BINARY = yaml.safe_load("v: !!binary aGk=")["v"]
+FN = {"f": {"script": []}}
+# every place a script holds a string: doc(value) -> a document with `value` there
+STRING_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "autobot": lambda v: d(autobot=v),
+    "env-value": lambda v: d(env={"A": v}),
+    "errors-item": lambda v: d(errors=[v]),
+    "prompt-name": lambda v: d(prompts=[{"name": v, "expect": "x"}]),
+    "prompt-expect": lambda v: d(prompts=[{"name": "p", "expect": v}]),
+    "prompt-expect-item": lambda v: d(prompts=[{"name": "p", "expect": ["x", v]}]),
+    "prompt-send": lambda v: prompt(send=v),
+    "send-each": lambda v: prompt(send={"each": v}),
+    "fields-match": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": v, "field": "u"}]}}]),
+    "fields-match-item": lambda v: d(
+        prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": ["x", v], "field": "u"}]}}]
+    ),
+    "fields-field": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": v}]}}]),
+    "attach-spawn": lambda v: d(attach={"spawn": v}),
+    "attach-prepare": lambda v: d(attach={"spawn": "ssh host", "prepare": v}),
+    "attach-env-value": lambda v: d(attach={"spawn": "ssh host", "env": {"A": v}}),
+    "cmd": lambda v: s({"cmd": v}),
+    "cmd-item": lambda v: s({"cmd": ["x", v]}),
+    "cmd-assert": lambda v: s({"cmd": "x", "assert": v}),
+    "cmd-assert-item": lambda v: s({"cmd": "x", "assert": ["x", v]}),
+    "cmd-register": lambda v: s({"cmd": "x", "register": v}),
+    "cmd-after": lambda v: s({"cmd": "x", "after": v}),
+    "cmd-when": lambda v: s({"cmd": "x", "when": v}),
+    "call": lambda v: d(fn=FN, script=[{"call": v}]),
+    "call-after": lambda v: d(fn=FN, script=[{"call": "f", "after": v}]),
+    "block-name": lambda v: s({"block": {"name": v}}),
+    "block-when": lambda v: s({"block": {"name": "b"}, "when": v}),
+    "line": lambda v: s({"line": v}),
+    "line-item": lambda v: s({"line": ["x", v]}),
+    "line-after": lambda v: s({"line": "x", "after": v}),
+    "return-when": lambda v: s({"return": 1, "when": v}),
+    "control": lambda v: s({"control": v}),
+    "control-item": lambda v: s({"control": ["a", v]}),
+    "control-after": lambda v: s({"control": "a", "after": v}),
+    "fn-step": lambda v: d(fn={"f": {"script": [{"cmd": v}]}}),
+    "duration": lambda v: s({"sleep": v}),
+}
+
+
+@pytest.mark.parametrize("field", list(STRING_FIELDS))
+def test_p6_70_parity_binary_is_not_a_string(both_validate: Callable, field: str):
+    """SPEC "YAML Script Structure": a `!!binary` value isn't a string; both reject it wherever a string goes.
+
+    The models used to decode it (`cmd: !!binary aGk=` ran `hi`), while the schema rejected it.
+    """
+    assert BINARY == b"hi"
+    doc = STRING_FIELDS[field](BINARY)
+    assert both_validate(doc) == (False, False)
+    # and the same document with the text is fine, so it is the bytes that are rejected
+    valid = {"autobot": "2026-10", "send-each": "vars.c", "call": "f", "duration": "5s"}
+    text = valid.get(field, "a" if field.startswith("control") else "hi")
+    assert both_validate(STRING_FIELDS[field](text)) == (True, True)
+
+
+@pytest.mark.parametrize("field", ["cmd", "attach-spawn", "env-value", "block-name", "cmd-when"])
+def test_p6_70_binary_is_a_string_type_error(field: str):
+    """The model's error is the string's own type error, at the value."""
+    assert {e["type"] for e in model_errors(STRING_FIELDS[field](BINARY))} <= {"string_type", "list_type"}
+
+
+@pytest.mark.parametrize("field", ["probe-field", "after", "when"])
+def test_p6_70_binary_in_a_plugin_step_common_prop(both_validate: Callable, probe: Any, field: str):
+    """A plugin step's common properties are strings in the same sense."""
+    doc = s({"probe": "x", **({} if field == "probe-field" else {field: BINARY})})
+    assert both_validate(doc) == ((True, True) if field == "probe-field" else (False, False))

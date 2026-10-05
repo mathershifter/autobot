@@ -302,7 +302,7 @@
     },
     "duration": {
       "oneOf": [
-        { "type": "number", "minimum": 0 },
+        { "type": "number", "minimum": 0, "maximum": 1.7976931348623157e308 },
         { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ms|s|m|h)$" }
       ]
     },

@@ -19,6 +19,10 @@ All fields validated by pydantic against `schemas/autobot.2026-10.json`. The JSO
 
 Another such case is regular expressions. A JSON schema can't check Python regex syntax, so only the models compile them. Every regex that is used as written is compiled when the script is loaded: the top-level `errors`, and a prompt's `expect` and the `match` of its `fields` entries, in top-level and block `prompts`. One that doesn't compile is a validation error of type `invalid_regex` at the value (e.g. `errors.1`, `prompts.0.expect`, `prompts.0.expect.1`, `prompts.0.send.fields.0.match.1`), with the message `invalid regex '<regex>': <reason>`, e.g. `invalid regex '(': missing ), unterminated subpattern at position 0`. `assert` and `after` are templates. One that contains no Jinja2 syntax (`{{`, `{%` or `{#`) is checked the same way when the script is loaded, at `script.N.cmd.assert` (the first bad pattern of a list) or the step's `after`. One that does is checked when it is used, once rendered: a result that isn't a valid regex is a `ValueError`, `assert: invalid regex '<rendered>': <reason>` or `after: invalid regex '<rendered>': <reason>`, chained from the `re.error`. So an invalid regex never surfaces as a raw `re.error`, and one that can be known before the run stops the script before `attach.prepare` runs or anything is spawned.
 
+A third case is numbers that JSON doesn't have. The schema is applied to the document as YAML loads it, and there a number can be `.inf`, `-.inf` or `.nan`, or an integer beyond any double. The schema's `minimum` and `maximum` reject the infinities and every number above the largest double, as the models do. But no bound compares with `.nan`, and a pattern can't compute the value a duration string stands for, so only the models reject `.nan` and a duration string whose value overflows to infinity (see [Duration Format](#duration-format)).
+
+A value has the type the schema names; it is never converted from another type. A string is a YAML string: a `!!binary` value isn't one, so `cmd: !!binary aGk=` or a `!!binary` `spawn` is a validation error (`string_type`) in the models as in the schema, wherever a string goes. A boolean is `true` or `false`, not `1` or `"yes"`. Numbers follow JSON, where a number with a zero fraction is that integer: `return: 1.0` is `return: 1` for both.
+
 An optional field is either omitted or given a value of its type. An explicit `null`, including a key with an empty YAML value (`after:`, `timeout: ~`), is invalid for every optional field, including the common step properties of plugin steps: omit the key instead to get the default. The error type is `null_value`, located at the key. A plugin's own fields follow the plugin's model.
 
 ### Top-level fields
@@ -469,7 +473,7 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
 - return: 3       # send three
 ```
 
-The value is required and must be an integer ≥ 1.
+The value is required and must be an integer ≥ 1. As in JSON, a number with a zero fraction is that integer: `return: 2.0` sends two newlines. Any other number (`1.5`, `0`, `.inf`) is a validation error.
 
 ### `control` — Send control character(s)
 
@@ -542,7 +546,7 @@ Durations accept a bare number (seconds) or a string with a unit suffix:
 - `2m` — 2 minutes
 - `1h` — 1 hour
 
-A bare number must be finite and ≥ 0: YAML's `.nan`, `.inf` and `-.inf` are rejected when the script is loaded, so there is no "wait forever" duration. A boolean is not a duration, and neither is `null` (so `sleep:` with no value is rejected). A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected). The number is written in ASCII digits `0`-`9` only (`"٥s"` is rejected), and a string whose value overflows to infinity is rejected too.
+A bare number must be finite and ≥ 0: YAML's `.nan`, `.inf` and `-.inf` are rejected when the script is loaded, so there is no "wait forever" duration. Finite means at most the largest double, 1.7976931348623157e308 (the schema's `maximum`); a larger integer, such as one of 400 digits, is rejected too. A boolean is not a duration, and neither is `null` (so `sleep:` with no value is rejected). A string must be a non-negative number immediately followed by one of the units `ms`, `s`, `m`, `h`, with nothing else (`"5"`, `"1 s"` and `"-1s"` are rejected). The number is written in ASCII digits `0`-`9` only (`"٥s"` is rejected), and a string whose value overflows to infinity is rejected too.
 
 ## Jinja2 Templating
 
@@ -689,7 +693,7 @@ A further tightening, again without a new version number, rejects more values th
 
 Empty lists are still accepted for `cmd`, `line`, `control` and `assert`. `cmd: []` sends nothing, as it was documented to: it used to wait for a prompt and send the `$?` check, so it failed on the exit code of an earlier command (see [`cmd`](#cmd--send-commands-to-the-shell)). A `cmd` is split into lines only at `\n`, `\r\n` and `\r`, also as documented: it used to be split at a form feed, a vertical tab, U+001C to U+001E, U+0085, U+2028 and U+2029 as well, which cut a command that contained one of them in two.
 
-The same round changed four behaviors of a run. None of them changes what the schema accepts, but a script or plugin that relied on the old behavior needs a change:
+The same round changed five behaviors of a run. None of them changes what the schema accepts, but a script or plugin that relied on the old behavior needs a change:
 
 - **The solicit newline is no longer sent after a command** (see [Prompt Handling](#prompt-handling-get_prompt)). Before, every prompt wait pressed Return after 5 seconds of silence. Now a wait that follows a `cmd` line never does.
   - A `cmd` whose command shows nothing until Return is pressed, e.g. `cmd: consutil connect 0` to enter an idle console, used to complete and now times out. Send it with `line`; the next `cmd` waits for the prompt and solicits it.
@@ -697,7 +701,13 @@ The same round changed four behaviors of a run. None of them changes what the sc
   - A plugin that calls `ctx.session.sendline(text)` and then waits for a prompt gets no solicit on that wait. That is right when `text` is a command. When it is a raw send, one that needs a Return press before a prompt shows (connecting to a console, leaving a sub-CLI), pass `ctx.session.sendline(text, solicit=True)`.
 - **A `sendEach` item or field value must be a string, number or boolean** (see [`sendEach`](#sendeach)). An unquoted YAML date or timestamp (`2026-10-04`), or a `!!binary` or `!!set` value, used to be sent as the text of its Python value. It is now an error when the prompts are loaded, e.g. `item 1 is a timestamp; without fields each item must be a string, number or boolean`. Quote the value to send it as written.
 - **A mapping key wins over a method of the same name in templates** (see [Jinja2 Templating](#jinja2-templating)). `{{ vars.values }}` now reads the key `values`. The other side of it: when `vars`, `env` or `args` has a key named like a method, calling that method by name fails, e.g. `vars.get('k')` or `vars.items()` with a key `get` or `items` is `template error: TypeError: 'str' object is not callable`. Before, the method was called and the key was reachable only as `vars['get']`. Use a filter (`vars | items`) or rename the key.
-- **An exception raised while a template is rendered is a template error.** `{{ 1/0 }}` used to raise `ZeroDivisionError`; it is now a `ValueError`, `template error: ZeroDivisionError: division by zero`. An embedded script is rendered after the step's first prompt wait, like every other `cmd`, so `session.before` in it is what that wait set.
+- **An exception raised while a template is rendered is a template error.** `{{ 1/0 }}` used to raise `ZeroDivisionError`; it is now a `ValueError`, `template error: ZeroDivisionError: division by zero`.
+- **An embedded script is rendered after the step's first prompt wait**, like every other `cmd`, so `session.before` and `session.match` in it are what that wait set. It used to be rendered before the wait, with the values of the step before.
+
+A later round, again without a new version number, closed gaps between SPEC, the schema and the models. What it rejects that used to load:
+- a `!!binary` value where a string goes (`string_type`; see [YAML Script Structure](#yaml-script-structure)). The models used to decode it, so `cmd: !!binary aGk=` sent `hi`, while the schema rejected the document. Write the text as a string.
+
+It also accepts one thing that the models used to reject: `return: 1.0` (a number with a zero fraction), which the schema always accepted.
 
 ## CLI
 
