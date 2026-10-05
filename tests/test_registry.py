@@ -1,4 +1,4 @@
-"""P7-01..06, P7-13, P7-16..19: step registry and plugin execution (SPEC.md:286)."""
+"""P7-01..06, P7-13, P7-16..19, P7-24, P7-25: step registry and plugin execution (SPEC.md:286)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
