@@ -377,11 +377,56 @@ def test_p5_58_get_prompt_after_detach_is_not_attached():
 
 
 def test_p5_58_session_that_never_attached_is_not_attached():
-    """The same for a session whose prompt state was set without a child: the check for one comes first."""
+    """A session that was never attached raises the same way from every wait and send."""
     s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
-    s._at_prompt = True
-    with pytest.raises(RuntimeError, match="^not attached$"):
-        s.get_prompt()
+    for use in (s.get_prompt, s.check_rc, lambda: s.sendline("x"), lambda: s.sendcontrol("c"), lambda: s.expect(["x"])):
+        with pytest.raises(RuntimeError, match="^not attached$"):
+            use()
+
+
+# a child whose first output is a line that reads like the echo of a command, then a line, then a shell
+ECHO_LIKE = "bash -c \"echo 'echo stale-cmd'; echo real; PS1='PROMPT$ ' exec bash --norc --noprofile -i\""
+
+
+def test_p5_59_reattached_session_strips_no_stale_echo():
+    """SPEC "Captured output": the echo that is removed is the echo of a line sent to this child.
+
+    A line sent to a child that was detached before its prompt stayed remembered: the first wait on the
+    next child took that child's own output `echo stale-cmd` for the echo and removed it.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        s.get_prompt(timeout=5)
+        s.sendline("echo stale-cmd")
+        s.detach()  # without waiting for the command's prompt
+        s.attach(ECHO_LIKE, env=SHELL_ENV, timeout=5)
+        assert s.ctx == {"before": "", "match": ""}  # nothing of the first child's output
+        assert s.get_prompt(timeout=5) == "echo stale-cmd\nreal\n"
+        assert s.ctx["before"] == "echo stale-cmd\nreal\n"
+    finally:
+        s.detach()
+
+
+@pytest.mark.slow
+def test_p5_59_first_wait_of_a_reattached_session_solicits(fake_device: FakeDevice, sent: SentLog):
+    """SPEC "Prompt Handling": the first wait after a spawn follows no command, so it presses Return for an idle console.
+
+    After a command sent to the child before, the session still counted the wait as following that command.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        s.get_prompt(timeout=5)
+        s.sendline("echo stale-cmd")
+        s.detach()
+        sent.clear()
+        spawn, _ = fake_device("--wait-enter", "--order", "none", "--then", "prompt")
+        s.attach(spawn, env=dict(SHELL_ENV), timeout=5)
+        s.get_prompt(timeout=15)
+        assert sent.lines() == [""]
+    finally:
+        s.detach()
 
 
 def test_p5_58_reattached_session_waits_for_its_own_prompt(sent: SentLog):

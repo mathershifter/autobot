@@ -224,7 +224,17 @@ class Session:
                 return is_return and (not whole or end == len(text))
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
+    def _forget(self):
+        """Drop what is known of a child: its prompt, the last line sent to it and whether to solicit."""
+        self._at_prompt = False
+        self._prompt = ""
+        self._sent = None
+        self._solicit = True
+
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
+        # nothing of an earlier child applies to this one
+        self._forget()
+        self._ctx["before"] = self._ctx["match"] = ""
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -266,7 +276,7 @@ class Session:
         """
         cld, self._cld = self._cld, None
         echo, self._echo = self._echo, None
-        self._at_prompt = False  # there is no session to be at a prompt of
+        self._forget()  # there is no session to be at a prompt of
         if not cld:
             return
         try:
