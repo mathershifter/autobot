@@ -15,6 +15,7 @@ from conftest import (
     SHELL_PROMPT,
     ProbeExecutor,
     SentLog,
+    Timeline,
     make_runner,
     run_vars,
     steps,
@@ -22,6 +23,7 @@ from conftest import (
 
 from autobot.runner import Runner
 from autobot.session import CommandError
+from autobot.steps import StepFailure
 
 PCT_ERR = ["% .*"]
 
@@ -272,3 +274,55 @@ def test_p1_20_ignore_error_does_not_swallow_responses_exhausted(probe: ProbeExe
     with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
         r.run()
     assert_aborted(r, probe)
+
+
+def test_p1_22_empty_cmd_list_sends_no_exit_code_check(sent: SentLog):
+    """SPEC "cmd": `cmd: []` sends nothing, so it can't fail on an earlier command's exit code."""
+    out = run_vars([{"cmd": "echo hi; false", "assert": "hi"}, {"cmd": [], "register": "r"}])
+    assert sent.lines() == ["echo hi; false"]
+    assert out["r"] == ""
+
+
+@pytest.mark.parametrize("errors", [None, PCT_ERR], ids=["rc", "errors"])
+def test_p1_22_empty_cmd_list_waits_for_no_prompt(sent: SentLog, timeline: Timeline, errors):
+    """SPEC "cmd": a prompt wait may press Return or answer a prompt, so `cmd: []` makes none."""
+    out = run_vars([{"cmd": [], "register": "r"}], vars={"r": "old"}, errors=errors)
+    assert sent == []
+    assert "get_prompt" not in timeline.names()
+    assert out["r"] == ""
+
+
+def test_p1_22_empty_cmd_list_keeps_after_and_delays(sent: SentLog, timeline: Timeline):
+    """SPEC "cmd": the common step properties of a `cmd: []` step still apply."""
+    run_vars(
+        [
+            {"line": "printf 'pre%s\\n' READY"},
+            {"cmd": [], "after": "preREADY", "delay_before": "1s", "delay_after": "2s"},
+        ]
+    )
+    i = timeline.index_of(("expect", ["preREADY"]))
+    assert list(timeline[i + 1 :]) == [("sleep", 1.0), ("sleep", 2.0)]
+    assert len(sent.lines()) == 1
+
+
+def test_p1_22_empty_cmd_list_assert_checks_empty_output(sent: SentLog, probe: ProbeExecutor):
+    """SPEC "cmd": the output of no lines is empty, so an assert fails unless it matches the empty string."""
+    with pytest.raises(StepFailure, match="^assertion failed: expected "):
+        run_vars([{"cmd": [], "assert": "hi", "register": "r"}, {"probe": "next"}])
+    assert probe.calls == []
+    out = run_vars(
+        [
+            {"cmd": [], "assert": "hi", "ignore_error": True, "register": "ignored"},
+            {"cmd": [], "assert": "^$", "register": "matched"},
+        ]
+    )
+    assert out == {"ignored": "", "matched": ""}
+    assert sent == []
+
+
+@pytest.mark.parametrize("cmd", ["", [""], "{{ '' }}", "\n  \n", ["", "{{ '' }}"]], ids=repr)
+def test_p1_22_empty_line_is_still_sent_and_checked(sent: SentLog, cmd):
+    """SPEC "cmd": only `cmd: []` has no lines; an empty or blank string sends one empty line per item."""
+    run_vars([{"cmd": cmd}])
+    n = len(cmd) if isinstance(cmd, list) else 1
+    assert sent.lines() == [""] * n + [RC_PROBE]
