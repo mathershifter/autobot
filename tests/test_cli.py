@@ -695,6 +695,29 @@ def test_p6_77_schema_from_the_source_tree_needs_no_network(monkeypatch: pytest.
     assert json.loads(capsys.readouterr().out) == schema
 
 
+def test_p6_77_broken_plugin_is_reported_before_the_schema_is_looked_for(
+    installed: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """SPEC "CLI": the plugins are loaded first, so with a broken plugin and no network it is the plugin
+    that is reported, at once, and nothing is downloaded."""
+    from autobot.registry import PluginError
+
+    def discover() -> None:
+        raise PluginError("entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'")
+
+    monkeypatch.setattr(cli.registry, "discover", discover)
+    installed.result = _url_error(OSError(-2, "Name or service not known"))
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.err == (
+        "Plugin error: entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'\n"
+    )
+    assert out.out == ""
+    assert installed == []
+
+
 def test_p6_77_schema_download_failure_through_the_command_line(tmp_path: Path):
     """End to end, with the real `urlopen`: a URL nothing listens on gives the one line and status 1, no traceback."""
     code = (

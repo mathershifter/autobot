@@ -637,6 +637,7 @@ The same branch then takes the owner's decision on boolean spelling (G), the fol
 | H.3, H.4: SPEC was wrong about carriage returns before a line break, and "Migrating" left out three changes | none: SPEC only. P4-42's `cr-at-end` case already pins the capture, and the three migration facts were checked against the models by hand | - |
 | H.5: the EOS example's comment said a prompt after `printf foo` isn't recognised | `test_p6_74_eos_prompt_after_output_with_no_final_newline` (7 texts), added to P6-74 | a comment changed, not a regex, so the seven cases pass before and after: `fooswitch#` is matched whole by the EOS regex, and `done. switch#`, `foobash-5.1$ ` and `foo[admin@switch ~]$ ` are not matched |
 | I.1: `get_prompt` on a detached session returned `""` | P5-58 | all three fail: no `RuntimeError` is raised (twice), and the reattached session captures `''` instead of `two\n` |
+| I.2: SPEC said `autobot schema` loads the plugins after the schema; the code loads them first | `test_p6_77_broken_plugin_is_reported_before_the_schema_is_looked_for`, added to P6-77 | SPEC was changed to the code's order, so the test passes before and after: with a broken plugin and no network, `Plugin error: ...` is reported and `urlopen` is never called |
 
 ### Deviations from the plan
 
