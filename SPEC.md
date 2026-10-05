@@ -639,7 +639,7 @@ The engine doesn't turn a boolean of the document into text anywhere else either
 - A `sendEach` refuses a boolean item or field value when the prompts are loaded (see [`sendEach`](#sendeach)).
 - `--arg` values are always strings: `--arg debug=true` is the text `true`.
 
-A boolean stays a boolean where that is what is meant: `ignore_error`, a prompt's `return`, and any value in `vars`, which templates use in conditions. Numbers are not concerned by any of this: a number in `vars` renders as its digits, and a number where a string goes was and is `string_type`.
+A boolean stays a boolean where that is what is meant: `ignore_error`, a prompt's `return`, and any value in `vars`, which templates use in conditions. Numbers are not concerned by any of this: a number in `vars` renders as its digits, and a number where a string goes is `string_type`, with pydantic's own message.
 
 An error message that shows a boolean of the document shows it as YAML writes it: `unsupported autobot version 'true'`, `invalid duration: true`, `a boolean (true)`. YAML reads `yes`, `on` and `True` as the same value, so the message can't show which of them was written.
 

@@ -194,8 +194,8 @@ registry = StepRegistry()
 
 
 def __getattr__(name: str) -> Any:
-    # `from autobot import registry` was this instance until the name stopped shadowing the module:
-    # the instance's methods stay reachable on the module, so `registry.register(...)` still works
+    # `from autobot import registry` gives this module: the instance's public methods are reachable on
+    # it, so `registry.register(...)` registers on the instance
     if not name.startswith("_") and hasattr(StepRegistry, name):
         return getattr(registry, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
