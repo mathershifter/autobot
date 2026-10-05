@@ -555,7 +555,7 @@ Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> exec
 
 ### Conditional execution with `when`
 
-The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: it is falsy if, with surrounding whitespace removed and lowercased, it is `""`, `"false"`, `"0"` or `"none"`. A falsy result skips the step entirely. So `false` (how a boolean expression such as `{{ vars.flag }}` or `{{ a == b }}` is rendered, see [Jinja2 Templating](#jinja2-templating)), `False`, `FALSE`, `None` (how Jinja2 renders a null value, e.g. `{{ vars.v }}` when `v` is `null`) and `" false "` are all falsy. Any other result, including `"no"` and `"off"`, runs the step.
+The `when` field accepts a Jinja2 template string. The rendered result is evaluated as a boolean gate: it is falsy if, with surrounding whitespace removed and lowercased, it is `""`, `"false"`, `"0"` or `"none"`. A falsy result skips the step entirely. So `False` (how Jinja2 renders a boolean, e.g. `{{ vars.flag }}` or `{{ a == b }}`), `FALSE`, `None` (how Jinja2 renders a null value, e.g. `{{ vars.v }}` when `v` is `null`) and `" false "` are all falsy. Any other result, including `"no"` and `"off"`, runs the step. `when` is a condition, not text that is sent or stored, so a boolean result is exactly what it is for: it is the one templated value where an expression may give a boolean (see [Booleans are not text](#booleans-are-not-text)).
 
 The `session.before` and `session.match` context variables are populated both by `after` (explicit expect) and by `get_prompt` (on shell prompt match). Commonly used with `when`:
 
@@ -616,21 +616,26 @@ Available context:
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
-### Booleans in output
+### Booleans are not text
 
-An expression whose value is a boolean is written as YAML writes it, `true` or `false`: `{{ vars.flag }}` with `flag: true`, `{{ a == b }}`, `{{ x is defined }}`, `{{ value | contains('x') }}`. This is only about how the value of a `{{ ... }}` is written out, in every templated value:
-- Conditions and expressions work on the value itself: `{% if vars.flag %}`, `vars.flag == true` and `vars.flag | int` are unaffected, and so is the `when` gate, which reads `true` and `false` as it read `True` and `False`.
-- Only a value that is exactly a boolean changes. Text an expression builds itself is what Python makes of it: `{{ vars.flag | string }}`, `{{ vars.flag ~ '' }}` and `{{ [vars.flag] | join(',') }}` give `True`. So is a boolean inside a list or a mapping that is written out whole: `{{ vars.flags }}` with `flags: [true, false]` is `[True, False]`. Use `tojson` for those: `{{ vars.flags | tojson }}` is `[true, false]`.
-- A string is never changed: `word: 'True'` renders `True`.
-- A null is still written `None` (`{{ vars.v }}` when `v` is `null`), as Jinja2 does it.
+A template is rendered to text that the engine sends or stores, and a boolean is not text: there is no one spelling for it (`true`, `True`, `yes`, `on`, `1`), and the device decides which it accepts. So an expression whose value is a boolean is a template error: `cmd: "set debug {{ vars.debug }}"` with `debug: true`, `{{ a == b }}`, `{{ x is defined }}`, `{{ value | contains('x') }}`. The message is `template error: an expression gave a boolean (true), which is never written as text; quote the value in the script, or say which text is meant, e.g. {{ value | string }} (True) or {{ value | tojson }} (true)`, with `(false)` for a false value. Like any [template error](#jinja2-templating) it aborts the step, also with `ignore_error: true`, and nothing of that value is sent. To use a boolean-looking value as text:
+- Quote it in the script, so that it is a string: `debug: 'true'`, `debug: 'yes'`. `{{ vars.debug }}` then renders what was written.
+- Or say in the template which text is meant: `{{ vars.debug | string }}` is `True` or `False`, `{{ vars.debug | tojson }}` (or `| string | lower`) is `true` or `false`, and `{{ 'on' if vars.debug else 'off' }}` is whatever the device wants.
 
-Where the engine itself turns a boolean of the document into text, it uses the same spelling: the values a `sendEach` sends (see [`sendEach`](#sendeach)), the value the `contains` and `search` filters look in (`{{ vars.flag | contains('true') }}`), and the messages `unsupported autobot version 'true'` and `invalid duration: true`.
+The rule is about the value a `{{ ... }}` writes out, and only when that value is exactly a boolean:
+- A boolean used inside a template is unaffected: `{% if vars.debug %}`, `{{ 'on' if vars.debug else 'off' }}`, `vars.debug == true`, `x is defined` in an `{% if %}`, and filters and tests inside an expression all work on the value.
+- Text an expression builds itself is what Python makes of it, with no error: `{{ vars.debug ~ '' }}`, `{{ '%s' | format(vars.debug) }}` and `{{ [vars.debug] | join(',') }}` give `True`. So is a boolean inside a list or a mapping that is written out whole: `{{ vars.flags }}` with `flags: [true, false]` is `[True, False]`; `{{ vars.flags | tojson }}` is `[true, false]`.
+- A string and a number are never refused: `word: 'True'` renders `True`, and `1` and `0` render as they are.
+- A null is not a boolean: it is written `None` (`{{ vars.v }}` when `v` is `null`), as Jinja2 does it.
+- `when` is a condition and is rendered without this rule (see [Conditional execution with `when`](#conditional-execution-with-when)). A plugin renders a condition of its own with `ctx.render(template, condition=True)`.
+
+The engine doesn't turn a boolean of the document into text anywhere else either: a `sendEach` refuses one (see [`sendEach`](#sendeach)). The `contains` and `search` filters read the value they look in as `str()` gives it, which matters only for a boolean passed to them directly (`{{ vars.debug | contains('True') }}`).
 
 ### Custom Filters
 
 | Filter | Usage | Description |
 |--------|-------|-------------|
-| `contains` | `{{ value \| contains('substring') }}` | True if `substring` is found in `value`. Written out, the result is `true` or `false` |
+| `contains` | `{{ value \| contains('substring') }}` | True if `substring` is found in `value`. The result is a boolean: use it in a `when` or an `{% if %}`, not as text (see [Booleans are not text](#booleans-are-not-text)) |
 | `search` | `{{ value \| search('regex') }}` | True if the regex pattern matches anywhere in `value`. An invalid regex is a template error (`template error: search: invalid regex ...`) |
 
 ## Prompt Handling (`get_prompt`)
@@ -761,12 +766,12 @@ That round also changed one thing about captured output: a prompt wait discards 
 
 It also accepts one thing that the models used to reject: `return: 1.0` (a number with a zero fraction), which the schema always accepted.
 
-**A boolean that a template writes out is `true` or `false`** (see [Booleans in output](#booleans-in-output)). `{{ vars.flag }}`, `{{ a == b }}` and `{{ value | contains('x') }}` used to render Python's `True` or `False`. `when` is unaffected, and so are `{% if %}` and comparisons inside an expression. What needs a change is text that goes somewhere the spelling matters:
-- a command or script that passes the value to something that wants Python's spelling, e.g. `cmd: python3 -c "print({{ vars.flag }})"`: write `{{ vars.flag | string }}`, which is still `True`.
-- an `assert`, `after` or `search` pattern, or a comparison in a later step, that looks for `True` or `False` in text an earlier template produced (e.g. `echo {{ vars.flag }}` with `assert: True`).
-- `{{ vars.flag | contains('True') }}` or `search('True')` on a boolean: the filters now look in `true` / `false`.
+**A boolean that a template writes out is an error** (see [Booleans are not text](#booleans-are-not-text)). `{{ vars.flag }}` with `flag: true`, `{{ a == b }}` and `{{ value | contains('x') }}` used to render Python's `True` or `False` into the command, line, pattern, script or environment value. They are now a template error, `template error: an expression gave a boolean (true), which is never written as text; ...`, when the value is rendered. `when` is unaffected, and so are `{% if %}`, conditional expressions and comparisons inside an expression. What needs a change:
+- a `vars` value that was meant as text all along, e.g. `debug: true` used as `set debug {{ vars.debug }}`: quote it with the text the device expects, `debug: 'True'` to send what was sent before.
+- a template that writes out a real boolean: say which text is meant. `{{ vars.flag | string }}` and `{{ (a == b) | string }}` are `True` or `False` as before, `| tojson` gives `true` or `false`, and `{{ 'on' if vars.flag else 'off' }}` anything else.
+- a plugin that renders a condition field through `ctx.render(...)` and reads the text: pass `condition=True`, as the runner does for `when`.
 
-The messages `unsupported autobot version 'True'` and `invalid duration: True` now say `true`.
+The messages `unsupported autobot version 'True'` and `invalid duration: True` now show the value as YAML writes it, `true`.
 
 **A `sendEach` no longer sends a boolean** (see [`sendEach`](#sendeach)). An item or field value that YAML reads as a boolean (`true`, `yes`, `on`, `True` and their opposites, unquoted) used to be sent as Python's `True` or `False`, whatever was written. It is now an error when the prompts are loaded, e.g. `prompt 'login': sendEach 'vars.creds': item 0 field 'password' is a boolean (true), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'`. Quote the value with the text the device expects: `password: 'True'` sends what `password: true` used to.
 

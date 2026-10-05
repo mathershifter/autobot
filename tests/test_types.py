@@ -99,7 +99,7 @@ def test_p8_19_search_invalid_regex_is_template_error():
     """SPEC "Jinja2 Templating": an invalid ``search`` regex is a template error."""
     with pytest.raises(ValueError, match=r"^template error: search: invalid regex '\(': "):
         render("{{ 'x' | search('(') }}", {})
-    assert render("{{ 'abc' | search('b+') }}", {}) == "true"
+    assert render("{{ 'abc' | search('b+') }}", {}, condition=True) == "True"
 
 
 @pytest.mark.parametrize(("value", "shown"), [(True, "true"), (False, "false")])

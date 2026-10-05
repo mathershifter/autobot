@@ -443,7 +443,7 @@ Available context:
 
 A key wins over a mapping method of the same name: after `register: values`, `{{ vars.values }}` is the registered output. `vars.items()` and `vars.get('k', 'default')` work as long as no key is named `items` or `get`.
 
-A boolean is written as YAML writes it: `{{ vars.flag }}`, `{{ a == b }}` and `{{ value | contains('x') }}` render `true` or `false`. Conditions (`when`, `{% if %}`, comparisons) work on the value and are unaffected. A boolean inside a list or mapping written out whole, and a null, are still Python's (`[True, False]`, `None`); use `tojson` for those.
+A boolean is not text. An expression that gives one, such as `{{ vars.debug }}` with `debug: true`, `{{ a == b }}` or `{{ value | contains('x') }}`, is a template error wherever the result is sent or stored, because no single spelling (`true`, `True`, `yes`) is right for every device. Quote the value in the script (`debug: 'true'`) if it is meant as text, or say in the template which text you mean: `{{ vars.debug | string }}` (`True`), `{{ vars.debug | tojson }}` (`true`) or `{{ 'on' if vars.debug else 'off' }}`. Conditions are unaffected: `when`, `{% if %}` and comparisons inside an expression work on the value. A null still renders as `None`.
 
 An expression that fails while a template is rendered, such as `{{ 1/0 }}`, is a template error like a syntax error or an undefined variable: `template error: ZeroDivisionError: division by zero`.
 

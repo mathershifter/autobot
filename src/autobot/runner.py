@@ -186,11 +186,13 @@ class Runner:
             "session": self._session.ctx,
         }
 
-    def render(self, template: Any, extra_ctx: dict | None = None) -> str:
+    def render(self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False) -> str:
+        """Render a template to text. A boolean isn't text, so an expression that gives one is a template
+        error, unless `condition`: the text is then only read as a yes or no, as `when` reads it."""
         ctx = self._ctx
         if extra_ctx:
             ctx = {**ctx, **extra_ctx}
-        return render_template(template, ctx)
+        return render_template(template, ctx, condition=condition)
 
     @staticmethod
     def _run_prepare(script: str):
@@ -276,7 +278,7 @@ class Runner:
 
         when = getattr(step, "when", None)
         if when is not None:
-            result = self.render(when)
+            result = self.render(when, condition=True)
             if result.strip().lower() in ("", "false", "0", "none"):
                 return
 
