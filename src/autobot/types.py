@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from collections.abc import Mapping
 from typing import Annotated, Any
 
@@ -12,6 +13,10 @@ from pydantic_core import PydanticCustomError
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
+DURATION_MAX = sys.float_info.max
+
+
+
 class _Environment(jinja2.Environment):
     def getattr(self, obj: Any, attribute: str) -> Any:
         # `x.name` on a mapping is the key `name` when there is one: `vars.values` is the key, not dict.values
@@ -42,12 +47,10 @@ def parse_duration(value: Any) -> float:
     if value is None:
         raise ValueError("invalid duration: null")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        try:
-            seconds = float(value)
-        except OverflowError:
-            seconds = math.inf
-        if not math.isfinite(seconds):
+        # compared before the conversion, which rounds: the schema's `maximum` is the largest double
+        if value != value or abs(value) > DURATION_MAX:
             raise ValueError(f"invalid duration: {value} (not a finite number)")
+        seconds = float(value)
         if seconds < 0:
             raise ValueError(f"invalid duration: {value}")
         return seconds
@@ -70,6 +73,8 @@ Duration = Annotated[float, pydantic.BeforeValidator(parse_duration)]
 StringOrArray = str | list[str]
 # an optional field: the key may be omitted (the field is then None), but an explicit null is rejected
 type Omittable[T] = Annotated[T | None, pydantic.BeforeValidator(reject_null)]
+# an optional field whose default isn't None (a list, a mapping, a flag): the same rule for an explicit null
+type NotNull[T] = Annotated[T, pydantic.BeforeValidator(reject_null)]
 
 
 def render(template: Any, ctx: dict) -> Any:

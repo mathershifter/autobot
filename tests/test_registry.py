@@ -1,4 +1,4 @@
-"""P7-01..06, P7-13, P7-16..19: step registry and plugin execution (SPEC.md:286)."""
+"""P7-01..06, P7-13, P7-16..19, P7-24, P7-25: step registry and plugin execution (SPEC.md:286)."""
 
 from __future__ import annotations
 
@@ -21,7 +21,17 @@ from conftest import (
     run_script,
 )
 
-from autobot.models import Config, PluginStep
+from autobot.models import (
+    BlockStep,
+    CallStep,
+    CmdStep,
+    Config,
+    ControlStep,
+    LineStep,
+    PluginStep,
+    ReturnStep,
+    SleepStep,
+)
 from autobot.registry import PluginError, StepRegistry
 
 BUILTINS = {"cmd", "sleep", "call", "block", "line", "return", "control"}
@@ -247,6 +257,11 @@ class OtherEchoExecutor:
         pass
 
 
+class OtherEchoExecutorWithKey(OtherEchoExecutor):
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+
 def _registry_state(reg: StepRegistry) -> tuple[dict, dict, dict]:
     return dict(reg._executors), dict(reg._model_keys), dict(reg._origins)
 
@@ -281,6 +296,198 @@ def test_p7_16_same_plugin_registered_again_is_harmless(isolated_registry: StepR
     assert reg.get("echo") is again
     assert [e.key for e in reg.plugin_executors()] == ["echo"]
     assert reg._model_keys[EchoStep] == "echo"
+
+
+# -- P7-24: a model belongs to one step key ------------------------------------
+
+
+class NapExecutor:
+    """The audit's plugin: its own key, the built-in `sleep` step's model."""
+
+    key = "nap"
+    model = SleepStep
+
+    def __init__(self) -> None:
+        self.ran: list[Any] = []
+
+    def execute(self, step: Any, ctx: Any, timeout: float) -> None:
+        self.ran.append(step)
+
+
+def test_p7_24_plugin_with_a_builtin_model_is_rejected(isolated_registry: StepRegistry):
+    """SPEC "Common Step Properties": a plugin can't take over a built-in step by reusing its model."""
+    reg = isolated_registry
+    before = _registry_state(reg)
+    with pytest.raises(PluginError) as ei:
+        reg.register(NapExecutor())
+    assert str(ei.value) == (
+        f"plugin {__name__}.NapExecutor, step key 'nap': model SleepStep is already the model of "
+        "the built-in step 'sleep'; a plugin needs a model of its own"
+    )
+    assert _registry_state(reg) == before
+    assert not reg.has("nap")
+    # a sleep step is still the built-in's
+    assert reg.key_for_step(SleepStep(sleep=0.01)) == "sleep"
+    assert type(reg.get("sleep")).__name__ == "SleepExecutor"
+
+
+def test_p7_24_sleep_step_still_runs_the_builtin(isolated_registry: StepRegistry, timeline: Timeline):
+    """The hijack itself: after the registration attempt, `sleep: 10ms` sleeps and the plugin never runs."""
+    nap = NapExecutor()
+    with pytest.raises(PluginError):
+        isolated_registry.register(nap)
+    run_script([{"sleep": "10ms"}])
+    assert timeline.sleeps() == [0.01]
+    assert nap.ran == []
+
+
+@pytest.mark.parametrize("model", [CmdStep, CallStep, BlockStep, LineStep, ReturnStep, ControlStep])
+def test_p7_24_every_builtin_model_is_taken(isolated_registry: StepRegistry, model: type[pydantic.BaseModel]):
+    """Every built-in model is refused, and for this reason rather than for its common property fields."""
+    reg = isolated_registry
+    before = _registry_state(reg)
+    with pytest.raises(PluginError, match=rf"model {model.__name__} is already the model of the built-in step '\w+'; "):
+        reg.register(_Executor("mine", model))
+    assert _registry_state(reg) == before
+
+
+def test_p7_24_plugin_with_another_plugins_model_is_rejected(isolated_registry: StepRegistry):
+    """Two keys with one model: steps of the first key would run the second plugin."""
+    reg = isolated_registry
+    first = _Executor("echo", EchoStep)
+    reg.register(first, origin="distribution pkg-a, entry point 'echo'")
+    before = _registry_state(reg)
+    with pytest.raises(PluginError) as ei:
+        reg.register(OtherEchoExecutorWithKey("shout"), origin="distribution pkg-b, entry point 'shout'")
+    assert str(ei.value) == (
+        f"plugin {__name__}.OtherEchoExecutorWithKey (distribution pkg-b, entry point 'shout'), step key 'shout': "
+        f"model EchoStep is already the model of step key 'echo', registered by plugin {__name__}._Executor "
+        "(distribution pkg-a, entry point 'echo'); a plugin needs a model of its own"
+    )
+    assert _registry_state(reg) == before
+    assert reg.key_for_step(EchoStep(echo="x")) == "echo"
+    # the same class under a second key is the same mistake
+    with pytest.raises(PluginError, match="model EchoStep is already the model of step key 'echo'"):
+        reg.register(_Executor("echo2", EchoStep))
+    assert _registry_state(reg) == before
+
+
+def test_p7_24_plugin_step_model_is_rejected(isolated_registry: StepRegistry):
+    """`PluginStep` is the type of every plugin step, so a plugin with it would take all of them."""
+    reg = isolated_registry
+    before = _registry_state(reg)
+    with pytest.raises(PluginError) as ei:
+        reg.register(_Executor("all", PluginStep))
+    assert str(ei.value) == (
+        f"plugin {__name__}._Executor, step key 'all': model PluginStep is the runner's own model of every "
+        "plugin step; a plugin needs a model of its own"
+    )
+    assert _registry_state(reg) == before
+
+
+def test_p7_24_own_model_and_reregistration_still_work(isolated_registry: StepRegistry):
+    """A model of the plugin's own registers, also a subclass of a built-in's, and the plugin can register again."""
+
+    class MySleep(SleepStep):
+        pass
+
+    reg = isolated_registry
+    reg.register(_Executor("mysleep", MySleep))
+    reg.register(_Executor("mysleep", MySleep))
+    assert reg.key_for_step(MySleep(sleep=1)) == "mysleep"
+    assert reg.key_for_step(SleepStep(sleep=1)) == "sleep"
+
+
+NAP_PLUGIN = '''
+from autobot.models import SleepStep
+
+
+class NapExecutor:
+    key = "nap"
+    model = SleepStep
+
+    def execute(self, step, ctx, timeout):
+        print("napped")
+'''
+
+
+def test_p7_24_cli_reports_a_reused_builtin_model(tmp_path: Path):
+    """An installed plugin with a built-in's model is a `Plugin error` before anything runs."""
+    root = tmp_path / "nap"
+    root.mkdir()
+    plugin_dist(root, "nap", NAP_PLUGIN, "NapExecutor")
+    marker = tmp_path / "prepared"
+    res = run_cli(make_doc([{"sleep": "10ms"}], prepare=f"touch {marker}"), tmp_path, pythonpath=root)
+    assert _plugin_error(res) == (
+        "plugin autobot_testplugin_nap.NapExecutor (distribution autobot_testplugin_nap, entry point 'nap'), "
+        "step key 'nap': model SleepStep is already the model of the built-in step 'sleep'; "
+        "a plugin needs a model of its own"
+    )
+    assert "napped" not in res.stdout
+    assert not marker.exists()
+
+
+# -- P7-25: `autobot.registry` is the module --------------------------------------
+
+IMPORT_FORMS = {
+    "import-as": "import autobot.registry as reg; print(type(reg).__name__, reg.PluginError.__mro__[1].__name__)",
+    "from-import": "from autobot.registry import PluginError; print('module', PluginError.__mro__[1].__name__)",
+    "plain-import": "import autobot.registry; print(type(autobot.registry).__name__, "
+    "autobot.registry.PluginError.__mro__[1].__name__)",
+    "package-first": "import autobot; import autobot.registry as reg; print(type(reg).__name__, "
+    "reg.PluginError.__mro__[1].__name__)",
+    "from-package": "from autobot import registry as reg; print(type(reg).__name__, reg.PluginError.__mro__[1].__name__)",
+}
+
+
+@pytest.mark.parametrize("form", list(IMPORT_FORMS))
+def test_p7_25_plugin_error_is_importable_from_autobot_registry(form: str):
+    """SPEC "Common Step Properties": `PluginError` is "from `autobot.registry`", however that is imported.
+
+    `import autobot.registry as reg; reg.PluginError` raised `AttributeError: 'StepRegistry' object has
+    no attribute 'PluginError'`: the package bound the registry instance to the submodule's name.
+    Each form runs in a fresh interpreter, so nothing this suite imported is in the way.
+    """
+    res = subprocess.run(
+        [sys.executable, "-c", IMPORT_FORMS[form]], check=False, capture_output=True, text=True, timeout=60
+    )
+    assert (res.returncode, res.stdout.strip(), res.stderr) == (0, "module TypeError", "")
+
+
+def test_p7_25_autobot_registry_is_the_module():
+    """In this process too: the package attribute, `sys.modules` and the import statement agree."""
+    import autobot
+    import autobot.registry as reg
+
+    assert reg is sys.modules["autobot.registry"] is autobot.registry
+    assert reg.PluginError is PluginError
+    assert reg.StepRegistry is StepRegistry
+    assert isinstance(reg.registry, StepRegistry)
+    for name in autobot.__all__:
+        assert hasattr(autobot, name), name
+
+
+def test_p7_25_registry_methods_stay_reachable_on_the_module(isolated_registry: StepRegistry):
+    """`from autobot import registry; registry.register(...)` worked on the instance, and still works."""
+    from autobot import registry
+
+    for name in ("register", "get", "has", "keys", "key_for_step", "discover", "plugin_executors", "validate_plugin_step"):
+        assert getattr(registry, name) == getattr(isolated_registry, name), name
+    executor = _Executor("echo", EchoStep)
+    registry.register(executor)
+    assert registry.has("echo") and registry.get("echo") is executor
+    assert isolated_registry.get("echo") is executor
+    assert "cmd" in registry.keys()
+
+
+@pytest.mark.parametrize("name", ["PluginErorr", "nope", "_executors", "__wrapped__"])
+def test_p7_25_unknown_module_attribute_is_a_module_error(name: str):
+    """A typo is reported for the module, not as a missing attribute of a `StepRegistry` object."""
+    import autobot.registry as reg
+
+    with pytest.raises(AttributeError) as ei:
+        getattr(reg, name)
+    assert str(ei.value) == f"module 'autobot.registry' has no attribute '{name}'"
 
 
 DUP_PLUGIN = '''

@@ -414,6 +414,42 @@ def prep_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tdir
 
 
+@pytest.mark.parametrize("text", ["\ud800", "\udcff"], ids=["lone-surrogate", "non-utf8-arg"])
+def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
+    timeline: Timeline, prep_tmp: Path, capsys: pytest.CaptureFixture[str], text: str
+):
+    """SPEC "attach": the temp file is removed in every case, also when the script can't be written.
+
+    A byte of an `--arg` that isn't UTF-8 reaches the script as a lone surrogate (`\\udcff`),
+    which UTF-8 can't encode; the file used to be left behind.
+    """
+    r = make_runner([], prepare="#!/bin/sh\necho {{ args.x }}\n", args={"x": text})
+    with pytest.raises(UnicodeEncodeError):
+        r.run()
+    assert list(prep_tmp.iterdir()) == []
+    assert "attach" not in timeline.names()
+    assert ">> prepare: done" not in capsys.readouterr().err
+
+
+def test_p5_55_run_prepare_removes_the_file_when_the_write_fails(prep_tmp: Path):
+    """The audit's reproduction: `Runner._run_prepare("echo \\ud800")` left `_autobot_*.sh` in the temp dir."""
+    with pytest.raises(UnicodeEncodeError):
+        Runner._run_prepare("echo \ud800")
+    assert list(prep_tmp.iterdir()) == []
+
+
+def test_p5_55_prepare_temp_file_removed_when_chmod_fails(prep_tmp: Path, monkeypatch: pytest.MonkeyPatch):
+    """Every later failure removes it too."""
+
+    def chmod(path: Any, mode: int) -> None:
+        raise PermissionError(1, "Operation not permitted", str(path))
+
+    monkeypatch.setattr(os, "chmod", chmod)
+    with pytest.raises(PermissionError):
+        Runner._run_prepare("#!/bin/sh\ntrue\n")
+    assert list(prep_tmp.iterdir()) == []
+
+
 def test_p5_04_prepare_without_shebang_runs_under_sh(
     tmp_path: Path, prep_tmp: Path, timeline: Timeline, capsys
 ):
@@ -984,6 +1020,31 @@ def test_p5_53_spawn_rendering_empty_stops_before_prepare(timeline: Timeline, tm
         runner.run()
     assert not prepared.exists()
     assert "attach" not in timeline.names()
+
+
+NO_COMMAND = ["''", '""', "\\", "'", "''\"\"", "'' ''", "'' ls", '"" --version']
+
+
+@pytest.mark.parametrize("value", NO_COMMAND)
+def test_p5_54_spawn_rendering_to_quotes_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
+    """SPEC "attach": a spawn that renders to quotes or a backslash names no command; nothing runs.
+
+    `pexpect.spawn("''")` raised `IndexError: list index out of range`, after `prepare` had run.
+    """
+    prepared = tmp_path / "prepared"
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+        runner.run()
+    assert not prepared.exists()
+    assert "attach" not in timeline.names()
+
+
+@pytest.mark.parametrize("value", ["'true'", '"true"', "tr''ue", "\\true", "'/bin/true' ''"])
+def test_p5_54_quoted_command_still_spawns(value: str):
+    """A command that is quoted or escaped is still a command: it gets as far as the spawn wait."""
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
+    with pytest.raises(EOFError, match=r"^connection closed before any output from .* \(exit status 0\)$"):
+        runner.run()
 
 
 def test_p5_24_attach_timeout_default_and_spawn_templated(

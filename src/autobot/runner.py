@@ -10,7 +10,7 @@ from typing import Any
 from jinja2 import StrictUndefined
 from rich.console import Console
 
-from .models import Config, PluginStep, Prompt, SendEach, Step
+from .models import Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
@@ -192,12 +192,13 @@ class Runner:
         else:
             argv = ["/bin/sh"]
             console.print(">> prepare: running local script (no shebang, using /bin/sh)")
-        with tempfile.NamedTemporaryFile(
+        f = tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
-        ) as f:
-            f.write(script)
-            tmp = f.name
+        )
+        tmp = f.name
         try:
+            with f:
+                f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
             os.chmod(tmp, 0o700)
             try:
                 result = subprocess.run([*argv, tmp], check=False)
@@ -216,7 +217,7 @@ class Runner:
     def run(self):
         attach = self._config.attach
         spawn = self.render(attach.spawn)
-        if not spawn.strip():
+        if not names_command(spawn):
             raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
         if attach.prepare:
@@ -252,8 +253,10 @@ class Runner:
         timeout = self._get_timeout(step)
 
         after = getattr(step, "after", None)
-        if after:
+        if after is not None:
             pattern = self.render(after)
+            if not pattern:
+                raise ValueError("after: the pattern rendered to an empty regex, which matches at once")
             check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import pydantic
 
-from .models import _BUILTIN_KEYS, _COMMON_PROPS
+from .models import _BUILTIN_KEYS, _COMMON_PROPS, PluginStep
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -49,6 +49,24 @@ class StepRegistry:
             raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (the schema's pluginStep definition "
                 "and the plugin step type in validation errors use the name)"
+            )
+        # a step is dispatched by its model's class: a model another key has would send that key's steps here
+        owner = self._model_keys.get(model)
+        if model is PluginStep:
+            raise PluginError(
+                f"plugin {who}, step key {key!r}: model PluginStep is the runner's own model of every plugin step; "
+                "a plugin needs a model of its own"
+            )
+        if owner is not None and owner != key:
+            whose = (
+                f"the built-in step {owner!r}"
+                if owner in self._builtins
+                else f"step key {owner!r}, registered by plugin "
+                f"{_describe(self._executors[owner], self._origins.get(owner, ''))}"
+            )
+            raise PluginError(
+                f"plugin {who}, step key {key!r}: model {model.__name__} is already the model of {whose}; "
+                "a plugin needs a model of its own"
             )
         clashes = [
             name if name == field else f"{name} (field {field!r})"
@@ -177,3 +195,11 @@ def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
 
 
 registry = StepRegistry()
+
+
+def __getattr__(name: str) -> Any:
+    # `from autobot import registry` was this instance until the name stopped shadowing the module:
+    # the instance's methods stay reachable on the module, so `registry.register(...)` still works
+    if not name.startswith("_") and hasattr(StepRegistry, name):
+        return getattr(registry, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

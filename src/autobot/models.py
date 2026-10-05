@@ -4,12 +4,17 @@ import re
 from collections.abc import Iterator
 from typing import Annotated, Any
 
+import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, Omittable, StringOrArray, ensure_list
+from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list
 
 VERSION = "2026-10"
+
+
+# strict: a value has the type the schema names, so YAML's !!binary isn't a string
+_STRICT = pydantic.ConfigDict(extra="forbid", strict=True)
 
 
 def _custom(type_: str, msg: str) -> PydanticCustomError:
@@ -61,6 +66,15 @@ def _template_regex(v: str) -> str:
     return v if _TEMPLATE_RE.search(v) else _compiles(v)
 
 
+def _after(v: str) -> str:
+    if v == "":
+        raise _custom(
+            "string_too_short",
+            "an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing",
+        )
+    return _template_regex(v)
+
+
 # a character that isn't whitespace (the characters of str.isspace, written out so that the schema's
 # pattern, an ECMA regex, means the same; the schema uses this exact pattern)
 _BLANK = [(0x09, 0x0D), (0x1C, 0x1F), 0x20, 0x85, 0xA0, 0x1680, (0x2000, 0x200A), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
@@ -69,20 +83,37 @@ NOT_BLANK = "[^%s]" % "".join(
 )
 
 
+def names_command(spawn: str) -> bool:
+    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none."""
+    words = pexpect.split_command_line(spawn)
+    return bool(words and words[0])
+
+
 def _spawn(v: str) -> str:
     if not re.search(NOT_BLANK, v):
         raise _custom("empty_command", "spawn must be a command, not an empty or blank string")
+    # a template names its command only once it is rendered; the runner checks it then
+    if not _TEMPLATE_RE.search(v) and not names_command(v):
+        raise _custom(
+            "empty_command",
+            f"spawn must name a command: the first word of {v!r} is empty (quotes or a backslash with nothing in them)",
+        )
     return v
+
+
+def _whole(v: Any) -> Any:
+    # as in JSON, a number with a zero fraction is that integer: `return: 1.0` is 1
+    return int(v) if isinstance(v, float) and v.is_integer() else v
 
 
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
-# `after`: a regex once rendered
-After = Annotated[str, pydantic.AfterValidator(_template_regex)]
+# `after`: a non-empty regex once rendered
+After = Annotated[str, pydantic.AfterValidator(_after)]
 
 
 class FieldEntry(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     match: list[Regex]
     field: str
 
@@ -108,7 +139,7 @@ class FieldEntry(pydantic.BaseModel):
 
 
 class SendEach(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     each: str
     fields: Omittable[Annotated[list[FieldEntry], pydantic.Field(min_length=1)]] = None
 
@@ -124,12 +155,12 @@ _MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
 
 
 class Prompt(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     name: str
     # entries are single non-empty regexes; a grouped or empty entry is kept here so _check_expect can name it
     expect: Omittable[list[str | list[str]]] = None
     send: Omittable[str | SendEach] = None
-    is_shell_prompt: bool = pydantic.Field(False, alias="return", strict=True)
+    is_shell_prompt: NotNull[bool] = pydantic.Field(False, alias="return", strict=True)
 
     @pydantic.field_validator("expect", mode="before")
     @classmethod
@@ -201,27 +232,27 @@ class Prompt(pydantic.BaseModel):
 
 
 class Function(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     script: list[Step]
 
 
 class Attach(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
     env: Omittable[dict[str, str]] = None
-    script: list[Step] = []
+    script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
 
 class CmdStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     cmd: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
     assert_: Omittable[StringOrArray] = pydantic.Field(None, alias="assert")
-    ignore_error: bool = pydantic.Field(False, strict=True)
+    ignore_error: NotNull[bool] = pydantic.Field(False, strict=True)
     register_: Omittable[Annotated[str, pydantic.StringConstraints(min_length=1)]] = pydantic.Field(
         None, alias="register"
     )
@@ -244,12 +275,12 @@ class CmdStep(pydantic.BaseModel):
 
 
 class SleepStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     sleep: Duration
 
 
 class CallStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     call: str
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -259,21 +290,21 @@ class CallStep(pydantic.BaseModel):
 
 
 class Breakout(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    script: list[Step] = []
+    model_config = _STRICT
+    script: NotNull[list[Step]] = []
 
 
 class Block(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     name: str
-    prompts: list[Prompt] = []
-    enter: list[Step] = []
-    script: list[Step] = []
+    prompts: NotNull[list[Prompt]] = []
+    enter: NotNull[list[Step]] = []
+    script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
 
 class BlockStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     block: Block
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -283,7 +314,7 @@ class BlockStep(pydantic.BaseModel):
 
 
 class LineStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     line: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -292,8 +323,8 @@ class LineStep(pydantic.BaseModel):
 
 
 class ReturnStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
-    newline_count: int = pydantic.Field(alias="return", ge=1, strict=True)
+    model_config = _STRICT
+    newline_count: Annotated[int, pydantic.BeforeValidator(_whole)] = pydantic.Field(alias="return", ge=1, strict=True)
     after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
@@ -305,7 +336,7 @@ CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
 
 
 class ControlStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     control: StringOrArray
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -326,7 +357,7 @@ class ControlStep(pydantic.BaseModel):
 
 
 class PluginStep(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="allow")
+    model_config = pydantic.ConfigDict(extra="allow", strict=True)
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
     after: Omittable[After] = None
     when: Omittable[str] = None
@@ -402,25 +433,29 @@ def _walk_steps(loc: tuple, steps: list[Step]) -> Iterator[tuple[tuple, Step]]:
 
 
 class Config(pydantic.BaseModel):
-    model_config = pydantic.ConfigDict(extra="forbid")
+    model_config = _STRICT
     autobot: str
 
-    @pydantic.field_validator("autobot")
+    # before the type check: a value YAML reads as a number or a date (2026, 2026.10, 2026-10-04) is
+    # an unsupported version like any other, not a string_type error
+    @pydantic.field_validator("autobot", mode="before")
     @classmethod
-    def _validate_autobot(cls, v: str) -> str:
+    def _validate_autobot(cls, v: Any) -> Any:
+        if v is None:
+            return v  # not a version at all: the field's own error
         if v == "2026-08":
             raise _custom(
                 "unsupported_version",
                 f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
             )
-        if v != VERSION:
-            raise _custom("unsupported_version", f"unsupported autobot version {v!r}; expected {VERSION}")
+        if not isinstance(v, str) or v != VERSION:
+            raise _custom("unsupported_version", f"unsupported autobot version {str(v)!r}; expected {VERSION}")
         return v
-    env: dict[str, str] = {}
-    vars: dict[str, Any] = {}
-    prompts: list[Prompt] = []
-    fn: dict[str, Function] = {}
-    errors: list[ErrorRegex] = []
+    env: NotNull[dict[str, str]] = {}
+    vars: NotNull[dict[str, Any]] = {}
+    prompts: NotNull[list[Prompt]] = []
+    fn: NotNull[dict[str, Function]] = {}
+    errors: NotNull[list[ErrorRegex]] = []
     attach: Attach
     script: list[Step]
 

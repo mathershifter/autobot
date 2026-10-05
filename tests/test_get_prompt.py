@@ -656,3 +656,175 @@ def test_p4_40_solicit_after_a_timed_out_rc_check(device, sent: SentLog):
     with pytest.raises(TimeoutError):
         r.session.get_prompt(timeout=6)
     assert sent.lines() == [""]
+
+
+# -- P4-42: `^` in a prompt regex is the start of a line -------------------------
+
+RAW_DEVICE = """
+import os, sys, termios, time
+raw = "--cooked" not in sys.argv
+attrs = termios.tcgetattr(0)
+attrs[3] &= ~termios.ECHO          # no tty echo: the session reads exactly what is written here
+if raw:
+    attrs[1] &= ~termios.OPOST     # and no \\n -> \\r\\n on the way out
+termios.tcsetattr(0, termios.TCSANOW, attrs)
+chunks = [bytes.fromhex(c) for c in sys.argv[1].split(",")]
+os.write(1, b"ready\\r\\nPROMPT$ ")
+while os.read(0, 4096):
+    for i, chunk in enumerate(chunks):
+        if i:
+            time.sleep(0.3)        # the next chunk arrives in a read of its own
+        os.write(1, chunk)
+"""
+
+ANCHORED = r"^PROMPT\$ $"
+UNANCHORED = r"PROMPT\$ $"
+
+
+@pytest.fixture
+def raw_device(tmp_path: Path) -> Iterator[Callable[..., Session]]:
+    """Factory: a Session on a device that answers every line with the given chunks, byte for byte."""
+    import sys
+
+    path = tmp_path / "raw_device.py"
+    path.write_text(RAW_DEVICE)
+    sessions: list[Session] = []
+
+    def factory(*chunks: str, regex: str = ANCHORED, cooked: bool = False) -> Session:
+        s = Session([PromptHandler("sh", [regex], [], True)])
+        sessions.append(s)
+        spawn = f"{sys.executable} {path} {','.join(c.encode().hex() for c in chunks)}"
+        s.attach(spawn + (" --cooked" if cooked else ""), env={"PATH": "/usr/bin:/bin"}, timeout=5)
+        assert s.get_prompt(timeout=5) == "ready\n"
+        s.sendline("x")
+        return s
+
+    yield factory
+    for s in sessions:
+        s.detach()
+
+
+STRAY = {
+    "cr": "\r",
+    "nul": "\x00",
+    "bel": "\x07",
+    "nul-nul": "\x00\x00",
+    "cr-nul-bel-cr": "\r\x00\x07\r",
+}
+
+
+@pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
+@pytest.mark.parametrize("lead", list(STRAY.values()), ids=list(STRAY))
+def test_p4_42_prompt_after_a_stray_control_character(raw_device: Callable[..., Session], lead: str, regex: str):
+    """SPEC "Prompt Handling": a CR, NUL or BEL before a prompt is discarded, so `^` still finds the prompt.
+
+    The anchored regex used to time out here. The unanchored one matched before and matches now,
+    with the same captured output.
+    """
+    s = raw_device(f"out\r\n{lead}PROMPT$ ", regex=regex)
+    assert s.get_prompt(timeout=3) == "out\n"
+    assert s.ctx == {"before": "out\n", "match": "PROMPT$ "}
+
+
+@pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
+def test_p4_42_prompt_after_cr_cr_lf(raw_device: Callable[..., Session], regex: str):
+    """`\\r\\r\\n` is a line break with a CR before it, as it always was: one empty line, then the prompt."""
+    s = raw_device("out\r\n\r\r\nPROMPT$ ", regex=regex)
+    assert s.get_prompt(timeout=3) == "out\n\n"
+
+
+@pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
+@pytest.mark.parametrize(
+    "chunks",
+    [("out\r", "\nPROMPT$ "), ("out\r\n\r", "\nPROMPT$ "), ("out", "\r", "\n", "PROMPT$ ")],
+    ids=["cr|lf", "crlf-cr|lf", "byte-by-byte"],
+)
+def test_p4_42_crlf_split_across_two_reads(raw_device: Callable[..., Session], chunks: tuple[str, ...], regex: str):
+    """A `\\r` whose `\\n` is still to come is not taken for a stray one: the pair stays a line break."""
+    s = raw_device(*chunks, regex=regex)
+    assert s.get_prompt(timeout=3) == "".join(chunks).replace("\r\n", "\n").removesuffix("PROMPT$ ")
+
+
+@pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
+def test_p4_42_stray_cr_in_a_read_of_its_own(raw_device: Callable[..., Session], regex: str):
+    """A lone `\\r` at the end of a read waits for what follows; followed by the prompt, it is dropped."""
+    s = raw_device("out\r\n\r", "PROMPT$ ", regex=regex)
+    assert s.get_prompt(timeout=3) == "out\n"
+
+
+@pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
+@pytest.mark.parametrize(
+    "line",
+    ["10%\r50%\r100%", "ab\x00cd\x07ef", "a\r", "x\x00", "\x00", "\x07\x00", "tab\there"],
+    ids=["progress", "nul-bel-inside", "cr-at-end", "nul-at-end", "only-nul", "only-bel-nul", "tab"],
+)
+def test_p4_42_control_characters_inside_a_line_are_captured(raw_device: Callable[..., Session], line: str, regex: str):
+    """Only the start of the unread output is affected: a line that rewrites itself is captured as before.
+
+    A run of them that makes up the whole line is kept as well, since a line break follows it.
+    (A `\\r` right before the line break was always dropped, as part of the break.)
+    """
+    s = raw_device(f"{line}\r\nPROMPT$ ", regex=regex)
+    assert s.get_prompt(timeout=3) == line.rstrip("\r") + "\n"
+
+
+@pytest.mark.parametrize("lead", ["\r", "\x00", "\x07\r"], ids=["cr", "nul", "bel-cr"])
+def test_p4_42_stray_characters_at_the_start_of_an_output_line_are_dropped(raw_device: Callable[..., Session], lead: str):
+    """The one change to captured output: these characters at the start of a line are no longer in it."""
+    s = raw_device(f"one\r\n{lead}two\rthree\r\nPROMPT$ ")
+    assert s.get_prompt(timeout=3) == "one\ntwo\rthree\n"
+
+
+def test_p4_42_anchored_prompt_is_not_found_in_the_middle_of_a_line(raw_device: Callable[..., Session]):
+    """`^` means what it says: text before the prompt on its line, also before a CR, is not a line start."""
+    s = raw_device("out\r\nnot a PROMPT$ ")
+    with pytest.raises(TimeoutError):
+        s.get_prompt(timeout=1)
+    s2 = raw_device("out\r\nredrawn\rPROMPT$ ")
+    with pytest.raises(TimeoutError):
+        s2.get_prompt(timeout=1)
+    # the unanchored regex finds both, as before
+    assert raw_device("out\r\nnot a PROMPT$ ", regex=UNANCHORED).get_prompt(timeout=3) == "out\n"
+    assert raw_device("out\r\nredrawn\rPROMPT$ ", regex=UNANCHORED).get_prompt(timeout=3) == "out\n"
+
+
+def test_p4_42_line_feed_through_a_pty_is_a_line_break(raw_device: Callable[..., Session]):
+    """A device that prints `\\n` alone reaches the session as `\\r\\n` (the pty's ONLCR), so `^` holds.
+
+    With output processing off, the bare `\\n` arrives; it is not a line break for the engine, so the
+    anchored regex doesn't match and the unanchored one captures nothing (no change here).
+    """
+    assert raw_device("out\nPROMPT$ ", cooked=True).get_prompt(timeout=3) == "out\n"
+    with pytest.raises(TimeoutError):
+        raw_device("out\nPROMPT$ ").get_prompt(timeout=1)
+    assert raw_device("out\nPROMPT$ ", regex=UNANCHORED).get_prompt(timeout=3) == "out\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("PROMPT$ ", True),
+        ("\rPROMPT$ ", True),
+        ("\x00\x07PROMPT$ ", True),
+        ("\r\nPROMPT$ ", True),
+        ("\r\r\nPROMPT$ ", True),
+        ("\x1b[0m\rPROMPT$ ", True),
+        ("\r\x1b[0mPROMPT$ ", True),
+        ("x\rPROMPT$ ", False),
+        ("x PROMPT$ ", False),
+        ("\r", False),
+        ("", False),
+    ],
+    ids=repr,
+)
+def test_p4_42_prompt_swap_reads_the_prompt_the_same_way(text: str, expected: bool):
+    """`_is_shell_prompt` (a block's prompt swap) discards what `get_prompt` discards."""
+    s = Session([PromptHandler("sh", [ANCHORED], [], True)])
+    assert s._is_shell_prompt(text) is expected
+
+
+def test_p4_42_prompt_regex_wins_a_tie_with_the_stray_characters():
+    """A prompt regex that itself starts at a leading CR still matches there (ties go to the prompts)."""
+    s = Session([PromptHandler("login", [r"\rlogin: $"], [["x"]], False), PromptHandler("sh", [r"^\$ $"], [], True)])
+    assert s._is_shell_prompt("\rlogin: ") is False  # the login prompt, not a shell prompt
+    assert s._is_shell_prompt("\r$ ") is True

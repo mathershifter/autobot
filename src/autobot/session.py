@@ -13,6 +13,12 @@ from .types import ANSI_ESCAPE_RE
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
 
+# Stray carriage returns, NULs and BELs at the start of the unread output: a prompt wait drops them, so
+# `^` in a prompt regex means the start of a line. The lookahead needs the next character to be there and
+# to be none of these or a line break, so a `\r` whose `\n` is still to come is never taken for a stray one.
+STRAY_RE = re.compile(r"\A[\r\x00\x07]+(?=[^\r\n\x00\x07])")
+
+
 class CommandError(RuntimeError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
@@ -57,17 +63,39 @@ def _exit_note(cld: pexpect.spawn) -> str:
     return ""
 
 
+# the start of a sequence ANSI_ESCAPE_RE removes, cut off by the end of a read: ESC, or an unfinished CSI
+_PARTIAL_ESCAPE_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*)?\Z")
+# longer than any real sequence; a longer run after an ESC is written out rather than held
+ESCAPE_HOLD = 64
+
+
 class CleanWriter:
+    """The operator echo: what is read from the session, without the escape sequences ANSI_ESCAPE_RE removes."""
+
     def __init__(self, stream):
         self._stream = stream
+        self._held = ""
 
     def write(self, data):
-        data = ANSI_ESCAPE_RE.sub("", data)
+        data = ANSI_ESCAPE_RE.sub("", self._held + data)
+        self._held = ""
+        # a sequence may arrive in two reads: keep its start back until the next one completes it
+        m = _PARTIAL_ESCAPE_RE.search(data)
+        if m and len(data) - m.start() <= ESCAPE_HOLD:
+            data, self._held = data[: m.start()], data[m.start() :]
         if data:
             self._stream.write(data)
             self._stream.flush()
 
     def flush(self):
+        # pexpect flushes after every read, so this must not release what is held
+        self._stream.flush()
+
+    def close(self):
+        """Write out what is still held: nothing more will come to complete it. The stream stays open."""
+        held, self._held = self._held, ""
+        if held:
+            self._stream.write(held)
         self._stream.flush()
 
 
@@ -146,6 +174,7 @@ class SimpleHandler(PromptHandler):
 class Session:
     def __init__(self, handlers: list[PromptHandler]):
         self._cld: pexpect.spawn | None = None
+        self._echo: CleanWriter | None = None
         self._at_prompt = False
         self._prompt = ""
         self._sent: str | None = None
@@ -164,6 +193,9 @@ class Session:
             h.start = len(self._patterns)
             h.end = h.start + len(h.patterns)
             self._patterns.extend(h.patterns)
+        # after the prompts: on a tie (a prompt regex that itself starts at a leading `\r`) the prompt wins
+        self._stray = len(self._patterns)
+        self._patterns.append(STRAY_RE)
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
@@ -180,9 +212,9 @@ class Session:
             if not found:
                 return False
             _, i, end = min(found)
-            if i > 1:
+            if 1 < i < self._stray:
                 return next(h for h in self._handlers if h.start <= i < h.end).is_return
-            text = text[end:]  # a line break or escape sequence, consumed as get_prompt does
+            text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         self._cld = pexpect.spawn(
@@ -192,7 +224,7 @@ class Session:
             codec_errors="replace",
             env=dict(DEFAULT_ENV) if env is None else env,
         )
-        self._cld.logfile_read = CleanWriter(sys.stdout)
+        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
         cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
@@ -221,7 +253,12 @@ class Session:
 
     def detach(self):
         if self._cld:
-            self._cld.close()
+            try:
+                self._cld.close()
+            finally:
+                if self._echo:
+                    self._echo.close()
+                    self._echo = None
             self._cld = None
 
     def get_prompt(
@@ -259,7 +296,7 @@ class Session:
                 continue
             if before:
                 output.append(before)
-            if i == 1:
+            if i == 1 or i == self._stray:
                 continue
             if i == len(self._patterns) - 1:
                 raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
@@ -326,7 +363,8 @@ class Session:
 
         self.sendline("echo __AUTOBOT_RC=$?")
         try:
-            self._expect([r"__AUTOBOT_RC=(\d+)"], timeout, "the exit code of the command (echo $?)")
+            # the lookahead waits for what follows the digits: a code split across two reads is read whole
+            self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
         except BaseException:
             self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
             raise

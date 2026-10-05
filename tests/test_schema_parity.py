@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -339,9 +339,9 @@ def test_p6_41_parity_null_optional_field(both_validate: Callable, model: type[p
     assert both_validate(doc) == (False, False)
     # the send union also reports its list members for a sendEach error; keep the one at the key
     [err] = [e for e in model_errors(doc) if e["loc"][-1] == key]
-    if optional_fields(model)[key][1] is None:
-        assert err["type"] == "null_value"
-        assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
+    # every optional field, whatever its default: `env:`, `prompts:`, `ignore_error:` as much as `timeout:`
+    assert err["type"] == "null_value"
+    assert err["msg"] == "null (an empty value) is not allowed; omit the key instead"
 
 
 @pytest.mark.parametrize(("model", "key"), OPTIONAL, ids=OPTIONAL_IDS)
@@ -688,3 +688,309 @@ def test_p6_62_parity_non_ascii_digit_duration(both_validate: Callable, value: s
     """SPEC "Duration Format": the schema's ``[0-9]`` and the model agree on non-ASCII digits."""
     assert both_validate(s({"sleep": value})) == (False, False)
     assert both_validate(s({"sleep": "5s"})) == (True, True)
+
+
+# -- P6-68..70: values a YAML file can hold and JSON can't, or holds differently ----
+
+
+@pytest.mark.parametrize("literal", ["1.0", "2.0", "3.0e+0", "1.0e+1"])
+def test_p6_68_parity_return_whole_float_accepted(both_validate: Callable, literal: str):
+    """SPEC "return": a number with a zero fraction is that integer, as in JSON; both accept it."""
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    assert isinstance(value, float)
+    doc = s({"return": value})
+    assert both_validate(doc) == (True, True)
+    count = Config.model_validate(doc).script[0].newline_count
+    assert (count, type(count)) == (int(value), int)
+
+
+@pytest.mark.parametrize("literal", ["1.5", "0.0", "-1.0", "0.999", ".inf", "-.inf", ".nan", "1.0e+400"])
+def test_p6_68_parity_return_other_float_rejected(both_validate: Callable, literal: str):
+    """SPEC "return": a fraction, a whole number below 1 and a non-finite number are rejected by both."""
+    doc = s({"return": yaml.safe_load(f"v: {literal}")["v"]})
+    assert both_validate(doc) == (False, False)
+    assert all(e["loc"][:3] == ("script", 0, "return") for e in model_errors(doc))
+
+
+FLOAT_MAX = 1.7976931348623157e308
+# the first integer above the largest double; `float()` would round it down to FLOAT_MAX
+ABOVE_FLOAT_MAX = int(FLOAT_MAX) + 1
+TOO_LARGE = {
+    "inf": float("inf"),
+    "-inf": float("-inf"),
+    "10**400": 10**400,
+    "-10**400": -(10**400),
+    "2**1024": 2**1024,
+    "above-float-max": ABOVE_FLOAT_MAX,
+}
+
+
+def test_p6_69_schema_duration_maximum_is_the_largest_double(schema: dict[str, Any]):
+    """SPEC "Duration Format": the schema's bound and the model's are the same number."""
+    import sys
+
+    from autobot import types
+
+    [number] = [alt for alt in schema["$defs"]["duration"]["oneOf"] if alt["type"] == "number"]
+    assert number == {"type": "number", "minimum": 0, "maximum": sys.float_info.max}
+    assert types.DURATION_MAX == sys.float_info.max == FLOAT_MAX
+
+
+@pytest.mark.parametrize("field", list(DURATION_FIELDS))
+@pytest.mark.parametrize("value", list(TOO_LARGE.values()), ids=list(TOO_LARGE))
+def test_p6_69_parity_duration_beyond_a_double_rejected(both_validate: Callable, value: Any, field: str):
+    """SPEC "Duration Format": `.inf`, `-.inf` and a number above the largest double are rejected by both.
+
+    The schema used to accept `timeout: .inf` and an integer of 400 digits (`minimum: 0` only).
+    """
+    doc = DURATION_FIELDS[field](value)
+    if field == "call.timeout":
+        doc["fn"] = {"f": {"script": []}}
+    assert both_validate(doc) == (False, False)
+    errs = model_errors(doc)
+    assert errs and all("invalid duration" in e["msg"] for e in errs)
+
+
+@pytest.mark.parametrize("value", [FLOAT_MAX, int(FLOAT_MAX), 1e308, 10**308, 0, 0.0], ids=repr)
+def test_p6_69_parity_duration_up_to_a_double_accepted(both_validate: Callable, value: Any):
+    """SPEC "Duration Format": the bound is inclusive, and nothing below it is cut off."""
+    doc = s({"sleep": value})
+    assert both_validate(doc) == (True, True)
+    assert Config.model_validate(doc).script[0].sleep == float(value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), "9" * 400 + "s", "1" + "0" * 310 + "h"], ids=["nan", "400-digits", "hours"])
+def test_p6_69_duration_only_the_models_can_reject(both_validate: Callable, value: Any):
+    """SPEC "YAML Script Structure": `.nan`, and a string that overflows, are the stated model-only cases.
+
+    No `minimum` or `maximum` compares with NaN, and a pattern can't compute a string's value.
+    """
+    doc = s({"sleep": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert "not a finite number" in err["msg"]
+
+
+BINARY = yaml.safe_load("v: !!binary aGk=")["v"]
+FN = {"f": {"script": []}}
+# every place a script holds a string: doc(value) -> a document with `value` there
+STRING_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "autobot": lambda v: d(autobot=v),
+    "env-value": lambda v: d(env={"A": v}),
+    "errors-item": lambda v: d(errors=[v]),
+    "prompt-name": lambda v: d(prompts=[{"name": v, "expect": "x"}]),
+    "prompt-expect": lambda v: d(prompts=[{"name": "p", "expect": v}]),
+    "prompt-expect-item": lambda v: d(prompts=[{"name": "p", "expect": ["x", v]}]),
+    "prompt-send": lambda v: prompt(send=v),
+    "send-each": lambda v: prompt(send={"each": v}),
+    "fields-match": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": v, "field": "u"}]}}]),
+    "fields-match-item": lambda v: d(
+        prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": ["x", v], "field": "u"}]}}]
+    ),
+    "fields-field": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": v}]}}]),
+    "attach-spawn": lambda v: d(attach={"spawn": v}),
+    "attach-prepare": lambda v: d(attach={"spawn": "ssh host", "prepare": v}),
+    "attach-env-value": lambda v: d(attach={"spawn": "ssh host", "env": {"A": v}}),
+    "cmd": lambda v: s({"cmd": v}),
+    "cmd-item": lambda v: s({"cmd": ["x", v]}),
+    "cmd-assert": lambda v: s({"cmd": "x", "assert": v}),
+    "cmd-assert-item": lambda v: s({"cmd": "x", "assert": ["x", v]}),
+    "cmd-register": lambda v: s({"cmd": "x", "register": v}),
+    "cmd-after": lambda v: s({"cmd": "x", "after": v}),
+    "cmd-when": lambda v: s({"cmd": "x", "when": v}),
+    "call": lambda v: d(fn=FN, script=[{"call": v}]),
+    "call-after": lambda v: d(fn=FN, script=[{"call": "f", "after": v}]),
+    "block-name": lambda v: s({"block": {"name": v}}),
+    "block-when": lambda v: s({"block": {"name": "b"}, "when": v}),
+    "line": lambda v: s({"line": v}),
+    "line-item": lambda v: s({"line": ["x", v]}),
+    "line-after": lambda v: s({"line": "x", "after": v}),
+    "return-when": lambda v: s({"return": 1, "when": v}),
+    "control": lambda v: s({"control": v}),
+    "control-item": lambda v: s({"control": ["a", v]}),
+    "control-after": lambda v: s({"control": "a", "after": v}),
+    "fn-step": lambda v: d(fn={"f": {"script": [{"cmd": v}]}}),
+    "duration": lambda v: s({"sleep": v}),
+}
+
+
+@pytest.mark.parametrize("field", list(STRING_FIELDS))
+def test_p6_70_parity_binary_is_not_a_string(both_validate: Callable, field: str):
+    """SPEC "YAML Script Structure": a `!!binary` value isn't a string; both reject it wherever a string goes.
+
+    The models used to decode it (`cmd: !!binary aGk=` ran `hi`), while the schema rejected it.
+    """
+    assert BINARY == b"hi"
+    doc = STRING_FIELDS[field](BINARY)
+    assert both_validate(doc) == (False, False)
+    # and the same document with the text is fine, so it is the bytes that are rejected
+    valid = {"autobot": "2026-10", "send-each": "vars.c", "call": "f", "duration": "5s"}
+    text = valid.get(field, "a" if field.startswith("control") else "hi")
+    assert both_validate(STRING_FIELDS[field](text)) == (True, True)
+
+
+@pytest.mark.parametrize("field", ["cmd", "attach-spawn", "env-value", "block-name", "cmd-when"])
+def test_p6_70_binary_is_a_string_type_error(field: str):
+    """The model's error is the string's own type error, at the value."""
+    assert {e["type"] for e in model_errors(STRING_FIELDS[field](BINARY))} <= {"string_type", "list_type"}
+
+
+@pytest.mark.parametrize("field", ["probe-field", "after", "when"])
+def test_p6_70_binary_in_a_plugin_step_common_prop(both_validate: Callable, probe: Any, field: str):
+    """A plugin step's common properties are strings in the same sense."""
+    doc = s({"probe": "x", **({} if field == "probe-field" else {field: BINARY})})
+    assert both_validate(doc) == ((True, True) if field == "probe-field" else (False, False))
+
+
+# -- P6-71: a spawn that names no command --------------------------------------
+
+SPAWN_NO_COMMAND = ["''", '""', "\\", "'", '"', "''\"\"", "'' ''", "'' ls", '"" --version', " '' "]
+
+
+@pytest.mark.parametrize("value", SPAWN_NO_COMMAND)
+def test_p6_71_spawn_of_quotes_or_a_backslash_rejected_on_load(both_validate: Callable, value: str):
+    """SPEC "attach": spawn must name a command. Only the models can split a command line.
+
+    Each of these has a non-blank character, so the schema's pattern accepts it; `pexpect.spawn`
+    finds no command name in it (`IndexError` for the first six, a command `''` for the rest).
+    """
+    doc = d(attach={"spawn": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("attach", "spawn"), "empty_command")
+    assert err["msg"] == (
+        f"spawn must name a command: the first word of {value!r} is empty "
+        "(quotes or a backslash with nothing in them)"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["'ssh' host", '"ssh" host', "s''sh host", "\\ssh host", "ssh ''", "{{ args.cmd }}", "''{{ args.cmd }}", "{# c #}''"],
+)
+def test_p6_71_spawn_with_a_command_or_a_template_accepted(both_validate: Callable, value: str):
+    """A quoted command name is a command, and a template is checked once rendered (P5-54)."""
+    assert both_validate(d(attach={"spawn": value})) == (True, True)
+
+
+def test_p6_71_names_command_is_what_pexpect_spawns():
+    """`names_command` is false exactly when pexpect has no command name to look up."""
+    import pexpect
+
+    for value in [*SPAWN_NO_COMMAND, "", "  ", "\x1c", "ssh host", "'a", "\\ ", "' '"]:
+        words = pexpect.split_command_line(value)
+        assert models.names_command(value) == bool(words and words[0]), value
+    assert not models.names_command("''")
+    assert models.names_command("'ssh' host")
+
+
+# -- P6-72: an `autobot` value that isn't a string ------------------------------
+
+# YAML text of the value -> how the message shows it
+VERSION_NOT_A_STRING = {
+    "2026": "2026",
+    "2026.10": "2026.1",
+    "2026-10-04": "2026-10-04",
+    "202610": "202610",
+    "true": "True",
+    "[2026-10]": "['2026-10']",
+    "{v: 2026-10}": "{'v': '2026-10'}",
+    "!!binary MjAyNi0xMA==": "b'2026-10'",
+    "0": "0",
+    "''": "",
+}
+
+
+@pytest.mark.parametrize("literal", list(VERSION_NOT_A_STRING))
+def test_p6_72_parity_version_of_another_type_is_unsupported(both_validate: Callable, literal: str):
+    """SPEC "Top-level fields": any value but `2026-10` is `unsupported_version`, also one that isn't a string.
+
+    `autobot: 2026` used to be `string_type` ("Input should be a valid string"). The schema's `const` rejects it too.
+    """
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    doc = d(autobot=value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("autobot",), "unsupported_version")
+    assert err["msg"] == f"unsupported autobot version {VERSION_NOT_A_STRING[literal]!r}; expected 2026-10"
+
+
+def test_p6_72_version_null_and_missing_keep_their_errors(both_validate: Callable):
+    """An explicit null and a missing key aren't versions: `string_type` and `missing`, as before."""
+    doc = d(autobot=None)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("autobot",), "string_type")
+    missing = {k: v for k, v in MIN.items() if k != "autobot"}
+    assert both_validate(missing) == (False, False)
+    [err] = model_errors(missing)
+    assert (err["loc"], err["type"]) == (("autobot",), "missing")
+    assert both_validate(d(autobot=yaml.safe_load("v: 2026-10")["v"])) == (True, True)
+
+
+# -- P6-73: an empty `after` -----------------------------------------------------
+
+EMPTY_AFTER: dict[str, tuple[dict[str, Any], tuple]] = {
+    "cmd": (s({"cmd": "x", "after": ""}), ("script", 0, "cmd", "after")),
+    "call": (d(fn=FN, script=[{"call": "f", "after": ""}]), ("script", 0, "call", "after")),
+    "block": (s({"block": {"name": "b"}, "after": ""}), ("script", 0, "block", "after")),
+    "line": (s({"line": "x", "after": ""}), ("script", 0, "line", "after")),
+    "return": (s({"return": 1, "after": ""}), ("script", 0, "return", "after")),
+    "control": (s({"control": "c", "after": ""}), ("script", 0, "control", "after")),
+    "in-fn": (d(fn={"f": {"script": [{"cmd": "x", "after": ""}]}}), ("fn", "f", "script", 0, "cmd", "after")),
+    "in-attach-script": (
+        d(attach={"spawn": "ssh host", "script": [{"line": "x", "after": ""}]}),
+        ("attach", "script", 0, "line", "after"),
+    ),
+    "in-breakout": (
+        d(attach={"spawn": "ssh host", "breakout": {"script": [{"line": "x", "after": ""}]}}),
+        ("attach", "breakout", "script", 0, "line", "after"),
+    ),
+    "in-block": (
+        s({"block": {"name": "b", "enter": [{"cmd": "x", "after": ""}]}}),
+        ("script", 0, "block", "block", "enter", 0, "cmd", "after"),
+    ),
+}
+EMPTY_AFTER_MSG = "an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing"
+
+
+@pytest.mark.parametrize("case", EMPTY_AFTER)
+def test_p6_73_parity_empty_after_rejected(both_validate: Callable, case: str):
+    """SPEC "Common Step Properties": `after: ''` is rejected by both, like an empty `assert` pattern.
+
+    It used to be accepted and silently skipped: the step ran without waiting for anything.
+    """
+    doc, loc = EMPTY_AFTER[case]
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (loc, "string_too_short", EMPTY_AFTER_MSG)
+
+
+def test_p6_73_parity_empty_after_on_a_plugin_step_rejected(both_validate: Callable, probe: Any):
+    """The common step properties of a plugin step follow the same rule (the schema's `stepCommon`)."""
+    doc = s({"probe": "x", "after": ""})
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (("script", 0, "plugin", "after"), "string_too_short", EMPTY_AFTER_MSG)
+    # a key no plugin registers: the static schema checks stepCommon, the model rejects the step
+    assert both_validate(s({"nope": 1, "after": ""})) == (False, False)
+    assert both_validate(s({"nope": 1, "after": "x"})) == (False, True)
+
+
+def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
+    """Every definition with an `after` has the same one, so no step type is left out."""
+    found = [
+        (name, definition["properties"]["after"])
+        for name, definition in schema["$defs"].items()
+        if "after" in definition.get("properties", {})
+    ]
+    assert sorted(name for name, _ in found) == [
+        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "stepCommon",
+    ]
+    assert all(prop == {"type": "string", "minLength": 1} for _, prop in found)
+
+
+@pytest.mark.parametrize("value", [" ", "x", "{{ vars.p }}", "{{ '' }}", "{# only a comment #}", "^$"])
+def test_p6_73_parity_blank_and_templated_after_accepted(both_validate: Callable, value: str):
+    """Only the empty string is rejected at load; a template that renders to nothing is caught when it is used (P3-21)."""
+    assert both_validate(s({"cmd": "x", "after": value})) == (True, True)

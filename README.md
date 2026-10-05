@@ -92,7 +92,7 @@ The `attach` block controls how autobot connects to the remote console.
 | Field      | Required | Description                                                                                                                         |
 |------------|----------|-------------------------------------------------------------------------------------------------------------------------------------|
 | `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
-| `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must not be empty or blank, as written or once rendered         |
+| `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
 | `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
@@ -145,7 +145,7 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
   return: true
 ```
 
-Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
+Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^` to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
 
 A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
 
@@ -380,7 +380,7 @@ All step types except `sleep` support these optional fields:
 
 | Field          | Description                                                    |
 |----------------|----------------------------------------------------------------|
-| `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match` |
+| `after`        | Regex pattern — wait for this to appear in output before executing. On match, populates `session.before` and `session.match`. Must not be empty, as written or once rendered; omit the key to skip the wait |
 | `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
@@ -497,7 +497,7 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields, a class of the plugin's own: not a built-in step's model or another plugin's) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 
 When a plugin sends text itself, it tells the session what kind of send it is:
 

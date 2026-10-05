@@ -210,6 +210,7 @@ LOAD_HOLES = {
     "expect-invalid-regex": ({"prompts": [{"name": "sh", "expect": "("}]}, "invalid_regex"),
     "assert-empty": ({"script": [{"cmd": "true", "assert": ""}]}, "string_too_short"),
     "register-empty": ({"script": [{"cmd": "true", "register": ""}]}, "string_too_short"),
+    "after-empty": ({"script": [{"cmd": "true", "after": ""}]}, "string_too_short"),
     "control-two-chars": ({"script": [{"control": "ab"}]}, "control_char"),
 }
 
