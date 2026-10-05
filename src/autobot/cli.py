@@ -119,23 +119,37 @@ def _cmd_run(args):
 SCHEMA_NAME = "autobot.2026-10.json"
 
 
+class SchemaError(RuntimeError):
+    """The schema is in neither place it is read from; the CLI reports it without a traceback."""
+
+
 def load_schema() -> dict[str, Any]:
     """The JSON schema, read from the package it ships in.
 
     The repository keeps one copy, `schemas/`, and the package holds a link to it that a build turns into
-    the file. A source tree without that link falls back to `schemas/`.
+    the file. In a source tree the link may be missing, or be a text file holding the link's target (a
+    checkout made without symbolic links): `schemas/` is read then.
     """
     packaged = importlib.resources.files("autobot") / SCHEMA_NAME
-    try:
-        return json.loads(packaged.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        source = Path(__file__).resolve().parent.parent.parent / "schemas" / SCHEMA_NAME
-        return json.loads(source.read_text(encoding="utf-8"))
+    source = Path(__file__).resolve().parent.parent.parent / "schemas" / SCHEMA_NAME
+    for candidate in (packaged, source):
+        try:
+            schema = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(schema, dict):
+            return schema
+    raise SchemaError(f"neither {packaged} nor {source} holds the JSON schema")
 
 
 def _cmd_schema():
     _discover()
-    print(json.dumps(add_plugin_steps(load_schema(), registry.plugin_executors()), indent=2))
+    try:
+        schema = load_schema()
+    except SchemaError as e:
+        console.print(f"Cannot read the schema: {e}")
+        sys.exit(1)
+    print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 
 def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> dict[str, Any]:

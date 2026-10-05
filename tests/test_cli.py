@@ -611,6 +611,7 @@ def test_p6_80_packaged_schema_is_the_one_in_schemas():
     canonical = ROOT / "schemas" / SCHEMA_NAME
     assert packaged.is_file()
     assert packaged.read_bytes() == canonical.read_bytes()
+    assert json.loads(packaged.read_text(encoding="utf-8"))["$id"] == f"schemas/{SCHEMA_NAME}"  # not the link's text
     assert cli.load_schema() == json.loads(canonical.read_text())
     assert cli.load_schema()["$id"] == f"schemas/{SCHEMA_NAME}"
     # in the source tree the packaged file is a link to the canonical one, not a second copy
@@ -638,11 +639,58 @@ def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: py
 
 
 def test_p6_80_source_tree_without_the_packaged_file_reads_schemas(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, schema: dict[str, Any]):
-    """A source tree whose package directory lacks the file (the link wasn't checked out) falls back to `schemas/`."""
+    """With no schema file in the package directory, the loader reads the repository's `schemas/` copy."""
     import importlib.resources
 
     monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
+    assert not (tmp_path / SCHEMA_NAME).exists()
     assert cli.load_schema() == schema
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"../../schemas/autobot.2026-10.json", b"", b"\xff\xfe\x00", b"[]", b'"schemas/autobot.2026-10.json"'],
+    ids=["link-text", "empty", "not-utf-8", "json-list", "json-string"],
+)
+def test_p6_81_packaged_file_that_is_not_the_schema_falls_back_to_schemas(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], schema: dict[str, Any], content: bytes
+):
+    """SPEC "CLI": a checkout made without symbolic links leaves a text file holding the link's target where
+    the schema should be. The loader reads `schemas/` then, and `autobot schema` prints the schema.
+
+    It died with a `JSONDecodeError` traceback.
+    """
+    import importlib.resources
+
+    (tmp_path / SCHEMA_NAME).write_bytes(content)
+    monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
+    assert cli.load_schema() == schema
+    cli._cmd_schema()
+    out = capsys.readouterr()
+    assert json.loads(out.out) == schema
+    assert out.err == ""
+
+
+def test_p6_81_no_schema_anywhere_is_a_clean_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """With the schema in neither place (the link's text in an installed package), one line and status 1."""
+    import importlib.resources
+
+    package = tmp_path / "site-packages" / "autobot"
+    package.mkdir(parents=True)
+    (package / SCHEMA_NAME).write_text("../../schemas/autobot.2026-10.json")
+    monkeypatch.setattr(importlib.resources, "files", lambda name: package)
+    monkeypatch.setattr(cli, "__file__", str(package / "cli.py"))
+    with pytest.raises(cli.SchemaError):
+        cli.load_schema()
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == (
+        f"Cannot read the schema: neither {package / SCHEMA_NAME} nor {tmp_path / 'schemas' / SCHEMA_NAME} "
+        "holds the JSON schema\n"
+    )
 
 
 def test_p6_80_cli_has_no_download_left():
