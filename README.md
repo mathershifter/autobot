@@ -388,6 +388,8 @@ All step types except `sleep` support these optional fields:
 
 `line` and `return` steps do not support `timeout`.
 
+`after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. `line`, `return` and `control` send as soon as the pattern matches. Don't use the shell prompt itself as a `cmd`'s `after` pattern: the match takes the prompt, and the step has to press Return for another one.
+
 For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 
 To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.

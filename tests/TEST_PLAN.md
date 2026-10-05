@@ -20,14 +20,14 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | Priority | Area | pass | xfail | todo | total | slow |
 |----------|------|-----:|------:|---------:|------:|-----:|
 | P1 | `cmd` success semantics, register, ignore_error | 23 | 0 | 0 | 23 | 1 |
-| P2 | `cmd` forms, embedded scripts | 22 | 0 | 0 | 22 | 0 |
+| P2 | `cmd` forms, embedded scripts | 23 | 0 | 0 | 23 | 1 |
 | P3 | Common step properties, templating context | 21 | 0 | 0 | 21 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 38 | 0 | 0 | 38 | 7 |
 | P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
 | P6 | model / schema / example / CLI parity | 73 | 0 | 0 | 73 | 0 |
 | P7 | registry and plugins | 25 | 0 | 0 | 25 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **278** | **0** | **0** | **278** | **8** |
+| **Total** | | **279** | **0** | **0** | **279** | **9** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -177,7 +177,7 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-01 | `test_multiline_skips_blank_lines` | 99 | F1, F4 | `cmd: "echo a\n\n   \necho b\n"` → `sent.commands() == ["echo a", "echo b"]` | pass |
 | P2-02 | `test_each_line_waits_for_prompt` | 99 | F1, F5 | `cmd: ["echo a", "echo b"]` → timeline subsequence `get_prompt, sendline(echo a), get_prompt, sendline(echo b), get_prompt` | pass |
 | P2-03 | `test_list_with_shebang_first_item_sent_verbatim` | 162 | F1, F4 | `cmd: ["#!/bin/false", "echo x"]` registers `x`; `#!/bin/false` sent as-is; no sent line contains `/tmp/_autobot_` | pass |
-| P2-04 | `test_after_skips_initial_get_prompt` | 278 | F1, F5 | `line: "printf 'pre%s\\n' READY"`, then `cmd: echo x`, `after: preREADY` → no `get_prompt` between `expect([preREADY])` and `sendline(echo x)` | pass |
+| P2-04 | `test_p2_04_after_is_followed_by_the_first_prompt_wait` (was `test_after_skips_initial_get_prompt`, which pinned the opposite) | `cmd` | F1, F5 | `line: "printf 'pre%s\\n' READY"`, then `cmd: echo x`, `after: preREADY` → the timeline after `expect([preREADY])` is `get_prompt`, `sendline(echo x)` | pass (open item A; assertion inverted) |
 | P2-05 | `test_multiline_lines_rendered_individually` | 99, 317 | F1, `vars: {a: 1, b: 2}` | `cmd: "echo {{ vars.a }}\necho {{ vars.b }}"` registers `1\n2` | pass |
 | P2-06 | `test_multiline_jinja_block_spanning_lines` | 99, 317 | F1 | `cmd: "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}"` registers `n0\nn1` | pass (was xfail #8) |
 | P2-07 | `test_upload_chunks_at_most_512` | 165 | F1, F4, script > 3 x 512 b64 chars | each `printf %s <chunk>` payload ≤ 512 chars; chunk count = `ceil(len(b64)/512)`; concatenated chunks == `b64encode(rendered)` | pass |
@@ -196,8 +196,9 @@ Files: `tests/test_cmd_forms.py` (new) and `tests/test_embedded_script.py` (exte
 | P2-20 | `test_no_interrupt_on_success_or_failure` | Embedded scripts: Cleanup | F1, F4 | success, exit code 2 and an `errors` match each run cleanup without `^C`: `sent.controls() == []` | pass |
 | P2-21 | `test_p2_21_rendered_after_the_first_prompt_wait` (parametrized: embedded script, plain `cmd`), `test_p2_21_embedded_template_error_comes_after_the_prompt_wait` | `cmd`, Embedded scripts | F1, F4, F5; `cmd: echo old`, `line: echo fresh`, then a step using `{{ session.before \| trim }}`; and a script with `{{ vars.nope }}` | the step registers `got-fresh` (an embedded script used to see `got-old`); the template error is raised after exactly one `get_prompt` (it used to come before any), and nothing is sent | pass (review finding 5) (x2) |
 | P2-22 | `test_p2_22_only_line_breaks_split_a_command` (parametrized: U+000B, U+000C, U+001C, U+001D, U+001E, U+0085, U+2028, U+2029), `test_p2_22_line_breaks_and_blank_lines` (parametrized, 13 cases), `test_p2_22_separator_inside_a_command_is_sent` (parametrized: U+0085, U+2028, U+2029) | `cmd` | unit (`CmdExecutor._lines`); F1, F4 for the last | `_lines("echo a<char>echo b")` is the one line, and a `\n` after it still splits; `\n`, `\r\n` and a lone `\r` split, a trailing or leading newline adds no line, blank lines (also `\x0c `) are skipped, lines keep their surrounding whitespace, and `""`, `"\n\r\n"` and `" \x1e "` give `[""]`; `cmd: "printf '%s\\n' 'A<char>B' \| od -An -tx1"` is sent as one line and registers the UTF-8 bytes of `A<char>B\n` (only the non-ASCII separators: the terminal acts on a control character such as U+001E itself) | pass (audit of 359a8a2, bug 2) (x3) |
+| P2-23 | `test_p2_23_cmd_with_after_waits_for_the_pending_prompt` (parametrized: plain `cmd`, embedded script), `test_p2_23_cmd_with_after_keeps_the_values_of_the_match`, `test_p2_23_cmd_with_after_sends_at_once_at_a_prompt`, `test_p2_23_raw_sends_with_after_wait_for_no_prompt` (parametrized: `line`, `return`, `control`), `test_p2_23_after_that_takes_the_prompt_waits_for_the_next_one` (`slow`) | `cmd`, Common Step Properties (`after`) | F1, F4, F5; `line: "printf 'pre%s\\n' READY; sleep 1"` (the line is still running when `after` matches), then `cmd: echo hi`, `after: preREADY`, `register: out`, then `cmd: echo two` | `vars.out == "hi"` and `vars.two == "two"`, with two `$?` probes (it was `''`: the line's prompt was taken for the command's); `echo got-{{ session.match }}` registers `got-preREADY` (the first prompt wait leaves `session.*` as `after` set it); with the session at a prompt (`after` matches the output of a background job) the command registers `x` and no `""` is sent; `line`, `return` and `control` with `after` make no `get_prompt`; `after: 'PROMPT\$ '` with `timeout: 15s` sends `""`, `echo hi` and the probe and registers `hi` | pass (open item A) (x5) |
 
-Totals: 22 pass (P2-01..22).
+Totals: 23 pass (P2-01..23). Slow: one test of P2-23.
 
 ## P3: common step properties and templating context
 
@@ -225,7 +226,7 @@ File: `tests/test_common_props.py` (new). SPEC.md:272-334.
 | P3-18 | `test_after_eof_names_pattern` | `cmd` ignore_error (closed connection) | F1; `line: exit`, then `{cmd: "true", after: "login: {{ 'x' }}", timeout: 5}` | `EOFError` exactly `connection closed while waiting for the after pattern 'login: x'` (the rendered pattern) | pass |
 | P3-19 | `test_p3_19_key_named_like_a_dict_method_renders_the_key` (parametrized: `values`, `items`, `keys`, `get`, `copy`, `update`, `pop`, `clear`), `test_p3_19_dict_methods_still_work_without_such_a_key`, `test_p3_19_register_under_a_dict_method_name` (parametrized: `values`, `items`) | Jinja2 Templating | `Runner(...).render` (no spawn); F1 for `register` | `vars.<name>`, `env.<name>`, `args.<name>` render the key, also nested and while `env` is resolved; `\| items`, `\| tojson`, `\| length` still work; without such a key `vars.items()`, `vars.get(...)`, `env.get(...)` work; `register: values` is readable as `{{ vars.values }}` | pass (review finding 8) (x3) |
 | P3-20 | `test_p3_20_after_rendering_to_an_invalid_regex_is_a_script_error` | Common Step Properties (`after`) | F1, F4; `after: "x{{ '(' }}"` | `ValueError` `after: invalid regex 'x(': ...`; no command sent | pass (review finding 9) |
-| P3-21 | `test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error` (parametrized: `{{ vars.p }}` with `p: ""`, `{{ '' }}`, a comment, an `if` block), `test_p3_21_empty_rendered_after_aborts_every_step_type` (parametrized: `line`, `return`, `control`, `call`, `block`), `test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs`, `test_p3_21_after_rendering_to_a_pattern_still_waits` | Common Step Properties (`after`) | F1, F4, F5; `cmd: echo hi`, `register: out`, `vars.out` preset | `ValueError` exactly `after: the pattern rendered to an empty regex, which matches at once`; nothing sent, no `expect` and no `get_prompt`, `vars.out` unchanged (the wait was skipped, the `cmd` sent before the first prompt and `register` stored `''`); the same for every step type, before `when` is rendered; `ignore_error: true` doesn't swallow it and the attach breakout runs; with `p: 'PROMPT\$ '` the step waits and registers `hi` | pass (audit 2, finding 12) (x4) |
+| P3-21 | `test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error` (parametrized: `{{ vars.p }}` with `p: ""`, `{{ '' }}`, a comment, an `if` block), `test_p3_21_empty_rendered_after_aborts_every_step_type` (parametrized: `line`, `return`, `control`, `call`, `block`), `test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs`, `test_p3_21_after_rendering_to_a_pattern_still_waits` | Common Step Properties (`after`) | F1, F4, F5; `cmd: echo hi`, `register: out`, `vars.out` preset | `ValueError` exactly `after: the pattern rendered to an empty regex, which matches at once`; nothing sent, no `expect` and no `get_prompt`, `vars.out` unchanged (the wait was skipped, the `cmd` sent before the first prompt and `register` stored `''`); the same for every step type, before `when` is rendered; `ignore_error: true` doesn't swallow it and the attach breakout runs; after `line: "printf 'pre%s\\n' READY"`, with `p: preREADY` the step waits and registers `hi` (it was `p: 'PROMPT\$ '` until open item A: an `after` that takes the prompt now makes the step wait 5 s for another one, see P2-23) | pass (audit 2, finding 12) (x4) |
 
 Totals: 21 pass (P3-01..21).
 
@@ -520,14 +521,14 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | Priority | pass | xfail | slow | Files |
 |----------|-----:|------:|-----:|-------|
 | P1 | 23 | 0 | 1 | `test_cmd_semantics.py` |
-| P2 | 22 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
+| P2 | 23 | 0 | 1 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 21 | 0 | 0 | `test_common_props.py` |
 | P4 | 38 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
 | P6 | 73 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 25 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **278** | **0** | **8** | |
+| **Total** | **279** | **0** | **9** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -593,6 +594,14 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 12: an empty `after`, as written or once rendered, skipped the wait | P3-21, P6-73; one case added to P6-67 | with the old schema and code 23 of the 30 cases fail: the ten `after: ''` documents and the plugin step are `(True, True)`, the schema check finds `{type: string}`, the ten rendered cases raise nothing (`DID NOT RAISE ValueError`; the `cmd` is sent and `vars.out` becomes `''`), and the CLI case runs the script; the accepted cases and the still-waits test pass before and after |
 | 13: the EOS example's second prompt regex matched any read ending in `>`, `#` or `$` | P6-74; samples added to the existing example tests | with the old example 113 of the 262 tests of `test_examples.py` fail: all 24 EOS texts in each of the four contexts (96), 16 control-character cases (the `[user@host dir]` prompts and `bash-5.12$ ` were matched only by their last character, so the match wasn't the whole prompt) and the anchoring test; the SONiC cases and the real-shell cases pass before and after. It can't be run against a real switch |
 | 13, follow-up: `^` anchors a prompt to its line | P4-42 | the first version anchored the example's regexes with a lookbehind, which the owner rejected in favour of a plain `^`; the engine now discards stray `\r`, NUL and BEL at the start of the unread output instead. On the engine before the change 13 of the 51 cases fail: the six anchored stray cases (`TimeoutError`), the three dropped-at-line-start cases (`'one\n\rtwo\rthree\n'`), three swap texts and the tie test; every unanchored case, the split `\r\n` cases and the inside-a-line cases pass before and after. With the example's `^` regexes, the engine before the change doesn't recognize 30 of 48 prompts that have a `\r`, NUL or BEL in front (`_is_shell_prompt`), and recognizes all 48 after it |
+
+### Open items after PR #46
+
+Branch `fix/open-items` works through six items left open after PR #46, lettered A to F. Their tests are rows of the section tables above, with the status `pass (open item X)`. Each test was run against the code without its fix; what failed there is noted per item:
+
+| Item | Rows | Without the fix |
+|------|------|-----------------|
+| A: a `cmd` with `after` skipped its first prompt wait | P2-23; P2-04 inverted, one case of P3-21 changed | 4 of the 8 P2-23 tests fail: both `waits_for_the_pending_prompt` cases and `keeps_the_values_of_the_match` (`'' == 'hi'`, `'' == 'got-preREADY-True'`: the line's prompt was taken for the command's), and `takes_the_prompt` (`['echo hi', probe]`, no `""`); the new P2-04 fails (`sendline` right after `expect`). The at-a-prompt test and the three raw-send cases pass before and after: they pin what the fix must not change |
 
 ### Deviations from the plan
 

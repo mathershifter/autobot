@@ -284,9 +284,10 @@ def test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs(sent: Sen
 
 def test_p3_21_after_rendering_to_a_pattern_still_waits(timeline: Timeline):
     """The same template with a value waits for it, and the command's output is registered."""
-    out = run_vars([{"cmd": "echo hi", "after": "{{ vars.p }}", "register": "out"}], vars={"p": r"PROMPT\$ "})
+    script = [{"line": "printf 'pre%s\\n' READY"}, {"cmd": "echo hi", "after": "{{ vars.p }}", "register": "out"}]
+    out = run_vars(script, vars={"p": "preREADY"})
     assert out["out"] == "hi"
-    assert ("expect", [r"PROMPT\$ "]) in timeline
+    assert ("expect", ["preREADY"]) in timeline
 
 
 # -- P3-19: keys named like dict methods -------------------------------------

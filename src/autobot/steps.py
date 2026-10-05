@@ -49,8 +49,8 @@ class CmdExecutor:
         output: list[str] = []
         items = ensure_list(step.cmd)
         # `cmd: []` sends nothing: a prompt wait could press Return or answer a prompt
-        if items and step.after is None:
-            ctx.session.get_prompt(timeout=timeout)
+        if items:
+            self._first_prompt(step, ctx, timeout)
         # render before splitting: a Jinja block may span lines or add lines
         lines = [l for item in items for l in self._lines(ctx.render(item))]
         try:
@@ -69,6 +69,11 @@ class CmdExecutor:
                 raise
             console.print(f">> error ignored: {e}")
         self._register(step, ctx, "".join(output))
+
+    @staticmethod
+    def _first_prompt(step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
+        # after `after` too: its match is no prompt. session.* then stays what `after` set
+        ctx.session.get_prompt(timeout=timeout, capture=step.after is None)
 
     @staticmethod
     def _lines(text: str) -> list[str]:
@@ -101,8 +106,7 @@ class CmdExecutor:
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         output = ""
         interrupt = False
-        if step.after is None:
-            ctx.session.get_prompt(timeout=timeout)
+        self._first_prompt(step, ctx, timeout)
         # rendered after the first prompt wait, like any cmd: session.* is what that wait set
         script = ctx.render(str(step.cmd))
         if not script.endswith("\n"):
