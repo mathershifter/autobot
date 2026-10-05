@@ -23,11 +23,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 22 | 0 | 0 | 22 | 0 |
 | P3 | Common step properties, templating context | 20 | 0 | 0 | 20 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
-| P5 | attach / block lifecycles, env | 53 | 0 | 0 | 53 | 0 |
-| P6 | model / schema / example / CLI parity | 69 | 0 | 0 | 69 | 0 |
+| P5 | attach / block lifecycles, env | 54 | 0 | 0 | 54 | 0 |
+| P6 | model / schema / example / CLI parity | 70 | 0 | 0 | 70 | 0 |
 | P7 | registry and plugins | 23 | 0 | 0 | 23 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 20 | 0 | 0 | 20 | 0 |
-| **Total** | | **267** | **0** | **0** | **267** | **8** |
+| **Total** | | **269** | **0** | **0** | **269** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -340,8 +340,9 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-51 | `test_sleep_eof_message` | `sleep` | F1; `line: exit`, then `sleep: 5s` | `EOFError` exactly `connection closed while waiting for the end of a sleep` | pass |
 | P5-52 | `test_prepare_written_as_utf8` | attach `prepare` | `prep_tmp`; `tempfile._io` replaced by a shim whose `open` turns the default encoding (`None` or `"locale"`, which `NamedTemporaryFile` passes via `io.text_encoding`) into `latin-1`, as under an ISO-8859-1 locale; prepare `#!/bin/sh` + `echo 'é ✓ 日本' > out` | `out` is exactly the UTF-8 bytes of `é ✓ 日本\n`; temp file removed | pass (was `UnicodeEncodeError`: `'latin-1' codec can't encode character '\u2713'`) |
 | P5-53 | `test_p5_53_spawn_rendering_empty_stops_before_prepare` (parametrized: empty, blank, newline) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; the marker doesn't exist; no `attach` in the timeline | pass (review finding 9) |
+| P5-54 | `test_p5_54_spawn_rendering_to_quotes_stops_before_prepare` (parametrized: `''`, `""`, a backslash, a lone `'`, `''""`, `'' ''`, `'' ls`, `"" --version`), `test_p5_54_quoted_command_still_spawns` (parametrized: `'true'`, `"true"`, `tr''ue`, `\true`, `'/bin/true' ''`) | attach `spawn` | F5; `spawn: "{{ args.cmd }}"`, `prepare` touches a marker file | `ValueError` exactly `attach.spawn rendered to an empty command: '{{ args.cmd }}'`; no marker; no `attach` call (the first five raised `IndexError: list index out of range` from `pexpect.spawn`, the others `ExceptionPexpect`, all after `prepare`). A quoted or escaped command still reaches the spawn wait: `EOFError` `connection closed before any output from ... (exit status 0)` | pass (audit 2, finding 6) (x2) |
 
-Totals: 53 pass (P5-01..53).
+Totals: 54 pass (P5-01..54).
 
 ## P6: model, schema, example and CLI parity
 
@@ -420,8 +421,9 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-68 | `test_p6_68_parity_return_whole_float_accepted` (parametrized: `1.0`, `2.0`, `3.0e+0`, `1.0e+1`), `test_p6_68_parity_return_other_float_rejected` (parametrized: `1.5`, `0.0`, `-1.0`, `0.999`, `.inf`, `-.inf`, `.nan`, `1.0e+400`) | `return`, YAML Script Structure | F7; values loaded from YAML | a float with a zero fraction → `(True, True)` and `newline_count` is that `int` (the strict model used to reject it, `int_type`); every other float → `(False, False)`, the model's errors at `script.0.return` | pass (audit 2, finding 5) (x2) |
 | P6-69 | `test_p6_69_schema_duration_maximum_is_the_largest_double`, `test_p6_69_parity_duration_beyond_a_double_rejected` (parametrized: `.inf`, `-.inf`, `10**400`, `-10**400`, `2**1024`, the first integer above the largest double × the 12 duration fields of P6-61), `test_p6_69_parity_duration_up_to_a_double_accepted` (parametrized: the largest double as a float and as an integer, `1e308`, `10**308`, `0`, `0.0`), `test_p6_69_duration_only_the_models_can_reject` (parametrized: `.nan`, a 400-digit `s` string, an `h` string that overflows) | Duration Format, YAML Script Structure | F7 | the schema's number alternative is exactly `{type: number, minimum: 0, maximum: sys.float_info.max}` and equals `types.DURATION_MAX`; a number beyond it → `(False, False)` with `invalid duration` (the schema used to accept `.inf` and the large integers; the model accepted the first integer above the bound, which `float()` rounds down); up to it → `(True, True)` and the value is kept; `.nan` and an overflowing string → `(False, True)`, the model-only cases SPEC states | pass (audit 2, finding 5) (x4) |
 | P6-70 | `test_p6_70_parity_binary_is_not_a_string` (parametrized over 34 places a script holds a string: `autobot`, `env` and `attach.env` values, `errors`, a prompt's `name`, `expect`, `send`, `each`, `match`, `field`, `spawn`, `prepare`, `cmd`, `assert`, `register`, `after`, `when`, `call`, a block's `name`, `line`, `control`, list items, a step inside `fn`, a duration), `test_p6_70_binary_is_a_string_type_error` (parametrized: 5 fields), `test_p6_70_binary_in_a_plugin_step_common_prop` (parametrized: none, `after`, `when`) | YAML Script Structure | F7, F6 `probe`; the value is `yaml.safe_load("v: !!binary aGk=")`, i.e. `b"hi"` | `(False, False)` in every place, and the same document with the text → `(True, True)`; the model's error types are `string_type` (and `list_type` for the list arm of a string-or-list); a plugin step's `after`/`when` → `(False, False)`. The models used to decode the bytes (25 of the 34 places accepted them, e.g. `cmd: !!binary aGk=` ran `hi`) | pass (audit 2, finding 5) (x3) |
+| P6-71 | `test_p6_71_spawn_of_quotes_or_a_backslash_rejected_on_load` (parametrized: the P5-54 values, a lone `"` and `''` between spaces), `test_p6_71_spawn_with_a_command_or_a_template_accepted` (parametrized: quoted and escaped command names, `ssh ''`, templates), `test_p6_71_names_command_is_what_pexpect_spawns` | attach `spawn`, YAML Script Structure | F7 | `(False, True)`: one model error `empty_command` at `attach.spawn` with exactly `spawn must name a command: the first word of <repr> is empty (quotes or a backslash with nothing in them)`; the schema's pattern can't split a command line; a quoted command and a template (also `''{{ args.cmd }}`) → `(True, True)`; `models.names_command` agrees with `pexpect.split_command_line` having a non-empty first word | pass (audit 2, finding 6) (x3) |
 
-Totals: 69 pass (P6-01..70 without the removed P6-08).
+Totals: 70 pass (P6-01..71 without the removed P6-08).
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -512,11 +514,11 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P2 | 22 | 0 | 0 | `test_cmd_forms.py`, `test_embedded_script.py` |
 | P3 | 20 | 0 | 0 | `test_common_props.py` |
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
-| P5 | 53 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 69 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P5 | 54 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
+| P6 | 70 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 23 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 20 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **267** | **0** | **8** | |
+| **Total** | **269** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -573,6 +575,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 3: exit code truncated when the `$?` marker arrives in two reads | P1-23 | the four split cases fail with `assert 1 == 127`, the step test with `command returned exit code 1`; the bash test passes before and after (the echoed probe never matched) |
 | 4: an explicit null on a field with a non-`None` default wasn't `null_value` | P6-41 (assertion widened to every optional field) | 12 cases fail: `Config.env`, `.vars`, `.prompts`, `.fn`, `.errors`, `Attach.script`, `Breakout.script`, `Prompt.return`, `Block.prompts`, `.enter`, `.script`, `CmdStep.ignore_error` |
 | 5: schema and models disagreed on `return: 1.0`, non-finite and huge durations, `!!binary` strings | P6-68, P6-69, P6-70 | with the old schema and models 85 of the 136 cases fail: the 4 whole floats (`(False, True)`), 48 of the 72 too-large durations (the negative ones were rejected by `minimum`), the `maximum` check, and 32 binary cases (`(True, False)`); the up-to-a-double and model-only cases pass before and after |
+| 6: a `spawn` of only quotes or a backslash crashed after `prepare` | P5-54, P6-71 | the 8 rendered cases fail (5 `IndexError: list index out of range`, 3 `ExceptionPexpect: The command was not found or was not executable`), the 10 load cases are `(True, True)`, and `names_command` doesn't exist; the 13 accepted cases pass before and after |
 
 ### Deviations from the plan
 

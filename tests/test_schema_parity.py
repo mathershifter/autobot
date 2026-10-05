@@ -840,3 +840,45 @@ def test_p6_70_binary_in_a_plugin_step_common_prop(both_validate: Callable, prob
     """A plugin step's common properties are strings in the same sense."""
     doc = s({"probe": "x", **({} if field == "probe-field" else {field: BINARY})})
     assert both_validate(doc) == ((True, True) if field == "probe-field" else (False, False))
+
+
+# -- P6-71: a spawn that names no command --------------------------------------
+
+SPAWN_NO_COMMAND = ["''", '""', "\\", "'", '"', "''\"\"", "'' ''", "'' ls", '"" --version', " '' "]
+
+
+@pytest.mark.parametrize("value", SPAWN_NO_COMMAND)
+def test_p6_71_spawn_of_quotes_or_a_backslash_rejected_on_load(both_validate: Callable, value: str):
+    """SPEC "attach": spawn must name a command. Only the models can split a command line.
+
+    Each of these has a non-blank character, so the schema's pattern accepts it; `pexpect.spawn`
+    finds no command name in it (`IndexError` for the first six, a command `''` for the rest).
+    """
+    doc = d(attach={"spawn": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("attach", "spawn"), "empty_command")
+    assert err["msg"] == (
+        f"spawn must name a command: the first word of {value!r} is empty "
+        "(quotes or a backslash with nothing in them)"
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["'ssh' host", '"ssh" host', "s''sh host", "\\ssh host", "ssh ''", "{{ args.cmd }}", "''{{ args.cmd }}", "{# c #}''"],
+)
+def test_p6_71_spawn_with_a_command_or_a_template_accepted(both_validate: Callable, value: str):
+    """A quoted command name is a command, and a template is checked once rendered (P5-54)."""
+    assert both_validate(d(attach={"spawn": value})) == (True, True)
+
+
+def test_p6_71_names_command_is_what_pexpect_spawns():
+    """`names_command` is false exactly when pexpect has no command name to look up."""
+    import pexpect
+
+    for value in [*SPAWN_NO_COMMAND, "", "  ", "\x1c", "ssh host", "'a", "\\ ", "' '"]:
+        words = pexpect.split_command_line(value)
+        assert models.names_command(value) == bool(words and words[0]), value
+    assert not models.names_command("''")
+    assert models.names_command("'ssh' host")

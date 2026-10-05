@@ -10,7 +10,7 @@ from typing import Any
 from jinja2 import StrictUndefined
 from rich.console import Console
 
-from .models import Config, PluginStep, Prompt, SendEach, Step
+from .models import Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
@@ -216,7 +216,7 @@ class Runner:
     def run(self):
         attach = self._config.attach
         spawn = self.render(attach.spawn)
-        if not spawn.strip():
+        if not names_command(spawn):
             raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
         if attach.prepare:

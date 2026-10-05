@@ -986,6 +986,31 @@ def test_p5_53_spawn_rendering_empty_stops_before_prepare(timeline: Timeline, tm
     assert "attach" not in timeline.names()
 
 
+NO_COMMAND = ["''", '""', "\\", "'", "''\"\"", "'' ''", "'' ls", '"" --version']
+
+
+@pytest.mark.parametrize("value", NO_COMMAND)
+def test_p5_54_spawn_rendering_to_quotes_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
+    """SPEC "attach": a spawn that renders to quotes or a backslash names no command; nothing runs.
+
+    `pexpect.spawn("''")` raised `IndexError: list index out of range`, after `prepare` had run.
+    """
+    prepared = tmp_path / "prepared"
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+        runner.run()
+    assert not prepared.exists()
+    assert "attach" not in timeline.names()
+
+
+@pytest.mark.parametrize("value", ["'true'", '"true"', "tr''ue", "\\true", "'/bin/true' ''"])
+def test_p5_54_quoted_command_still_spawns(value: str):
+    """A command that is quoted or escaped is still a command: it gets as far as the spawn wait."""
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
+    with pytest.raises(EOFError, match=r"^connection closed before any output from .* \(exit status 0\)$"):
+        runner.run()
+
+
 def test_p5_24_attach_timeout_default_and_spawn_templated(
     timeline: Timeline, monkeypatch: pytest.MonkeyPatch
 ):

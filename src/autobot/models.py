@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterator
 from typing import Annotated, Any
 
+import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
@@ -73,9 +74,21 @@ NOT_BLANK = "[^%s]" % "".join(
 )
 
 
+def names_command(spawn: str) -> bool:
+    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none."""
+    words = pexpect.split_command_line(spawn)
+    return bool(words and words[0])
+
+
 def _spawn(v: str) -> str:
     if not re.search(NOT_BLANK, v):
         raise _custom("empty_command", "spawn must be a command, not an empty or blank string")
+    # a template names its command only once it is rendered; the runner checks it then
+    if not _TEMPLATE_RE.search(v) and not names_command(v):
+        raise _custom(
+            "empty_command",
+            f"spawn must name a command: the first word of {v!r} is empty (quotes or a backslash with nothing in them)",
+        )
     return v
 
 
