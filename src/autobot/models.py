@@ -8,7 +8,7 @@ import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
-from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list
+from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
 VERSION = "2026-10"
 
@@ -84,8 +84,12 @@ NOT_BLANK = "[^%s]" % "".join(
 
 
 def names_command(spawn: str) -> bool:
-    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none."""
-    words = pexpect.split_command_line(spawn)
+    """Whether pexpect finds a command name in `spawn`: blanks, quotes or a backslash alone leave none.
+
+    Leading whitespace doesn't count: the runner strips it before it spawns (pexpect would take it for an
+    empty first word).
+    """
+    words = pexpect.split_command_line(spawn.lstrip())
     return bool(words and words[0])
 
 
@@ -106,6 +110,18 @@ def _whole(v: Any) -> Any:
     return int(v) if isinstance(v, float) and v.is_integer() else v
 
 
+def _env_value(v: Any) -> Any:
+    # `DEBUG: true` and `NO_COLOR: yes` look like text and are booleans: say so, rather than "not a string"
+    if isinstance(v, bool):
+        raise _custom(
+            "string_type",
+            f"an environment value is a string, and unquoted this one is a boolean ({text(v)}); "
+            "quote it to set it as written, e.g. 'true' or 'yes'",
+        )
+    return v
+
+
+EnvValue = Annotated[str, pydantic.BeforeValidator(_env_value)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -123,8 +139,7 @@ class FieldEntry(pydantic.BaseModel):
         if isinstance(data, str):
             raise _custom(
                 "fields_entry",
-                "since 2026-10 a fields entry pairs a regex with a field: "
-                f"write {{match: <regex>, field: {data}}} (see \"Migrating from 2026-08\" in SPEC.md)",
+                f"a fields entry pairs a regex with a field: write {{match: <regex>, field: {data}}}",
             )
         return data
 
@@ -151,9 +166,6 @@ class SendEach(pydantic.BaseModel):
         return v
 
 
-_MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
-
-
 class Prompt(pydantic.BaseModel):
     model_config = _STRICT
     name: str
@@ -178,7 +190,7 @@ class Prompt(pydantic.BaseModel):
                 "send_list",
                 "send is a single string: for a simple prompt write send: '<response>'; "
                 "to answer a sequence of prompts such as a login, use sendEach with fields "
-                f"and keep the values in vars {_MIGRATE}",
+                "and keep the values in vars",
             )
         if v is not None and not isinstance(v, str):
             raise _custom(
@@ -219,7 +231,7 @@ class Prompt(pydantic.BaseModel):
                     errors.append(_error(
                         "grouped_expect",
                         "each expect entry is a single regex, and the regexes are alternatives; "
-                        f"to answer a sequence of prompts such as a login, use sendEach with fields {_MIGRATE}",
+                        "to answer a sequence of prompts such as a login, use sendEach with fields",
                         ("expect", i), entry,
                     ))
                 elif entry == "":
@@ -241,7 +253,7 @@ class Attach(pydantic.BaseModel):
     prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
-    env: Omittable[dict[str, str]] = None
+    env: Omittable[dict[str, EnvValue]] = None
     script: NotNull[list[Step]] = []
     breakout: Omittable[Breakout] = None
 
@@ -446,12 +458,12 @@ class Config(pydantic.BaseModel):
         if v == "2026-08":
             raise _custom(
                 "unsupported_version",
-                f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
+                f"autobot 2026-08 is no longer supported; use {VERSION}",
             )
         if not isinstance(v, str) or v != VERSION:
-            raise _custom("unsupported_version", f"unsupported autobot version {str(v)!r}; expected {VERSION}")
+            raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
-    env: NotNull[dict[str, str]] = {}
+    env: NotNull[dict[str, EnvValue]] = {}
     vars: NotNull[dict[str, Any]] = {}
     prompts: NotNull[list[Prompt]] = []
     fn: NotNull[dict[str, Function]] = {}

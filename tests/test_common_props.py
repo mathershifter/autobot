@@ -107,16 +107,17 @@ def test_p3_05_when_surrounding_whitespace_and_case(sent: SentLog, when: str, ru
 def test_p3_06_filter_contains():
     """SPEC.md:333: contains filter."""
     r = make_runner([])
-    assert r.render("{{ 'abc' | contains('b') }}") == "True"
-    assert r.render("{{ 'abc' | contains('x') }}") == "False"
-    assert r.render("{{ 123 | contains('2') }}") == "True"
+    assert r.render("{{ 'abc' | contains('b') }}", condition=True) == "True"
+    assert r.render("{{ 'abc' | contains('x') }}", condition=True) == "False"
+    assert r.render("{{ 123 | contains('2') }}", condition=True) == "True"
+    assert r.render("{{ true | contains('True') }}", condition=True) == "True"  # a non-string is read as str() gives it
 
 
 def test_p3_07_filter_search():
     """SPEC.md:334: search filter."""
     r = make_runner([])
-    assert r.render("{{ 'v1.2' | search('\\\\d+\\\\.\\\\d+') }}") == "True"
-    assert r.render("{{ 'vX' | search('\\\\d') }}") == "False"
+    assert r.render("{{ 'v1.2' | search('\\\\d+\\\\.\\\\d+') }}", condition=True) == "True"
+    assert r.render("{{ 'vX' | search('\\\\d') }}", condition=True) == "False"
 
 
 def test_p3_08_range_global():
@@ -284,9 +285,161 @@ def test_p3_21_empty_rendered_after_is_not_ignorable_and_breakout_runs(sent: Sen
 
 def test_p3_21_after_rendering_to_a_pattern_still_waits(timeline: Timeline):
     """The same template with a value waits for it, and the command's output is registered."""
-    out = run_vars([{"cmd": "echo hi", "after": "{{ vars.p }}", "register": "out"}], vars={"p": r"PROMPT\$ "})
+    script = [{"line": "printf 'pre%s\\n' READY"}, {"cmd": "echo hi", "after": "{{ vars.p }}", "register": "out"}]
+    out = run_vars(script, vars={"p": "preREADY"})
     assert out["out"] == "hi"
-    assert ("expect", [r"PROMPT\$ "]) in timeline
+    assert ("expect", ["preREADY"]) in timeline
+
+
+# -- P3-22: a boolean is not text ----------------------------------------------
+
+FLAGS = {"on": True, "off": False, "nothing": None, "n": 1, "word": "True", "many": [True, False, None], "map": {"k": True}}
+
+
+def boolean_error(shown: str) -> str:
+    return (
+        f"template error: an expression gave a boolean ({shown}), which is never written as text; "
+        "quote the value in the script, or say which text is meant, "
+        "e.g. {{ value | string }} (True) or {{ value | tojson }} (true)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("template", "shown"),
+    [
+        ("set debug {{ vars.on }}", "true"),
+        ("{{ vars.off }}", "false"),
+        ("{{ 1 == 1 }}", "true"),
+        ("{{ vars.n == 2 }}", "false"),
+        ("{{ not vars.on }}", "false"),
+        ("{{ true }}", "true"),
+        ("{{ False }}", "false"),
+        ("{{ vars.on and vars.n == 1 }}", "true"),
+        ("{{ vars.nope is defined }}", "false"),
+        ("{{ 'b' in 'abc' }}", "true"),
+        ("{{ 'abc' | contains('b') }}", "true"),
+        ("{{ 'abc' | search('^b') }}", "false"),
+        ("{{ vars.on if vars.n else vars.off }}", "true"),
+        ("{% for f in vars.many[:2] %}{{ f }}{% endfor %}", "true"),
+        ("{{ vars.n }} {{ vars.off }}", "false"),
+    ],
+)
+def test_p3_22_boolean_as_text_is_a_template_error(template: str, shown: str):
+    """SPEC "Jinja2 Templating": an expression whose value is a boolean can't be written as text.
+
+    `set debug {{ vars.debug }}` with `debug: true` used to send `set debug True`.
+    """
+    with pytest.raises(ValueError) as ei:
+        make_runner([], vars=dict(FLAGS)).render(template)
+    assert str(ei.value) == boolean_error(shown)
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    [
+        # saying which text is meant
+        ("{{ vars.on | string }} {{ vars.off | string }}", "True False"),
+        ("{{ vars.on | tojson }} {{ vars.off | tojson }}", "true false"),
+        ("{{ vars.on | string | lower }} {{ vars.on | int }}", "true 1"),
+        ("{{ 'on' if vars.on else 'off' }} {{ 'yes' if vars.n == 2 else 'no' }}", "on no"),
+        ("{{ vars.on ~ '' }} {{ 'x' ~ vars.off }} {{ '%s' | format(vars.on) }}", "True xFalse True"),
+        ("{{ [vars.on, vars.off] | join(',') }}", "True,False"),
+        # a boolean inside a list or a mapping that is written out whole
+        ("{{ vars.many }} {{ vars.map }}", "[True, False, None] {'k': True}"),
+        ("{{ vars.many | tojson }}", "[true, false, null]"),
+        # not booleans: a string, a number, a null, plain text
+        ("{{ vars.word }} {{ vars.n }} {{ 0 }} {{ 1 }}", "True 1 0 1"),
+        ("{{ vars.nothing }} {{ none }}", "None None"),
+        ("True false yes", "True false yes"),
+        # used inside the template, never written out
+        ("{% if vars.on %}yes{% else %}no{% endif %}{% if vars.off %}yes{% else %}no{% endif %}", "yesno"),
+        ("{% if vars.nope is defined %}a{% else %}b{% endif %}{% if vars.n == 1 and not vars.off %}c{% endif %}", "bc"),
+        ("{% set f = vars.on %}{% if f is sameas true %}set{% endif %}", "set"),
+        ("{{ 'a' if vars.off == false else 'b' }}{{ (vars.on, vars.off) | select | list | length }}", "a1"),
+        ("{{ 'found' if 'abc' | contains('b') else 'missing' }} {{ 'm' if vars.word | search('^T') else 'n' }}", "found m"),
+        ("{% for f in vars.many %}{{ 'T' if f else 'F' }}{% endfor %}", "TFF"),
+    ],
+)
+def test_p3_22_explicit_text_and_conditions_still_render(template: str, expected: str):
+    """Only the value an expression writes out is checked, and only when it is exactly a boolean.
+
+    `| string`, `| tojson` and a conditional expression are the ways to say which text is meant.
+    """
+    assert make_runner([], vars=dict(FLAGS)).render(template) == expected
+
+
+@pytest.mark.parametrize(
+    ("when", "runs"),
+    [
+        ("{{ vars.on }}", True),
+        ("{{ vars.off }}", False),
+        ("{{ vars.on == true }}", True),
+        ("{{ vars.n == 2 }}", False),
+        ("{{ vars.nope is defined }}", False),
+        ("{{ vars.word | contains('rue') }}", True),
+        ("{{ vars.word | search('^x') }}", False),
+        ("{{ vars.on and not vars.off }}", True),
+        ("{{ vars.nothing }}", False),
+        ("{% if vars.on %}run{% endif %}", True),
+        ("{{ vars.off }} {{ vars.off }}", True),  # the text `False False` is none of the falsy words
+    ],
+)
+def test_p3_22_when_reads_a_boolean_as_before(sent: SentLog, when: str, runs: bool):
+    """SPEC "Conditional execution with when": `when` is a condition, so a boolean result is what it is for."""
+    run_script([{"line": "echo x", "when": when}], vars=dict(FLAGS))
+    assert ("echo x" in sent.lines()) is runs
+
+
+def test_p3_22_condition_rendering_is_available_to_plugins():
+    """`render(..., condition=True)` is the runner's own path for `when`; a plugin with a condition field uses it."""
+    r = make_runner([], vars=dict(FLAGS))
+    assert r.render("{{ vars.on }} {{ 1 == 2 }} {{ vars.word | contains('T') }}", condition=True) == "True False True"
+    assert r.render("{{ vars.n }}-{{ flag }}", {"flag": False}, condition=True) == "1-False"
+    with pytest.raises(ValueError, match=r"^template error: an expression gave a boolean \(false\)"):
+        r.render("{{ flag }}", {"flag": False})
+    with pytest.raises(ValueError, match="^template error: "):
+        r.render("{{ vars.nope }}", condition=True)
+
+
+TEXT_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
+    "cmd": lambda t: {"script": [{"cmd": f"echo {t}"}]},
+    "cmd-list": lambda t: {"script": [{"cmd": ["echo ok", f"echo {t}"]}]},
+    "embedded-script": lambda t: {"script": [{"cmd": f"#!/bin/sh\necho {t}\n"}]},
+    "assert": lambda t: {"script": [{"cmd": "echo ok", "assert": t}]},
+    "after": lambda t: {"script": [{"line": "echo ok", "after": t}]},
+    "line": lambda t: {"script": [{"line": f"echo {t}"}]},
+    "spawn": lambda t: {"script": [], "spawn": f"bash {t}"},
+    "prepare": lambda t: {"script": [], "prepare": f"#!/bin/sh\necho {t}\n"},
+    "env": lambda t: {"script": [], "env": {"AB_FLAG": t}},
+}
+
+
+@pytest.mark.parametrize("field", list(TEXT_FIELDS))
+def test_p3_22_boolean_in_every_templated_text_is_refused(sent: SentLog, monkeypatch: pytest.MonkeyPatch, field: str):
+    """Every templated value that becomes text follows the rule, and what it would have sent is never sent."""
+    monkeypatch.delenv("AB_FLAG", raising=False)
+    kw = TEXT_FIELDS[field]("{{ vars.debug }}")
+    with pytest.raises(ValueError, match=r"^template error: an expression gave a boolean \(true\), "):
+        run_script(kw.pop("script"), vars={"debug": True}, **kw)
+    assert not any("True" in line or "true" in line for line in sent.lines())
+
+
+def test_p3_22_boolean_in_a_prompt_send_is_refused():
+    """A prompt's `send` is rendered when it is sent; the error names the prompt, like any template error there."""
+    r = make_runner([], vars={"on": True}, prompts=[{"name": "q", "expect": "ok\\?", "send": "{{ vars.on }}"}])
+    with pytest.raises(ValueError, match=r"^prompt 'q': template error: an expression gave a boolean \(true\), "):
+        r.session.save_handlers()[0].respond(0)
+
+
+def test_p3_22_boolean_error_is_not_ignorable(sent: SentLog):
+    """Like every template error it aborts the step, also with `ignore_error`, and the quoted value works."""
+    with pytest.raises(ValueError, match="^template error: an expression gave a boolean"):
+        run_script([{"cmd": "echo {{ vars.debug }}", "ignore_error": True}], vars={"debug": True})
+    out = run_vars(
+        [{"cmd": "echo {{ vars.debug }}-{{ vars.flag | tojson }}-{{ 'on' if vars.flag else 'off' }}", "register": "out"}],
+        vars={"debug": "true", "flag": True},
+    )
+    assert out["out"] == "true-true-on"
 
 
 # -- P3-19: keys named like dict methods -------------------------------------
@@ -317,7 +470,7 @@ def test_p3_19_dict_methods_still_work_without_such_a_key():
     assert r.render("{% for k, v in vars.items() %}{{ k }}={{ v }};{% endfor %}") == "a=1;b={'c': 2};"
     assert r.render("{{ vars.keys() | list }} {{ vars.get('nope', 'd') }} {{ vars | length }}") == "['a', 'b'] d 2"
     assert r.render("{{ vars }} {{ vars | tojson }}") == "{'a': 1, 'b': {'c': 2}} {\"a\": 1, \"b\": {\"c\": 2}}"
-    assert r.render("{{ 'a' in vars }} {{ vars == {'a': 1, 'b': {'c': 2}} }}") == "True True"
+    assert r.render("{{ 'a' in vars }} {{ vars == {'a': 1, 'b': {'c': 2}} }}", condition=True) == "True True"
     assert r.render("{{ env.E }} {{ env.items() | list }} {{ args.get('k') }}") == "d [('E', 'd')] v"
     with pytest.raises(ValueError, match="^template error: "):
         r.render("{{ vars.nope }}")

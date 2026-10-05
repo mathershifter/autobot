@@ -31,8 +31,9 @@ class StepRegistry:
             self._check_unique(executor, origin)
             self._origins[executor.key] = origin
         self._executors[executor.key] = executor
-        self._model_keys[executor.model] = executor.key
         if builtin:
+            # only a built-in step is dispatched by its model: a plugin step arrives as a PluginStep
+            self._model_keys[executor.model] = executor.key
             self._builtins.add(executor.key)
 
     def _check_plugin(self, executor: StepExecutor, origin: str):
@@ -50,23 +51,17 @@ class StepRegistry:
                 f"plugin {who}: step key {key!r} is reserved (the schema's pluginStep definition "
                 "and the plugin step type in validation errors use the name)"
             )
-        # a step is dispatched by its model's class: a model another key has would send that key's steps here
-        owner = self._model_keys.get(model)
+        # a built-in step is dispatched by its model's class: a plugin with that model would take its steps.
+        # A plugin step is dispatched by its key, so plugins may share a model with each other
         if model is PluginStep:
             raise PluginError(
                 f"plugin {who}, step key {key!r}: model PluginStep is the runner's own model of every plugin step; "
                 "a plugin needs a model of its own"
             )
-        if owner is not None and owner != key:
-            whose = (
-                f"the built-in step {owner!r}"
-                if owner in self._builtins
-                else f"step key {owner!r}, registered by plugin "
-                f"{_describe(self._executors[owner], self._origins.get(owner, ''))}"
-            )
+        if model in self._model_keys:
             raise PluginError(
-                f"plugin {who}, step key {key!r}: model {model.__name__} is already the model of {whose}; "
-                "a plugin needs a model of its own"
+                f"plugin {who}, step key {key!r}: model {model.__name__} is already the model of "
+                f"the built-in step {self._model_keys[model]!r}; a plugin needs a model of its own"
             )
         clashes = [
             name if name == field else f"{name} (field {field!r})"
@@ -198,8 +193,8 @@ registry = StepRegistry()
 
 
 def __getattr__(name: str) -> Any:
-    # `from autobot import registry` was this instance until the name stopped shadowing the module:
-    # the instance's methods stay reachable on the module, so `registry.register(...)` still works
+    # `from autobot import registry` gives this module: the instance's public methods are reachable on
+    # it, so `registry.register(...)` registers on the instance
     if not name.startswith("_") and hasattr(StepRegistry, name):
         return getattr(registry, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

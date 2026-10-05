@@ -99,6 +99,11 @@ REJECT = {
     "extra-allow-plugin-null-common": s({"free": "x", "timeout": None}),
     "extra-allow-plugin-field-type": s({"free": 1}),
     "internal-plugin-key": s({"probe": "x", "plugin_key_": "probe"}),
+    # P6-75: a step's keys are strings, also where the plugin's model allows extra fields
+    "non-string-key": s({"probe": "x", 1: "y"}),
+    "non-string-key-nested-model": s({"nest": "a", True: "y"}),
+    "extra-allow-plugin-non-string-key": s({"free": "x", 1: "y"}),
+    "extra-allow-plugin-null-key": s({"free": "x", None: "y"}),
 }
 
 

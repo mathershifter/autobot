@@ -7,8 +7,12 @@ import time
 from collections.abc import Callable
 
 import pexpect
+from rich.console import Console
 
 from .types import ANSI_ESCAPE_RE
+
+# markup off: log lines echo errors that may look like [tags]
+console = Console(stderr=True, markup=False, soft_wrap=True)
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
@@ -201,8 +205,11 @@ class Session:
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
         self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
 
-    def _is_shell_prompt(self, text: str) -> bool:
-        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers."""
+    def _is_shell_prompt(self, text: str, whole: bool = False) -> bool:
+        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
+
+        `whole`: and the prompt's match ends where `text` ends, so nothing was read past the prompt.
+        """
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
@@ -213,10 +220,21 @@ class Session:
                 return False
             _, i, end = min(found)
             if 1 < i < self._stray:
-                return next(h for h in self._handlers if h.start <= i < h.end).is_return
+                is_return = next(h for h in self._handlers if h.start <= i < h.end).is_return
+                return is_return and (not whole or end == len(text))
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
+    def _forget(self):
+        """Drop what is known of a child: its prompt, the last line sent to it and whether to solicit."""
+        self._at_prompt = False
+        self._prompt = ""
+        self._sent = None
+        self._solicit = True
+
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
+        # nothing of an earlier child applies to this one
+        self._forget()
+        self._ctx["before"] = self._ctx["match"] = ""
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -235,10 +253,10 @@ class Session:
                 closed=f"before any output from '{spawn}'",
             )
         except EOFError as e:
-            self.detach()  # reaps the child, so its exit status is known
+            self.detach(failing=True)  # reaps the child, so its exit status is known
             raise EOFError(f"{e}{_exit_note(cld)}") from e.__cause__
         except BaseException:
-            self.detach()
+            self.detach(failing=True)
             raise
 
     def _expect(self, patterns, timeout: float, what: str, closed: str | None = None) -> int:
@@ -251,30 +269,43 @@ class Session:
         except pexpect.EOF as e:
             raise EOFError(f"connection closed {closed or f'while waiting for {what}'}") from e
 
-    def detach(self):
-        if self._cld:
+    def detach(self, failing: bool = False):
+        """Close the child and forget it, whether or not the close works.
+
+        A close that fails raises, unless `failing`: an error is already on its way, so this one is only logged.
+        """
+        cld, self._cld = self._cld, None
+        echo, self._echo = self._echo, None
+        self._forget()  # there is no session to be at a prompt of
+        if not cld:
+            return
+        try:
             try:
-                self._cld.close()
+                cld.close()
             finally:
-                if self._echo:
-                    self._echo.close()
-                    self._echo = None
-            self._cld = None
+                if echo:
+                    echo.close()
+        except Exception as e:  # noqa: BLE001 - must not replace the error that is propagating
+            if not failing:
+                raise
+            console.print(f">> close error ({type(e).__name__}): {e}")
 
     def get_prompt(
         self,
         timeout: float = 300,
         errors: list[str] | None = None,
         capture: bool = True,
+        solicit: bool = True,
     ) -> str:
-        if self._at_prompt:
-            return ""
+        """Wait for a shell prompt. `solicit=False`: never press Return for one, whatever was sent last."""
         if not self._cld:
             raise RuntimeError("not attached")
+        if self._at_prompt:
+            return ""
 
         sent, self._sent = self._sent, None
         # a command that is still running would answer a solicit newline with a second prompt
-        solicited, self._solicit = not self._solicit, True
+        solicited, self._solicit = not (self._solicit and solicit), True
         for h in self._handlers:
             h.reset()
         output: list[str] = []
@@ -345,6 +376,11 @@ class Session:
         idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
+        # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
+        # session is at it, as after a prompt wait
+        line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")[2]
+        if not self._at_prompt and not self._cld.buffer and self._is_shell_prompt(line, whole=True):
+            self._at_prompt, self._prompt = True, line
         return idx
 
     def sendline(self, line: str = "", *, solicit: bool = False):

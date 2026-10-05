@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.resources
 import json
 import sys
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -116,15 +116,39 @@ def _cmd_run(args):
     runner.run()
 
 
+SCHEMA_NAME = "autobot.2026-10.json"
+
+
+class SchemaError(RuntimeError):
+    """The schema is in neither place it is read from; the CLI reports it without a traceback."""
+
+
+def load_schema() -> dict[str, Any]:
+    """The JSON schema, read from the package it ships in.
+
+    The repository keeps one copy, `schemas/`, and the package holds a link to it that a build turns into
+    the file. In a source tree the link may be missing, or be a text file holding the link's target (a
+    checkout made without symbolic links): `schemas/` is read then.
+    """
+    packaged = importlib.resources.files("autobot") / SCHEMA_NAME
+    source = Path(__file__).resolve().parent.parent.parent / "schemas" / SCHEMA_NAME
+    for candidate in (packaged, source):
+        try:
+            schema = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(schema, dict):
+            return schema
+    raise SchemaError(f"neither {packaged} nor {source} holds the JSON schema")
+
+
 def _cmd_schema():
     _discover()
-    schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
-    if schema_path.exists():
-        schema = json.loads(schema_path.read_text())
-    else:
-        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
-        schema = json.loads(urllib.request.urlopen(url).read())
-
+    try:
+        schema = load_schema()
+    except SchemaError as e:
+        console.print(f"Cannot read the schema: {e}")
+        sys.exit(1)
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 

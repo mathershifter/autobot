@@ -295,7 +295,6 @@ def test_p7_16_same_plugin_registered_again_is_harmless(isolated_registry: StepR
     reg.register(again)
     assert reg.get("echo") is again
     assert [e.key for e in reg.plugin_executors()] == ["echo"]
-    assert reg._model_keys[EchoStep] == "echo"
 
 
 # -- P7-24: a model belongs to one step key ------------------------------------
@@ -351,25 +350,68 @@ def test_p7_24_every_builtin_model_is_taken(isolated_registry: StepRegistry, mod
     assert _registry_state(reg) == before
 
 
-def test_p7_24_plugin_with_another_plugins_model_is_rejected(isolated_registry: StepRegistry):
-    """Two keys with one model: steps of the first key would run the second plugin."""
+class RestStep(pydantic.BaseModel):
+    """One model for two plugin keys."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+    nap: str | None = None
+    snooze: str | None = None
+
+
+class RestExecutor:
+    model = RestStep
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.ran: list[RestStep] = []
+
+    def execute(self, step: RestStep, ctx: Any, timeout: float) -> None:
+        self.ran.append(step)
+
+
+def test_p7_26_two_plugins_may_share_a_model(isolated_registry: StepRegistry):
+    """SPEC "Common Step Properties": a plugin step is dispatched by its key, so two keys with one model each
+    run their own plugin. This was refused for a while, as if the second plugin took the first one's steps."""
     reg = isolated_registry
-    first = _Executor("echo", EchoStep)
-    reg.register(first, origin="distribution pkg-a, entry point 'echo'")
+    nap, snooze = RestExecutor("nap"), RestExecutor("snooze")
+    reg.register(nap, origin="distribution pkg-a, entry point 'nap'")
+    reg.register(snooze, origin="distribution pkg-b, entry point 'snooze'")
+    assert reg.get("nap") is nap and reg.get("snooze") is snooze
+    assert [e.key for e in reg.plugin_executors()] == ["nap", "snooze"]
+    # only built-in steps are found by their model; a plugin's model is in no dispatch table
+    assert sorted(reg._model_keys.values()) == sorted(["cmd", "sleep", "call", "block", "line", "return", "control"])
+    with pytest.raises(ValueError, match="^no executor for step: "):
+        reg.key_for_step(RestStep(nap="a"))
+    run_script([{"nap": "a"}, {"snooze": "b"}, {"nap": "c", "when": "true"}, {"sleep": "10ms"}])
+    assert [s.nap for s in nap.ran] == ["a", "c"]
+    assert [s.snooze for s in snooze.ran] == ["b"]
+    # each can register again, and a third key with the same model is as good as the second
+    reg.register(RestExecutor("snooze"))
+    reg.register(_Executor("doze", RestStep))
+    assert reg.has("doze")
+
+
+def test_p7_26_sharing_a_builtin_model_or_plugin_step_is_still_refused(isolated_registry: StepRegistry):
+    """Only plugins may share with each other: a built-in's model and `PluginStep` do decide the dispatch."""
+    reg = isolated_registry
+    reg.register(RestExecutor("nap"))
     before = _registry_state(reg)
-    with pytest.raises(PluginError) as ei:
-        reg.register(OtherEchoExecutorWithKey("shout"), origin="distribution pkg-b, entry point 'shout'")
-    assert str(ei.value) == (
-        f"plugin {__name__}.OtherEchoExecutorWithKey (distribution pkg-b, entry point 'shout'), step key 'shout': "
-        f"model EchoStep is already the model of step key 'echo', registered by plugin {__name__}._Executor "
-        "(distribution pkg-a, entry point 'echo'); a plugin needs a model of its own"
-    )
+    with pytest.raises(PluginError, match="model SleepStep is already the model of the built-in step 'sleep'"):
+        reg.register(NapExecutor())
+    with pytest.raises(PluginError, match="model PluginStep is the runner's own model of every plugin step"):
+        reg.register(_Executor("all", PluginStep))
     assert _registry_state(reg) == before
-    assert reg.key_for_step(EchoStep(echo="x")) == "echo"
-    # the same class under a second key is the same mistake
-    with pytest.raises(PluginError, match="model EchoStep is already the model of step key 'echo'"):
-        reg.register(_Executor("echo2", EchoStep))
-    assert _registry_state(reg) == before
+    assert reg.key_for_step(SleepStep(sleep=0.01)) == "sleep"
+
+
+def test_p7_26_a_key_still_belongs_to_one_plugin(isolated_registry: StepRegistry):
+    """Sharing a model isn't sharing a key: a second plugin with a registered key is refused as before."""
+    reg = isolated_registry
+    reg.register(_Executor("echo", EchoStep), origin="distribution pkg-a, entry point 'echo'")
+    with pytest.raises(PluginError, match="step key 'echo' is already registered by plugin"):
+        reg.register(OtherEchoExecutorWithKey("echo"), origin="distribution pkg-b, entry point 'echo'")
+    reg.register(OtherEchoExecutorWithKey("shout"))  # the same model under another key is fine
+    assert reg.has("shout")
 
 
 def test_p7_24_plugin_step_model_is_rejected(isolated_registry: StepRegistry):
@@ -394,7 +436,7 @@ def test_p7_24_own_model_and_reregistration_still_work(isolated_registry: StepRe
     reg = isolated_registry
     reg.register(_Executor("mysleep", MySleep))
     reg.register(_Executor("mysleep", MySleep))
-    assert reg.key_for_step(MySleep(sleep=1)) == "mysleep"
+    assert reg.get("mysleep").model is MySleep
     assert reg.key_for_step(SleepStep(sleep=1)) == "sleep"
 
 

@@ -17,8 +17,16 @@ autobot = "autobot.cli:main"
 requires = ["uv_build>=0.11.13,<0.12.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+# src/autobot/autobot.2026-10.json is a link to schemas/autobot.2026-10.json, the one copy of the schema:
+# the wheel gets the file itself, and the sdist needs the link's target as well
+source-include = ["schemas/autobot.2026-10.json"]
+
 [tool.pytest.ini_options]
-markers = ["slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'"]
+markers = [
+    "slow: needs the 5s get_prompt idle poll; deselect with -m 'not slow'",
+    "build: runs `uv build` and checks the wheel and sdist; skipped without uv or its cached build backend",
+]
 
 [dependency-groups]
 dev = [

@@ -99,7 +99,14 @@ def test_p8_19_search_invalid_regex_is_template_error():
     """SPEC "Jinja2 Templating": an invalid ``search`` regex is a template error."""
     with pytest.raises(ValueError, match=r"^template error: search: invalid regex '\(': "):
         render("{{ 'x' | search('(') }}", {})
-    assert render("{{ 'abc' | search('b+') }}", {}) == "True"
+    assert render("{{ 'abc' | search('b+') }}", {}, condition=True) == "True"
+
+
+@pytest.mark.parametrize(("value", "shown"), [(True, "true"), (False, "false")])
+def test_p3_22_duration_error_names_a_boolean_as_yaml_writes_it(value: bool, shown: str):
+    """An error that shows a value of the document shows a boolean as `true` or `false`, not `True`."""
+    with pytest.raises(ValueError, match=f"^invalid duration: {shown}$"):
+        parse_duration(value)
 
 
 # -- P8-20: any exception from an expression is a template error -------------

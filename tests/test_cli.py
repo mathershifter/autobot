@@ -1,4 +1,4 @@
-"""P6-21..40, P6-45, P6-59: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40, P6-45, P6-59, P6-80: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -342,7 +342,9 @@ EACH_VARS = {
     "n": 5,
     "nul": None,
     "lst": ["x"],
-    "pins": ["1111", 2.5, True],
+    "pins": ["1111", 2.5, "True"],
+    "flags": ["1111", True],
+    "bools": [{"username": "a", "password": False}],
     "mixed": ["ok", {"username": "a"}],
     "nulls": [{"username": "a", "password": None}],
     "pairs": [{"username": "a", "password": "b"}],
@@ -378,13 +380,15 @@ def _marked_each_doc(tmp_path: Path, send: dict) -> dict:
         ("vars.site", UP, "'vars.site' is a mapping, not a list"),
         ("vars.creds", UP, "item 1 has no field 'password'"),
         ("vars.mixed", UP[:1], "item 0 is a string, not a mapping"),
-        ("vars.nulls", UP, "item 0 field 'password' is null, not a string, number or boolean"),
-        ("vars.pairs", None, "item 0 is a mapping; without fields each item must be a string, number or boolean"),
+        ("vars.nulls", UP, "item 0 field 'password' is null, not a string or number"),
+        ("vars.pairs", None, "item 0 is a mapping; without fields each item must be a string or number"),
+        ("vars.flags", None, "item 1 is a boolean (true), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'"),
+        ("vars.bools", UP, "item 0 field 'password' is a boolean (false), which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'"),
     ],
     ids=[
         "missing-key", "missing-nested-key", "missing-middle-key", "through-string", "through-list",
         "string-not-list", "number-not-list", "null-not-list", "mapping-not-list", "missing-field",
-        "item-not-mapping", "null-field", "mapping-item-without-fields",
+        "item-not-mapping", "null-field", "mapping-item-without-fields", "boolean-item", "boolean-field",
     ],
 )
 def test_p6_38_cli_send_each_error_is_clean_error(tmp_path: Path, each: str, fields: list[dict] | None, problem: str):
@@ -419,8 +423,8 @@ def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
     assert "got-2-hi" in res.stdout
 
 
-def test_p6_46_cli_old_fields_list_is_validation_error_with_hint(tmp_path: Path):
-    """SPEC "Migrating from 2026-08": `fields: [username, password]` fails validation and names the new form."""
+def test_p6_46_cli_fields_list_of_names_is_validation_error_with_hint(tmp_path: Path):
+    """SPEC "sendEach": `fields: [username, password]` fails validation and names the form an entry has."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pairs", "fields": ["username", "password"]})
     doc["prompts"][1]["expect"] = [["login:", "Password:"]]
     res = run_cli(doc, tmp_path)
@@ -431,24 +435,21 @@ def test_p6_46_cli_old_fields_list_is_validation_error_with_hint(tmp_path: Path)
         (["prompts", 1, "send", "fields", 1], "fields_entry"),
     ]
     assert errs[1]["msg"] == (
-        "since 2026-10 a fields entry pairs a regex with a field: "
-        'write {match: <regex>, field: password} (see "Migrating from 2026-08" in SPEC.md)'
+        "a fields entry pairs a regex with a field: write {match: <regex>, field: password}"
     )
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 
 
 def test_p6_47_cli_old_version_is_validation_error_with_hint(tmp_path: Path):
-    """SPEC "Top-level fields": `autobot: 2026-08` fails validation and points to the migration section."""
+    """SPEC "Top-level fields": `autobot: 2026-08` fails validation and names the version to use."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
     doc["autobot"] = "2026-08"
     res = run_cli(doc, tmp_path)
     assert _load_error(res) == "Validation errors:"
     [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
     assert (err["loc"], err["type"]) == (["autobot"], "unsupported_version")
-    assert err["msg"] == (
-        'autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)'
-    )
+    assert err["msg"] == "autobot 2026-08 is no longer supported; use 2026-10"
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 
@@ -506,7 +507,7 @@ def test_p6_55_cli_unquoted_send_scalar_is_validation_error_with_hint(
 def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     tmp_path: Path, prompt: dict[str, Any], loc: list[Any], type_: str
 ):
-    """SPEC "Migrating from 2026-08": a send list and a grouped expect fail validation and point to sendEach."""
+    """SPEC "prompts": a send list and a grouped expect fail validation and point to sendEach."""
     doc = _marked_each_doc(tmp_path, {"each": "vars.pins"})
     doc["prompts"][1] = prompt
     res = run_cli(doc, tmp_path)
@@ -514,7 +515,7 @@ def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
     assert (err["loc"], err["type"]) == (loc, type_)
     assert SEQUENCE_HINT in err["msg"]
-    assert 'see "Migrating from 2026-08" in SPEC.md' in err["msg"]
+    assert "SPEC.md" not in err["msg"]
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
 
@@ -571,3 +572,185 @@ def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, lo
     assert msg in err["msg"]
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
+
+
+# -- P6-80: `autobot schema` prints the schema that ships with the package -------
+
+SCHEMA_NAME = "autobot.2026-10.json"
+
+
+@pytest.fixture
+def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every way out to the network raises, and is recorded."""
+    import socket
+    import urllib.request
+
+    calls: list[str] = []
+
+    def refuse(name: str) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            raise AssertionError(f"network access: {name}")
+
+        return call
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse("urlopen"))
+    monkeypatch.setattr(socket, "create_connection", refuse("create_connection"))
+    monkeypatch.setattr(socket.socket, "connect", refuse("connect"))
+    monkeypatch.setattr(socket, "getaddrinfo", refuse("getaddrinfo"))
+    return calls
+
+
+def test_p6_80_packaged_schema_is_the_one_in_schemas():
+    """SPEC "CLI": the schema ships inside the package, and it is the repository's one copy, `schemas/`."""
+    import importlib.resources
+
+    from conftest import ROOT
+
+    packaged = importlib.resources.files("autobot") / SCHEMA_NAME
+    canonical = ROOT / "schemas" / SCHEMA_NAME
+    assert packaged.is_file()
+    assert packaged.read_bytes() == canonical.read_bytes()
+    assert json.loads(packaged.read_text(encoding="utf-8"))["$id"] == f"schemas/{SCHEMA_NAME}"  # not the link's text
+    assert cli.load_schema() == json.loads(canonical.read_text())
+    assert cli.load_schema()["$id"] == f"schemas/{SCHEMA_NAME}"
+    # in the source tree the packaged file is a link to the canonical one, not a second copy
+    link = ROOT / "src" / "autobot" / SCHEMA_NAME
+    assert link.is_symlink() and link.resolve() == canonical.resolve()
+
+
+def test_p6_80_load_schema_returns_a_fresh_copy():
+    """`add_plugin_steps` changes the schema it is given, so every caller gets its own."""
+    first = cli.load_schema()
+    first["$defs"]["step"]["oneOf"].clear()
+    assert cli.load_schema()["$defs"]["step"]["oneOf"]
+
+
+def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
+    """SPEC "CLI": `autobot schema` prints the packaged schema and never goes to the network.
+
+    An installed package used to download it from the `main` branch on GitHub.
+    """
+    cli._cmd_schema()
+    out = capsys.readouterr()
+    assert json.loads(out.out) == schema  # no plugins are installed here
+    assert out.err == ""
+    assert no_network == []
+
+
+def test_p6_80_source_tree_without_the_packaged_file_reads_schemas(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, schema: dict[str, Any]):
+    """With no schema file in the package directory, the loader reads the repository's `schemas/` copy."""
+    import importlib.resources
+
+    monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
+    assert not (tmp_path / SCHEMA_NAME).exists()
+    assert cli.load_schema() == schema
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"../../schemas/autobot.2026-10.json", b"", b"\xff\xfe\x00", b"[]", b'"schemas/autobot.2026-10.json"'],
+    ids=["link-text", "empty", "not-utf-8", "json-list", "json-string"],
+)
+def test_p6_81_packaged_file_that_is_not_the_schema_falls_back_to_schemas(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], schema: dict[str, Any], content: bytes
+):
+    """SPEC "CLI": a checkout made without symbolic links leaves a text file holding the link's target where
+    the schema should be. The loader reads `schemas/` then, and `autobot schema` prints the schema.
+
+    It died with a `JSONDecodeError` traceback.
+    """
+    import importlib.resources
+
+    (tmp_path / SCHEMA_NAME).write_bytes(content)
+    monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
+    assert cli.load_schema() == schema
+    cli._cmd_schema()
+    out = capsys.readouterr()
+    assert json.loads(out.out) == schema
+    assert out.err == ""
+
+
+def test_p6_81_no_schema_anywhere_is_a_clean_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """With the schema in neither place (the link's text in an installed package), one line and status 1."""
+    import importlib.resources
+
+    package = tmp_path / "site-packages" / "autobot"
+    package.mkdir(parents=True)
+    (package / SCHEMA_NAME).write_text("../../schemas/autobot.2026-10.json")
+    monkeypatch.setattr(importlib.resources, "files", lambda name: package)
+    monkeypatch.setattr(cli, "__file__", str(package / "cli.py"))
+    with pytest.raises(cli.SchemaError):
+        cli.load_schema()
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == (
+        f"Cannot read the schema: neither {package / SCHEMA_NAME} nor {tmp_path / 'schemas' / SCHEMA_NAME} "
+        "holds the JSON schema\n"
+    )
+
+
+def test_p6_80_cli_has_no_download_left():
+    """Nothing in the CLI can reach the network: no `urlopen`, no URL of the schema."""
+    source = Path(cli.__file__).read_text()
+    for gone in ("urlopen", "urllib.request", "raw.githubusercontent", "http.client", "SCHEMA_URL", "Cannot download"):
+        assert gone not in source, gone
+
+
+def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """SPEC "CLI": the plugins are loaded first, as for `run`; a broken one is the error, and nothing is printed."""
+    from autobot.registry import PluginError
+
+    def discover() -> None:
+        raise PluginError("entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'")
+
+    def load_schema() -> Any:
+        raise AssertionError("the schema was read")
+
+    monkeypatch.setattr(cli.registry, "discover", discover)
+    monkeypatch.setattr(cli, "load_schema", load_schema)
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.err == (
+        "Plugin error: entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'\n"
+    )
+    assert out.out == ""
+
+
+@pytest.mark.build
+def test_p6_80_built_wheel_and_sdist_contain_the_schema(tmp_path: Path):
+    """The build itself: the wheel has the schema inside the package, and the sdist has it at both paths."""
+    import shutil
+    import tarfile
+    import zipfile
+
+    from conftest import ROOT
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    res = subprocess.run(
+        [uv, "build", "--offline", "-o", str(tmp_path), str(ROOT)], check=False, capture_output=True, text=True, timeout=300
+    )
+    if res.returncode != 0 and "network was disabled" in res.stderr:
+        # the build backend isn't in uv's cache, and this test doesn't go and fetch it
+        pytest.skip("uv build --offline: the build backend (uv_build) isn't in uv's cache")
+    assert res.returncode == 0, res.stderr
+    canonical = (ROOT / "schemas" / SCHEMA_NAME).read_bytes()
+    [wheel] = tmp_path.glob("*.whl")
+    with zipfile.ZipFile(wheel) as z:
+        assert z.read(f"autobot/{SCHEMA_NAME}") == canonical
+        assert not [n for n in z.namelist() if n.startswith("schemas/")]
+    [sdist] = tmp_path.glob("*.tar.gz")
+    with tarfile.open(sdist) as t:
+        names = {n.split("/", 1)[1]: n for n in t.getnames() if "/" in n}
+        for path in (f"schemas/{SCHEMA_NAME}", f"src/autobot/{SCHEMA_NAME}"):
+            member = t.extractfile(names[path])
+            assert member is not None and member.read() == canonical, path

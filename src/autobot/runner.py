@@ -14,7 +14,7 @@ from .models import Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, check_regex, check_template
+from .types import EnvError, check_regex, check_template, text
 from .types import render as render_template
 
 # markup off: log lines echo commands, names and errors that may look like [tags]
@@ -37,7 +37,15 @@ def _kind(value: Any) -> str:
 
 
 def _scalar(value: Any) -> bool:
-    return isinstance(value, (str, int, float, bool))
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
+def _not_text(value: bool) -> str:
+    # YAML reads yes, on and True as the same boolean, so the value as written isn't known here
+    return (
+        f"a boolean ({text(value)}), which is never sent as text; "
+        "quote the value to send it as written, e.g. 'true' or 'yes'"
+    )
 
 
 def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list[str]]:
@@ -61,8 +69,10 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
     sets: list[list[str]] = []
     for i, item in enumerate(obj):
         if not fields:
+            if isinstance(item, bool):
+                raise fail(f"item {i} is {_not_text(item)}")
             if not _scalar(item):
-                raise fail(f"item {i} is {_kind(item)}; without fields each item must be a string, number or boolean")
+                raise fail(f"item {i} is {_kind(item)}; without fields each item must be a string or number")
             sets.append([str(item)])
             continue
         if not isinstance(item, dict):
@@ -70,8 +80,10 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
         for f in fields:
             if f not in item:
                 raise fail(f"item {i} has no field '{f}'")
+            if isinstance(item[f], bool):
+                raise fail(f"item {i} field '{f}' is {_not_text(item[f])}")
             if not _scalar(item[f]):
-                raise fail(f"item {i} field '{f}' is {_kind(item[f])}, not a string, number or boolean")
+                raise fail(f"item {i} field '{f}' is {_kind(item[f])}, not a string or number")
         sets.append([str(item[f]) for f in fields])
     return sets
 
@@ -174,11 +186,13 @@ class Runner:
             "session": self._session.ctx,
         }
 
-    def render(self, template: Any, extra_ctx: dict | None = None) -> str:
+    def render(self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False) -> str:
+        """Render a template to text. A boolean isn't text, so an expression that gives one is a template
+        error, unless `condition`: the text is then only read as a yes or no, as `when` reads it."""
         ctx = self._ctx
         if extra_ctx:
             ctx = {**ctx, **extra_ctx}
-        return render_template(template, ctx)
+        return render_template(template, ctx, condition=condition)
 
     @staticmethod
     def _run_prepare(script: str):
@@ -216,7 +230,8 @@ class Runner:
 
     def run(self):
         attach = self._config.attach
-        spawn = self.render(attach.spawn)
+        # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
+        spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
             raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
@@ -238,8 +253,10 @@ class Runner:
                         self.run_steps(attach.breakout.script)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
                         console.print(f">> breakout error ({type(e).__name__}): {e}")
-        finally:
-            self._session.detach()
+        except BaseException:
+            self._session.detach(failing=True)  # a close that fails must not replace this error
+            raise
+        self._session.detach()
 
     def run_steps(self, steps: list[Step]):
         for step in steps:
@@ -262,7 +279,7 @@ class Runner:
 
         when = getattr(step, "when", None)
         if when is not None:
-            result = self.render(when)
+            result = self.render(when, condition=True)
             if result.strip().lower() in ("", "false", "0", "none"):
                 return
 

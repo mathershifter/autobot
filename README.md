@@ -30,7 +30,7 @@ autobot schema
 
 `autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
 
-A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, or it reuses another plugin's key; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
+A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
 
 Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
 
@@ -51,7 +51,7 @@ vars:                   # arbitrary data accessible as {{ vars.KEY }}
 
 prompts:                # interactive prompt handlers
   - name: cli
-    expect: ['\w+@[\w\-\.]+:[^\r\n]*[$#] ?$']
+    expect: ['^\w+@[\w.-]+:[^\r\n]*[$#] ?$']
     return: true
 
 fn:                     # reusable step sequences
@@ -76,7 +76,7 @@ script:                 # main steps to execute
 
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
-| `autobot` | yes      | Schema version: `2026-10`. Scripts written for `2026-08` need changes to their prompts, see [Migrating from 2026-08](SPEC.md#migrating-from-2026-08) |
+| `autobot` | yes      | Schema version: `2026-10` |
 | `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
@@ -107,7 +107,7 @@ The `attach` block controls how autobot connects to the remote console.
 5. `attach.breakout.script` executes (best-effort, errors logged to stderr)
 6. Session closed
 
-The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates.
+The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
 
 If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError: timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`EOFError: connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
 
@@ -140,12 +140,12 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
 ```yaml
 - name: cli
   expect:
-    - '\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'
-    - '(arista-)?bmc-boot=> ?$'
+    - '^\w+@[\w.-]+:[^\r\n]*[$#] ?$'
+    - '^(arista-)?bmc-boot=> ?$'
   return: true
 ```
 
-Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^` to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
+Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^`, as above, to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. Without it, output that only contains something like a prompt and ends a read with the prompt character (`scp admin@host:/x $`) is taken for one. The cost is a prompt with other text in front of it on its line, such as one printed right after output with no final newline: it isn't recognized. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
 
 A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
 
@@ -182,7 +182,7 @@ prompts:
 
 This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
-Without `fields`, each item (a string, number or boolean) is sent as it is, in answer to any of the prompt's `expect` regexes:
+Without `fields`, each item (a string or number) is sent as it is, in answer to any of the prompt's `expect` regexes. A boolean is never sent: an unquoted `true`, `yes` or `on` as an item or a field's value is an error that tells you to quote it (`'true'`, `'yes'`):
 
 ```yaml
 - name: pin
@@ -191,7 +191,7 @@ Without `fields`, each item (a string, number or boolean) is sent as it is, in a
     each: vars.pins
 ```
 
-`each` must be a path of keys under `vars` (e.g. `vars.creds` or `vars.site.creds`) that leads to a list. With `fields`, every item must be a mapping with each entry's field; without it, every item must be a string, number or boolean. A path or item that doesn't fit stops the script: before anything runs for the top-level prompts, or on entering the block for a block's prompts. For example: `prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'`. See [SPEC.md](SPEC.md#sendeach).
+`each` must be a path of keys under `vars` (e.g. `vars.creds` or `vars.site.creds`) that leads to a list. With `fields`, every item must be a mapping with each entry's field; without it, every item must be a string or number. A path or item that doesn't fit stops the script: before anything runs for the top-level prompts, or on entering the block for a block's prompts. For example: `prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'`. See [SPEC.md](SPEC.md#sendeach).
 
 ## Step Types
 
@@ -388,6 +388,8 @@ All step types except `sleep` support these optional fields:
 
 `line` and `return` steps do not support `timeout`.
 
+`after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. That wait never presses Return, since a Return could answer a question or reach a running command; if no shell prompt comes within the step's `timeout`, the step fails. An `after` that ends at the shell prompt itself is fine: the command is sent at once. `line`, `return` and `control` send as soon as the pattern matches, so use `line` to answer something that isn't a shell prompt.
+
 For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 
 To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.
@@ -440,6 +442,8 @@ Available context:
 | `session.match`  | Text that matched the last `after` pattern or shell prompt |
 
 A key wins over a mapping method of the same name: after `register: values`, `{{ vars.values }}` is the registered output. `vars.items()` and `vars.get('k', 'default')` work as long as no key is named `items` or `get`.
+
+A boolean is not text. An expression that gives one, such as `{{ vars.debug }}` with `debug: true`, `{{ a == b }}` or `{{ value | contains('x') }}`, is a template error wherever the result is sent or stored, because no single spelling (`true`, `True`, `yes`) is right for every device. Quote the value in the script (`debug: 'true'`) if it is meant as text, or say in the template which text you mean: `{{ vars.debug | string }}` (`True`), `{{ vars.debug | tojson }}` (`true`) or `{{ 'on' if vars.debug else 'off' }}`. Conditions are unaffected: `when`, `{% if %}` and comparisons inside an expression work on the value. A null still renders as `None`.
 
 An expression that fails while a template is rendered, such as `{{ 1/0 }}`, is a template error like a syntax error or an undefined variable: `template error: ZeroDivisionError: division by zero`.
 
@@ -497,17 +501,17 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields, a class of the plugin's own: not a built-in step's model or another plugin's) and `execute(step, ctx, timeout)`. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`.
+
+`ctx.render(template)` renders text that is sent or stored, where an expression that gives a boolean is a template error (see [Templating](#templating)). A plugin that renders a condition, to read the result as a yes or no, calls `ctx.render(template, condition=True)`, as the runner does for `when`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 
 When a plugin sends text itself, it tells the session what kind of send it is:
 
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
 
-Before this distinction every prompt wait pressed Return after 5 seconds. A plugin that relied on that after its own `sendline` now needs `solicit=True` (see "Migrating from 2026-08" in SPEC.md).
-
 ## Schema
 
-The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. A step has at most one plugin key, and a plugin can't use a built-in step key or a common step property name, as its key or as a field of its model, its key can't be `plugin` (the generated definition would take the name of the `pluginStep` catch-all), and two installed plugins can't share a key (see SPEC.md, "Common Step Properties"). It reads the file from the source tree when it runs from a checkout; an installed copy downloads it from the `main` branch on GitHub. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step (it still checks the step's common properties, such as `timeout` and `when`), while autobot rejects a key that no installed plugin provides. Autobot also compiles the regexes when it loads the script, which a JSON schema can't do: one that doesn't compile in `errors`, a prompt's `expect` or `match`, or an `assert` or `after` without template syntax, fails validation with `invalid_regex` before anything runs.
+The full JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it, with a definition added for each installed plugin step: a step with that plugin's key is checked against the plugin's model and the common step properties. A step has at most one plugin key, and a plugin can't use a built-in step key or a common step property name, as its key or as a field of its model, its key can't be `plugin` (the generated definition would take the name of the `pluginStep` catch-all), and two installed plugins can't share a key (see SPEC.md, "Common Step Properties"). The schema ships inside the package, so an installed autobot prints the schema of its own version and needs no network. It is normative: autobot accepts the scripts the schema accepts. The exception is step keys: the static schema accepts any unknown step key as a possible plugin step (it still checks the step's common properties, such as `timeout` and `when`), while autobot rejects a key that no installed plugin provides. Autobot also compiles the regexes when it loads the script, which a JSON schema can't do: one that doesn't compile in `errors`, a prompt's `expect` or `match`, or an `assert` or `after` without template syntax, fails validation with `invalid_regex` before anything runs.
 
 For the detailed specification, see [`SPEC.md`](SPEC.md).

@@ -33,7 +33,7 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import Session
+from autobot.session import PromptHandler, Session
 
 TOP_PROMPTS = [{"name": "top", "expect": [r"PROMPT\$ "], "return": True}]
 BLOCK_PROMPTS = [{"name": "blk", "expect": [r"PROMPT\$ "], "return": True}]
@@ -226,6 +226,222 @@ def test_attach_original_error_preserved_when_breakout_fails(children):
         r.run()
     assert len(children) == 1
     assert not children[0].isalive()
+
+
+# -- P5-56: a close that fails (attach lifecycle step 6) -----------------------
+
+CLOSE_FAILED = "Could not terminate the child."
+CLOSE_LOG = f">> close error (ExceptionPexpect): {CLOSE_FAILED}"
+
+
+@pytest.fixture
+def unkillable(monkeypatch: pytest.MonkeyPatch) -> list[pexpect.spawn]:
+    """`pexpect.spawn.close` raises what it raises for a child that survives SIGHUP, SIGINT and SIGKILL.
+
+    The child is really closed first, so the test leaves nothing behind.
+    """
+    closed: list[pexpect.spawn] = []
+    orig = pexpect.spawn.close
+
+    def close(self, force=True):
+        orig(self, force)
+        closed.append(self)
+        raise pexpect.ExceptionPexpect(CLOSE_FAILED)
+
+    monkeypatch.setattr(pexpect.spawn, "close", close)
+    return closed
+
+
+def detached(r: Runner) -> bool:
+    return r.session._cld is None and r.session._echo is None
+
+
+@pytest.mark.parametrize(
+    ("script", "breakout", "error", "message"),
+    [
+        ([{"cmd": "false"}], None, RuntimeError, r"^command returned exit code 1$"),
+        ([STUCK], None, TimeoutError, r"^timed out after 1(\.0)?s waiting for the after pattern 'NEVER_APPEARS'$"),
+        ([{"cmd": "echo {{ vars.nope }}"}], None, ValueError, r"^template error: "),
+        ([{"cmd": "false"}], [STUCK], RuntimeError, r"^command returned exit code 1$"),
+    ],
+    ids=["step-failure", "timeout", "template-error", "with-failing-breakout"],
+)
+def test_p5_56_close_failure_does_not_replace_the_script_error(
+    unkillable: list, capsys, script: list, breakout: list | None, error: type[Exception], message: str
+):
+    """SPEC "attach": a session that can't be closed never replaces the error the script raised.
+
+    `detach` ran in a `finally`, so pexpect's `Could not terminate the child.` took the place of the
+    script's own error, which was left only as its `__context__`.
+    """
+    r = top_runner(script, breakout=breakout)
+    with pytest.raises(error, match=message):
+        r.run()
+    assert len(unkillable) == 1
+    assert detached(r)
+    assert CLOSE_LOG in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("spawn", "error", "message"),
+    [
+        ("sleep 30", TimeoutError, r"^timed out after 0\.5s waiting for the first output from 'sleep 30' \(attach\.timeout\)$"),
+        ("true", EOFError, r"^connection closed before any output from 'true' \(exit status 0\)$"),
+    ],
+    ids=["timeout", "eof"],
+)
+def test_p5_56_close_failure_does_not_replace_a_spawn_wait_error(
+    unkillable: list, capsys, spawn: str, error: type[Exception], message: str
+):
+    """The same for the close that follows a failed spawn wait, inside `Session.attach`."""
+    r = top_runner([], spawn=spawn, timeout=0.5)
+    with pytest.raises(error, match=message):
+        r.run()
+    assert len(unkillable) == 1  # closed once: the runner's own detach finds nothing left
+    assert detached(r)
+    assert CLOSE_LOG in capsys.readouterr().err
+
+
+def test_p5_56_close_failure_alone_is_the_runs_error(unkillable: list, capsys):
+    """With no other error, the close failure is raised, not swallowed, and the session still forgets the child."""
+    r = top_runner([{"cmd": "true"}], breakout=[{"line": "exit"}])
+    with pytest.raises(pexpect.ExceptionPexpect, match=f"^{CLOSE_FAILED}$"):
+        r.run()
+    assert len(unkillable) == 1
+    assert detached(r)
+    assert ">> close error" not in capsys.readouterr().err
+    r.session.detach()  # nothing left to close: no second attempt, no error
+    assert len(unkillable) == 1
+
+
+def test_p5_56_detach_forgets_the_child_when_close_fails(unkillable: list, capsys):
+    """`Session.detach`: the state is cleared whether or not the close fails, and `failing` only logs it."""
+    for failing in (False, True):
+        s = Session([])
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        if failing:
+            s.detach(failing=True)
+        else:
+            with pytest.raises(pexpect.ExceptionPexpect, match=f"^{CLOSE_FAILED}$"):
+                s.detach()
+        assert s._cld is None and s._echo is None
+        assert (CLOSE_LOG in capsys.readouterr().err) is failing
+        with pytest.raises(RuntimeError, match="^not attached$"):
+            s.sendline("x")
+    assert len(unkillable) == 2
+
+
+def test_p5_56_interrupt_during_close_is_not_swallowed(monkeypatch: pytest.MonkeyPatch):
+    """A `KeyboardInterrupt` while closing propagates even when another error is in flight."""
+    orig = pexpect.spawn.close
+
+    def close(self, force=True):
+        orig(self, force)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(pexpect.spawn, "close", close)
+    r = top_runner([{"cmd": "false"}])
+    with pytest.raises(KeyboardInterrupt):
+        r.run()
+    assert detached(r)
+
+
+def test_p5_56_echo_is_flushed_when_close_fails(unkillable: list, capsys):
+    """What the operator echo still holds is written out even though the close fails."""
+    s = Session([])
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
+    assert s._echo is not None
+    s._echo.write("tail\x1b[")
+    s.detach(failing=True)
+    assert capsys.readouterr().out.endswith("tail\x1b[")
+
+
+# -- P5-58: nothing can be done with a detached session -------------------------
+
+
+def test_p5_58_get_prompt_after_detach_is_not_attached():
+    """A session that was at a shell prompt when it was detached isn't at one any more.
+
+    `get_prompt` returned `""` at once for it, as if a prompt were waiting, instead of raising `not attached`.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    s.attach(BASH, env=SHELL_ENV, timeout=5)
+    s.get_prompt(timeout=5)
+    assert s.get_prompt(timeout=5) == ""  # at the prompt: returns at once
+    s.detach()
+    assert s._at_prompt is False
+    with pytest.raises(RuntimeError, match="^not attached$"):
+        s.get_prompt(timeout=5)
+    with pytest.raises(RuntimeError, match="^not attached$"):
+        s.check_rc(timeout=5)
+
+
+def test_p5_58_session_that_never_attached_is_not_attached():
+    """A session that was never attached raises the same way from every wait and send."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    for use in (s.get_prompt, s.check_rc, lambda: s.sendline("x"), lambda: s.sendcontrol("c"), lambda: s.expect(["x"])):
+        with pytest.raises(RuntimeError, match="^not attached$"):
+            use()
+
+
+# a child whose first output is a line that reads like the echo of a command, then a line, then a shell
+ECHO_LIKE = "bash -c \"echo 'echo stale-cmd'; echo real; PS1='PROMPT$ ' exec bash --norc --noprofile -i\""
+
+
+def test_p5_59_reattached_session_strips_no_stale_echo():
+    """SPEC "Captured output": the echo that is removed is the echo of a line sent to this child.
+
+    A line sent to a child that was detached before its prompt stayed remembered: the first wait on the
+    next child took that child's own output `echo stale-cmd` for the echo and removed it.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        s.get_prompt(timeout=5)
+        s.sendline("echo stale-cmd")
+        s.detach()  # without waiting for the command's prompt
+        s.attach(ECHO_LIKE, env=SHELL_ENV, timeout=5)
+        assert s.ctx == {"before": "", "match": ""}  # nothing of the first child's output
+        assert s.get_prompt(timeout=5) == "echo stale-cmd\nreal\n"
+        assert s.ctx["before"] == "echo stale-cmd\nreal\n"
+    finally:
+        s.detach()
+
+
+@pytest.mark.slow
+def test_p5_59_first_wait_of_a_reattached_session_solicits(fake_device: FakeDevice, sent: SentLog):
+    """SPEC "Prompt Handling": the first wait after a spawn follows no command, so it presses Return for an idle console.
+
+    After a command sent to the child before, the session still counted the wait as following that command.
+    """
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        s.attach(BASH, env=SHELL_ENV, timeout=5)
+        s.get_prompt(timeout=5)
+        s.sendline("echo stale-cmd")
+        s.detach()
+        sent.clear()
+        spawn, _ = fake_device("--wait-enter", "--order", "none", "--then", "prompt")
+        s.attach(spawn, env=dict(SHELL_ENV), timeout=5)
+        s.get_prompt(timeout=15)
+        assert sent.lines() == [""]
+    finally:
+        s.detach()
+
+
+def test_p5_58_reattached_session_waits_for_its_own_prompt(sent: SentLog):
+    """A session attached again starts away from a prompt: its first wait reads the new child's prompt."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    try:
+        for word in ("one", "two"):
+            s.attach(BASH, env=SHELL_ENV, timeout=5)
+            s.get_prompt(timeout=5)
+            s.sendline(f"echo {word}")
+            assert s.get_prompt(timeout=5) == f"{word}\n"
+            s.detach()
+    finally:
+        s.detach()
+    assert sent.lines() == ["echo one", "echo two"]
 
 
 # -- P5: spawn failure (attach lifecycle step 2) ------------------------------
@@ -1045,6 +1261,43 @@ def test_p5_54_quoted_command_still_spawns(value: str):
     runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
     with pytest.raises(EOFError, match=r"^connection closed before any output from .* \(exit status 0\)$"):
         runner.run()
+
+
+@pytest.mark.parametrize(
+    ("spawn", "args"),
+    [
+        (f" {BASH}", {}),
+        (f"\t \n{BASH}", {}),
+        ("{{ args.wrapper | default('') }} " + BASH, {}),
+        ("{{ args.wrapper | default('') }} bash --norc --noprofile -i", {"wrapper": "env"}),
+    ],
+    ids=["space", "tab-newline", "empty-wrapper", "wrapper"],
+)
+def test_p5_57_spawn_with_leading_whitespace_runs(timeline: Timeline, spawn: str, args: dict[str, str]):
+    """SPEC "attach": leading whitespace is removed from the command line before it is spawned.
+
+    `pexpect.spawn(' bash')` looks up an empty command name (`The command was not found or was not
+    executable`), and a wrapper template that renders to nothing leaves exactly that space.
+    """
+    r = run_script([{"cmd": "echo hi", "register": "out"}], spawn=spawn, args=args)
+    assert r.config.vars["out"] == "hi"
+    [(_, call, _)] = [c for c in timeline.calls if c[0] == "attach"]
+    assert call[0] == ("env " if args else "") + BASH
+
+
+def test_p5_57_messages_name_the_command_without_the_whitespace():
+    """The spawn-wait errors show the command line that was spawned."""
+    with pytest.raises(EOFError, match=r"^connection closed before any output from 'true' \(exit status 0\)$"):
+        make_runner([], spawn="  true").run()
+
+
+@pytest.mark.parametrize("value", [" ''", "  '' ls", " \\"])
+def test_p5_57_rendered_quotes_behind_whitespace_still_stop_the_run(timeline: Timeline, value: str):
+    """A rendered `spawn` that is whitespace and then quotes still names no command."""
+    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+        runner.run()
+    assert "attach" not in timeline.names()
 
 
 def test_p5_24_attach_timeout_default_and_spawn_templated(

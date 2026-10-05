@@ -1,4 +1,4 @@
-"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73: the pydantic models and schemas/autobot.2026-10.json agree.
+"""P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73, P6-75: the pydantic models and schemas/autobot.2026-10.json agree.
 
 SPEC.md:12 and 18 say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
@@ -420,7 +420,7 @@ def test_p6_53_parity_simple_prompt_accepted(both_validate: Callable, doc: dict[
 
 @pytest.mark.parametrize("doc", [c[0] for c in SIMPLE_BAD.values()], ids=list(SIMPLE_BAD))
 def test_p6_53_parity_removed_prompt_forms_rejected(both_validate: Callable, doc: dict[str, Any]):
-    """SPEC "Migrating from 2026-08": both reject a send list, a non-string send and a grouped expect."""
+    """SPEC "prompts": both reject a send list, a non-string send and a grouped expect."""
     assert both_validate(doc) == (False, False)
 
 
@@ -892,7 +892,8 @@ VERSION_NOT_A_STRING = {
     "2026.10": "2026.1",
     "2026-10-04": "2026-10-04",
     "202610": "202610",
-    "true": "True",
+    "true": "true",
+    "no": "false",
     "[2026-10]": "['2026-10']",
     "{v: 2026-10}": "{'v': '2026-10'}",
     "!!binary MjAyNi0xMA==": "b'2026-10'",
@@ -994,3 +995,217 @@ def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
 def test_p6_73_parity_blank_and_templated_after_accepted(both_validate: Callable, value: str):
     """Only the empty string is rejected at load; a template that renders to nothing is caught when it is used (P3-21)."""
     assert both_validate(s({"cmd": "x", "after": value})) == (True, True)
+
+
+# -- P6-75: mapping keys are strings -------------------------------------------
+
+# what YAML makes of a key that isn't a string
+KEY_LITERALS = {"int": "1", "float": "1.5", "bool": "true", "null": "~", "date": "2026-01-01", "binary": "!!binary aGk="}
+
+
+def yaml_key(literal: str) -> Any:
+    return next(iter(yaml.safe_load(f"{literal}: x")))
+
+
+# the mappings whose keys the script chooses: doc(key) -> a document with `key` in that mapping
+FREE_KEYS: dict[str, tuple[Callable[[Any], dict[str, Any]], tuple]] = {
+    "env": (lambda k: d(env={"A": "a", k: "x"}), ("env",)),
+    "vars": (lambda k: d(vars={"a": 1, k: "x"}), ("vars",)),
+    "fn": (lambda k: d(fn={"f": {"script": []}, k: {"script": []}}), ("fn",)),
+    "attach-env": (lambda k: d(attach={"spawn": "ssh host", "env": {"A": "a", k: "x"}}), ("attach", "env")),
+}
+# the mappings with fixed keys: doc(key) -> a document with `key` as one more key of that mapping
+FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "top-level": lambda k: {**d(), k: "x"},
+    "attach": lambda k: d(attach={"spawn": "ssh host", k: "x"}),
+    "attach-breakout": lambda k: d(attach={"spawn": "ssh host", "breakout": {"script": [], k: "x"}}),
+    "function": lambda k: d(fn={"f": {"script": [], k: "x"}}),
+    "prompt": lambda k: d(prompts=[{"name": "p", "expect": "x", k: "x"}]),
+    "send-each": lambda k: d(prompts=[{"name": "p", "expect": "x", "send": {"each": "vars.c", k: "x"}}]),
+    "fields-entry": lambda k: d(
+        prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": "u", k: "x"}]}}]
+    ),
+    "cmd": lambda k: s({"cmd": "x", k: "x"}),
+    "sleep": lambda k: s({"sleep": 1, k: "x"}),
+    "call": lambda k: d(fn=FN, script=[{"call": "f", k: "x"}]),
+    "block-step": lambda k: s({"block": {"name": "b"}, k: "x"}),
+    "block": lambda k: s({"block": {"name": "b", k: "x"}}),
+    "block-breakout": lambda k: s({"block": {"name": "b", "breakout": {"script": [], k: "x"}}}),
+    "line": lambda k: s({"line": "x", k: "x"}),
+    "return": lambda k: s({"return": 1, k: "x"}),
+    "control": lambda k: s({"control": "a", k: "x"}),
+    "fn-step": lambda k: d(fn={"f": {"script": [{"cmd": "x", k: "x"}]}}),
+}
+
+
+@pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
+@pytest.mark.parametrize("where", list(FREE_KEYS))
+def test_p6_75_parity_non_string_key_rejected(both_validate: Callable, where: str, literal: str):
+    """SPEC "YAML Script Structure": a key of `env`, `vars`, `fn` or `attach.env` is a string, in both.
+
+    The models always rejected `vars: {1: x}`; the schema accepted it, having nothing to say about a key's type.
+    """
+    build, loc = FREE_KEYS[where]
+    key = yaml_key(literal)
+    assert not isinstance(key, str)
+    doc = build(key)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["type"], err["loc"][: len(loc)], err["loc"][-1]) == ("string_type", loc, "[key]")
+    # the key isn't converted: only the quoted key is the string
+    assert both_validate(build(str(key))) == (True, True)
+
+
+@pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
+@pytest.mark.parametrize("where", list(FIXED_KEYS))
+def test_p6_75_parity_non_string_key_in_a_fixed_mapping_rejected(both_validate: Callable, where: str, literal: str):
+    """A mapping with fixed keys has no key that isn't a string: both reject it (they did before, too)."""
+    doc = FIXED_KEYS[where](yaml_key(literal))
+    assert both_validate(doc) == (False, False)
+    assert "invalid_key" in {e["type"] for e in model_errors(doc)}
+
+
+@pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
+def test_p6_75_parity_keys_inside_a_vars_value_are_data(both_validate: Callable, literal: str):
+    """Only the structure's keys are strings: a mapping inside a `vars` value keeps the keys YAML gives it."""
+    key = yaml_key(literal)
+    assert both_validate(d(vars={"ports": {key: "up"}})) == (True, True)
+    assert both_validate(d(vars={"items": [{key: {key: 1}}]})) == (True, True)
+    assert Config.model_validate(d(vars={"ports": {key: "up"}})).vars["ports"] == {key: "up"}
+
+
+@pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
+def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Callable, probe: Any, literal: str):
+    """A step's keys are strings for plugin steps too: `stepCommon` says so for `pluginStep` and every `<key>Step`."""
+    key = yaml_key(literal)
+    assert both_validate(s({"probe": "x", key: "x"})) == (False, False)
+    assert "invalid_key" in {e["type"] for e in model_errors(s({"probe": "x", key: "x"}))}
+    # a step no plugin provides: the static schema used to accept these two as possible plugin steps
+    assert both_validate(s({"nope": 1, key: "x"})) == (False, False)
+    assert both_validate(s({key: "x"})) == (False, False)
+
+
+def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
+    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed."""
+    names = {"type": "string"}
+    props, defs = schema["properties"], schema["$defs"]
+    for node in (props["env"], props["vars"], props["fn"], defs["attach"]["properties"]["env"], defs["stepCommon"]):
+        assert node["propertyNames"] == names
+
+    def objects(node: Any, path: str = "") -> Any:
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield path, node
+            for k, v in node.items():
+                yield from objects(v, f"{path}/{k}")
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                yield from objects(v, f"{path}/{i}")
+
+    open_ = sorted(p for p, n in objects(schema) if n.get("additionalProperties") is not False and "propertyNames" not in n)
+    # pluginStep gets the rule from stepCommon; the `if` of the prompt's fields rule only tests a value
+    assert open_ == ["/$defs/pluginStep", "/$defs/prompt/allOf/0/if/properties/send"]
+
+
+def test_p6_75_non_string_key_is_a_validation_error_on_load(tmp_path: Any):
+    """Through the CLI's loader: `vars: {1: x}` is reported as a validation error, without a traceback."""
+    from conftest import run_cli
+
+    res = run_cli(None, tmp_path, raw="autobot: 2026-10\nattach: {spawn: 'true'}\nvars: {1: x}\nscript: []\n")
+    assert res.returncode == 1
+    assert "Validation errors:" in res.stderr and "string_type" in res.stderr and "Traceback" not in res.stderr
+
+
+# -- P6-78: a YAML boolean is never text ---------------------------------------
+
+# unquoted, YAML reads each of these as a boolean
+BOOLEAN_LITERALS = ["true", "True", "yes", "on", "false", "No", "off"]
+ENV_HINT = (
+    "an environment value is a string, and unquoted this one is a boolean ({}); "
+    "quote it to set it as written, e.g. 'true' or 'yes'"
+)
+
+
+@pytest.mark.parametrize("literal", BOOLEAN_LITERALS)
+@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
+def test_p6_78_boolean_env_value_says_to_quote_it(both_validate: Callable, where: str, literal: str):
+    """SPEC "Booleans are not text": `DEBUG: true` or `NO_COLOR: yes` is rejected by both, and the models say to quote it.
+
+    It was always `string_type`; the message used to be only `Input should be a valid string`.
+    """
+    value = yaml.safe_load(literal)
+    assert isinstance(value, bool)
+    doc = STRING_FIELDS[where](value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    loc = ("env", "A") if where == "env-value" else ("attach", "env", "A")
+    assert (err["loc"], err["type"], err["msg"]) == (loc, "string_type", ENV_HINT.format(str(value).lower()))
+    # quoted, it is the text as written
+    assert both_validate(STRING_FIELDS[where](literal)) == (True, True)
+
+
+@pytest.mark.parametrize("value", [1, 2.5], ids=repr)
+@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
+def test_p6_78_number_env_value_keeps_its_error(both_validate: Callable, where: str, value: Any):
+    """Only booleans get the hint: a number is still the plain `string_type` it was."""
+    doc = STRING_FIELDS[where](value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["type"], err["msg"]) == ("string_type", "Input should be a valid string")
+
+
+@pytest.mark.parametrize("value", [True, False], ids=repr)
+@pytest.mark.parametrize("field", [f for f in STRING_FIELDS if f != "duration"])
+def test_p6_78_parity_boolean_is_not_a_string(both_validate: Callable, field: str, value: bool):
+    """Wherever a script holds a string, a boolean is rejected by both when the script is loaded:
+    `cmd: yes`, `line: on`, `register: true`, `when: true`, `spawn: no`. It is never turned into text."""
+    assert both_validate(STRING_FIELDS[field](value)) == (False, False)
+
+
+@pytest.mark.parametrize("value", [True, False], ids=repr)
+def test_p6_78_boolean_flags_and_data_are_still_booleans(both_validate: Callable, value: bool):
+    """Where a boolean is the value that is meant, nothing changes: the two flags, and `vars`."""
+    assert both_validate(s({"cmd": "x", "ignore_error": value})) == (True, True)
+    assert both_validate(d(prompts=[{"name": "p", "expect": "x", "return": value}])) == (True, True)
+    assert both_validate(d(vars={"debug": value, "flags": [value], "site": {"up": value}})) == (True, True)
+    assert Config.model_validate(d(vars={"debug": value})).vars["debug"] is value
+
+
+# -- P6-79: leading whitespace in spawn -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [" ssh host", "  ssh host", "\tssh host", "\n  ssh host\n", " ssh host", " 'ssh' host", " {{ args.cmd }}", " s''sh"],
+    ids=repr,
+)
+def test_p6_79_spawn_with_leading_whitespace_accepted(both_validate: Callable, value: str):
+    """SPEC "attach": whitespace before the command is not part of it; both accept such a `spawn`.
+
+    The models used to reject `" ssh host"` with the message about quotes: pexpect splits it into
+    `['', 'ssh', 'host']`, an empty first word.
+    """
+    assert both_validate(d(attach={"spawn": value})) == (True, True)
+    assert models.names_command(value)
+
+
+@pytest.mark.parametrize("value", [" ''", "  '' ls", '\t"" --version', " \\", "\n''\n"], ids=repr)
+def test_p6_79_quotes_behind_leading_whitespace_still_rejected(both_validate: Callable, value: str):
+    """What is left after the whitespace must still name a command; the message shows the value as written."""
+    doc = d(attach={"spawn": value})
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("attach", "spawn"), "empty_command")
+    assert err["msg"] == (
+        f"spawn must name a command: the first word of {value!r} is empty "
+        "(quotes or a backslash with nothing in them)"
+    )
+
+
+def test_p6_79_names_command_is_what_pexpect_spawns_once_stripped():
+    """`names_command` is about the command line the runner spawns: the value without its leading whitespace."""
+    import pexpect
+
+    for value in [" ssh host", "\tssh", " ''", "  '' ls", " ", "", " 'a b' c", "ssh "]:
+        words = pexpect.split_command_line(value.lstrip())
+        assert models.names_command(value) == bool(words and words[0]), value

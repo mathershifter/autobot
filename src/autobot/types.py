@@ -25,8 +25,26 @@ class _Environment(jinja2.Environment):
         return super().getattr(obj, attribute)
 
 
-_jinja_env = _Environment(undefined=jinja2.StrictUndefined)
-_jinja_env.filters["contains"] = lambda s, substring: substring in str(s)
+def text(value: Any) -> str:
+    """A scalar of the script as text: a boolean as YAML writes it, `true` or `false`."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _no_boolean(value: Any) -> Any:
+    # what `{{ ... }}` puts out. Only the expression's own value is checked: a boolean used inside the
+    # expression, or inside a list or mapping it puts out, never gets here
+    if isinstance(value, bool):
+        raise ValueError(
+            f"template error: an expression gave a boolean ({text(value)}), which is never written as text; "
+            "quote the value in the script, or say which text is meant, "
+            "e.g. {{ value | string }} (True) or {{ value | tojson }} (true)"
+        )
+    return value
+
+
+# text the engine sends or stores, and a condition, whose text is only read as a yes or no
+_jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean)
+_condition_env = _Environment(undefined=jinja2.StrictUndefined)
 
 
 class EnvError(ValueError):
@@ -40,7 +58,9 @@ def _search(s: Any, pattern: str) -> bool:
         raise ValueError(f"template error: search: invalid regex {pattern!r}: {e}") from e
 
 
-_jinja_env.filters["search"] = _search
+for _env in (_jinja_env, _condition_env):
+    _env.filters["contains"] = lambda s, substring: substring in str(s)
+    _env.filters["search"] = _search
 
 
 def parse_duration(value: Any) -> float:
@@ -60,7 +80,7 @@ def parse_duration(value: Any) -> float:
         if not math.isfinite(seconds):
             raise ValueError(f"invalid duration: {value} (not a finite number)")
         return seconds
-    raise ValueError(f"invalid duration: {value}")
+    raise ValueError(f"invalid duration: {text(value)}")
 
 
 def reject_null(value: Any) -> Any:
@@ -77,11 +97,13 @@ type Omittable[T] = Annotated[T | None, pydantic.BeforeValidator(reject_null)]
 type NotNull[T] = Annotated[T, pydantic.BeforeValidator(reject_null)]
 
 
-def render(template: Any, ctx: dict) -> Any:
+def render(template: Any, ctx: dict, *, condition: bool = False) -> Any:
+    """Render a template to text. `condition`: the text is only read as a yes or no (`when`), so a boolean
+    is written out as Jinja2 does it instead of being refused."""
     if not isinstance(template, str):
         return template
     try:
-        return _jinja_env.from_string(template).render(ctx)
+        return (_condition_env if condition else _jinja_env).from_string(template).render(ctx)
     except jinja2.TemplateError as e:
         raise ValueError(f"template error: {e}") from e
     except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error

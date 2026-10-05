@@ -136,11 +136,11 @@ def test_p6_05_version_pattern(version: str, ok: bool):
         assert err["msg"] == f"unsupported autobot version {version!r}; expected 2026-10"
 
 
-def test_p6_05_old_version_points_to_migration():
-    """SPEC "Migrating from 2026-08": the old version names the section to read."""
+def test_p6_05_old_version_names_the_version_to_use():
+    """SPEC "Top-level fields": the earlier version gets a message of its own."""
     [err] = errors_of(with_("autobot", "2026-08"))
     assert (err["loc"], err["type"]) == (("autobot",), "unsupported_version")
-    assert err["msg"] == 'autobot 2026-08 is no longer supported; use 2026-10 (see "Migrating from 2026-08" in SPEC.md)'
+    assert err["msg"] == "autobot 2026-08 is no longer supported; use 2026-10"
 
 
 def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plugin):
@@ -187,10 +187,9 @@ def test_p6_07_send_each_fields_form():
 # -- P6-52: simple prompts, one send string (SPEC "prompts") -----------------
 
 AT = ("prompts", 0)
-MIGRATE = '(see "Migrating from 2026-08" in SPEC.md)'
 SEND_LIST_MSG = (
     "send is a single string: for a simple prompt write send: '<response>'; to answer a sequence of "
-    f"prompts such as a login, use sendEach with fields and keep the values in vars {MIGRATE}"
+    "prompts such as a login, use sendEach with fields and keep the values in vars"
 )
 SEND_TYPE_MSG = (
     "send must be a string; quote it, e.g. send: 'yes' or send: '1234' "
@@ -198,7 +197,7 @@ SEND_TYPE_MSG = (
 )
 GROUPED_MSG = (
     "each expect entry is a single regex, and the regexes are alternatives; "
-    f"to answer a sequence of prompts such as a login, use sendEach with fields {MIGRATE}"
+    "to answer a sequence of prompts such as a login, use sendEach with fields"
 )
 
 
@@ -252,7 +251,7 @@ SIMPLE_BAD = {
 
 @pytest.mark.parametrize(("doc", "loc", "type_", "msg"), list(SIMPLE_BAD.values()), ids=list(SIMPLE_BAD))
 def test_p6_52_removed_prompt_forms_rejected(doc: dict[str, Any], loc: tuple, type_: str, msg: str):
-    """SPEC prompts, "Migrating from 2026-08": a send list, a non-string send and a grouped expect are errors."""
+    """SPEC prompts: a send list, a non-string send and a grouped expect are errors."""
     [err] = errors_of(doc)
     assert (err["loc"], err["type"], err["msg"]) == (loc, type_, msg)
 
@@ -331,8 +330,7 @@ SEND_EACH_BAD = {
         fields_prompt(["username", "password"]),
         (*AT, "send", "fields", 1), "fields_entry",
         (
-            "since 2026-10 a fields entry pairs a regex with a field: "
-            'write {match: <regex>, field: password} (see "Migrating from 2026-08" in SPEC.md)'
+            "a fields entry pairs a regex with a field: write {match: <regex>, field: password}"
         ),
     ),
     "expect-with-fields": (fields_prompt(UP, expect=["x"]), (*AT, "expect"), "expect_with_fields", WITH_FIELDS_MSG),

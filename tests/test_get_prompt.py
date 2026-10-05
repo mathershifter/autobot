@@ -188,12 +188,27 @@ def test_p4_21_send_each_nested_path_ignores_other_keys(device):
 
 
 def test_p4_22_send_each_scalar_items_without_fields(device):
-    """SPEC sendEach: without fields, a string, number or boolean item is sent as a string."""
+    """SPEC sendEach: without fields, a string or number item is sent as a string; a quoted 'True' is a string."""
     pin = {"name": "pin", "expect": ["Password:"], "send": {"each": "vars.pins"}}
     r, log = device([SHELL_PROMPT, pin], "--wait-enter", "--order", "password",
-                    "--accept", ":True", vars={"pins": ["1111", 2.5, True]})
+                    "--accept", ":True", vars={"pins": ["1111", 2.5, "True"]})
     r.session.get_prompt(timeout=10)
     assert log_of(log) == ["ENTER=", "PASSWORD=1111", "PASSWORD=2.5", "PASSWORD=True"]
+
+
+def test_p4_22_send_each_boolean_item_sends_nothing(device, sent: SentLog):
+    """SPEC sendEach: a boolean item is an error when the prompts are loaded, before anything is spawned or sent.
+
+    `pins: ["1111", 2.5, true]` used to send `True` as the third PIN.
+    """
+    pin = {"name": "pin", "expect": ["Password:"], "send": {"each": "vars.pins"}}
+    with pytest.raises(ValueError) as ei:
+        device([SHELL_PROMPT, pin], "--wait-enter", "--order", "password", vars={"pins": ["1111", 2.5, True]})
+    assert str(ei.value) == (
+        "prompt 'pin': sendEach 'vars.pins': item 2 is a boolean (true), which is never sent as text; "
+        "quote the value to send it as written, e.g. 'true' or 'yes'"
+    )
+    assert sent == []
 
 
 def test_p4_23_send_each_empty_list_fails_at_send_time(device):
@@ -534,7 +549,7 @@ def test_p4_36_eof_names_shell_prompts(handlers: list[PromptHandler], names: str
         s.detach()
 
 
-# -- P4-39: sendEach items are strings, numbers or booleans ------------------
+# -- P4-39: sendEach items are strings or numbers ------------------------------
 
 NOT_SCALAR = {
     "date": ("2026-10-04", "a timestamp"),
@@ -547,7 +562,7 @@ NOT_SCALAR = {
 
 
 @pytest.mark.parametrize("case", NOT_SCALAR)
-def test_p4_39_send_each_item_must_be_string_number_or_boolean(case: str):
+def test_p4_39_send_each_item_must_be_string_or_number(case: str):
     """SPEC sendEach: an item, or a field's value, that YAML reads as something else is an error, not its `str()`.
 
     An unquoted date used to be sent as `2026-10-04` by accident of `str()`, and `!!binary` as `b'hi'`.
@@ -557,22 +572,70 @@ def test_p4_39_send_each_item_must_be_string_number_or_boolean(case: str):
     with pytest.raises(ValueError) as ei:
         send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins})
     assert str(ei.value) == (
-        f"prompt 'p': sendEach 'vars.pins': item 1 is {kind}; without fields each item must be a string, number or boolean"
+        f"prompt 'p': sendEach 'vars.pins': item 1 is {kind}; without fields each item must be a string or number"
     )
     send = SendEach.model_validate({"each": "vars.creds", "fields": [{"match": "x", "field": "pw"}]})
     with pytest.raises(ValueError) as ei:
         send_each_sets("p", send, {"creds": [{"pw": pins[1]}]})
     assert str(ei.value) == (
-        f"prompt 'p': sendEach 'vars.creds': item 0 field 'pw' is {kind}, not a string, number or boolean"
+        f"prompt 'p': sendEach 'vars.creds': item 0 field 'pw' is {kind}, not a string or number"
     )
 
 
 def test_p4_39_send_each_scalars_sent_as_str():
-    """SPEC sendEach: strings, numbers and booleans are accepted and converted with `str()`."""
-    pins = yaml.safe_load("['2026-10-04', 1234, 2.5, true, false, '']")
+    """SPEC sendEach: strings and numbers are accepted and converted with `str()`; a quoted boolean word is a string."""
+    pins = yaml.safe_load("['2026-10-04', 1234, 2.5, 'true', 'False', 'yes', 0, 1, '']")
     assert send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins}) == [
-        ["2026-10-04"], ["1234"], ["2.5"], ["True"], ["False"], [""],
+        ["2026-10-04"], ["1234"], ["2.5"], ["true"], ["False"], ["yes"], ["0"], ["1"], [""],
     ]
+
+
+# every unquoted spelling YAML reads as a boolean -> how the error shows it
+YAML_BOOLEANS = {
+    "true": "true", "True": "true", "TRUE": "true", "yes": "true", "Yes": "true", "on": "true", "On": "true",
+    "false": "false", "False": "false", "no": "false", "NO": "false", "off": "false",
+}
+QUOTE_IT = "which is never sent as text; quote the value to send it as written, e.g. 'true' or 'yes'"
+
+
+@pytest.mark.parametrize("literal", list(YAML_BOOLEANS))
+def test_p4_43_send_each_boolean_is_an_error(literal: str):
+    """SPEC sendEach: a boolean is never sent. As an item or as a field's value it is an error that says to quote it.
+
+    It used to be sent as Python's `True` or `False`, whatever the script spelled (`yes`, `on`, `true`).
+    """
+    shown = YAML_BOOLEANS[literal]
+    pins = yaml.safe_load(f"[ok, 7, {literal}]")
+    assert isinstance(pins[2], bool)
+    with pytest.raises(ValueError) as ei:
+        send_each_sets("p", SendEach(each="vars.pins"), {"pins": pins})
+    assert str(ei.value) == f"prompt 'p': sendEach 'vars.pins': item 2 is a boolean ({shown}), {QUOTE_IT}"
+    send = SendEach.model_validate({"each": "vars.creds", "fields": [{"match": "x", "field": "u"}, {"match": "y", "field": "pw"}]})
+    creds = yaml.safe_load(f"[{{u: admin, pw: secret}}, {{u: admin, pw: {literal}}}]")
+    with pytest.raises(ValueError) as ei:
+        send_each_sets("p", send, {"creds": creds})
+    assert str(ei.value) == f"prompt 'p': sendEach 'vars.creds': item 1 field 'pw' is a boolean ({shown}), {QUOTE_IT}"
+    # quoted, the same spelling is the text that is sent
+    assert send_each_sets("p", SendEach(each="vars.pins"), {"pins": yaml.safe_load(f"['{literal}']")}) == [[literal]]
+
+
+def test_p4_43_boolean_in_a_field_no_entry_sends_is_not_looked_at():
+    """Only the fields the entries name are sent, so only they are checked."""
+    send = SendEach.model_validate({"each": "vars.creds", "fields": [{"match": "x", "field": "u"}]})
+    creds = yaml.safe_load("[{u: admin, enabled: true}]")
+    assert send_each_sets("p", send, {"creds": creds}) == [["admin"]]
+
+
+def test_p4_43_block_prompt_boolean_stops_the_block_before_it_sends(sent: SentLog):
+    """A block's prompts are loaded on entering the block: the error comes before its `enter` steps send anything."""
+    block = {
+        "name": "b",
+        "prompts": [SHELL_PROMPT, {"name": "pin", "expect": "PIN:", "send": {"each": "vars.pins"}}],
+        "enter": [{"line": "echo entered"}],
+    }
+    with pytest.raises(ValueError, match=r"^prompt 'pin': sendEach 'vars.pins': item 0 is a boolean \(false\), "):
+        run_vars([{"cmd": "echo before"}, {"block": block}], vars={"pins": [False]})
+    assert sent.commands() == ["echo before"]
 
 
 # -- P4-37..38: no solicit newline while a command is running ----------------
