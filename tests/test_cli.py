@@ -1,4 +1,4 @@
-"""P6-21..40, P6-45, P6-59: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40, P6-45, P6-59, P6-77: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -571,3 +571,138 @@ def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, lo
     assert msg in err["msg"]
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
+
+
+# -- P6-77: `autobot schema` without the source tree -----------------------------
+
+SCHEMA_URL = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
+
+
+class FakeResponse:
+    def __init__(self, body: bytes | Exception) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+
+@pytest.fixture
+def installed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[tuple]:
+    """`autobot schema` as an installed package runs it: no schema file next to the code, and no real network.
+
+    Returns the recorded `urlopen` calls; set `installed.result` to what `urlopen` raises or returns.
+    """
+
+    class Calls(list):
+        result: Any = None
+
+    calls = Calls()
+
+    def urlopen(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        if isinstance(calls.result, Exception):
+            raise calls.result
+        return calls.result
+
+    monkeypatch.setattr(cli, "SCHEMA_PATH", tmp_path / "no-such-dir" / "autobot.2026-10.json")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
+    return calls
+
+
+def _http_error(code: int, reason: str) -> Exception:
+    import urllib.error
+
+    return urllib.error.HTTPError(SCHEMA_URL, code, reason, None, None)  # type: ignore[arg-type]
+
+
+def _url_error(reason: Any) -> Exception:
+    import urllib.error
+
+    return urllib.error.URLError(reason)
+
+
+def _incomplete() -> Exception:
+    import http.client
+
+    return http.client.IncompleteRead(b"{", 100)
+
+
+SCHEMA_FAILURES: dict[str, tuple[Any, str]] = {
+    "dns": (lambda: _url_error(OSError(-2, "Name or service not known")), "Name or service not known"),
+    "refused": (lambda: _url_error(ConnectionRefusedError(111, "Connection refused")), "Connection refused"),
+    "connect-timeout": (lambda: _url_error(TimeoutError("timed out")), "timed out after 30s"),
+    "url-error-text": (lambda: _url_error("unknown url type: htps"), "unknown url type: htps"),
+    "http-404": (lambda: _http_error(404, "Not Found"), "HTTP 404 Not Found"),
+    "http-503": (lambda: _http_error(503, "Service Unavailable"), "HTTP 503 Service Unavailable"),
+    "read-timeout": (lambda: FakeResponse(TimeoutError("The read operation timed out")), "timed out after 30s"),
+    "reset": (lambda: FakeResponse(ConnectionResetError(104, "Connection reset by peer")), "Connection reset by peer"),
+    "incomplete": (lambda: FakeResponse(_incomplete()), "IncompleteRead(1 bytes read, 100 more expected)"),
+    "not-json": (lambda: FakeResponse(b"<html>Sign in to the guest network</html>"), "the response is not JSON"),
+    "not-utf-8": (lambda: FakeResponse(b"\xff\xfe{"), "the response is not JSON"),
+}
+
+
+@pytest.mark.parametrize("case", list(SCHEMA_FAILURES))
+def test_p6_77_schema_download_failure_is_a_clean_error(installed: Any, capsys: pytest.CaptureFixture[str], case: str):
+    """SPEC "CLI": when the schema can't be downloaded, one line on stderr and status 1, like the other load errors.
+
+    A network or HTTP error used to surface as a traceback (`urllib.error.URLError: <urlopen error ...>`).
+    """
+    make, reason = SCHEMA_FAILURES[case]
+    installed.result = make()
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == f"Cannot download schema from {SCHEMA_URL}: {reason}\n"
+
+
+def test_p6_77_schema_download_has_a_timeout(installed: Any, capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
+    """The download is bounded: `urlopen` used to be called without a timeout, so a dead connection hung the command."""
+    installed.result = FakeResponse(json.dumps(schema).encode())
+    cli._cmd_schema()
+    assert installed == [((SCHEMA_URL,), {"timeout": 30})]
+    assert cli.SCHEMA_TIMEOUT == 30
+    # and what was downloaded is what is printed (no plugins are installed here)
+    out = capsys.readouterr()
+    assert json.loads(out.out) == schema
+    assert out.err == ""
+
+
+def test_p6_77_schema_from_the_source_tree_needs_no_network(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
+    """From a checkout the file is read and nothing is downloaded."""
+    from conftest import SCHEMA_PATH
+
+    def urlopen(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the schema was downloaded")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
+    assert cli.SCHEMA_PATH == SCHEMA_PATH
+    cli._cmd_schema()
+    assert json.loads(capsys.readouterr().out) == schema
+
+
+def test_p6_77_schema_download_failure_through_the_command_line(tmp_path: Path):
+    """End to end, with the real `urlopen`: a URL nothing listens on gives the one line and status 1, no traceback."""
+    code = (
+        "import sys; from pathlib import Path; from autobot import cli;"
+        "cli.SCHEMA_PATH = Path(sys.argv[1]); cli.SCHEMA_URL = 'http://127.0.0.1:1/schema.json';"
+        "sys.argv[1:] = ['schema']; cli.main()"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}  # reach the port itself
+    res = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path / "missing.json")],
+        check=False, capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert res.returncode == 1
+    assert res.stdout == ""
+    assert res.stderr == "Cannot download schema from http://127.0.0.1:1/schema.json: Connection refused\n"

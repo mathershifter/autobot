@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import http.client
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -116,15 +118,35 @@ def _cmd_run(args):
     runner.run()
 
 
+SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
+SCHEMA_URL = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
+SCHEMA_TIMEOUT = 30
+
+
+def _download_schema() -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(SCHEMA_URL, timeout=SCHEMA_TIMEOUT) as response:
+            body = response.read()
+        try:
+            return json.loads(body)
+        except ValueError:
+            reason = "the response is not JSON"
+    except urllib.error.HTTPError as e:
+        reason = f"HTTP {e.code} {e.reason}"
+    except (OSError, http.client.HTTPException) as e:
+        # urlopen wraps a failed connection in URLError; a failed read comes as it is
+        cause = e.reason if isinstance(e, urllib.error.URLError) else e
+        if isinstance(cause, TimeoutError):
+            reason = f"timed out after {SCHEMA_TIMEOUT}s"
+        else:
+            reason = getattr(cause, "strerror", None) or str(cause) or type(cause).__name__
+    console.print(f"Cannot download schema from {SCHEMA_URL}: {reason}")
+    sys.exit(1)
+
+
 def _cmd_schema():
     _discover()
-    schema_path = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
-    if schema_path.exists():
-        schema = json.loads(schema_path.read_text())
-    else:
-        url = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
-        schema = json.loads(urllib.request.urlopen(url).read())
-
+    schema = json.loads(SCHEMA_PATH.read_text()) if SCHEMA_PATH.exists() else _download_schema()
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 
