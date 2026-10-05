@@ -23,6 +23,7 @@ import yaml
 
 import autobot.registry as registry_mod
 import autobot.runner as runner_mod
+from autobot.cli import load_schema
 from autobot.models import Config
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
@@ -31,7 +32,6 @@ from autobot.steps import register_builtins
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SCHEMA_PATH = ROOT / "schemas" / "autobot.2026-10.json"
 DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 # -- F1: real local shell ----------------------------------------------------
@@ -467,7 +467,7 @@ def run_cli(
 
 @pytest.fixture(scope="session")
 def schema() -> dict[str, Any]:
-    return json.loads(SCHEMA_PATH.read_text())
+    return load_schema()
 
 
 @pytest.fixture(scope="session")

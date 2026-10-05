@@ -1,4 +1,4 @@
-"""P6-21..40, P6-45, P6-59, P6-77: CLI argument handling and error reporting (SPEC.md:348-355)."""
+"""P6-21..40, P6-45, P6-59, P6-80: CLI argument handling and error reporting (SPEC.md:348-355)."""
 
 from __future__ import annotations
 
@@ -574,170 +574,98 @@ def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, lo
     assert not (tmp_path / "spawned").exists()
 
 
-# -- P6-77: `autobot schema` without the source tree -----------------------------
+# -- P6-80: `autobot schema` prints the schema that ships with the package -------
 
-SCHEMA_URL = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
-
-
-class FakeResponse:
-    def __init__(self, body: bytes | Exception) -> None:
-        self._body = body
-
-    def read(self) -> bytes:
-        if isinstance(self._body, Exception):
-            raise self._body
-        return self._body
-
-    def __enter__(self) -> FakeResponse:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        pass
+SCHEMA_NAME = "autobot.2026-10.json"
 
 
 @pytest.fixture
-def installed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[tuple]:
-    """`autobot schema` as an installed package runs it: no schema file next to the code, and no real network.
+def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every way out to the network raises, and is recorded."""
+    import socket
+    import urllib.request
 
-    Returns the recorded `urlopen` calls; set `installed.result` to what `urlopen` raises or returns.
-    """
+    calls: list[str] = []
 
-    class Calls(list):
-        result: Any = None
+    def refuse(name: str) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            raise AssertionError(f"network access: {name}")
 
-    calls = Calls()
+        return call
 
-    def urlopen(*args: Any, **kwargs: Any) -> Any:
-        calls.append((args, kwargs))
-        if isinstance(calls.result, Exception):
-            raise calls.result
-        return calls.result
-
-    monkeypatch.setattr(cli, "SCHEMA_PATH", tmp_path / "no-such-dir" / "autobot.2026-10.json")
-    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", refuse("urlopen"))
+    monkeypatch.setattr(socket, "create_connection", refuse("create_connection"))
+    monkeypatch.setattr(socket.socket, "connect", refuse("connect"))
+    monkeypatch.setattr(socket, "getaddrinfo", refuse("getaddrinfo"))
     return calls
 
 
-def _http_error(code: int, reason: str) -> Exception:
-    import urllib.error
+def test_p6_80_packaged_schema_is_the_one_in_schemas():
+    """SPEC "CLI": the schema ships inside the package, and it is the repository's one copy, `schemas/`."""
+    import importlib.resources
 
-    return urllib.error.HTTPError(SCHEMA_URL, code, reason, None, None)  # type: ignore[arg-type]
+    from conftest import ROOT
 
-
-def _url_error(reason: Any) -> Exception:
-    import urllib.error
-
-    return urllib.error.URLError(reason)
-
-
-def _incomplete() -> Exception:
-    import http.client
-
-    return http.client.IncompleteRead(b"{", 100)
-
-
-SCHEMA_FAILURES: dict[str, tuple[Any, str]] = {
-    "dns": (lambda: _url_error(OSError(-2, "Name or service not known")), "Name or service not known"),
-    "refused": (lambda: _url_error(ConnectionRefusedError(111, "Connection refused")), "Connection refused"),
-    "connect-timeout": (lambda: _url_error(TimeoutError("timed out")), "timed out after 30s"),
-    "url-error-text": (lambda: _url_error("unknown url type: htps"), "unknown url type: htps"),
-    "http-404": (lambda: _http_error(404, "Not Found"), "HTTP 404 Not Found"),
-    "http-503": (lambda: _http_error(503, "Service Unavailable"), "HTTP 503 Service Unavailable"),
-    "read-timeout": (lambda: FakeResponse(TimeoutError("The read operation timed out")), "timed out after 30s"),
-    "reset": (lambda: FakeResponse(ConnectionResetError(104, "Connection reset by peer")), "Connection reset by peer"),
-    "incomplete": (lambda: FakeResponse(_incomplete()), "IncompleteRead(1 bytes read, 100 more expected)"),
-    "not-json": (lambda: FakeResponse(b"<html>Sign in to the guest network</html>"), "the response is not JSON"),
-    "not-utf-8": (lambda: FakeResponse(b"\xff\xfe{"), "the response is not JSON"),
-}
+    packaged = importlib.resources.files("autobot") / SCHEMA_NAME
+    canonical = ROOT / "schemas" / SCHEMA_NAME
+    assert packaged.is_file()
+    assert packaged.read_bytes() == canonical.read_bytes()
+    assert cli.load_schema() == json.loads(canonical.read_text())
+    assert cli.load_schema()["$id"] == f"schemas/{SCHEMA_NAME}"
+    # in the source tree the packaged file is a link to the canonical one, not a second copy
+    link = ROOT / "src" / "autobot" / SCHEMA_NAME
+    assert link.is_symlink() and link.resolve() == canonical.resolve()
 
 
-@pytest.mark.parametrize("case", list(SCHEMA_FAILURES))
-def test_p6_77_schema_download_failure_is_a_clean_error(installed: Any, capsys: pytest.CaptureFixture[str], case: str):
-    """SPEC "CLI": when the schema can't be downloaded, one line on stderr and status 1, like the other load errors.
+def test_p6_80_load_schema_returns_a_fresh_copy():
+    """`add_plugin_steps` changes the schema it is given, so every caller gets its own."""
+    first = cli.load_schema()
+    first["$defs"]["step"]["oneOf"].clear()
+    assert cli.load_schema()["$defs"]["step"]["oneOf"]
 
-    A network or HTTP error used to surface as a traceback (`urllib.error.URLError: <urlopen error ...>`).
+
+def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
+    """SPEC "CLI": `autobot schema` prints the packaged schema and never goes to the network.
+
+    An installed package used to download it from the `main` branch on GitHub.
     """
-    make, reason = SCHEMA_FAILURES[case]
-    installed.result = make()
-    with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
-    assert ei.value.code == 1
-    out = capsys.readouterr()
-    assert out.out == ""
-    assert out.err == f"Cannot download schema from {SCHEMA_URL}: {reason}\n"
-
-
-NOT_THE_SCHEMA = {
-    "list": [],
-    "null": None,
-    "string": "Not Found",
-    "number": 404,
-    "empty-object": {},
-    "error-object": {"message": "Not Found", "status": "404"},
-    "another-schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
-    "defs-not-an-object": {"$defs": []},
-    "no-step": {"$defs": {"pluginStep": {"not": {"anyOf": []}}}},
-    "step-without-oneof": {"$defs": {"step": {}, "pluginStep": {"not": {"anyOf": []}}}},
-    "oneof-not-a-list": {"$defs": {"step": {"oneOf": {}}, "pluginStep": {"not": {"anyOf": []}}}},
-    "no-plugin-step": {"$defs": {"step": {"oneOf": []}}},
-    "plugin-step-without-not": {"$defs": {"step": {"oneOf": []}, "pluginStep": {}}},
-}
-
-
-@pytest.mark.parametrize("case", list(NOT_THE_SCHEMA))
-def test_p6_77_downloaded_json_that_is_not_the_schema_is_a_clean_error(
-    installed: Any, capsys: pytest.CaptureFixture[str], case: str
-):
-    """SPEC "CLI": a response that is JSON but not the schema (an error document, a list) is the same one-line error.
-
-    It used to reach `add_plugin_steps` and die there with a `KeyError` or `TypeError` traceback.
-    """
-    installed.result = FakeResponse(json.dumps(NOT_THE_SCHEMA[case]).encode())
-    with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
-    assert ei.value.code == 1
-    out = capsys.readouterr()
-    assert out.out == ""
-    assert out.err == f"Cannot download schema from {SCHEMA_URL}: the response is not the autobot schema\n"
-
-
-def test_p6_77_schema_download_has_a_timeout(installed: Any, capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
-    """The download is bounded: `urlopen` used to be called without a timeout, so a dead connection hung the command."""
-    installed.result = FakeResponse(json.dumps(schema).encode())
     cli._cmd_schema()
-    assert installed == [((SCHEMA_URL,), {"timeout": 30})]
-    assert cli.SCHEMA_TIMEOUT == 30
-    # and what was downloaded is what is printed (no plugins are installed here)
     out = capsys.readouterr()
-    assert json.loads(out.out) == schema
+    assert json.loads(out.out) == schema  # no plugins are installed here
     assert out.err == ""
+    assert no_network == []
 
 
-def test_p6_77_schema_from_the_source_tree_needs_no_network(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
-    """From a checkout the file is read and nothing is downloaded."""
-    from conftest import SCHEMA_PATH
+def test_p6_80_source_tree_without_the_packaged_file_reads_schemas(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, schema: dict[str, Any]):
+    """A source tree whose package directory lacks the file (the link wasn't checked out) falls back to `schemas/`."""
+    import importlib.resources
 
-    def urlopen(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("the schema was downloaded")
-
-    monkeypatch.setattr(cli.urllib.request, "urlopen", urlopen)
-    assert cli.SCHEMA_PATH == SCHEMA_PATH
-    cli._cmd_schema()
-    assert json.loads(capsys.readouterr().out) == schema
+    monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
+    assert cli.load_schema() == schema
 
 
-def test_p6_77_broken_plugin_is_reported_before_the_schema_is_looked_for(
-    installed: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_p6_80_cli_has_no_download_left():
+    """Nothing in the CLI can reach the network: no `urlopen`, no URL of the schema."""
+    source = Path(cli.__file__).read_text()
+    for gone in ("urlopen", "urllib.request", "raw.githubusercontent", "http.client", "SCHEMA_URL", "Cannot download"):
+        assert gone not in source, gone
+
+
+def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    """SPEC "CLI": the plugins are loaded first, so with a broken plugin and no network it is the plugin
-    that is reported, at once, and nothing is downloaded."""
+    """SPEC "CLI": the plugins are loaded first, as for `run`; a broken one is the error, and nothing is printed."""
     from autobot.registry import PluginError
 
     def discover() -> None:
         raise PluginError("entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'")
 
+    def load_schema() -> Any:
+        raise AssertionError("the schema was read")
+
     monkeypatch.setattr(cli.registry, "discover", discover)
-    installed.result = _url_error(OSError(-2, "Name or service not known"))
+    monkeypatch.setattr(cli, "load_schema", load_schema)
     with pytest.raises(SystemExit) as ei:
         cli._cmd_schema()
     assert ei.value.code == 1
@@ -746,21 +674,32 @@ def test_p6_77_broken_plugin_is_reported_before_the_schema_is_looked_for(
         "Plugin error: entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'\n"
     )
     assert out.out == ""
-    assert installed == []
 
 
-def test_p6_77_schema_download_failure_through_the_command_line(tmp_path: Path):
-    """End to end, with the real `urlopen`: a URL nothing listens on gives the one line and status 1, no traceback."""
-    code = (
-        "import sys; from pathlib import Path; from autobot import cli;"
-        "cli.SCHEMA_PATH = Path(sys.argv[1]); cli.SCHEMA_URL = 'http://127.0.0.1:1/schema.json';"
-        "sys.argv[1:] = ['schema']; cli.main()"
-    )
-    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}  # reach the port itself
+@pytest.mark.slow
+def test_p6_80_built_wheel_and_sdist_contain_the_schema(tmp_path: Path):
+    """The build itself: the wheel has the schema inside the package, and the sdist has it at both paths."""
+    import shutil
+    import tarfile
+    import zipfile
+
+    from conftest import ROOT
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
     res = subprocess.run(
-        [sys.executable, "-c", code, str(tmp_path / "missing.json")],
-        check=False, capture_output=True, text=True, timeout=60, env=env,
+        [uv, "build", "--offline", "-o", str(tmp_path), str(ROOT)], check=False, capture_output=True, text=True, timeout=300
     )
-    assert res.returncode == 1
-    assert res.stdout == ""
-    assert res.stderr == "Cannot download schema from http://127.0.0.1:1/schema.json: Connection refused\n"
+    assert res.returncode == 0, res.stderr
+    canonical = (ROOT / "schemas" / SCHEMA_NAME).read_bytes()
+    [wheel] = tmp_path.glob("*.whl")
+    with zipfile.ZipFile(wheel) as z:
+        assert z.read(f"autobot/{SCHEMA_NAME}") == canonical
+        assert not [n for n in z.namelist() if n.startswith("schemas/")]
+    [sdist] = tmp_path.glob("*.tar.gz")
+    with tarfile.open(sdist) as t:
+        names = {n.split("/", 1)[1]: n for n in t.getnames() if "/" in n}
+        for path in (f"schemas/{SCHEMA_NAME}", f"src/autobot/{SCHEMA_NAME}"):
+            member = t.extractfile(names[path])
+            assert member is not None and member.read() == canonical, path

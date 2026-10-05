@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
-import http.client
+import importlib.resources
 import json
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -118,49 +116,26 @@ def _cmd_run(args):
     runner.run()
 
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "schemas" / "autobot.2026-10.json"
-SCHEMA_URL = "https://raw.githubusercontent.com/mathershifter/autobot/main/schemas/autobot.2026-10.json"
-SCHEMA_TIMEOUT = 30
+SCHEMA_NAME = "autobot.2026-10.json"
 
 
-def _download_schema() -> dict[str, Any]:
+def load_schema() -> dict[str, Any]:
+    """The JSON schema, read from the package it ships in.
+
+    The repository keeps one copy, `schemas/`, and the package holds a link to it that a build turns into
+    the file. A source tree without that link falls back to `schemas/`.
+    """
+    packaged = importlib.resources.files("autobot") / SCHEMA_NAME
     try:
-        with urllib.request.urlopen(SCHEMA_URL, timeout=SCHEMA_TIMEOUT) as response:
-            body = response.read()
-        try:
-            schema = json.loads(body)
-        except ValueError:
-            reason = "the response is not JSON"
-        else:
-            if _is_schema(schema):
-                return schema
-            reason = "the response is not the autobot schema"
-    except urllib.error.HTTPError as e:
-        reason = f"HTTP {e.code} {e.reason}"
-    except (OSError, http.client.HTTPException) as e:
-        # urlopen wraps a failed connection in URLError; a failed read comes as it is
-        cause = e.reason if isinstance(e, urllib.error.URLError) else e
-        if isinstance(cause, TimeoutError):
-            reason = f"timed out after {SCHEMA_TIMEOUT}s"
-        else:
-            reason = getattr(cause, "strerror", None) or str(cause) or type(cause).__name__
-    console.print(f"Cannot download schema from {SCHEMA_URL}: {reason}")
-    sys.exit(1)
-
-
-def _is_schema(schema: Any) -> bool:
-    """Whether `schema` has what add_plugin_steps extends: the step alternatives and the pluginStep catch-all."""
-    try:
-        defs = schema["$defs"]
-        return isinstance(defs["step"]["oneOf"], list) and isinstance(defs["pluginStep"]["not"]["anyOf"], list)
-    except (KeyError, TypeError, IndexError):
-        return False
+        return json.loads(packaged.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        source = Path(__file__).resolve().parent.parent.parent / "schemas" / SCHEMA_NAME
+        return json.loads(source.read_text(encoding="utf-8"))
 
 
 def _cmd_schema():
     _discover()
-    schema = json.loads(SCHEMA_PATH.read_text()) if SCHEMA_PATH.exists() else _download_schema()
-    print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
+    print(json.dumps(add_plugin_steps(load_schema(), registry.plugin_executors()), indent=2))
 
 
 def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> dict[str, Any]:
