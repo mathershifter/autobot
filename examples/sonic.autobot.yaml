@@ -17,8 +17,13 @@ vars:
 
 prompts:
   - name: cli
+    # The regex starts with ^, so a prompt must begin its line. Without it, output that has
+    # user@host: in it and ends a read with '$' or '#' (scp admin@host:/x $) is taken for a
+    # prompt. The cost: a prompt with other text in front of it on its line is not recognised,
+    # such as one printed right after output with no final newline (printf 'done. ').
     expect:
-      - '\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'
+      # bash on SONiC: 'admin@sonic:~$ ', 'root@sonic:/var/log# '
+      - '^\w+@[\w.-]+:[^\r\n]*[$#] ?$'
     return: true
 
   - name: login

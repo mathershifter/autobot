@@ -51,7 +51,7 @@ vars:                   # arbitrary data accessible as {{ vars.KEY }}
 
 prompts:                # interactive prompt handlers
   - name: cli
-    expect: ['\w+@[\w\-\.]+:[^\r\n]*[$#] ?$']
+    expect: ['^\w+@[\w.-]+:[^\r\n]*[$#] ?$']
     return: true
 
 fn:                     # reusable step sequences
@@ -140,12 +140,12 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
 ```yaml
 - name: cli
   expect:
-    - '\w+@[\w\-\.]+:[^\r\n]*[$#] ?$'
-    - '(arista-)?bmc-boot=> ?$'
+    - '^\w+@[\w.-]+:[^\r\n]*[$#] ?$'
+    - '^(arista-)?bmc-boot=> ?$'
   return: true
 ```
 
-Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^` to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
+Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^`, as above, to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. Without it, output that only contains something like a prompt and ends a read with the prompt character (`scp admin@host:/x $`) is taken for one. The cost is a prompt with other text in front of it on its line, such as one printed right after output with no final newline: it isn't recognized. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
 
 A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
 

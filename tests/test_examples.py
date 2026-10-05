@@ -1,4 +1,4 @@
-"""P6-19/20, P6-74: every example validates against the models and the schema, and its shell prompt regexes read whole
+"""P6-19/20, P6-74, P6-76: every example validates against the models and the schema, and its shell prompt regexes read whole
 prompts and nothing else."""
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ PROMPT_SAMPLES = {
         "admin@sonic:/var/log$ ",
         "admin@sonic-bmc.lab:~$ ",
         "root@sonic:~# ",
+        "root@sonic:/# ",
+        "admin@sonic:~$",
+        "admin@str-7260cx3-acs-1:/usr/share/sonic$ ",
+        "root@bmc_1:~# ",
     ],
     "eos-bootstrap.autobot.yaml": [
         "switch>",
@@ -75,6 +79,19 @@ NOT_PROMPTS = {
         "$ ",
         "# ",
         "admin@sonic",
+        # P6-76: output with user@host: in it that ends a read with '$' or '#'; the unanchored regex took these
+        "scp admin@host:/x $",
+        "scp admin@host:/x $ ",
+        "rsync -a . admin@10.0.0.1:/srv/ # ",
+        "Warning: Permanently added to admin@host: known hosts #",
+        "see admin@sonic:~$ ",
+        "mail from: root@sonic: cost in $",
+        # and what only looks like the prompt
+        "admin@sonic:~",
+        "admin@sonic ~$ ",
+        "@sonic:~$ ",
+        "admin@:~$ ",
+        "admin@sonic:~> ",
     ],
     "eos-bootstrap.autobot.yaml": [
         # the four of the audit: every part of the old bash regex was optional
@@ -210,6 +227,59 @@ def test_p6_74_eos_regexes_start_at_the_line_and_each_has_a_prompt():
     # no regex can match the empty string or a lone prompt character any more
     for r in regexes:
         assert not any(re.fullmatch(r, t) for t in ["", "$", "#", ">", "$ ", "# ", "> "])
+
+
+# -- P6-76: the SONiC example's prompt regex starts at its line ------------------
+
+SONIC = "sonic.autobot.yaml"
+
+
+@pytest.mark.parametrize("lead", ["", "\r", "\x00", "\x07", "\r\x00\x00", "\r\n", "\x1b[?2004h", "\x1b[0m\r"], ids=repr)
+@pytest.mark.parametrize("prompt", PROMPT_SAMPLES[SONIC], ids=repr)
+def test_p6_76_sonic_prompts_through_the_engine(prompt: str, lead: str):
+    """`^` finds each prompt behind what the engine consumes or discards: line breaks, escape sequences, stray CR, NUL, BEL."""
+    assert read_prompt(shell_regexes(SONIC), f"output\r\n{lead}{prompt}") == (prompt, "")
+    s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
+    assert s._is_shell_prompt(lead + prompt) is True
+    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "fooadmin@sonic:~$ ",  # printf foo: `fooadmin` reads as a user name, but only by luck (see the next ones)
+        "foo admin@sonic:~$ ",
+        "100%admin@sonic:~$ ",
+        "(venv) admin@sonic:~$ ",
+        "[1] admin@sonic:~$ ",
+        "--More--\r        \radmin@sonic:~$ ",
+        "abc \radmin@sonic:~$ ",
+        "abc \x07root@sonic:~# ",
+    ],
+    ids=repr,
+)
+def test_p6_76_sonic_prompt_behind_text_on_its_line(text: str):
+    """What `^` costs: a prompt with other text before it on its line isn't matched, unless that text
+    happens to read as part of the user name (`printf foo` leaves `fooadmin@sonic:~$ `)."""
+    expected = text.startswith("fooadmin")
+    assert (read_prompt(shell_regexes(SONIC), text) is not None) is expected
+    s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
+    assert s._is_shell_prompt(text) is expected
+
+
+def test_p6_76_sonic_regex_starts_at_the_line():
+    """The one shell regex of the SONiC example starts with `^`, ends at the prompt character and uses no lookaround."""
+    [regex] = shell_regexes(SONIC)
+    assert regex.startswith("^") and regex.endswith("[$#] ?$")
+    assert "(?" not in regex
+    assert not any(re.fullmatch(regex, t) for t in ["", "$", "#", "$ ", "# ", "admin@sonic", "admin@sonic:"])
+
+
+def test_p6_76_spec_and_readme_quote_the_sonic_regex():
+    """SPEC "Prompt Handling" and the README give the example's regex as their shell prompt regex."""
+    [regex] = shell_regexes(SONIC)
+    assert f"`'{regex}'`" in (ROOT / "SPEC.md").read_text()
+    assert (ROOT / "README.md").read_text().count(f"'{regex}'") == 2
 
 
 @pytest.mark.parametrize("name", sorted(PROMPT_SAMPLES))
