@@ -9,10 +9,12 @@
     "autobot": { "const": "2026-10" },
     "env": {
       "type": "object",
+      "propertyNames": { "type": "string" },
       "additionalProperties": { "type": "string" }
     },
     "vars": {
       "type": "object",
+      "propertyNames": { "type": "string" },
       "additionalProperties": true
     },
     "prompts": {
@@ -25,6 +27,7 @@
     },
     "fn": {
       "type": "object",
+      "propertyNames": { "type": "string" },
       "additionalProperties": { "$ref": "#/$defs/function" }
     },
     "attach": { "$ref": "#/$defs/attach" },
@@ -91,6 +94,7 @@
         "timeout": { "$ref": "#/$defs/duration" },
         "env": {
           "type": "object",
+          "propertyNames": { "type": "string" },
           "additionalProperties": { "type": "string" }
         },
         "script": {
@@ -265,6 +269,7 @@
     },
     "stepCommon": {
       "type": "object",
+      "propertyNames": { "type": "string" },
       "properties": {
         "after": { "type": "string", "minLength": 1 },
         "when": { "type": "string" },
