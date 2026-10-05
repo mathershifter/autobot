@@ -128,9 +128,13 @@ def _download_schema() -> dict[str, Any]:
         with urllib.request.urlopen(SCHEMA_URL, timeout=SCHEMA_TIMEOUT) as response:
             body = response.read()
         try:
-            return json.loads(body)
+            schema = json.loads(body)
         except ValueError:
             reason = "the response is not JSON"
+        else:
+            if _is_schema(schema):
+                return schema
+            reason = "the response is not the autobot schema"
     except urllib.error.HTTPError as e:
         reason = f"HTTP {e.code} {e.reason}"
     except (OSError, http.client.HTTPException) as e:
@@ -142,6 +146,15 @@ def _download_schema() -> dict[str, Any]:
             reason = getattr(cause, "strerror", None) or str(cause) or type(cause).__name__
     console.print(f"Cannot download schema from {SCHEMA_URL}: {reason}")
     sys.exit(1)
+
+
+def _is_schema(schema: Any) -> bool:
+    """Whether `schema` has what add_plugin_steps extends: the step alternatives and the pluginStep catch-all."""
+    try:
+        defs = schema["$defs"]
+        return isinstance(defs["step"]["oneOf"], list) and isinstance(defs["pluginStep"]["not"]["anyOf"], list)
+    except (KeyError, TypeError, IndexError):
+        return False
 
 
 def _cmd_schema():

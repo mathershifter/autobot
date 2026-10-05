@@ -670,6 +670,40 @@ def test_p6_77_schema_download_failure_is_a_clean_error(installed: Any, capsys: 
     assert out.err == f"Cannot download schema from {SCHEMA_URL}: {reason}\n"
 
 
+NOT_THE_SCHEMA = {
+    "list": [],
+    "null": None,
+    "string": "Not Found",
+    "number": 404,
+    "empty-object": {},
+    "error-object": {"message": "Not Found", "status": "404"},
+    "another-schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"},
+    "defs-not-an-object": {"$defs": []},
+    "no-step": {"$defs": {"pluginStep": {"not": {"anyOf": []}}}},
+    "step-without-oneof": {"$defs": {"step": {}, "pluginStep": {"not": {"anyOf": []}}}},
+    "oneof-not-a-list": {"$defs": {"step": {"oneOf": {}}, "pluginStep": {"not": {"anyOf": []}}}},
+    "no-plugin-step": {"$defs": {"step": {"oneOf": []}}},
+    "plugin-step-without-not": {"$defs": {"step": {"oneOf": []}, "pluginStep": {}}},
+}
+
+
+@pytest.mark.parametrize("case", list(NOT_THE_SCHEMA))
+def test_p6_77_downloaded_json_that_is_not_the_schema_is_a_clean_error(
+    installed: Any, capsys: pytest.CaptureFixture[str], case: str
+):
+    """SPEC "CLI": a response that is JSON but not the schema (an error document, a list) is the same one-line error.
+
+    It used to reach `add_plugin_steps` and die there with a `KeyError` or `TypeError` traceback.
+    """
+    installed.result = FakeResponse(json.dumps(NOT_THE_SCHEMA[case]).encode())
+    with pytest.raises(SystemExit) as ei:
+        cli._cmd_schema()
+    assert ei.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == f"Cannot download schema from {SCHEMA_URL}: the response is not the autobot schema\n"
+
+
 def test_p6_77_schema_download_has_a_timeout(installed: Any, capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
     """The download is bounded: `urlopen` used to be called without a timeout, so a dead connection hung the command."""
     installed.result = FakeResponse(json.dumps(schema).encode())
