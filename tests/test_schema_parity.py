@@ -882,3 +882,47 @@ def test_p6_71_names_command_is_what_pexpect_spawns():
         assert models.names_command(value) == bool(words and words[0]), value
     assert not models.names_command("''")
     assert models.names_command("'ssh' host")
+
+
+# -- P6-72: an `autobot` value that isn't a string ------------------------------
+
+# YAML text of the value -> how the message shows it
+VERSION_NOT_A_STRING = {
+    "2026": "2026",
+    "2026.10": "2026.1",
+    "2026-10-04": "2026-10-04",
+    "202610": "202610",
+    "true": "True",
+    "[2026-10]": "['2026-10']",
+    "{v: 2026-10}": "{'v': '2026-10'}",
+    "!!binary MjAyNi0xMA==": "b'2026-10'",
+    "0": "0",
+    "''": "",
+}
+
+
+@pytest.mark.parametrize("literal", list(VERSION_NOT_A_STRING))
+def test_p6_72_parity_version_of_another_type_is_unsupported(both_validate: Callable, literal: str):
+    """SPEC "Top-level fields": any value but `2026-10` is `unsupported_version`, also one that isn't a string.
+
+    `autobot: 2026` used to be `string_type` ("Input should be a valid string"). The schema's `const` rejects it too.
+    """
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    doc = d(autobot=value)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("autobot",), "unsupported_version")
+    assert err["msg"] == f"unsupported autobot version {VERSION_NOT_A_STRING[literal]!r}; expected 2026-10"
+
+
+def test_p6_72_version_null_and_missing_keep_their_errors(both_validate: Callable):
+    """An explicit null and a missing key aren't versions: `string_type` and `missing`, as before."""
+    doc = d(autobot=None)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("autobot",), "string_type")
+    missing = {k: v for k, v in MIN.items() if k != "autobot"}
+    assert both_validate(missing) == (False, False)
+    [err] = model_errors(missing)
+    assert (err["loc"], err["type"]) == (("autobot",), "missing")
+    assert both_validate(d(autobot=yaml.safe_load("v: 2026-10")["v"])) == (True, True)

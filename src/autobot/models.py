@@ -427,16 +427,20 @@ class Config(pydantic.BaseModel):
     model_config = _STRICT
     autobot: str
 
-    @pydantic.field_validator("autobot")
+    # before the type check: a value YAML reads as a number or a date (2026, 2026.10, 2026-10-04) is
+    # an unsupported version like any other, not a string_type error
+    @pydantic.field_validator("autobot", mode="before")
     @classmethod
-    def _validate_autobot(cls, v: str) -> str:
+    def _validate_autobot(cls, v: Any) -> Any:
+        if v is None:
+            return v  # not a version at all: the field's own error
         if v == "2026-08":
             raise _custom(
                 "unsupported_version",
                 f"autobot 2026-08 is no longer supported; use {VERSION} (see \"Migrating from 2026-08\" in SPEC.md)",
             )
-        if v != VERSION:
-            raise _custom("unsupported_version", f"unsupported autobot version {v!r}; expected {VERSION}")
+        if not isinstance(v, str) or v != VERSION:
+            raise _custom("unsupported_version", f"unsupported autobot version {str(v)!r}; expected {VERSION}")
         return v
     env: NotNull[dict[str, str]] = {}
     vars: NotNull[dict[str, Any]] = {}

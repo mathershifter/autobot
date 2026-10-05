@@ -24,10 +24,10 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P3 | Common step properties, templating context | 20 | 0 | 0 | 20 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 37 | 0 | 0 | 37 | 7 |
 | P5 | attach / block lifecycles, env | 55 | 0 | 0 | 55 | 0 |
-| P6 | model / schema / example / CLI parity | 70 | 0 | 0 | 70 | 0 |
+| P6 | model / schema / example / CLI parity | 71 | 0 | 0 | 71 | 0 |
 | P7 | registry and plugins | 24 | 0 | 0 | 24 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 21 | 0 | 0 | 21 | 0 |
-| **Total** | | **272** | **0** | **0** | **272** | **8** |
+| **Total** | | **273** | **0** | **0** | **273** | **8** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-04, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08) are not counted.
 
@@ -423,8 +423,9 @@ Files: `tests/test_models.py`, `tests/test_schema_parity.py`, `tests/test_exampl
 | P6-69 | `test_p6_69_schema_duration_maximum_is_the_largest_double`, `test_p6_69_parity_duration_beyond_a_double_rejected` (parametrized: `.inf`, `-.inf`, `10**400`, `-10**400`, `2**1024`, the first integer above the largest double × the 12 duration fields of P6-61), `test_p6_69_parity_duration_up_to_a_double_accepted` (parametrized: the largest double as a float and as an integer, `1e308`, `10**308`, `0`, `0.0`), `test_p6_69_duration_only_the_models_can_reject` (parametrized: `.nan`, a 400-digit `s` string, an `h` string that overflows) | Duration Format, YAML Script Structure | F7 | the schema's number alternative is exactly `{type: number, minimum: 0, maximum: sys.float_info.max}` and equals `types.DURATION_MAX`; a number beyond it → `(False, False)` with `invalid duration` (the schema used to accept `.inf` and the large integers; the model accepted the first integer above the bound, which `float()` rounds down); up to it → `(True, True)` and the value is kept; `.nan` and an overflowing string → `(False, True)`, the model-only cases SPEC states | pass (audit 2, finding 5) (x4) |
 | P6-70 | `test_p6_70_parity_binary_is_not_a_string` (parametrized over 34 places a script holds a string: `autobot`, `env` and `attach.env` values, `errors`, a prompt's `name`, `expect`, `send`, `each`, `match`, `field`, `spawn`, `prepare`, `cmd`, `assert`, `register`, `after`, `when`, `call`, a block's `name`, `line`, `control`, list items, a step inside `fn`, a duration), `test_p6_70_binary_is_a_string_type_error` (parametrized: 5 fields), `test_p6_70_binary_in_a_plugin_step_common_prop` (parametrized: none, `after`, `when`) | YAML Script Structure | F7, F6 `probe`; the value is `yaml.safe_load("v: !!binary aGk=")`, i.e. `b"hi"` | `(False, False)` in every place, and the same document with the text → `(True, True)`; the model's error types are `string_type` (and `list_type` for the list arm of a string-or-list); a plugin step's `after`/`when` → `(False, False)`. The models used to decode the bytes (25 of the 34 places accepted them, e.g. `cmd: !!binary aGk=` ran `hi`) | pass (audit 2, finding 5) (x3) |
 | P6-71 | `test_p6_71_spawn_of_quotes_or_a_backslash_rejected_on_load` (parametrized: the P5-54 values, a lone `"` and `''` between spaces), `test_p6_71_spawn_with_a_command_or_a_template_accepted` (parametrized: quoted and escaped command names, `ssh ''`, templates), `test_p6_71_names_command_is_what_pexpect_spawns` | attach `spawn`, YAML Script Structure | F7 | `(False, True)`: one model error `empty_command` at `attach.spawn` with exactly `spawn must name a command: the first word of <repr> is empty (quotes or a backslash with nothing in them)`; the schema's pattern can't split a command line; a quoted command and a template (also `''{{ args.cmd }}`) → `(True, True)`; `models.names_command` agrees with `pexpect.split_command_line` having a non-empty first word | pass (audit 2, finding 6) (x3) |
+| P6-72 | `test_p6_72_parity_version_of_another_type_is_unsupported` (parametrized: `2026`, `2026.10`, `2026-10-04`, `202610`, `true`, a list, a mapping, `!!binary`, `0`, `''`), `test_p6_72_version_null_and_missing_keep_their_errors` | Top-level fields | F7; values loaded from YAML | `(False, False)`; one model error at `autobot` of type `unsupported_version`, `unsupported autobot version '<value as text>'; expected 2026-10` (a non-string was `string_type`, `Input should be a valid string`); `autobot: null` stays `string_type` and a missing key `missing`; an unquoted `2026-10` is a string and is accepted by both | pass (audit 2, finding 10) (x2) |
 
-Totals: 70 pass (P6-01..71 without the removed P6-08).
+Totals: 71 pass (P6-01..72 without the removed P6-08).
 
 P6-13 and P6-14 were xfail #11 (SPEC.md:37 allows mixed entries, SPEC.md:24 requires `YYYY-MM`). Both pass now that the schema is normative and the model and schema were fixed.
 
@@ -518,10 +519,10 @@ All rows above are implemented. The original `pass` and `xfail` rows landed on b
 | P3 | 20 | 0 | 0 | `test_common_props.py` |
 | P4 | 37 | 0 | 7 | `test_get_prompt.py` |
 | P5 | 55 | 0 | 0 | `test_lifecycle.py`, `test_env.py` |
-| P6 | 70 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
+| P6 | 71 | 0 | 0 | `test_models.py`, `test_schema_parity.py`, `test_examples.py`, `test_cli.py` |
 | P7 | 24 | 0 | 0 | `test_registry.py`, `test_plugins.py`, `test_schema_plugins.py` |
 | P8 | 21 | 0 | 0 | `test_types.py`, `test_output_capture.py`, `test_simple_steps.py` |
-| **Total** | **272** | **0** | **8** | |
+| **Total** | **273** | **0** | **8** | |
 
 Findings #1, #2, #3, #5 and #18 are fixed (branch `fix/xfail-bugs-1-2-3-5-18`); their xfail markers are removed and the rows above say `pass (was xfail #N)`. Findings #7, #8 and #15 are fixed the same way (branch `fix/xfail-bugs-7-8-15`: P4-20, P2-06, P8-14); no xfail rows remain. Finding #19 is fixed on branch `fix/cli-load-errors-19` (P6-25..30); SPEC.md's CLI section now lists every load error, and all of them exit 1. Finding #20 is fixed on the same branch (P8-15, P8-16). The same branch also reports `ValueError`s raised while the `Runner` is built (top-level `env` and prompt `send` templates) as `Script error in <path>: ...` with rc 1, before `prepare` (P6-31, P6-32). Duplicate mapping keys are rejected at load time as a `YAML error` instead of silently keeping the last value (P6-33..37).
 
@@ -582,6 +583,7 @@ Branch `fix/audit-2-findings` fixes eleven more findings of the same audit, numb
 | 7: `CleanWriter` leaked a sequence split across two reads | P8-21 (the first tests of `CleanWriter` and the stdout echo) | 35 of the 60 cases fail: 23 of the 43 cuts (those inside a sequence), byte by byte, the audit's case (`'ab\x1b[31mcd' == 'abcd'`), the held-start, close and bound tests (no `close`, no `ESCAPE_HOLD`), two of the keep cases (`ESC ESC [0m` and `ESC M` split) and the device test; whole-text and real-shell cases pass before and after |
 | 8: `prepare` temp file left behind when the write fails | P5-55 | the three write cases fail with `[PosixPath('.../_autobot_*.sh')] == []`; the `chmod` case passes before and after |
 | 9: a plugin could take over a built-in step by reusing its model | P7-24 | 11 of the 12 cases fail: the registrations don't raise (`DID NOT RAISE PluginError`), the six other built-in models are refused only for their common property names, and the CLI run exits 0; the own-model case passes before and after |
+| 10: `autobot: 2026` was `string_type`, not `unsupported_version` | P6-72 | the nine non-string values fail (`string_type`); the empty string, the null and the missing key pass before and after |
 
 ### Deviations from the plan
 
