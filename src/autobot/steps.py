@@ -72,7 +72,8 @@ class CmdExecutor:
 
     @staticmethod
     def _lines(text: str) -> list[str]:
-        return [l for l in text.splitlines() if l.strip()] or [""]
+        # not splitlines(): it also splits at \x0b, \x0c, \x1c-\x1e, \x85, U+2028 and U+2029
+        return [l for l in re.split(r"\r\n?|\n", text) if l.strip()] or [""]
 
     def _check(
         self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float, probe: bool = True

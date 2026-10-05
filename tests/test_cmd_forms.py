@@ -1,8 +1,11 @@
-"""P2-01..06: ``cmd`` forms (SPEC.md:99, 162, 278, 317)."""
+"""P2-01..06, P2-22: ``cmd`` forms (SPEC.md:99, 162, 278, 317)."""
 
 from __future__ import annotations
 
+import pytest
 from conftest import SentLog, Timeline, run_vars
+
+from autobot.steps import CmdExecutor
 
 
 def test_p2_01_multiline_skips_blank_lines(sent: SentLog):
@@ -63,3 +66,50 @@ def test_p2_06_multiline_jinja_block_spanning_lines():
         [{"cmd": "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}", "register": "out"}]
     )
     assert out["out"] == "n0\nn1"
+
+
+NOT_LINE_BREAKS = ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+
+
+@pytest.mark.parametrize("char", NOT_LINE_BREAKS, ids=lambda c: f"U+{ord(c):04X}")
+def test_p2_22_only_line_breaks_split_a_command(char: str):
+    """SPEC "cmd": a command is split at LF, CRLF and CR, not at the other separators of str.splitlines."""
+    text = f"echo a{char}echo b"
+    assert CmdExecutor._lines(text) == [text]
+    assert CmdExecutor._lines(f"{text}\necho c") == [text, "echo c"]
+
+
+@pytest.mark.parametrize(
+    ("text", "lines"),
+    [
+        ("a\nb", ["a", "b"]),
+        ("a\r\nb\r\n", ["a", "b"]),
+        ("a\rb", ["a", "b"]),
+        ("a\n\rb", ["a", "b"]),
+        ("a\n", ["a"]),
+        ("a\r", ["a"]),
+        ("\na", ["a"]),
+        ("a\n\n \t \nb", ["a", "b"]),
+        ("a\n\x0c\u2028\nb", ["a", "b"]),
+        ("  a  \n\tb", ["  a  ", "\tb"]),
+        ("", [""]),
+        ("\n\r\n", [""]),
+        (" \x1e ", [""]),
+    ],
+    ids=repr,
+)
+def test_p2_22_line_breaks_and_blank_lines(text: str, lines: list[str]):
+    """SPEC "cmd": blank lines are skipped, lines are sent as written, and no lines means one empty line."""
+    assert CmdExecutor._lines(text) == lines
+
+
+@pytest.mark.parametrize("char", ["\x85", " ", " "], ids=lambda c: f"U+{ord(c):04X}")
+def test_p2_22_separator_inside_a_command_is_sent(sent: SentLog, char: str):
+    """SPEC "cmd": a separator that isn't a newline reaches the shell inside its line.
+
+    Only the non-ASCII ones: the terminal acts on a control character such as U+001E itself.
+    """
+    cmd = f"printf '%s\\n' 'A{char}B' | od -An -tx1"
+    out = run_vars([{"cmd": cmd, "register": "out"}])
+    assert sent.commands() == [cmd]
+    assert bytes.fromhex(out["out"]) == f"A{char}B\n".encode()
