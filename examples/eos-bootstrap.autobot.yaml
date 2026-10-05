@@ -78,14 +78,13 @@ script:
         exit
 
   # - block:
-  #   name: run 'uname -a' from bash
-  #   enter:
-  #     script:
+  #     name: run 'uname -a' from bash
+  #     enter:
   #       - line: bash
+  #     script:
+  #       - cmd: |
+  #           #!/bin/sh
+  #           uname -a
   #     breakout:
   #       - line: exit
-  #   script:
-  #     - cmd: |
-  #         #!/bin/sh
-  #         uname -a
 
