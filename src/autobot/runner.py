@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -129,17 +129,20 @@ class _Unset(UndefinedError):
     """A default read a variable that nothing sets; `prepare` may still set it."""
 
 
-class Env(dict):
-    """`env` in templates: every variable of the environment, and the script's defaults for those not set."""
+def _env(values: dict[str, Any], why: Callable[[Any], str]) -> dict[str, Any]:
+    """`env` in templates: every variable of the environment, and the script's defaults for those not set.
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
+    A variable it doesn't have is undefined, and `why` says why. The mapping holds the variables and
+    nothing else: a template reads attributes too, so what the runner knows about them stays off it.
+    """
 
-    def __missing__(self, key: Any) -> Any:
-        if key in self.later:
-            return StrictUndefined(hint=f"env.{key} can't be read before prepare has run: {self.later[key]}")
-        return StrictUndefined(hint=f"env has no key '{key}'")
+    class Env(dict):
+        __slots__ = ()
+
+        def __missing__(self, key: Any) -> Any:
+            return StrictUndefined(hint=why(key))
+
+    return Env(values)
 
 
 class _EnvRefs(Mapping[str, Any]):
@@ -196,6 +199,7 @@ class Runner:
         self._default_timeout = 300
         # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
         self._environ = {**os.environ, **DEFAULT_ENV}
+        self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
         # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
         self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
@@ -246,17 +250,23 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self, later: bool = False) -> Env:
+    def _resolve_env(self, later: bool = False) -> dict[str, Any]:
         refs = _EnvRefs(self._config.env, self._environ, {"vars": self._config.vars, "args": self._cli_args})
-        env = Env()
+        values: dict[str, Any] = {}
+        self._later = {}
         for key in refs:
             try:
-                env[key] = refs[key]
+                values[key] = refs[key]
             except ScriptError as e:
                 if not (later and isinstance(e.__cause__, _Unset)):
                     raise
-                env.later[key] = str(e.__cause__)
-        return env
+                self._later[key] = str(e.__cause__)
+        return _env(values, self._why_unset)
+
+    def _why_unset(self, key: Any) -> str:
+        if key in self._later:
+            return f"env.{key} can't be read before prepare has run: {self._later[key]}"
+        return f"env has no key '{key}'"
 
     @property
     def _ctx(self) -> dict:

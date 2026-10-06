@@ -495,6 +495,17 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
     assert marker.exists() == (status == 3)
 
 
+@pytest.mark.parametrize("name", ["later", "_later", "why", "raw", "environ", "__dict__"])
+def test_p5_74_env_holds_nothing_but_variables(timeline: Timeline, name: str):
+    """SPEC "The environment in templates": what Autobot knows about the defaults isn't readable as `env.<name>`."""
+    for kw in ({}, {"prepare": "true\n", "env": {"AB_URL": "{{ env.AB_HOST }}"}}):
+        r = make_runner([], **kw)
+        assert r.render(f"{{{{ env.{name} | default('undefined') }}}} {{{{ 'y' if env.{name} is defined else 'n' }}}}") == "undefined n"
+        with pytest.raises(ValueError, match=f"^template error: env has no key '{name}'$"):
+            r.render(f"{{{{ env.{name} }}}}")
+        assert [a for a in dir(r._env) if not a.startswith("__")] == [a for a in dir({}) if not a.startswith("__")]
+
+
 # -- P5-75..77: the environment of the spawned process --------------------------
 
 
