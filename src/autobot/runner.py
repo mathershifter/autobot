@@ -2,28 +2,22 @@ from __future__ import annotations
 
 import datetime
 import os
-import subprocess
-import tempfile
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jinja2 import StrictUndefined
+from jinja2 import StrictUndefined, UndefinedError
 
-from . import log
+from . import log, prepare
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, RunError, ScriptError, check_regex, check_template, text
+from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
 
 
 register_builtins(registry)
-
-# Stripped before looking for a shebang: whitespace and line breaks, a BOM,
-# and the zero-width characters that copy and paste leave behind.
-_PREPARE_JUNK = " \t\r\n\ufeff\u200b\u2060"
 
 _KINDS = {
     dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
@@ -131,10 +125,20 @@ def trail(error: BaseException) -> tuple[StepRef, ...]:
     return getattr(error, "autobot_trail", ())
 
 
+class _Unset(UndefinedError):
+    """A default read a variable that nothing sets; `prepare` may still set it."""
+
+
 class Env(dict):
     """`env` in templates: every variable of the environment, and the script's defaults for those not set."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
+
     def __missing__(self, key: Any) -> Any:
+        if key in self.later:
+            return StrictUndefined(hint=f"env.{key} can't be read before prepare has run: {self.later[key]}")
         return StrictUndefined(hint=f"env has no key '{key}'")
 
 
@@ -155,7 +159,7 @@ class _EnvRefs(Mapping[str, Any]):
         if key in self.__environ:
             return self.__environ[key]
         if key not in self.__raw:
-            return StrictUndefined(hint=f"env has no key '{key}'")
+            return StrictUndefined(hint=f"env has no key '{key}'", exc=_Unset)
         if key not in self.__done:
             if key in self.__path:
                 cycle = [*self.__path[self.__path.index(key):], key]
@@ -191,7 +195,8 @@ class Runner:
         self._cli_args = cli_args
         self._default_timeout = 300
         self._environ = dict(os.environ)
-        self._env = self._resolve_env()
+        # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
+        self._env = self._resolve_env(later=config.attach.prepare is not None)
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
@@ -240,9 +245,17 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self) -> Env:
+    def _resolve_env(self, later: bool = False) -> Env:
         refs = _EnvRefs(self._config.env, self._environ, {"vars": self._config.vars, "args": self._cli_args})
-        return Env((k, refs[k]) for k in refs)
+        env = Env()
+        for key in refs:
+            try:
+                env[key] = refs[key]
+            except ScriptError as e:
+                if not (later and isinstance(e.__cause__, _Unset)):
+                    raise
+                env.later[key] = str(e.__cause__)
+        return env
 
     @property
     def _ctx(self) -> dict:
@@ -261,49 +274,31 @@ class Runner:
             ctx = {**ctx, **extra_ctx}
         return render_template(template, ctx, condition=condition)
 
-    @staticmethod
-    def _run_prepare(script: str):
-        script = script.lstrip(_PREPARE_JUNK)
-        first, nl, rest = script.partition("\n")
-        if script.startswith("#!"):
-            first = first.removesuffix("\r")
-            script = first + nl + rest
-            argv: list[str] = []
-            log.say("prepare: running local script")
-        else:
-            argv = ["/bin/sh"]
-            log.say("prepare: running local script (no shebang, using /bin/sh)")
-        f = tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
-        )
-        tmp = f.name
-        try:
-            with f:
-                f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
-            os.chmod(tmp, 0o700)
-            try:
-                result = subprocess.run([*argv, tmp], check=False)
-            except OSError as e:
-                raise RunError(
-                    f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}"
-                ) from e
-            if result.returncode != 0:
-                raise RunError(
-                    f"prepare script failed with exit code {result.returncode}"
-                )
-        finally:
-            os.unlink(tmp)
-        log.say("prepare: done", "ok")
+    _run_prepare = staticmethod(prepare.run)
 
-    def run(self):
+    def _spawn_command(self) -> str:
         attach = self._config.attach
         # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
         spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
             raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
+        return spawn
+
+    def run(self):
+        attach = self._config.attach
+        # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
+        # any other is rendered first, so one that names no command stops the run before `prepare`
+        late = bool(attach.prepare) and "env" in template_names(attach.spawn)
+        spawn = None if late else self._spawn_command()
         timeout = self._get_timeout(attach)
         if attach.prepare:
-            self._run_prepare(self.render(attach.prepare))
+            changes = self._run_prepare(self.render(attach.prepare), self._environ)
+            self._environ.update(changes.set)
+            for key in changes.unset:
+                self._environ.pop(key, None)
+            self._env = self._resolve_env()
+        if spawn is None:
+            spawn = self._spawn_command()
 
         log.say(f"attach: {spawn}")
         try:

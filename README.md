@@ -137,7 +137,7 @@ The `attach` block controls how autobot connects to the remote console.
 
 | Field      | Required | Description                                                                                                                         |
 |------------|----------|-------------------------------------------------------------------------------------------------------------------------------------|
-| `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
+| `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). A shell script is the run's rc script: the variables it exports are set for the rest of the run (see [`prepare` as an rc script](#prepare-as-an-rc-script)). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
 | `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
@@ -146,7 +146,7 @@ The `attach` block controls how autobot connects to the remote console.
 
 ### Lifecycle
 
-1. `attach.prepare` runs locally (if defined) — aborts on failure
+1. `attach.prepare` runs locally (if defined) — aborts on failure. The variables it exports are applied, and a `spawn` that reads `env` is rendered after it
 2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
@@ -175,6 +175,25 @@ attach:
     - control: "]"
     - line: logout
 ```
+
+### `prepare` as an rc script
+
+A `prepare` script that a shell runs works like an rc file: the variables it exports are set for the rest of the run, and templates read them through `env`.
+
+```yaml
+attach:
+  prepare: |
+    . ~/.config/lab/credentials.sh
+    export JUMP_HOST=$(lab-inventory jump-host)
+  spawn: ssh -J {{ env.JUMP_HOST }} admin@{{ args.host }}
+```
+
+- A script without a shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh` (`#!/bin/bash`, `#!/usr/bin/env bash`) is sourced by that shell. A script for any other interpreter (`#!/usr/bin/env python3`) is executed as a program and sets nothing: a process can't change its parent's environment.
+- Autobot takes what the script changed: an exported variable with a new value is set, one that is gone is unset. `_`, `SHLVL`, `PWD` and `OLDPWD` are never taken, and a `cd` in the script doesn't move Autobot.
+- Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
+- `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.
+- A script that exits non-zero aborts the run and sets nothing. The script's output stays its own, and Autobot prints only how many variables were set and unset, never a name or a value.
+- A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so. End such a script at the end of the file or with `return`.
 
 ## Prompts
 
@@ -479,7 +498,7 @@ Available context:
 
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
-| `env.*`          | The whole environment (`{{ env.HOME }}`), plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
+| `env.*`          | The whole environment (`{{ env.HOME }}`), with the variables `attach.prepare` exported, plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |

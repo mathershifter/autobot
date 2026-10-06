@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Annotated, Any
 
 import jinja2
+import jinja2.meta
 import pydantic
 from pydantic_core import PydanticCustomError
 
@@ -128,6 +129,14 @@ def check_template(template: str) -> None:
     """Report a template syntax error now rather than when the template is rendered."""
     try:
         _jinja_env.parse(template)
+    except jinja2.TemplateError as e:
+        raise ScriptError(f"template error: {e}") from e
+
+
+def template_names(template: str) -> set[str]:
+    """The context variables a template reads, e.g. `env` or `vars`."""
+    try:
+        return jinja2.meta.find_undeclared_variables(_jinja_env.parse(template))
     except jinja2.TemplateError as e:
         raise ScriptError(f"template error: {e}") from e
 
