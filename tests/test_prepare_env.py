@@ -131,6 +131,19 @@ def test_p5_66_non_utf8_bytes_are_kept(prepared, monkeypatch: pytest.MonkeyPatch
     assert r._env["AB_OS"] == "caf\udce9"
 
 
+def test_p5_66_non_utf8_value_in_a_command_is_sent_with_replacement():
+    """SPEC "The environment in templates": a byte that isn't UTF-8 goes to the session as `?`."""
+    from conftest import run_vars
+
+    out = run_vars(
+        [{"cmd": "echo R=[{{ env.AB_A }}]", "register": "tmpl"}, {"cmd": 'printf %s "$AB_A" | od -An -tx1', "register": "raw"}],
+        prepare="export AB_A=$(printf 'caf\\351')\n",
+    )
+    # the echo of the line isn't recognised (it has `?` where the sent text has the byte) and stays in front
+    assert out["tmpl"].splitlines()[-1] == "R=[caf?]"
+    assert out["raw"].split() == ["63", "61", "66", "e9"]
+
+
 # -- P5-67: exit status -------------------------------------------------------
 
 FAILING = {
