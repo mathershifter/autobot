@@ -337,6 +337,7 @@ class Session:
                         self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture)
                     self._cld.sendline(h.respond(i - h.start))
+                    log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
     def _prompt_what(self) -> str:

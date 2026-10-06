@@ -273,6 +273,80 @@ def test_p8_26_call_line_comes_before_the_functions_steps(capsys: pytest.Capture
     assert log.depth == 0
 
 
+# -- what is sent without a `cmd` ----------------------------------------------------------
+
+SECRET = "s3cret-hunter2"
+# the question is printed in two pieces, so the echo of the command doesn't show it
+ASK_PIN = "printf 'P'; printf 'IN: '; read -s pin; echo; test \"$pin\" = s3cret-hunter2 && echo PIN-OK"
+ASK_OK = "printf 'con'; printf 'tinue? '; read answer; echo got-$answer"
+
+
+def test_p8_27_line_and_return_say_that_they_sent_not_what(tmp_path: Path):
+    """SPEC "Output": a `line` prints `>> line sent` for each line and a `return` `>> return sent` for each
+    newline. The text of a line is never printed by Autobot: it may be a password."""
+    script = [
+        {"cmd": "stty -echo"},
+        {"line": [f"echo {SECRET} > /dev/null", "true"]},
+        {"return": 2},
+        {"block": {"name": "b", "script": [{"line": "true"}]}},
+    ]
+    res = piped(_write(tmp_path, script))
+    assert res.returncode == 0, res.stderr
+    assert res.stderr.splitlines() == [
+        ">> attach: bash --norc --noprofile -i",
+        ">> cmd: stty -echo",
+        ">> line sent",
+        ">> line sent",
+        ">> return sent",
+        ">> return sent",
+        ">> block enter: b",
+        ">>   line sent",
+        ">> block completed: b",
+        ">> run completed",
+    ]
+    assert SECRET not in res.stderr and SECRET not in res.stdout
+
+
+def test_p8_27_prompt_answer_names_the_prompt_and_never_the_response(tmp_path: Path):
+    """SPEC "Output": each answer to a prompt prints `>> prompt answered: <name>`; the response, a `sendEach`
+    value or a `send` string, is never printed."""
+    prompts = [
+        {"name": "sh", "expect": [r"^PROMPT\$ $"], "return": True},
+        {"name": "pin", "expect": ["PIN: $"], "send": {"each": "vars.pins"}},
+        {"name": "confirm", "expect": [r"continue\? $"], "send": "{{ vars.word }}"},
+    ]
+    doc_vars = {"pins": [SECRET], "word": "yes-" + SECRET}
+    res = piped(_write(tmp_path, [{"cmd": ASK_PIN}, {"block": {"name": "b", "script": [{"cmd": ASK_OK}]}}], prompts=prompts, vars=doc_vars))
+    assert res.returncode == 0, res.stderr
+    assert "PIN-OK" in res.stdout.split() and f"got-yes-{SECRET}" in res.stdout.split()
+    lines = res.stderr.splitlines()
+    assert lines[2] == ">> prompt answered: pin"
+    assert ">>   prompt answered: confirm" in lines  # at the level of the step that waits
+    # the device echoes the confirmation; autobot prints neither response
+    assert SECRET not in res.stderr.replace(ASK_PIN, "")
+
+
+def test_p8_27_completed_run_ends_with_run_completed(tmp_path: Path):
+    """SPEC "CLI": a run that completes prints `>> run completed` last, after the breakout; a failed run and
+    a script that can't be loaded don't."""
+    ok = piped(_write(tmp_path, [{"cmd": "true"}], breakout=[{"line": "exit"}]), FORCE_COLOR="1")
+    assert ok.returncode == 0, ok.stderr
+    assert ok.stderr.splitlines()[-3:] == [
+        f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mbreakout: {ESC}[0m{ESC}[1mdetaching{ESC}[0m",
+        f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mline sent{ESC}[0m",
+        f"{ESC}[1;32m>>{ESC}[0m {ESC}[32mrun completed{ESC}[0m",
+    ]
+    assert "run completed" not in ok.stdout
+    assert "run completed" not in piped(_write(tmp_path, [{"cmd": "false"}])).stderr
+    assert "run completed" not in piped(_write(tmp_path, [{"cmdd": "true"}])).stderr
+
+
+def test_p8_27_run_completed_starts_a_line_after_the_last_prompt(tmp_path: Path):
+    """With the streams on one pipe, the run doesn't end on the session's open prompt line."""
+    lines = _merged(_write(tmp_path, [{"cmd": "true"}]), tmp_path, "pipe").split("\n")
+    assert lines[-3:] == ["PROMPT$ ", ">> run completed", ""]
+
+
 # -- a message starts on a line of its own -------------------------------------------
 
 STEPS = [{"cmd": "echo hi"}, {"block": {"name": "b", "script": [{"cmd": "echo in"}]}}, {"cmd": "false"}]

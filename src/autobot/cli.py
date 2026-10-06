@@ -180,6 +180,7 @@ def _cmd_run(args):
         log.error(f"Run failed in {args.script}", reason)
         _where(e)
         sys.exit(EXIT_RUN)
+    log.say("run completed", "ok")
 
 
 SCHEMA_NAME = "autobot.2026-10.json"

@@ -523,6 +523,7 @@ def test_p5_33_banner_then_exit_runs_breakout(
         ">> prepare: done",
         f">> attach: {spawn}",
         ">> breakout: detaching",
+        ">> line sent",
         ">> breakout error (EOFError): connection closed while waiting for a shell prompt ('sh')",
     ]
 

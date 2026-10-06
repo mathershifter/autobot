@@ -231,6 +231,7 @@ class LineExecutor:
     def execute(self, step: LineStep, ctx: RunnerContext, timeout: float) -> None:
         for line in ensure_list(step.line):
             ctx.session.sendline(ctx.render(line), solicit=True)
+            log.say("line sent")  # not the text: it may be a password, which the session doesn't echo
 
 
 class ReturnExecutor:
@@ -240,6 +241,7 @@ class ReturnExecutor:
     def execute(self, step: ReturnStep, ctx: RunnerContext, timeout: float) -> None:
         for _ in range(step.newline_count):
             ctx.session.sendline("", solicit=True)
+            log.say("return sent")
 
 
 class ControlExecutor:
