@@ -194,7 +194,7 @@ attach:
 - `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.
 - The spawned process gets, each overriding the one before: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, what `prepare` changed, and the entries of `attach.env`. `prepare` itself runs with `TERM=dumb` and `NO_COLOR=1`, and `{{ env.TERM }}` reads the same, so a `prepare` that exports or unsets `TERM` or `NO_COLOR` decides it. The `env` section's defaults are for templates and aren't passed on. For a process that inherits nothing, spawn it through `env`: `spawn: env -i PATH=/usr/bin:/bin ssh host`.
 - A script that exits non-zero aborts the run and sets nothing. The script's output stays its own, and Autobot prints only how many variables were set and unset, never a name or a value. The environment is read back through a temp file that has no name, so no file with its values is left behind, however Autobot ends.
-- A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so. End such a script at the end of the file or with `return`.
+- A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so (`>> prepare: environment not read: ...`). End such a script at the end of the file or with `return`. The same warning, with its own reason, is printed when the environment can't be read for another cause, e.g. an exported value too large to start a command with. The run goes on in each case.
 
 ## Prompts
 

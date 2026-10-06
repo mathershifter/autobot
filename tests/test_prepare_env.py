@@ -414,6 +414,13 @@ def test_p5_72_dump_is_not_written_to_a_file_of_the_script(prepared, tmp_path: P
     assert "AB_A" not in r._env
 
 
+def test_p5_72_takeover_of_the_descriptor_is_a_failed_read(prepared, tmp_path: Path, capfd):
+    """SPEC "attach": the warning for a script that took the descriptor over."""
+    reuse = "".join(f"exec {fd}>&-\n" for fd in range(prepare.DUMP_FD, prepare.DUMP_FD + 8))
+    prepared(f"#!/bin/bash\nexport AB_A=1\n{reuse}")
+    assert ">> prepare: environment not read: it could not be read after the script" in capfd.readouterr().err
+
+
 def test_p5_72_no_descriptor_is_left_open(prepared):
     """The dump file and its copy for the shell are closed when `prepare` ends."""
     fds = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
@@ -479,8 +486,14 @@ def test_p5_72_truncated_dump_is_not_read():
     full = b"A=1\0B=x=y\0\0A=2\0C=\0\0"
     assert prepare._changes(full) == prepare.Changes({"A": "2", "C": ""}, frozenset({"B"}))
     assert prepare._changes(b"\0\0") == prepare.Changes({}, frozenset())
-    for cut in (b"", b"A=1\0\0", b"A=1\0\0A=2", b"A=1\0\0A=2\0", b"A=1\0\0A=2\0C"):
-        assert prepare._changes(cut) is None
+    none = {}, frozenset()
+    for cut in (b"", b"A=1", b"A=1\0", b"A=1\0B"):
+        assert prepare._changes(cut) == prepare.Changes(*none, prepare.NOT_BEFORE)
+    for cut in (b"A=1\0\0A=2", b"A=1\0\0A=2\0", b"A=1\0\0A=2\0C", b"\0A"):
+        assert prepare._changes(cut) == prepare.Changes(*none, prepare.NOT_AFTER)
+    for whole in (b"A=1\0\0", b"\0"):
+        assert prepare._changes(whole) == prepare.Changes(*none, prepare.SHELL_ENDED)
+        assert prepare._changes(whole, failed=True) == prepare.Changes(*none, prepare.NOT_AFTER)
 
 
 # -- P5-73: order -------------------------------------------------------------
@@ -585,6 +598,75 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
     else:
         assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ")
     assert marker.exists() == (status == 3)
+
+# -- P5-79: an environment that can't be read ------------------------------------
+
+WARN = ">> prepare: environment not read: "
+
+
+@pytest.fixture
+def python_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`sys.executable` as a link the script can remove, so the dumper stops working when it does."""
+    link = tmp_path / "python"
+    link.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
+    link.chmod(0o700)
+    monkeypatch.setattr(sys, "executable", str(link))
+    return link
+
+
+@pytest.mark.parametrize("end", ["", "exit 0\n", "return\n"], ids=["end-of-file", "exit-0", "return"])
+@pytest.mark.parametrize("shebang", ["", "#!/bin/bash\n", "#!/bin/sh -eu\n"], ids=["sh", "bash", "sh-eu"])
+def test_p5_79_dump_that_fails_after_the_script_is_not_blamed_on_it(prepared, python_link, capfd, shebang, end):
+    """SPEC "prepare as an rc script": the run goes on, nothing is set, and the warning says what failed."""
+    r = prepared(f"{shebang}export AB_A=1\nrm {python_link}\n{end}", env={"AB_A": "dflt"})
+    assert r.render("{{ env.AB_A }}") == "dflt"
+    assert progress(capfd.readouterr().err)[1:] == [WARN + "it could not be read after the script", ">> prepare: done"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the size one argument may have is Linux's")
+@pytest.mark.parametrize("shebang", ["", "#!/bin/bash\n"], ids=["sh", "bash"])
+def test_p5_79_value_too_large_to_start_the_dumper(prepared, capfd, shebang: str):
+    """SPEC "prepare as an rc script": with a value over 128 KB exported, the shell can start no command."""
+    r = prepared(f"{shebang}export AB_A=1 AB_B=$(head -c 200000 /dev/zero | tr '\\0' x)\n")
+    assert "AB_A" not in r._env and "AB_B" not in r._env
+    assert progress(capfd.readouterr().err)[1:] == [WARN + "it could not be read after the script", ">> prepare: done"]
+
+
+@pytest.mark.parametrize("status", [0, 3])
+@pytest.mark.parametrize("shebang", ["", "#!/bin/bash\n", "#!/bin/sh -eu\n"], ids=["sh", "bash", "sh-eu"])
+def test_p5_79_dump_that_fails_before_the_script_still_runs_it(timeline, prep_tmp, tmp_path, monkeypatch, capfd, shebang, status):
+    """SPEC "prepare as an rc script": the script runs without the capture, and its exit status is its own."""
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
+    ran = tmp_path / "ran"
+    timeline.stop_attach = True
+    r = make_runner([], prepare=f"{shebang}export AB_A=1\ntouch {ran}\n(exit {status})\n")
+    if status:
+        with pytest.raises(RuntimeError, match="^prepare script failed with exit code 3$"):
+            r.run()
+    else:
+        with pytest.raises(AttachRecorded):
+            r.run()
+        assert progress(capfd.readouterr().err)[1:] == [
+            WARN + "it could not be read before the script, which ran without that",
+            ">> prepare: done",
+        ]
+    assert ran.exists() and "AB_A" not in r._env
+    assert list(prep_tmp.iterdir()) == []
+
+
+def test_p5_79_no_python_interpreter_is_a_warning(prepared, tmp_path: Path, monkeypatch, capfd):
+    """SPEC "prepare as an rc script": without `sys.executable` the script is run as before, and a warning says so."""
+    monkeypatch.setattr(sys, "executable", "")
+    out = tmp_path / "out"
+    for shebang in ("", "#!/bin/bash\n"):
+        r = prepared(f'{shebang}export AB_A=1\necho "$0" > {out}\n')
+        assert "_autobot_" in out.read_text() and "AB_A" not in r._env
+        assert progress(capfd.readouterr().err)[1:] == [
+            WARN + "Autobot doesn't know the Python interpreter it runs in (sys.executable is empty)",
+            ">> prepare: done",
+        ]
+    prepared(f"#!{shutil.which('true')}\n")  # not a shell: there is nothing to read, and no warning
+    assert WARN not in capfd.readouterr().err
 
 # -- P5-78: the dump is the shell's environment, exactly -------------------------
 

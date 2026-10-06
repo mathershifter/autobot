@@ -13,7 +13,6 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import IO
 
 from . import log
 from .types import RunError
@@ -62,6 +61,13 @@ _LC_CTYPE = """ "$(/bin/sh -c 'printf %s. "${LC_CTYPE+s}${LC_CTYPE-}"')\""""
 # The descriptor the shell inherits the dump file on is at least this, out of the way of a script's own
 DUMP_FD = 200
 _DUMPED = "__autobot_dumped"
+_FAILED = b"\n# autobot: the environment could not be read after the script\n"
+
+# Why the environment a script left wasn't read, for the warning
+NO_PYTHON = "Autobot doesn't know the Python interpreter it runs in (sys.executable is empty)"
+NOT_BEFORE = "it could not be read before the script, which ran without that"
+NOT_AFTER = "it could not be read after the script"
+SHELL_ENDED = "the script ended its shell before the shell could report it"
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,7 @@ class Changes:
 
     set: dict[str, str]
     unset: frozenset[str]
+    unread: str = ""  # why the environment the script left wasn't read, when it should have been
 
 
 def _options(args: list[str]) -> str | None:
@@ -124,25 +131,30 @@ def _wrapper(script: str, dump: tuple[int, int, int], options: str = "") -> str:
     else:
         code, witness = _DUMP.format(read=_READ_ENVIRON), _LC_CTYPE
     dumper = f"{q(sys.executable)} -ISc {q(code)} {dump[0]} {dump[1]} {dump[2]}{witness}"
-    trap = f'[ $? -ne 0 ] || [ "${{2-}}" = {_DUMPED} ] || {dumper}'
+    # a dump that fails after the script is noted at the end of the script's file. With a builtin: an
+    # environment too large to start the dumper with is too large to start anything
+    failed = f"printf '%s' {q(_FAILED.decode())} >> {q(script)} || :"
+    trap = f'[ $? -ne 0 ] || [ "${{2-}}" = {_DUMPED} ] || {dumper} || {failed}'
+    source = f"{options and f'set -{options}'}\n. {q(script)}\n"
     return (
-        f"{dumper} || exit 125\n"
+        # without a first dump there is nothing to compare with: the script runs all the same
+        f"if {dumper}; then :; else\n{source}exit\nfi\n"
         f"trap {q(trap)} EXIT\n"
-        f"{options and f'set -{options}'}\n"
-        f". {q(script)}\n"
+        f"{source}"
         'set -- "$?"\n'
-        f'[ "$1" -ne 0 ] || {{ {dumper} || :; set -- 0 {_DUMPED}; }}\n'
+        f'[ "$1" -ne 0 ] || {{ {dumper} || {failed}; set -- 0 {_DUMPED}; }}\n'
         'exit "$1"\n'
     )
 
 
-def _dumps(data: bytes) -> list[dict[str, str]]:
-    """The complete dumps of a dump file; one that is cut off isn't one."""
-    if not data.endswith(b"\0"):
-        return []
+def _dumps(data: bytes) -> tuple[list[dict[str, str]], bool]:
+    """The complete dumps of a dump file, and whether one more was started and cut off."""
     dumps: list[dict[str, str]] = []
     current: dict[str, str] = {}
-    for entry in data[:-1].split(b"\0"):
+    *entries, rest = data.split(b"\0")
+    open_ = False
+    for entry in entries:
+        open_ = bool(entry)
         if entry:
             name, eq, value = entry.partition(b"=")
             if eq:  # as `os.environ` reads an environment: the first of a name, and nothing without `=`
@@ -150,13 +162,17 @@ def _dumps(data: bytes) -> list[dict[str, str]]:
         else:
             dumps.append(current)
             current = {}
-    return dumps
+    return dumps, open_ or bool(rest)
 
 
-def _changes(data: bytes) -> Changes | None:
-    dumps = _dumps(data)
+def _changes(data: bytes, failed: bool = False) -> Changes:
+    """What the script changed, from the dumps before and after it. `failed`: the shell noted that the
+    dump after the script failed."""
+    dumps, cut = _dumps(data)
+    if not dumps:
+        return Changes({}, frozenset(), NOT_BEFORE)
     if len(dumps) < 2:
-        return None
+        return Changes({}, frozenset(), NOT_AFTER if failed or cut else SHELL_ENDED)
     before, after = dumps[0], dumps[-1]
     return Changes(
         {k: v for k, v in after.items() if before.get(k) != v and k not in IGNORED},
@@ -220,9 +236,9 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
     else:
         shell, plain = (["/bin/sh"], ""), ["/bin/sh"]
         log.say("prepare: running local script (no shebang, using /bin/sh)")
-    source = shell is not None and bool(sys.executable)  # the dump is written by this Python
-    dump: IO[bytes]
-    changes: Changes | None = Changes({}, frozenset())
+    changes = Changes({}, frozenset())
+    if shell is not None and not sys.executable:  # the dump is written by this Python
+        shell, changes = None, Changes({}, frozenset(), NO_PYTHON)
     # the temp file is removed, whatever fails
     with _terminable(), contextlib.ExitStack() as files:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
@@ -232,7 +248,7 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
         os.chmod(tmp, 0o700)
         argv, fds = [*plain, tmp], ()
-        if shell is not None and source:
+        if shell is not None:
             # the environment is read from a file without a name: nothing that holds its values can be
             # left behind. A file, not a pipe: a process the script leaves running can't keep it waiting
             dump = files.enter_context(tempfile.TemporaryFile())
@@ -246,12 +262,12 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
         if result.returncode != 0:
             raise RunError(f"prepare script failed with exit code {result.returncode}")
-        if source:
+        if shell is not None:
             dump.seek(0)
-            changes = _changes(dump.read())
-    if changes is None:
-        log.say("prepare: environment not read: the script ended its shell before the shell could report it", "warn")
-        changes = Changes({}, frozenset())
+            with open(tmp, "rb") as written:
+                changes = _changes(dump.read(), written.read().endswith(_FAILED))
+    if changes.unread:
+        log.say(f"prepare: environment not read: {changes.unread}", "warn")
     elif changes.set or changes.unset:
         log.say(f"prepare: environment: {len(changes.set)} set, {len(changes.unset)} unset", "detail")
     log.say("prepare: done", "ok")
