@@ -1,4 +1,4 @@
-"""P5-65..76: `attach.prepare` as an rc script (SPEC "attach", "The environment in templates")."""
+"""P5-65..77: `attach.prepare` as an rc script and the spawned process's environment (SPEC "attach")."""
 
 from __future__ import annotations
 
@@ -493,3 +493,106 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
     else:
         assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ")
     assert marker.exists() == (status == 3)
+
+
+# -- P5-75..77: the environment of the spawned process --------------------------
+
+
+@pytest.fixture
+def spawn_env(spawned, prep_tmp: Path):
+    """Run a script up to `pexpect.spawn`, which is recorded and not made; returns the env it was given."""
+    spawned.stop = True
+
+    def run(**kw) -> dict[str, str]:
+        from conftest import SpawnRecorded
+
+        with pytest.raises(SpawnRecorded):
+            make_runner([], **kw).run()
+        assert list(prep_tmp.iterdir()) == []
+        return spawned[-1][1]["env"]
+
+    return run
+
+
+def test_p5_75_spawned_process_inherits_the_environment_and_prepare(monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": checked from inside the spawned shell."""
+    monkeypatch.setenv("AB_OS", "from os")
+    monkeypatch.setenv("AB_B", "os-b")
+    monkeypatch.setenv("AB_GONE", "os")
+    from conftest import run_vars
+
+    show = 'echo "[$AB_OS][$AB_A][$AB_B][${AB_GONE-unset}][${AB_C-unset}][${AB_NEW-unset}][$TERM][$NO_COLOR]"'
+    out = run_vars(
+        [{"cmd": show, "register": "out"}, {"cmd": "echo \"[{{ env.AB_B }}][{{ env.AB_C }}]\"", "register": "tmpl"}],
+        prepare="export AB_A='it'\\''s  \"a\" = $x' AB_B=prep-b\nunset AB_GONE\nAB_NEW=not-exported\n",
+        env={"AB_C": "dflt", "AB_A": "dflt"},
+    )
+    assert out["out"] == "[from os][it's  \"a\" = $x][prep-b][unset][unset][unset][dumb][1]"
+    assert out["tmpl"] == "[prep-b][dflt]"  # a default is for templates: AB_C is unset in the process
+
+
+def test_p5_75_spawned_process_gets_a_multiline_and_a_non_utf8_value(spawn_env):
+    """SPEC "prepare as an rc script": what the script exported reaches the process byte for byte."""
+    env = spawn_env(prepare="export AB_A='l1\nl2\n' AB_B=$(printf 'a\\377b')\n")
+    assert env["AB_A"] == "l1\nl2\n"
+    assert os.fsencode(env["AB_B"]) == b"a\xffb"
+
+
+@pytest.mark.parametrize("attach_env", [None, {}], ids=["omitted", "empty"])
+def test_p5_76_plain_terminal_over_the_inherited_environment(spawn_env, monkeypatch, attach_env):
+    """SPEC "The environment of the spawned process": lines 1 and 2; `attach.env: {}` sets nothing."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("AB_OS", "os")
+    expected = {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}
+    assert spawn_env(attach_env=attach_env, env={"AB_C": "template-only"}) == expected
+    assert spawn_env(attach_env=attach_env, prepare="true\n") == expected
+    assert spawn_env(attach_env=attach_env, prepare=f"#!{sys.executable}\nimport os\nos.environ['TERM'] = 'x'\n") == expected
+
+
+@pytest.mark.parametrize(
+    ("script", "term", "no_color"),
+    [
+        ("export TERM=vt100\n", "vt100", "1"),
+        ("unset TERM\nexport NO_COLOR=\n", None, ""),
+        ("unset NO_COLOR\n", "dumb", None),
+        ("export TERM=dumb NO_COLOR=1 AB_A=1\n", "dumb", "1"),
+        ("export TERM=xterm-256color\n", "dumb", "1"),
+    ],
+    ids=["term-set", "term-unset", "no-color-unset", "set-to-the-defaults", "exported-unchanged"],
+)
+def test_p5_76_prepare_decides_term_and_no_color(spawn_env, monkeypatch, script: str, term, no_color):
+    """SPEC "The environment of the spawned process": line 3 over line 2, only for what `prepare` changed."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("NO_COLOR", "0")
+    env = spawn_env(attach_env=None, prepare=script)
+    assert (env.get("TERM"), env.get("NO_COLOR")) == (term, no_color)
+
+
+def test_p5_76_attach_env_overrides_everything(spawn_env, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": line 4; the values are used as written."""
+    monkeypatch.setenv("AB_OS", "os")
+    monkeypatch.setenv("AB_B", "os")
+    attach_env = {"TERM": "xterm", "AB_OS": "attach", "AB_A": "attach", "AB_NEW": "{{ env.AB_A }}", "AB_GONE": "back"}
+    env = spawn_env(attach_env=attach_env, prepare="export TERM=vt100 AB_A=prep AB_B=prep\nunset AB_GONE\n")
+    assert env == {**os.environ, "NO_COLOR": "1", "AB_B": "prep", **attach_env}
+
+
+def test_p5_77_spawn_is_looked_up_in_the_path_prepare_set(tmp_path: Path, monkeypatch, capfd):
+    """SPEC "The environment of the spawned process": `spawn` is found in the `PATH` of that environment."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    cmd = bindir / "ab-device"
+    cmd.write_text('#!/bin/sh\necho "device says $AB_A"\n')
+    cmd.chmod(cmd.stat().st_mode | stat.S_IXUSR)
+    kw = {"prompts": [], "attach_env": None}
+    make_runner([], spawn="ab-device", prepare=f'export PATH="{bindir}:$PATH" AB_A=hi\n', **kw).run()
+    assert "device says hi" in capfd.readouterr().out
+    make_runner([], spawn="ab-device", **(kw | {"attach_env": {"PATH": f"{bindir}:/usr/bin:/bin", "AB_A": "there"}})).run()
+    assert "device says there" in capfd.readouterr().out
+    import pexpect
+
+    with pytest.raises(pexpect.ExceptionPexpect, match="The command was not found or was not executable: ab-device"):
+        make_runner([], spawn="ab-device", **kw).run()
+    with pytest.raises(pexpect.ExceptionPexpect, match="The command was not found"):
+        make_runner([], spawn="sh", prepare="unset PATH\n", **(kw | {"attach_env": {"PATH": "/nonexistent"}})).run()

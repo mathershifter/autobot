@@ -17,20 +17,24 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_p5_17_attach_env_replaces_parent_env(monkeypatch: pytest.MonkeyPatch):
-    """SPEC.md:75: attach.env replaces the process environment (no merge)."""
-    monkeypatch.setenv("AUTOBOT_LEAK", "1")
-    out = run_vars([{"cmd": 'echo "leak=${AUTOBOT_LEAK:-unset}"', "register": "out"}])
-    assert out["out"] == "leak=unset"
+def test_p5_17_attach_env_adds_to_the_inherited_env(monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": attach.env is set on top of the inherited environment."""
+    monkeypatch.setenv("AUTOBOT_KEPT", "1")
+    monkeypatch.setenv("PS1", "os-prompt> ")
+    # the run reaches its prompt only if attach.env's PS1 replaced the inherited one
+    out = run_vars([{"cmd": 'echo "kept=${AUTOBOT_KEPT:-unset}"', "register": "out"}])
+    assert out["out"] == "kept=1"
 
 
-def test_p5_18_attach_env_default_when_omitted(spawned: SpawnLog):
-    """SPEC.md:75: without attach.env the child gets TERM=dumb and NO_COLOR=1."""
+def test_p5_18_attach_env_default_when_omitted(spawned: SpawnLog, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": without attach.env, the inherited one with a plain terminal."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
     spawned.stop = True
     with pytest.raises(SpawnRecorded):
         make_runner([], attach_env=None).run()
     _, kwargs = spawned[0]
-    assert kwargs["env"] == {"TERM": "dumb", "NO_COLOR": "1"}
+    assert kwargs["env"] == {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}
 
 
 def test_p5_19_yaml_env_overridden_by_os_env(monkeypatch: pytest.MonkeyPatch):

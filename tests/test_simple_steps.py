@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 
@@ -104,10 +105,11 @@ def test_p8_13_call_steps_see_registered_vars():
     assert out["g"] == "got-v"
 
 
-def test_p8_14_attach_env_empty_dict_is_not_omitted(spawned: SpawnLog):
-    """SPEC.md:75: an explicit empty env replaces the environment with nothing."""
+def test_p8_14_attach_env_empty_dict_sets_nothing(spawned: SpawnLog, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "attach": `env: {}` is the same as no `env`: the inherited environment with a plain terminal."""
+    monkeypatch.setenv("TERM", "xterm")
     spawned.stop = True
     with pytest.raises(SpawnRecorded):
         make_runner([], attach_env={}).run()
     _, kwargs = spawned[0]
-    assert kwargs["env"] == {}
+    assert kwargs["env"] == {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}

@@ -140,7 +140,7 @@ The `attach` block controls how autobot connects to the remote console.
 | `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). A shell script is the run's rc script: the variables it exports are set for the rest of the run (see [`prepare` as an rc script](#prepare-as-an-rc-script)). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
-| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
+| `env`      | no       | Environment variables to set for the spawned process, on top of what it inherits: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, and the variables `prepare` exported. An entry overrides an inherited variable, `TERM` included; `env: {}` sets nothing. The spawn command is looked up in the `PATH` of that environment |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
 | `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
 
@@ -178,7 +178,7 @@ attach:
 
 ### `prepare` as an rc script
 
-A `prepare` script that a shell runs works like an rc file: the variables it exports are set for the rest of the run, and templates read them through `env`.
+A `prepare` script that a shell runs works like an rc file: the variables it exports are set for the rest of the run. Templates read them through `env`, and the spawned command (`ssh`, `telnet`, ...) inherits them.
 
 ```yaml
 attach:
@@ -192,6 +192,7 @@ attach:
 - Autobot takes what the script changed: an exported variable with a new value is set, one that is gone is unset. `_`, `SHLVL`, `PWD` and `OLDPWD` are never taken, and a `cd` in the script doesn't move Autobot.
 - Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
 - `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.
+- The spawned process gets, each overriding the one before: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, what `prepare` set (so a `prepare` that exports `TERM` keeps it), and the entries of `attach.env`. The `env` section's defaults are for templates and aren't passed on. For a process that inherits nothing, spawn it through `env`: `spawn: env -i PATH=/usr/bin:/bin ssh host`.
 - A script that exits non-zero aborts the run and sets nothing. The script's output stays its own, and Autobot prints only how many variables were set and unset, never a name or a value.
 - A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so. End such a script at the end of the file or with `return`.
 

@@ -11,7 +11,7 @@ from jinja2 import StrictUndefined, UndefinedError
 from . import log, prepare
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
-from .session import PromptHandler, Session, SimpleHandler
+from .session import DEFAULT_ENV, PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
 from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
@@ -195,8 +195,9 @@ class Runner:
         self._cli_args = cli_args
         self._default_timeout = 300
         self._environ = dict(os.environ)
+        self._prepared: set[str] = set()  # the variables `prepare` set or unset
         # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
-        self._env = self._resolve_env(later=config.attach.prepare is not None)
+        self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
@@ -284,6 +285,12 @@ class Runner:
             raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         return spawn
 
+    def _spawn_env(self) -> dict[str, str]:
+        """The spawned process's environment: autobot's own, as `prepare` changed it, plus `attach.env`."""
+        # a plain terminal, unless `prepare` said otherwise
+        plain = {k: v for k, v in DEFAULT_ENV.items() if k not in self._prepared}
+        return {**self._environ, **plain, **(self._config.attach.env or {})}
+
     def run(self):
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
@@ -296,13 +303,14 @@ class Runner:
             self._environ.update(changes.set)
             for key in changes.unset:
                 self._environ.pop(key, None)
+            self._prepared = changes.set.keys() | changes.unset
             self._env = self._resolve_env()
         if spawn is None:
             spawn = self._spawn_command()
 
         log.say(f"attach: {spawn}")
         try:
-            self._session.attach(spawn, env=attach.env, timeout=timeout)
+            self._session.attach(spawn, env=self._spawn_env(), timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)

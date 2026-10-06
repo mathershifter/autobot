@@ -36,6 +36,14 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 # -- F1: real local shell ----------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The spawned shell inherits the suite's environment: drop what would change how bash behaves."""
+    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0"):
+        monkeypatch.delenv(name, raising=False)
+
+
 BASH = "bash --norc --noprofile -i"
 SHELL_ENV = {"TERM": "dumb", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]}
 SHELL_PROMPT = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
