@@ -5,10 +5,12 @@ import copy
 import importlib.resources
 import json
 import sys
+import traceback
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pexpect
 import pydantic
 import yaml
 from rich.console import Console
@@ -17,13 +19,33 @@ from yaml.reader import ReaderError
 
 from .models import Config
 from .registry import PluginError, registry
-from .runner import Runner
+from .runner import Runner, trail
+from .types import RunError, ScriptError
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
 
 # markup off: messages echo user text (paths, --arg, YAML input) that may look like [tags]
 console = Console(stderr=True, markup=False, soft_wrap=True)
+
+EXIT_LOAD = 1  # the script can't be loaded: nothing ran
+EXIT_RUN = 3  # the run failed
+EXIT_UNEXPECTED = 70  # a bug in autobot or a plugin (EX_SOFTWARE)
+EXIT_INTERRUPTED = 130  # Ctrl-C
+
+# What a script, the device or the environment explains, so the user can act on it: reported without a
+# traceback. Anything else that ends a run is a bug in autobot or in a plugin.
+EXPECTED = (
+    ScriptError,  # a template, a rendered pattern, a block's sendEach collection
+    RunError,  # a failed command, a prompt out of responses, a failed prepare
+    TimeoutError,
+    EOFError,  # the connection closed
+    pexpect.ExceptionPexpect,  # the spawn command wasn't found, the process couldn't be terminated
+    OSError,  # the pty or a temp file
+    UnicodeError,  # text that can't be encoded for the pty or the prepare script
+    RecursionError,  # functions that call each other without end
+)
+CALLERS = 5
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
 VALUE_TAG = "tag:yaml.org,2002:value"  # a plain `=` key, which flatten_mapping turns into the string "="
@@ -77,20 +99,56 @@ def _load(path: str) -> object:
         console.print(f"YAML error in {path}, position {e.position}: {e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
         console.print(f"YAML error in {path}: {e}")
-    sys.exit(1)
+    sys.exit(EXIT_LOAD)
 
 
-def _discover() -> None:
+def _traceback(args: argparse.Namespace | None, e: BaseException) -> None:
+    if getattr(args, "traceback", False):
+        traceback.print_exception(e, file=sys.stderr)
+
+
+def _where(e: BaseException) -> None:
+    """The step that was running, and the calls that led to it. A block is part of its steps' paths."""
+    steps = trail(e)
+    if not steps:
+        return
+    *outer, last = steps
+    console.print(f"  at {last.path} ({last.what})")
+    callers = [ref for ref in reversed(outer) if ref.key != "block"]
+    for ref in callers[:CALLERS]:
+        console.print(f"  called from {ref.path} ({ref.what})")
+    if len(callers) > CALLERS:
+        console.print(f"  ... and {len(callers) - CALLERS} more callers")
+
+
+def _unexpected(e: Exception) -> None:
+    steps = trail(e)
+    if steps and steps[-1].plugin:
+        console.print(
+            f"Unexpected error in plugin '{steps[-1].key}': this is a bug in the plugin, not in the script. "
+            "Please report it to the plugin's author with the traceback below."
+        )
+    else:
+        console.print(
+            "Unexpected error in Autobot: this is a bug, not a problem with the script. "
+            "Please report it with the traceback below."
+        )
+    _where(e)
+    traceback.print_exception(e, file=sys.stderr)
+
+
+def _discover(args: argparse.Namespace | None = None) -> None:
     # validation depends on the installed plugins, so a broken one is reported first, before the script is read
     try:
         registry.discover()
     except PluginError as e:
+        _traceback(args, e)
         console.print(f"Plugin error: {e}")
-        sys.exit(1)
+        sys.exit(EXIT_LOAD)
 
 
 def _cmd_run(args):
-    _discover()
+    _discover(args)
     config_dict = _load(args.script)
 
     try:
@@ -98,22 +156,32 @@ def _cmd_run(args):
     except pydantic.ValidationError as e:
         console.print("Validation errors:")
         console.print(e.json(indent=2))
-        sys.exit(1)
+        sys.exit(EXIT_LOAD)
 
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
             console.print(f"--arg requires KEY=VALUE format, got: {item}")
-            sys.exit(1)
+            sys.exit(EXIT_LOAD)
         key, value = item.split("=", 1)
         cli_args[key] = value
 
     try:
         runner = Runner(config, cli_args)
-    except ValueError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+    except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        _traceback(args, e)
         console.print(f"Script error in {args.script}: {e}")
-        sys.exit(1)
-    runner.run()
+        sys.exit(EXIT_LOAD)
+    try:
+        runner.run()
+    except EXPECTED as e:
+        _traceback(args, e)
+        reason = str(e) or type(e).__name__
+        if isinstance(e, RecursionError):
+            reason = f"functions call each other too deeply ({reason})"
+        console.print(f"Run failed in {args.script}: {reason}")
+        _where(e)
+        sys.exit(EXIT_RUN)
 
 
 SCHEMA_NAME = "autobot.2026-10.json"
@@ -142,13 +210,13 @@ def load_schema() -> dict[str, Any]:
     raise SchemaError(f"neither {packaged} nor {source} holds the JSON schema")
 
 
-def _cmd_schema():
-    _discover()
+def _cmd_schema(args: argparse.Namespace | None = None):
+    _discover(args)
     try:
         schema = load_schema()
     except SchemaError as e:
         console.print(f"Cannot read the schema: {e}")
-        sys.exit(1)
+        sys.exit(EXIT_LOAD)
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 
@@ -196,20 +264,35 @@ def main():
         help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
     )
 
-    subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
+    schema_parser = subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
+    for sub in (run_parser, schema_parser):
+        sub.add_argument(
+            "--traceback",
+            action="store_true",
+            help="Also print the Python traceback of an error that is reported without one",
+        )
 
     if len(sys.argv) > 1 and sys.argv[1] not in ("run", "schema", "-h", "--help"):
         sys.argv.insert(1, "run")
 
     args = parser.parse_args()
 
-    if args.command == "schema":
-        _cmd_schema()
-    elif args.command == "run":
-        _cmd_run(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    try:
+        if args.command == "schema":
+            _cmd_schema(args)
+        elif args.command == "run":
+            _cmd_run(args)
+        else:
+            parser.print_help()
+            sys.exit(EXIT_LOAD)
+    except KeyboardInterrupt as e:
+        _traceback(args, e)
+        console.print("Interrupted")
+        _where(e)
+        sys.exit(EXIT_INTERRUPTED)
+    except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
+        _unexpected(e)
+        sys.exit(EXIT_UNEXPECTED)
 
 
 if __name__ == "__main__":

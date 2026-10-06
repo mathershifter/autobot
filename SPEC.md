@@ -172,7 +172,7 @@ Before sending, the current set advances to the next set when:
 - with `fields`, the matching entry's item was already sent from the current set (the sequence starts over, e.g. `login:` matches again after `Password:`, or `Password:` matches twice), or
 - without `fields`, the current item was already sent (any later match of any of the prompt's regexes).
 
-A `sendEach` prompt raises `RuntimeError`:
+A `sendEach` prompt raises `RuntimeError` (a `RunError`, see [CLI](#cli)):
 - `prompt '<name>': responses exhausted` when the set must advance and there is no next set.
 - `prompt '<name>': no response available` when the collection is empty, so the prompt has no credential sets.
 
@@ -226,11 +226,11 @@ Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout 
 Closing the session (step 6, and the close after a failed spawn wait) closes the process's pty and terminates a process that is still running. It can fail: pexpect raises `ExceptionPexpect` (`Could not terminate the child.`) for a process that survives `SIGHUP`, `SIGINT` and `SIGKILL`. Then:
 - The session forgets the process either way. It isn't closed a second time, and nothing more can be sent to it.
 - If an error is already propagating (from the spawn wait, `attach.script` or `script`), the close failure never replaces it. It is logged to stderr, `>> close error (ExceptionPexpect): Could not terminate the child.`, and the original error propagates, as with a breakout error.
-- If nothing else failed, the close failure is the run's error: it propagates, and the CLI prints its traceback and exits with status 1. The script's steps all ran, but a process that couldn't be terminated may still hold the line, so the run doesn't report success.
+- If nothing else failed, the close failure is the run's error: it propagates, and the CLI reports a failed run, `Run failed in <path>: Could not terminate the child.`, and exits with status 3 (see [CLI](#cli)). The script's steps all ran, but a process that couldn't be terminated may still hold the line, so the run doesn't report success.
 
 A `KeyboardInterrupt` during the close is not held back in either case.
 
-If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI prints a traceback and exits with status 1). The spawn wait fails when:
+If the spawn wait (step 2) fails, the run stops there. Neither `attach.script` nor `script` runs, and **`attach.breakout` doesn't run**: the breakout undoes what the steps did on the remote (log out, leave a console server session), and no step has run or sent anything. The spawned process, if any, is closed: its pty is closed, and a process that is still running is terminated (`SIGHUP` and `SIGINT`, then `SIGKILL` if it ignores them). Closing the process is what frees the line; a silent `ssh` or `telnet` that is killed drops its connection. Then the error propagates (the CLI reports a failed run and exits with status 3, or 130 for an interrupt; see [CLI](#cli)). The spawn wait fails when:
 - `attach.timeout` expires before any output: `TimeoutError` (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`, with the rendered `spawn` command). The process is still running until it is closed.
 - the process exits before any output: `EOFError` (`connection closed before any output from '<spawn>'`, with the rendered `spawn` command). Once the process is closed, its exit status or the signal that ended it is appended: ` (exit status <n>)` or ` (killed by <SIGNAL>)`, e.g. ` (killed by SIGKILL)`. `SIGHUP` isn't reported, because closing the pty sends it as well; a process ended by it gets no suffix.
 - the `spawn` command isn't found or isn't executable: pexpect's `ExceptionPexpect` (`The command was not found or was not executable: <command>`). No process is started.
@@ -553,7 +553,7 @@ A step key belongs to one plugin. A plugin whose key is already registered by an
 
 A plugin can't use the model of a built-in step. A built-in step is dispatched by the class of its model, so a plugin whose `model` is a built-in's would take over that step: with `key = "nap"` and `model = SleepStep`, every `sleep` step would run the plugin. Such a plugin is rejected at registration with a `PluginError`, e.g. `plugin mypkg.NapExecutor (distribution mypkg, entry point 'nap'), step key 'nap': model SleepStep is already the model of the built-in step 'sleep'; a plugin needs a model of its own`. This is checked after the reserved keys and before the common step property names, so a built-in's model is reported as that. `autobot.models.PluginStep`, the runner's model of every plugin step, is rejected the same way (`model PluginStep is the runner's own model of every plugin step; a plugin needs a model of its own`). A subclass of a built-in's model is a model of its own. It inherits that model's strict validation for the fields it adds: a value has exactly the field's type, so `count: 2.0` or `count: '2'` for an `int` field, and a value that isn't a list for a `list` field, are errors, where a model derived from `pydantic.BaseModel` itself converts them. Derive the model from `pydantic.BaseModel` to keep pydantic's usual conversions. The registry is left as it was, and the CLI reports it like any other plugin error. Two plugins may share a model with each other: a plugin step is dispatched by its key, not by its model, so with `nap` and `snooze` both using one model, a `nap` step runs the `nap` plugin and a `snooze` step the `snooze` plugin.
 
-A plugin whose entry point raises while it is loaded (its module fails to import, the named attribute is missing, or creating the executor fails) is also a `PluginError`, `entry point '<name>' (distribution <dist>) failed to load: <type>: <message>` (just `<type>` when the exception has no message), chained from the original exception. `KeyboardInterrupt` and `SystemExit` are not wrapped. Discovery stops at the first plugin that fails; a broken plugin is never skipped, because a script or schema without it would fail or validate in a misleading way. A failed discovery isn't tried again: every later attempt in the same process (an explicit `discover()`, creating a `Runner`, or looking up a step key that isn't registered, as validating a script does) raises a `PluginError` with the same message, chained from the first one, so the plugins after the broken one are never silently missing. A `KeyboardInterrupt` or `SystemExit` during discovery isn't remembered; the next attempt loads the entry points again. The CLI catches a `PluginError` only from discovery: one raised while a script runs is printed as a traceback like any other run-time error.
+A plugin whose entry point raises while it is loaded (its module fails to import, the named attribute is missing, or creating the executor fails) is also a `PluginError`, `entry point '<name>' (distribution <dist>) failed to load: <type>: <message>` (just `<type>` when the exception has no message), chained from the original exception. `KeyboardInterrupt` and `SystemExit` are not wrapped. Discovery stops at the first plugin that fails; a broken plugin is never skipped, because a script or schema without it would fail or validate in a misleading way. A failed discovery isn't tried again: every later attempt in the same process (an explicit `discover()`, creating a `Runner`, or looking up a step key that isn't registered, as validating a script does) raises a `PluginError` with the same message, chained from the first one, so the plugins after the broken one are never silently missing. A `KeyboardInterrupt` or `SystemExit` during discovery isn't remembered; the next attempt loads the entry points again. The CLI reports a `PluginError` this way only from discovery: one raised while a script runs is an unexpected error, printed with its traceback (see [CLI](#cli)).
 
 Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> execute -> `delay_after`.
 
@@ -594,7 +594,7 @@ These values are rendered as Jinja2 templates:
 
 Other values are used verbatim, e.g. `expect`, `errors`, `control`, `call`, `register` and `attach.env`. A plugin step decides which of its own fields it renders.
 
-Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` with the message `template error: ...`. So is any other exception an expression raises while the value is rendered: the message then names the exception's type, `template error: <type>: <message>` (just `<type>` when the exception has no message), e.g. `template error: ZeroDivisionError: division by zero` for `{{ 1/0 }}`, or `template error: TypeError: can only concatenate str (not "int") to str` for `{{ 'a' + 1 }}`. The `ValueError` is chained from the original exception. An error that is already reported is not wrapped again: a template error from a render inside the render (an `env` default referenced by another, a failing `search` regex) keeps its message, and an `env` cycle or nesting error stays `env cycle: ...` (see [Top-level fields](#top-level-fields)). `KeyboardInterrupt` and `SystemExit` are not wrapped. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
+Any template error in any templated value, a syntax error or an undefined variable, is reported as a `ValueError` (a `ScriptError`, see [CLI](#cli)) with the message `template error: ...`. So is any other exception an expression raises while the value is rendered: the message then names the exception's type, `template error: <type>: <message>` (just `<type>` when the exception has no message), e.g. `template error: ZeroDivisionError: division by zero` for `{{ 1/0 }}`, or `template error: TypeError: can only concatenate str (not "int") to str` for `{{ 'a' + 1 }}`. The `ValueError` is chained from the original exception. An error that is already reported is not wrapped again: a template error from a render inside the render (an `env` default referenced by another, a failing `search` regex) keeps its message, and an `env` cycle or nesting error stays `env cycle: ...` (see [Top-level fields](#top-level-fields)). `KeyboardInterrupt` and `SystemExit` are not wrapped. This includes plugin fields rendered through the runner. It always aborts the step, and with it the script, even with `ignore_error: true`. In a breakout it ends that breakout and is logged, like any other breakout error.
 
 Because these values are templates, `{{`, `{%` and `{#` in them always start Jinja2 syntax, even inside shell code. For example, bash's array length `${#arr[@]}` contains `{#`, which opens a Jinja2 comment, so rendering fails with a template syntax error. To pass such text through literally, wrap it in `{% raw %}...{% endraw %}`, or emit the delimiter from an expression (`{{ '{#' }}`):
 
@@ -678,14 +678,14 @@ The solicit newline is for a console that is idle, not for a command that is sti
 ## CLI
 
 ```
-autobot [run] <script.yaml> [-a KEY=VALUE ...]
-autobot schema
+autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
+autobot schema [--traceback]
 autobot -h | --help
 ```
 
 Subcommands:
 - `run <script>`: load, validate and execute the script. `script` is the path to the YAML script file.
-- `schema`: print the JSON schema to stdout (see below). It takes no arguments.
+- `schema`: print the JSON schema to stdout (see below). It takes no arguments, and one option, `--traceback`.
 
 `run` is the default. If the first argument isn't `run`, `schema`, `-h` or `--help`, the CLI treats the command line as `autobot run ...`, so `autobot <script>` is the same as `autobot run <script>`, and options may come before the script (`autobot -a k=v <script>`). A script file named `run` or `schema` must be given with the subcommand (`autobot run schema`) or as a path (`autobot ./schema`).
 
@@ -694,6 +694,7 @@ Options of `run`:
 | Flag | Description |
 |------|-------------|
 | `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument to the script, accessible as `{{ args.KEY }}`. Repeatable, one `KEY=VALUE` per flag. The value is everything after the first `=`, so it may contain `=`. Values are strings. If a key is given more than once, the last value wins. |
+| `--traceback` | Also print the Python traceback of an error that is reported without one (see [Errors while the script runs](#errors-while-the-script-runs)). |
 | `-h`, `--help` | Print the `run` usage and exit with status 0. |
 
 `autobot -h` prints the list of subcommands and exits with status 0. `autobot` with no arguments prints the same help to stdout and exits with status 1.
@@ -714,6 +715,68 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
 | The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...`, `Script error in <path>: env cycle: A -> B -> A` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
 
-Line and column numbers start at 1; `position` is a 0-based offset into the file. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The installed plugins are loaded first, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
+Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The installed plugins are loaded first, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
-Errors after the script is loaded aren't caught by the CLI: a failed `attach.prepare`, a timeout, a closed connection, an unignored step failure, or a template error at run time. For an error after the spawn wait succeeds, breakouts still run and the session is closed first. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the exception is printed as a Python traceback on stderr, and the CLI exits with status 1. The traceback's last line is the exception type and message, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
+### Errors while the script runs
+
+Once the script is loaded, the run itself can fail or be interrupted. For an error after the spawn wait succeeds, breakouts still run and the session is closed first, as the [`attach`](#attach) and [`block`](#block--named-group-of-steps) lifecycles describe. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the CLI reports the error on stderr and exits. It tells three kinds of error apart.
+
+**A failed run** is a problem of the script, the device or the environment: something the user can act on. It is reported without a traceback, and the CLI exits with status 3:
+
+```
+Run failed in <path>: <reason>
+  at <step path> (<step>)
+  called from <step path> (<step>)
+```
+
+`<path>` is the script file as given on the command line, and `<reason>` is the error's message. These are the failed runs:
+
+| Failure | Exception | `<reason>`, e.g. |
+|---------|-----------|------------------|
+| A command failure that `ignore_error` doesn't cover: a non-zero exit code, an `assert` where no pattern matches, an embedded-script upload mismatch | `StepFailure` (`autobot.steps`), a `RunError` | `command returned exit code 1`, `assertion failed: expected ['version 5\\.']` |
+| An `errors` pattern match | `CommandError` (`autobot.session`), a `RunError` | `command error: % Invalid input` |
+| A `sendEach` prompt out of responses | `RunError` | `prompt 'login': responses exhausted` |
+| A failed `attach.prepare` | `RunError` | `prepare script failed with exit code 3` |
+| A template error at run time, an `assert` or `after` that renders to an invalid or empty regex, an `attach.spawn` that renders to no command, a block's `sendEach` collection that can't be resolved | `ScriptError` | `template error: 'dict object' has no attribute 'image'` |
+| A timeout: waiting for a prompt, an `after` pattern, the `$?` result or the spawned process's first output | `TimeoutError` | `timed out after 30.0s waiting for a shell prompt ('sh')` |
+| A closed connection | `EOFError` | `connection closed while waiting for a shell prompt ('sh')` |
+| A `spawn` command that isn't found, or a process that can't be terminated when the session is closed | `pexpect.ExceptionPexpect` | `The command was not found or was not executable: sssh.` |
+| An operating-system error on the session's pty or a temp file, e.g. a line sent to a process that has exited | `OSError` | `[Errno 5] Input/output error` |
+| Text that can't be encoded for the session or the `prepare` script, e.g. the lone surrogate a non-UTF-8 byte of an `--arg` becomes | `UnicodeError` | `'utf-8' codec can't encode character '\udcff' in position 5: surrogates not allowed` |
+| Functions that call each other without end | `RecursionError` | `functions call each other too deeply (maximum recursion depth exceeded)` |
+
+`RunError` and `ScriptError` are in `autobot.types`. `RunError` is a `RuntimeError` and `ScriptError` a `ValueError`, so code that catches those catches them too; `EnvError` is a `ScriptError`. Where this document says an error is a `ValueError` with a `template error: ...`, `assert: ...`, `after: ...`, `attach.spawn ...` or `prompt '<name>': sendEach ...` message, it is a `ScriptError`; the `RuntimeError` of a `sendEach` prompt (`responses exhausted`, `no response available`) and of a failed `prepare` is a `RunError`. A message that has no text is reported as the exception's type name. A plugin reports a failure of this kind by raising one of these exceptions, e.g. `StepFailure` or `RunError` for what the device did and `ScriptError` for a bad value in the script.
+
+The `at` line names the step that was running: its path in the script, and in parentheses what it is.
+- The path is the list the step is in and its index, counted from 0. The lists are `script`, `attach.script`, `attach.breakout`, `fn.<name>.script`, and for the block at `<path>`, `<path>.block.enter`, `<path>.block.script` and `<path>.block.breakout`. So the second step of the main script of a block that is the fourth step of `script` is `script.3.block.script.1`. The steps a plugin builds in code and runs with `ctx.run_steps(...)` are in no list of the script: they are named after the plugin step that runs them, `<plugin step's path>.<key>.<index>`.
+- A `cmd` shows the first non-blank line of the command as written in the script, not rendered, cut after 72 characters with `...`; for a list, the first item and ` (+<N> more)`. A `call` shows the function's name and a `block` the block's name, e.g. `(call: is_system_running)`, `(block: Host Console)`. Every other step shows only its key: `(line)`, `(control)`, `(sleep)`, `(return)`, and a plugin step its plugin key. A `line` never shows its text: it may be a password, which the session doesn't echo.
+- A failure outside any step has no `at` line: a failed `prepare`, a failed spawn wait, a `spawn` that renders to no command, a session that can't be closed.
+
+A `called from` line follows for each step that was running the failing one through a `call` (or a plugin step that runs steps), nearest first: a step of a function is at `fn.<name>.script.<i>` wherever it is called from. At most five are listed, then `  ... and <N> more callers`. A block is not listed, since it is part of the path.
+
+**An interrupt** (Ctrl-C, a `KeyboardInterrupt`) ends the run like any error: the breakouts run and the session is closed, as described above. An interrupt during a breakout ends that breakout; the session is still closed. Then the CLI prints `Interrupted`, with the `at` and `called from` lines of the step that was running, and exits with status 130. There is no traceback. An interrupt before the run, e.g. while the script is loaded, prints `Interrupted` alone.
+
+**An unexpected error** is any other exception: a bug in Autobot or in a plugin, not something the script's author can fix. A plain `ValueError` or `RuntimeError` is one, and so is a `PluginError` raised while a script runs (the CLI reports a `PluginError` as a load error only from discovery). The CLI says so in one line, adds the `at` and `called from` lines when a step was running, prints the Python traceback and exits with status 70:
+
+```
+Unexpected error in Autobot: this is a bug, not a problem with the script. Please report it with the traceback below.
+  at script.1 (cmd: show version)
+Traceback (most recent call last):
+  ...
+KeyError: 'x'
+```
+
+When the step that was running is a plugin step, the first line names the plugin instead: `Unexpected error in plugin '<key>': this is a bug in the plugin, not in the script. Please report it to the plugin's author with the traceback below.` An exception outside a run, while the script is loaded or in `autobot schema`, is reported the same way, without the `at` line. `SystemExit` is not caught.
+
+With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report and the exit status are the same as without the flag.
+
+### Exit status
+
+| Status | Meaning |
+|--------|---------|
+| 0 | The run completed; `autobot schema` printed the schema; `-h` printed the help |
+| 1 | The script couldn't be loaded (the load errors above), and nothing ran. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
+| 2 | A malformed command line |
+| 3 | The run failed. `attach.prepare` or the session may have run, and the breakouts have run if the session got past the spawn wait |
+| 70 | An unexpected error: a bug in Autobot or in a plugin |
+| 130 | Interrupted |

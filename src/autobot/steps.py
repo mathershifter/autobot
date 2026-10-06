@@ -17,7 +17,7 @@ from .models import (
     SleepStep,
 )
 from .session import CommandError
-from .types import check_regex, ensure_list
+from .types import RunError, ScriptError, check_regex, ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext
@@ -33,7 +33,7 @@ SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
 
 
-class StepFailure(RuntimeError):
+class StepFailure(RunError):
     """A command failure that `ignore_error` swallows (exit code, assert, upload)."""
 
 
@@ -97,7 +97,7 @@ class CmdExecutor:
             rendered = [ctx.render(a) for a in assertions]
             for p in rendered:
                 if not p:
-                    raise ValueError("assert: a pattern rendered to an empty regex, which matches any output")
+                    raise ScriptError("assert: a pattern rendered to an empty regex, which matches any output")
                 check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")

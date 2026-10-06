@@ -9,7 +9,7 @@ from collections.abc import Callable
 import pexpect
 from rich.console import Console
 
-from .types import ANSI_ESCAPE_RE
+from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 
 # markup off: log lines echo errors that may look like [tags]
 console = Console(stderr=True, markup=False, soft_wrap=True)
@@ -23,7 +23,7 @@ DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 STRAY_RE = re.compile(r"\A[\r\x00\x07]+(?=[^\r\n\x00\x07])")
 
 
-class CommandError(RuntimeError):
+class CommandError(RunError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
@@ -133,7 +133,7 @@ class PromptHandler:
 
     def respond(self, i: int) -> str:
         if not self._sets:
-            raise RuntimeError(f"prompt '{self.name}': no response available")
+            raise RunError(f"prompt '{self.name}': no response available")
         slot = self.slots[i]
         if slot is None:
             slot = self._next_unused()
@@ -153,7 +153,7 @@ class PromptHandler:
 
     def _advance(self):
         if self._set + 1 >= len(self._sets):
-            raise RuntimeError(f"prompt '{self.name}': responses exhausted")
+            raise RunError(f"prompt '{self.name}': responses exhausted")
         self._set += 1
         self._used = set()
 
@@ -169,8 +169,8 @@ class SimpleHandler(PromptHandler):
     def respond(self, i: int) -> str:
         try:
             value = self._render(self._send)
-        except ValueError as e:
-            raise ValueError(f"prompt '{self.name}': {e}") from e
+        except ScriptError as e:
+            raise ScriptError(f"prompt '{self.name}': {e}") from e
         self._fired = True
         return value
 

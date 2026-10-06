@@ -34,7 +34,7 @@ def _no_boolean(value: Any) -> Any:
     # what `{{ ... }}` puts out. Only the expression's own value is checked: a boolean used inside the
     # expression, or inside a list or mapping it puts out, never gets here
     if isinstance(value, bool):
-        raise ValueError(
+        raise ScriptError(
             f"template error: an expression gave a boolean ({text(value)}), which is never written as text; "
             "quote the value in the script, or say which text is meant, "
             "e.g. {{ value | string }} (True) or {{ value | tojson }} (true)"
@@ -47,7 +47,17 @@ _jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean
 _condition_env = _Environment(undefined=jinja2.StrictUndefined)
 
 
-class EnvError(ValueError):
+class ScriptError(ValueError):
+    """A problem of the script that shows only while it runs: a template, a rendered pattern, a `sendEach`
+    collection. The CLI reports it without a traceback."""
+
+
+class RunError(RuntimeError):
+    """A failure of the run that the device or the environment explains: a failed command, a prompt out of
+    responses, a failed `prepare`. The CLI reports it without a traceback."""
+
+
+class EnvError(ScriptError):
     """An `env` reference cycle or nesting limit, found while a default is rendered; not a template error."""
 
 
@@ -55,7 +65,7 @@ def _search(s: Any, pattern: str) -> bool:
     try:
         return bool(re.search(pattern, str(s)))
     except re.error as e:
-        raise ValueError(f"template error: search: invalid regex {pattern!r}: {e}") from e
+        raise ScriptError(f"template error: search: invalid regex {pattern!r}: {e}") from e
 
 
 for _env in (_jinja_env, _condition_env):
@@ -105,13 +115,13 @@ def render(template: Any, ctx: dict, *, condition: bool = False) -> Any:
     try:
         return (_condition_env if condition else _jinja_env).from_string(template).render(ctx)
     except jinja2.TemplateError as e:
-        raise ValueError(f"template error: {e}") from e
+        raise ScriptError(f"template error: {e}") from e
     except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
         # already reported: by a render inside this one (an env default), or by a filter
-        if isinstance(e, EnvError) or (type(e) is ValueError and str(e).startswith("template error: ")):
+        if isinstance(e, ScriptError):
             raise
         why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-        raise ValueError(f"template error: {why}") from e
+        raise ScriptError(f"template error: {why}") from e
 
 
 def check_template(template: str) -> None:
@@ -119,7 +129,7 @@ def check_template(template: str) -> None:
     try:
         _jinja_env.parse(template)
     except jinja2.TemplateError as e:
-        raise ValueError(f"template error: {e}") from e
+        raise ScriptError(f"template error: {e}") from e
 
 
 def check_regex(pattern: str, what: str) -> None:
@@ -127,7 +137,7 @@ def check_regex(pattern: str, what: str) -> None:
     try:
         re.compile(pattern)
     except re.error as e:
-        raise ValueError(f"{what}: invalid regex {pattern!r}: {e}") from e
+        raise ScriptError(f"{what}: invalid regex {pattern!r}: {e}") from e
 
 
 def ensure_list(value: StringOrArray | None) -> list[str]:

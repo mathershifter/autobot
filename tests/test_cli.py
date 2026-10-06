@@ -239,12 +239,13 @@ def test_p6_67_cli_empty_spawn_is_validation_error(tmp_path: Path):
 
 
 def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
-    """Only building the Runner is guarded: a template error in a step still fails at run time, after attach."""
+    """A template error in a step isn't a load error: it fails the run, after attach, with status 3."""
     res = run_cli(make_doc([{"cmd": "echo {{ nope( }}"}]), tmp_path)
-    assert res.returncode == 1
+    assert res.returncode == 3
     assert ">> attach: " in res.stderr
     assert "Script error" not in res.stderr
-    assert "ValueError: template error: " in res.stderr
+    assert f"Run failed in {tmp_path / 'script.autobot.yaml'}: template error: " in res.stderr
+    assert "Traceback" not in res.stderr
 
 
 # -- duplicate mapping keys ------------------------------------------------------

@@ -699,12 +699,13 @@ class LateExecutor:
 
 
 def test_p7_17_cli_plugin_error_at_run_time_is_not_caught(tmp_path: Path):
-    """Only discovery is guarded: a `PluginError` from a running step is a traceback, after prepare ran."""
+    """Only discovery is guarded: a `PluginError` from a running step is the plugin's bug, after prepare ran."""
     roots = _install(tmp_path, [("late", "late", LATE_PLUGIN, "LateExecutor")])
     marker = tmp_path / "prepared"
     res = run_cli(make_doc([{"late": "x"}], prepare=f"touch {marker}"), tmp_path, pythonpath=roots)
-    assert res.returncode == 1
+    assert res.returncode == 70
     assert "Plugin error:" not in res.stderr
+    assert "Unexpected error in plugin 'late': " in res.stderr
     assert "Traceback" in res.stderr
     assert res.stderr.strip().splitlines()[-1] == "autobot.registry.PluginError: raised while running"
     assert marker.exists()
