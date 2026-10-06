@@ -188,7 +188,7 @@ attach:
   spawn: ssh -J {{ env.JUMP_HOST }} admin@{{ args.host }}
 ```
 
-- A script without a shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh` (`#!/bin/bash`, `#!/usr/bin/env bash`) is sourced by that shell. A script for any other interpreter (`#!/usr/bin/env python3`) is executed as a program and sets nothing: a process can't change its parent's environment.
+- A script without a shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh` (`#!/bin/bash`, `#!/usr/bin/env bash`) is sourced by that shell. The shebang may carry `set` options (`#!/bin/sh -eu`) or the end-of-options `-` (`#!/bin/sh -`). A script for any other interpreter (`#!/usr/bin/env python3`), or for a shell with any other argument (`#!/bin/bash -r`), is executed as a program and sets nothing: a process can't change its parent's environment.
 - Autobot takes what the script changed: an exported variable with a new value is set, one that is gone is unset. `_`, `SHLVL`, `PWD` and `OLDPWD` are never taken, and a `cd` in the script doesn't move Autobot.
 - Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, Autobot's `TERM=dumb` and `NO_COLOR=1`, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
 - `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.

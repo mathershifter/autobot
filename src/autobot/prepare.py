@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -19,6 +20,8 @@ _JUNK = " \t\r\n﻿​⁠"
 
 # The interpreters that can source the script, so that it runs as an rc script
 SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
+# A shebang argument the script can be sourced with: options that `set` turns on just before the script
+OPTIONS_RE = re.compile(r"-[aefuxC]+")
 # The shell's own bookkeeping, never taken from the script: a `cd` in it doesn't move autobot
 IGNORED = ("_", "SHLVL", "PWD", "OLDPWD")
 
@@ -39,23 +42,46 @@ class Changes:
     unset: frozenset[str]
 
 
-def shell_of(shebang: str) -> list[str] | None:
-    """The command line of the shell a shebang line names, or None when its interpreter isn't a shell."""
+def _options(args: list[str]) -> str | None:
+    """The `set` options a shebang's arguments turn on, e.g. `eu`; None for an argument that isn't one."""
+    options = ""
+    for arg in args:
+        if arg in ("-", "--"):  # the end of the options: nothing to turn on
+            continue
+        if not OPTIONS_RE.fullmatch(arg):
+            return None
+        options += arg[1:]
+    return options
+
+
+def shell_of(shebang: str) -> tuple[list[str], str] | None:
+    """The shell a shebang line names and the `set` options it gives it, e.g. `(["/bin/sh"], "eu")`.
+
+    None when the script can't be sourced: the interpreter isn't a shell, or an argument is more than
+    options that `set` can turn on before the script, such as `-r` or `--posix`.
+    """
     words = shebang[2:].split()
     if not words:
         return None
     if os.path.basename(words[0]) == "env":
         # `env sh`, or `env -S sh -eu`: the kernel hands env the rest of the line as one argument
         rest = words[2:] if words[1:2] == ["-S"] else words[1:] if len(words) == 2 else []
-        return [words[0], *rest] if rest and os.path.basename(rest[0]) in SHELLS else None
-    if os.path.basename(words[0]) not in SHELLS:
+        if not rest or os.path.basename(rest[0]) not in SHELLS:
+            return None
+        command, args = [words[0], rest[0]], rest[1:]
+    elif os.path.basename(words[0]) in SHELLS:
+        arg = shebang[2:].strip()[len(words[0]) :].strip()  # one argument, as the kernel passes it
+        command, args = [words[0]], [arg] if arg else []
+    else:
         return None
-    arg = shebang[2:].strip()[len(words[0]) :].strip()  # one argument, as the kernel passes it
-    return [words[0], arg] if arg else [words[0]]
+    options = _options(args)
+    return None if options is None else (command, options)
 
 
-def _wrapper(script: str, dump: str) -> str:
+def _wrapper(script: str, dump: str, options: str = "") -> str:
     """Shell code that sources `script` and appends its environment to `dump`, before and after.
+
+    `options` are the shebang's: they are turned on with `set`, just before the script.
 
     The paths are quoted into the code: the script may change the positional parameters. The dump after
     the script is also taken when the script calls `exit 0` (the EXIT trap), and the script's exit status
@@ -67,6 +93,7 @@ def _wrapper(script: str, dump: str) -> str:
     return (
         f"{dumper} || exit 125\n"
         f"trap {q(trap)} EXIT\n"
+        f"{options and f'set -{options}'}\n"
         f". {q(script)}\n"
         'set -- "$?"\n'
         f'[ "$1" -ne 0 ] || {{ {dumper} || :; set -- 0 {_DUMPED}; }}\n'
@@ -115,7 +142,7 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
         shell, plain = shell_of(first), []
         log.say("prepare: running local script")
     else:
-        shell = plain = ["/bin/sh"]
+        shell, plain = (["/bin/sh"], ""), ["/bin/sh"]
         log.say("prepare: running local script (no shebang, using /bin/sh)")
     source = shell is not None and bool(sys.executable)  # the dump is written by this Python
     changes: Changes | None = Changes({}, frozenset())
@@ -131,7 +158,7 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             fd, dump = tempfile.mkstemp(prefix="_autobot_", suffix=".env")  # mode 0600: it holds the environment
             files.callback(os.unlink, dump)
             os.close(fd)
-            argv = [*shell, "-c", _wrapper(tmp, dump), tmp]
+            argv = [*shell[0], "-c", _wrapper(tmp, dump, shell[1]), tmp]
         try:
             result = subprocess.run(argv, check=False, env=environ)
         except OSError as e:

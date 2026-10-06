@@ -241,16 +241,28 @@ def test_p5_68_cli_reports_no_value(tmp_path: Path, kw: dict, message: str):
 @pytest.mark.parametrize(
     ("shebang", "shell"),
     [
-        ("#!/bin/sh", ["/bin/sh"]),
-        ("#!/bin/bash", ["/bin/bash"]),
-        ("#! /usr/bin/zsh ", ["/usr/bin/zsh"]),
-        ("#!/usr/local/bin/dash", ["/usr/local/bin/dash"]),
-        ("#!/bin/ksh", ["/bin/ksh"]),
-        ("#!/bin/bash -eu", ["/bin/bash", "-eu"]),
-        ("#!/bin/bash -e -u", ["/bin/bash", "-e -u"]),
-        ("#!/usr/bin/env bash", ["/usr/bin/env", "bash"]),
-        ("#!/usr/bin/env -S bash -eu", ["/usr/bin/env", "bash", "-eu"]),
-        ("#!/usr/bin/env -S /bin/zsh", ["/usr/bin/env", "/bin/zsh"]),
+        ("#!/bin/sh", (["/bin/sh"], "")),
+        ("#!/bin/bash", (["/bin/bash"], "")),
+        ("#! /usr/bin/zsh ", (["/usr/bin/zsh"], "")),
+        ("#!/usr/local/bin/dash", (["/usr/local/bin/dash"], "")),
+        ("#!/bin/ksh", (["/bin/ksh"], "")),
+        ("#!/bin/bash -eu", (["/bin/bash"], "eu")),
+        ("#!/bin/sh -x", (["/bin/sh"], "x")),
+        ("#!/bin/sh -", (["/bin/sh"], "")),
+        ("#!/bin/bash --", (["/bin/bash"], "")),
+        ("#!/usr/bin/env bash", (["/usr/bin/env", "bash"], "")),
+        ("#!/usr/bin/env -S bash -eu", (["/usr/bin/env", "bash"], "eu")),
+        ("#!/usr/bin/env -S bash -e -u --", (["/usr/bin/env", "bash"], "eu")),
+        ("#!/usr/bin/env -S /bin/zsh", (["/usr/bin/env", "/bin/zsh"], "")),
+        ("#!/bin/bash -e -u", None),
+        ("#!/bin/bash -r", None),
+        ("#!/bin/bash --posix", None),
+        ("#!/bin/sh -n", None),
+        ("#!/bin/sh -eo pipefail", None),
+        ("#!/bin/bash -c", None),
+        ("#!/bin/sh -s", None),
+        ("#!/bin/bash +e", None),
+        ("#!/usr/bin/env -S bash -l", None),
         ("#!/usr/bin/env python3", None),
         ("#!/usr/bin/env bash -e", None),
         ("#!/usr/bin/env -S python3 -u", None),
@@ -262,9 +274,39 @@ def test_p5_68_cli_reports_no_value(tmp_path: Path, kw: dict, message: str):
         ("#!", None),
     ],
 )
-def test_p5_69_shell_of_a_shebang(shebang: str, shell: list[str] | None):
-    """SPEC "attach": sh, bash, dash, ksh and zsh are shells, directly or through `env`; nothing else is."""
+def test_p5_69_shell_of_a_shebang(shebang: str, shell: tuple[list[str], str] | None):
+    """SPEC "attach": sh, bash, dash, ksh and zsh are shells, directly or through `env`, with `set` options
+    or the end-of-options `-` or `--`; anything else isn't sourced."""
     assert prepare.shell_of(shebang) == shell
+
+
+@pytest.mark.parametrize(
+    "shebang", ["#!/bin/sh -", "#!/bin/bash --", "#!/usr/bin/env -S bash --", "#!/usr/bin/env -S sh -eu -"]
+)
+def test_p5_69_end_of_options_argument_is_sourced(prepared, tmp_path: Path, shebang: str):
+    """SPEC "attach": `#!/bin/sh -` runs when executed, and is sourced like `#!/bin/sh`."""
+    out = tmp_path / "out"
+    r = prepared(f"{shebang}\necho \"$0 $#\" > {out}\nexport AB_A=1\n")
+    assert out.read_text().split()[1] == "0" and "_autobot_" in out.read_text()
+    assert r._env["AB_A"] == "1"
+
+
+def test_p5_69_options_of_the_shebang_apply_to_the_script(timeline: Timeline, prep_tmp: Path):
+    """SPEC "attach": the shebang's options are the script's: `-e` ends it at the first failure."""
+    with pytest.raises(RuntimeError, match="^prepare script failed with exit code 9$"):
+        make_runner([], prepare="#!/bin/sh -eu\n(exit 9)\nexit 0\n").run()
+    with pytest.raises(RuntimeError, match="^prepare script failed with exit code [12]$"):
+        make_runner([], prepare="#!/usr/bin/env -S bash -e -u\necho $AB_NOPE\nexit 0\n").run()
+
+
+@pytest.mark.parametrize("shebang", ["#!/bin/bash -r", "#!/bin/bash --posix", "#!/bin/sh -ev"])
+def test_p5_69_unsupported_argument_runs_the_script_without_reading_it(prepared, tmp_path: Path, capsys, shebang: str):
+    """SPEC "attach": a shell with any other argument is executed as a program: it runs, and sets nothing."""
+    out = tmp_path / "out"
+    r = prepared(f"{shebang}\nexport AB_A=1\ntouch {out}\n", env={"AB_A": "dflt"})  # -r allows no redirection
+    assert out.exists()
+    assert r.render("{{ env.AB_A }}") == "dflt"
+    assert progress(capsys.readouterr().err) == [">> prepare: running local script", ">> prepare: done"]
 
 
 BASH_ONLY = '{{% raw %}}arr=(x y z)\n[[ ${{#arr[@]}} == 3 ]] && export AB_A="${{arr[*]:1}}"{{% endraw %}}\necho "$0" > {out}\n'
