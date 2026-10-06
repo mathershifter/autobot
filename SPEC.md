@@ -262,7 +262,7 @@ attach:
 - it has no shebang: the shell is `/bin/sh`;
 - its shebang names `sh`, `bash`, `dash`, `ksh` or `zsh`, by the interpreter's file name in whatever directory: that shell sources it. The shell is named directly, with at most the one argument a shebang line carries (`#!/bin/bash`, `#!/bin/sh -eu`), or through `env` (`#!/usr/bin/env bash`, `#!/usr/bin/env -S bash -eu`). An argument is one of two things. It is a group of the options `a`, `e`, `f`, `u`, `x` and `C` (`-eu`, `-x`): they are the script's, turned on with `set` just before the script is sourced. Or it is `-` or `--`, which ends the options and is dropped (`#!/bin/sh -`). A shebang with any other argument (`#!/bin/bash -r`, `--posix`, `-n`, `-v`, `-o <name>`) can't be sourced that way: the script is executed as a program, like one for another interpreter (see below), with the argument as written.
 
-The script runs in the run's environment, a shell script and any other alike: the environment Autobot was started with, with `TERM=dumb` and `NO_COLOR=1` (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). In the script, `$0` is the temp file and there are no positional parameters, as for a script that is executed. Because it is sourced, `return` at its top level ends it like the end of the file.
+The script runs in the run's environment, a shell script and any other alike: the environment Autobot was started with, with `TERM=dumb` and `NO_COLOR=1` (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). In the script, `$0` is the temp file and there are no positional parameters, as for a script that is executed. Because it is sourced, `return` at its top level ends it like the end of the file. With tracing on (`-x` in the shebang, or `set -x` in the script) the trace is the script's: Autobot's own commands around it aren't traced, except the two that frame it, the `.` that sources the temp file and the final `exit <N>`.
 
 A script with any other shebang (`#!/usr/bin/env python3`, `#!/usr/bin/perl`, a shell not listed, a listed shell with another argument, `env` with other arguments) is executed as a program, and the variables it sets are not read back: a process can't change the environment of the process that started it. Everything else about it is the same: its output, its exit status, the temp file. It sets up what lives outside the environment (a tunnel, a ticket, a file).
 
@@ -284,6 +284,8 @@ A value is taken exactly, byte for byte: line breaks, `=`, quotes, spaces, an em
 | `it could not be read after the script` | The helper that writes the environment could not be started after the script, or failed. E.g. the script exported a value too large to start any command with (more than 128 KB in one variable on Linux; the shell prints its own `Argument list too long`), or it closed or reused the descriptor of the nameless file. The shell notes this at the end of the script's temp file, which needs no command. |
 | `it could not be read before the script, which ran without that` | The helper could not be started before the script, e.g. the Python interpreter that runs Autobot is not where it was. The shell sources the script all the same. |
 | `Autobot doesn't know the Python interpreter it runs in (sys.executable is empty)` | There is no helper to start. The script is run without being sourced: under `/bin/sh` or as its shebang says. |
+
+After any of these warnings, an error for a variable that isn't set says so, since a variable the script exported may be the one that is missing: `template error: env has no key 'KEY' (the environment prepare left was not read: <reason>)`.
 
 None of these is reported as the script's failure: `prepare script failed with exit code <N>` is only ever the script's own exit status, in these cases too. They are warnings and not errors because a `prepare` may be there only for what it does outside the environment.
 
@@ -308,6 +310,8 @@ Lines 1 and 2 are the run's environment from its start, and there is one environ
 The defaults of the top-level `env` section are not in this environment. They are values for templates; a variable reaches the spawned process only from the four lines above.
 
 The `spawn` command is looked up in the `PATH` of this environment, so a directory that `prepare` or `attach.env` puts in `PATH` is searched. Without a `PATH` there, it is looked up in the system default path (`/bin:/usr/bin` on Linux).
+
+Inheriting everything has a price where the variables mean something to the command. A `spawn` that runs a local shell hands it `PROMPT_COMMAND`, `BASH_ENV`, `ENV`, `PS1` and the like, which change its prompt and what it runs when it starts, and `ssh` forwards `LANG` and the `LC_*` variables to a server that accepts them. A `prepare` can unset what is in the way.
 
 `attach.env` sets variables and can't unset one, and no field gives the process an environment that inherits nothing. A command that needs one is spawned through `env`, which is a command like any other: `spawn: env -i PATH=/usr/bin:/bin TERM=dumb ssh host`.
 

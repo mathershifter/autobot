@@ -612,6 +612,73 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
         assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ")
     assert marker.exists() == (status == 3)
 
+# -- P5-80: the wrapper stays out of the script's way ----------------------------
+
+
+@pytest.mark.parametrize("end", ["", "exit 0\n"], ids=["end-of-file", "exit-0"])
+@pytest.mark.parametrize("shebang", ["", "#!/bin/bash\n"], ids=["sh", "bash"])
+def test_p5_80_script_that_changes_ifs_gets_no_error_from_the_wrapper(prepared, capfd, shebang: str, end: str):
+    """The wrapper quotes what it expands: `IFS=0` used to make its `[ $? -ne 0 ]` an `Illegal number`."""
+    r = prepared(f"{shebang}IFS=0\nexport AB_A=1\n{end}")
+    assert r._env["AB_A"] == "1"
+    assert [line for line in capfd.readouterr().err.splitlines() if not line.startswith(">> ")] == []
+
+
+TRACED = ["#!/bin/sh -x\n", "#!/bin/bash -x\n", "#!/usr/bin/env -S bash -eux\n", "set -x\n", "#!/bin/bash\nset -x\n"]
+
+
+@pytest.mark.parametrize("end", ["", "exit 0\n"], ids=["end-of-file", "exit-0"])
+@pytest.mark.parametrize("start", TRACED, ids=["sh-x", "bash-x", "env-bash-eux", "set-x", "bash-set-x"])
+def test_p5_80_tracing_shows_the_script_and_not_the_wrapper(prepared, capfd, start: str, end: str):
+    """SPEC "prepare as an rc script": with `-x`, the trace is the script's; the dump command isn't in it."""
+    r = prepared(f"{start}export AB_A=traced\n{end}")
+    assert r._env["AB_A"] == "traced"
+    err = capfd.readouterr().err
+    assert "AB_A=traced" in err  # the script's own command is traced
+    for part in ("-ISc", "fstat", "environ", "printf", "set --", "set +x", prepare._DUMPED):
+        assert part not in err.replace("prepare: environment: 1 set", "")
+    wrapper = [line for line in err.splitlines() if not line.startswith(">> ") and "AB_A" not in line and "set -x" not in line]
+    assert all(line.split()[1:2] in (["."], ["exit"]) for line in wrapper), wrapper
+
+
+@pytest.mark.skipif(not shutil.which("zsh"), reason="zsh not installed")
+def test_p5_80_zsh_tracing(prepared, capfd):
+    """The same under zsh, whose trace lines have their own form."""
+    r = prepared("#!/usr/bin/env zsh\nset -x\nexport AB_A=traced\nexit 0\n")
+    assert r._env["AB_A"] == "traced"
+    err = capfd.readouterr().err
+    assert "AB_A=traced" in err and "-ISc" not in err and "fstat" not in err
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [{"spawn": "ssh {{ env.AB_HOST }}"}, {"env": {"AB_URL": "http://{{ env.AB_HOST }}/"}}],
+    ids=["spawn", "default"],
+)
+def test_p5_80_lost_variable_error_points_at_the_unread_environment(timeline: Timeline, prep_tmp: Path, capfd, kw):
+    """SPEC "prepare as an rc script": after the warning, an unset variable's error says the environment wasn't read."""
+    r = make_runner([], prepare="export AB_HOST=sw1\nexec true\n", **kw)
+    message = (
+        "template error: env has no key 'AB_HOST' (the environment prepare left was not read: "
+        "the script ended its shell before the shell could report it)"
+    )
+    with pytest.raises(ValueError) as ei:
+        r.run()
+    assert str(ei.value) == message
+    assert "attach" not in timeline.names()
+    with pytest.raises(ValueError) as ei:
+        r.render("{{ env.AB_NOPE }}")
+    assert str(ei.value) == message.replace("AB_HOST", "AB_NOPE")
+    assert r.render("{{ env.AB_NOPE | default('d') }}") == "d"
+
+
+def test_p5_80_no_pointer_when_the_environment_was_read(prepared):
+    """The pointer is only for a `prepare` whose environment wasn't read."""
+    for script in ("export AB_A=1\n", f"#!{sys.executable}\n"):
+        r = prepared(script)
+        with pytest.raises(ValueError, match="^template error: env has no key 'AB_NOPE'$"):
+            r.render("{{ env.AB_NOPE }}")
+
 # -- P5-79: an environment that can't be read ------------------------------------
 
 WARN = ">> prepare: environment not read: "

@@ -124,6 +124,9 @@ def _wrapper(script: str, dump: tuple[int, int, int], options: str = "") -> str:
     The path is quoted into the code: the script may change the positional parameters. The dump after
     the script is also taken when the script calls `exit 0` (the EXIT trap), and the script's exit status
     is the shell's. A failing script leaves one dump, so nothing is read back from it.
+
+    The script may leave `set -x` on, or anything in `IFS`: every expansion here is quoted, and tracing is
+    off while the wrapper's own commands run. It is back on for the `exit`, and so for a trap of the script.
     """
     q = shlex.quote
     if PROC and os.path.exists(PROC):
@@ -134,15 +137,21 @@ def _wrapper(script: str, dump: tuple[int, int, int], options: str = "") -> str:
     # a dump that fails after the script is noted at the end of the script's file. With a builtin: an
     # environment too large to start the dumper with is too large to start anything
     failed = f"printf '%s' {q(_FAILED.decode())} >> {q(script)} || :"
-    trap = f'[ $? -ne 0 ] || [ "${{2-}}" = {_DUMPED} ] || {dumper} || {failed}'
+    # $1: the script's exit status; $2: whether the dump after it is done
+    trap = (
+        '{ set -- "$?" "${3-}"; set +x; } 2>/dev/null; '
+        f'[ "$1" -ne 0 ] || [ "$2" = {_DUMPED} ] || {dumper} || {failed}'
+    )
     source = f"{options and f'set -{options}'}\n. {q(script)}\n"
     return (
         # without a first dump there is nothing to compare with: the script runs all the same
         f"if {dumper}; then :; else\n{source}exit\nfi\n"
         f"trap {q(trap)} EXIT\n"
         f"{source}"
-        'set -- "$?"\n'
-        f'[ "$1" -ne 0 ] || {{ {dumper} || {failed}; set -- 0 {_DUMPED}; }}\n'
+        # $1: the script's exit status; $2: its options; $3: whether the dump after it is done
+        '{ set -- "$?" "$-"; set +x; } 2>/dev/null\n'
+        f'[ "$1" -ne 0 ] || {{ {dumper} || {failed}; set -- 0 "$2" {_DUMPED}; }}\n'
+        'case "$2" in *x*) set -x ;; esac\n'
         'exit "$1"\n'
     )
 

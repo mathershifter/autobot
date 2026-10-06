@@ -151,9 +151,10 @@ class _EnvRefs(Mapping[str, Any]):
     A variable of `environ` is used as it is, never rendered, and the default of the same name isn't used.
     """
 
-    def __init__(self, raw: dict[str, str], environ: dict[str, str], ctx: dict[str, Any]):
+    def __init__(self, raw: dict[str, str], environ: dict[str, str], ctx: dict[str, Any], why: Callable[[Any], str]):
         self.__raw = raw
         self.__environ = environ
+        self.__why = why
         self.__ctx = {**ctx, "env": self}
         self.__done: dict[str, Any] = {}
         self.__path: list[str] = []
@@ -162,7 +163,7 @@ class _EnvRefs(Mapping[str, Any]):
         if key in self.__environ:
             return self.__environ[key]
         if key not in self.__raw:
-            return StrictUndefined(hint=f"env has no key '{key}'", exc=_Unset)
+            return StrictUndefined(hint=self.__why(key), exc=_Unset)
         if key not in self.__done:
             if key in self.__path:
                 cycle = [*self.__path[self.__path.index(key):], key]
@@ -200,6 +201,7 @@ class Runner:
         # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
         self._environ = {**os.environ, **DEFAULT_ENV}
         self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
+        self._unread = ""  # why the environment `prepare` left wasn't read, if it wasn't
         # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
         self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
@@ -251,9 +253,10 @@ class Runner:
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
     def _resolve_env(self, later: bool = False) -> dict[str, Any]:
-        refs = _EnvRefs(self._config.env, self._environ, {"vars": self._config.vars, "args": self._cli_args})
-        values: dict[str, Any] = {}
+        ctx = {"vars": self._config.vars, "args": self._cli_args}
         self._later = {}
+        refs = _EnvRefs(self._config.env, self._environ, ctx, self._why_unset)
+        values: dict[str, Any] = {}
         for key in refs:
             try:
                 values[key] = refs[key]
@@ -266,7 +269,9 @@ class Runner:
     def _why_unset(self, key: Any) -> str:
         if key in self._later:
             return f"env.{key} can't be read before prepare has run: {self._later[key]}"
-        return f"env has no key '{key}'"
+        # a variable the script exported may be what is missing
+        lost = f" (the environment prepare left was not read: {self._unread})" if self._unread else ""
+        return f"env has no key '{key}'{lost}"
 
     @property
     def _ctx(self) -> dict:
@@ -311,6 +316,7 @@ class Runner:
             self._environ.update(changes.set)
             for key in changes.unset:
                 self._environ.pop(key, None)
+            self._unread = changes.unread
             self._env = self._resolve_env()
         if spawn is None:
             spawn = self._spawn_command()

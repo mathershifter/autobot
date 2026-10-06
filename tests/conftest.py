@@ -39,8 +39,9 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 @pytest.fixture(autouse=True)
 def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The spawned shell inherits the suite's environment: drop what would change how bash behaves."""
-    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0"):
+    """The spawned shell inherits the suite's environment, and `env` in templates holds all of it: drop
+    what would change how bash behaves, the suite's own `AB_*` names, and names of mapping methods."""
+    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *dir({}), *(k for k in os.environ if k.startswith("AB_"))):
         monkeypatch.delenv(name, raising=False)
 
 
