@@ -42,6 +42,13 @@ def test_p6_23_cli_arg_without_equals_is_clean_error(tmp_path: Path):
     assert "Traceback" not in res.stderr
 
 
+def test_p6_23_cli_empty_arg_is_reported_with_its_colon(tmp_path: Path):
+    """The message keeps its `: ` when the argument it shows is empty."""
+    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "")
+    assert res.returncode == 1
+    assert res.stderr.splitlines()[-1] == "--arg requires KEY=VALUE format, got: "
+
+
 @pytest.mark.parametrize("raw", ["", "- a\n- b\n"], ids=["empty-file", "top-level-list"])
 def test_p6_24_cli_non_mapping_yaml_is_clean_error(tmp_path: Path, raw: str):
     """SPEC.md:12, 18: a non-mapping document is a validation error, not a crash."""

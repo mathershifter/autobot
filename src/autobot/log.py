@@ -80,9 +80,9 @@ def say(text: str, kind: str = "step") -> None:
     _print(Text.assemble((MARK, mark), " " + INDENT * depth, (label + sep, label_style), (rest, rest_style)))
 
 
-def error(head: str, detail: str = "", style: str = ERROR) -> None:
+def error(head: str, detail: str | None = None, style: str = ERROR) -> None:
     """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
-    _print(Text.assemble((head, style), f": {detail}" if detail else ""))
+    _print(Text.assemble((head, style), "" if detail is None else f": {detail}"))
 
 
 def note(label: str, text: str) -> None:
