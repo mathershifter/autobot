@@ -86,6 +86,12 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
         "attach.spawn rendered to an empty command: '{{ vars.s }}'",
         None,
     ),
+    "spawn-renders-a-nul": (
+        [{"cmd": "true"}],
+        {"vars": {"s": "a\0b"}, "spawn": "echo {{ vars.s }}", "prepare": "#!/bin/sh\nexit 9\n"},
+        "attach.spawn rendered to a command line with a NUL character: 'echo {{ vars.s }}'",
+        None,
+    ),
     "prepare-fails": ([{"cmd": "true"}], {"prepare": "#!/bin/sh\nexit 3\n"}, "prepare script failed with exit code 3", None),
     "prepare-removes-itself": (
         # the script deletes its own temp file: the report is still its exit code
@@ -478,7 +484,9 @@ class NestExecutor:
     model = NestStep
 
     def execute(self, step, ctx, timeout):
-        from autobot.models import CmdStep
+        from autobot.models import CallStep, CmdStep
+        if step.nest == "call":
+            ctx.run_steps([CallStep(call="no_such_function")])
         ctx.run_steps([CmdStep(cmd="true", timeout=5), CmdStep(cmd=step.nest, timeout=5)])
 '''
 
@@ -613,6 +621,22 @@ def test_p6_86_expected_failure_inside_a_plugin_is_still_expected(tmp_path: Path
         "  at script.0.nest.1 (cmd: false)",
         "  called from script.0 (nest)",
     ]
+
+
+def test_p6_86_unexpected_error_under_a_plugin_names_the_plugin(tmp_path: Path, buggy: list[Path]):
+    """An unexpected error in a built-in step that a plugin runs is the plugin's doing: here a `call` the
+    plugin builds to a function that doesn't exist, which no script can contain. The report names the plugin."""
+    res = run_cli(make_doc([{"nest": "call"}]), tmp_path, pythonpath=buggy)
+    lines = _lines(res)
+    assert res.returncode == 70, res.stderr
+    assert lines[:4] == [
+        "Unexpected error in plugin 'nest': this is a bug in the plugin, not in the script. "
+        "Please report it to the plugin's author with the traceback below.",
+        "  at script.0.nest.0 (call: no_such_function)",
+        "  called from script.0 (nest)",
+        "Traceback (most recent call last):",
+    ]
+    assert lines[-1] == "ValueError: undefined function: no_such_function"
 
 
 def test_p6_86_bug_in_a_builtin_step_is_autobots(
@@ -799,6 +823,26 @@ def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):
     assert seen == 0, "the loop went on after Ctrl-C"
     assert "Interrupted" in output and "Traceback" not in output
     assert started.read_text().split() == ["x"]  # one iteration
+
+
+# -- stdout closed -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flags", ["", "--traceback"])
+def test_p6_91_closed_stdout_is_a_load_error(tmp_path: Path, flags: str):
+    """SPEC "CLI": with stdout closed (`>&-`) there is nowhere for the session's output: the CLI says so and
+    exits with status 1 before anything runs."""
+    prepared = tmp_path / "prepared"
+    path = _script(tmp_path, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    res = subprocess.run(
+        ["sh", "-c", f'exec "$0" -W ignore -m autobot.cli "$1" {flags} >&-', sys.executable, str(path)],
+        check=False, capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 1, res.stderr
+    assert res.stderr == (
+        "Cannot write the session's output: stdout is closed (redirect it to /dev/null to discard the output)\n"
+    )
+    assert not prepared.exists()
 
 
 # -- exit status ---------------------------------------------------------------------

@@ -93,7 +93,12 @@ def names_command(spawn: str) -> bool:
     return bool(words and words[0])
 
 
+NUL = "\0"
+
+
 def _spawn(v: str) -> str:
+    if NUL in v:
+        raise _custom("nul_character", "spawn must not contain a NUL character (\\0): no command line can hold one")
     if not re.search(NOT_BLANK, v):
         raise _custom("empty_command", "spawn must be a command, not an empty or blank string")
     # a template names its command only once it is rendered; the runner checks it then
@@ -121,7 +126,26 @@ def _env_value(v: Any) -> Any:
     return v
 
 
+def _exec_value(v: str) -> str:
+    if NUL in v:
+        raise _custom(
+            "nul_character", "an environment value must not contain a NUL character (\\0): no process can be given one"
+        )
+    return v
+
+
+def _exec_name(v: str) -> str:
+    if not v or "=" in v or NUL in v:
+        raise _custom(
+            "env_name", "an environment variable name must not be empty or contain '=' or a NUL character (\\0)"
+        )
+    return v
+
+
 EnvValue = Annotated[str, pydantic.BeforeValidator(_env_value)]
+# `attach.env` is the environment of the spawned process: its names and values must be ones exec takes
+ExecName = Annotated[str, pydantic.AfterValidator(_exec_name)]
+ExecValue = Annotated[EnvValue, pydantic.AfterValidator(_exec_value)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -253,7 +277,7 @@ class Attach(pydantic.BaseModel):
     prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
-    env: Omittable[dict[str, EnvValue]] = None
+    env: Omittable[dict[ExecName, ExecValue]] = None
     script: NotNull[list[Step]] = []
     breakout: NotNull[list[Step]] = []
 

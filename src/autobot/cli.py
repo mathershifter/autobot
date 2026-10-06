@@ -195,10 +195,12 @@ def _plugins_own(e: BaseException) -> bool:
 
 
 def _unexpected(e: Exception) -> None:
-    steps = trail(e)
-    if steps and steps[-1].plugin:
+    # under a plugin step, whatever fails unexpectedly is the plugin's doing: its own code, or a step it
+    # built that no script could hold
+    plugin = next((ref for ref in reversed(trail(e)) if ref.plugin), None)
+    if plugin:
         log.error(
-            f"Unexpected error in plugin '{steps[-1].key}'",
+            f"Unexpected error in plugin '{plugin.key}'",
             "this is a bug in the plugin, not in the script. "
             "Please report it to the plugin's author with the traceback below.",
         )
@@ -235,6 +237,14 @@ def _discover(args: argparse.Namespace | None = None) -> None:
 
 
 def _cmd_run(args):
+    if sys.stdout is None:
+        # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
+        # session's pty for one, would become fd 1
+        log.error(
+            "Cannot write the session's output",
+            "stdout is closed (redirect it to /dev/null to discard the output)",
+        )
+        sys.exit(EXIT_LOAD)
     _discover(args)
     config_dict = _load(args.script)
 
