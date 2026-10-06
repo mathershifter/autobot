@@ -239,6 +239,68 @@ def test_p8_30_output_after_the_echo_is_untouched():
         assert strip_echo(echo_of(REPORTED, wrap, again) + "\n" + rest, REPORTED) == rest
 
 
+# -- P8-33: the cost of reading output that is no echo, or an odd one ---------------------------------
+
+
+def timed(text: str, sent: str) -> tuple[str, float]:
+    started = time.perf_counter()
+    out = strip_echo(text, sent)
+    return out, time.perf_counter() - started
+
+
+@pytest.mark.parametrize(
+    ("text", "sent"),
+    [
+        # a line of one character, shown in part and then written again a thousand times, one character each
+        ("a" * 500 + "\ra" * 1000 + "\n", "a" * 1000),
+        ("a" * 100 + "\ra" * 2000 + "\n", "a" * 200),
+        ("ab" * 2000 + "\rab" * 4000 + "\n", "ab" * 4000),
+        ("=" * 2000 + ("\r" + "=" * 50) * 500 + "\n", "=" * 4000),
+    ],
+    ids=["a-1000", "a-200-2000-parts", "ab-4000", "rows-of-50"],
+)
+def test_p8_33_line_that_repeats_itself_is_read_in_bounded_time(text: str, sent: str):
+    """The readings of such a line are many; a few are kept. Seconds before the bound, milliseconds with it."""
+    out, seconds = timed(text + "out\n", sent)
+    assert seconds < 0.5
+    assert out in (text + "out\n", "out\n")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "z" * 5_000_000,
+        "|\b/\b-\b\\\b" * 625_000,
+        "10%\r" * 1_250_000,
+        "show " + "\x00" * 5_000_000 + "version",
+        "s" + "\rs" * 1_000_000,
+        "\n" * 2_000_000,
+    ],
+    ids=["no-break", "spinner", "progress", "padding", "one-character-parts", "blank-lines"],
+)
+def test_p8_33_large_output_without_an_echo_is_left_alone_quickly(line: str):
+    """5 MB that is not the echo: decided at its first part, or at the bound on a part or on the parts."""
+    text = line + "\nout\n"
+    out, seconds = timed(text, "show version")
+    assert out == text
+    assert seconds < 0.2
+
+
+def test_p8_33_bounds_leave_room_for_an_echo():
+    """Padding of a thousand characters at a wrap, a row per character, and a line of one character
+    wrapped by a return are echoes within the bounds."""
+    cmd = command(200)
+    assert strip_echo(echo_of(cmd, " \b" + "\x00" * 1000) + "\nout\n", cmd) == "out\n"
+    assert strip_echo("\r".join(cmd) + "\nout\n", cmd) == "out\n"
+    assert strip_echo("\n".join(cmd) + "\nout\n", cmd) == "out\n"
+    rule = "echo " + "=" * 400
+    for wrap, again in WRAPS.values():
+        assert strip_echo(echo_of(rule, wrap, again) + "\nout\n", rule) == "out\n"
+    # past them, the output is kept
+    assert strip_echo("ls" + " " * 2000 + "\r -l\nout\n", "ls -l") == "ls" + " " * 2000 + "\r -l\nout\n"
+    assert strip_echo("ls -l" + "\rl" * 20 + "\nout\n", "ls -l") == "ls -l" + "\rl" * 20 + "\nout\n"
+
+
 # -- P8-31: the fake device's line editor --------------------------------------------------------------
 
 

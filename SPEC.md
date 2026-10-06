@@ -379,6 +379,8 @@ The echo ends at the first line break by which all of the sent line is shown, an
 
 The output is left unchanged, echo included, when it doesn't start with the echo: the echo is disabled (`stty -echo`, a password), the device writes something else for the line, text follows the echo on its last line, or the sent line shows nothing (an empty line, only blanks or control characters). Nothing is reported for it. One case is beyond the comparison: with the echo disabled, output whose first line reads as the sent line is taken for the echo.
 
+The reading is bounded, so that output which is no echo is left alone quickly whatever its size. A captured line is no part of an echo when one of its parts between two `\r` is longer than 8 characters per character of the sent line plus 1024, blanks and control characters included, or when it has more parts that show something than twice the characters the sent line shows, plus 2. And where a sent line repeats itself (`=====`), so that text after a `\r` fits in many places, 8 of the readings are kept: the one that continues the echo, and those that reach furthest. An echo past these bounds is not recognized, and the output is left unchanged.
+
 A line editor may write the prompt again while it echoes the line: readline does it in a single-byte locale (`LC_ALL=C`), on a terminal that wraps, for a line that with its prompt ends exactly at the right margin (a blank, a `\r`, cursor-up, the prompt and the line again). That prompt is not the end of the command, and the prompt wait doesn't take it for one (see [A prompt inside the echo](#a-prompt-inside-the-echo)); in the captured output it counts as a `\r`, so what follows it is read as the row written again.
 
 #### ANSI escape sequences

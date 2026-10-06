@@ -34,9 +34,20 @@ class CommandError(RunError):
         self.output = output
 
 
+# Bounds on the reading of an echo, so that output which is no echo costs little whatever its size:
+# the readings of a line kept at a time (there is more than one only where the sent line repeats itself),
+# and, per character of the sent line, the characters of a part between two `\r` and the parts of a line.
+ECHO_READINGS = 8
+ECHO_PART = 8
+ECHO_PARTS = 2
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def _shown(text: str) -> str:
     """What a terminal shows of `text`, less the blanks: a backspace steps back one cell, a character
     replaces the one in its cell, and the other control characters show nothing."""
+    if "\b" not in text:
+        return "".join(_CONTROL_RE.sub("", text).split())
     cells: list[str] = []
     col = 0
     for ch in text:
@@ -59,16 +70,20 @@ def strip_echo(text: str, sent: str) -> str:
     target = _shown(sent)
     if not target:
         return text
+    limit = ECHO_PART * len(sent) + 1024
     lines = text.split("\n")
     ends = {0}  # how much of `target` the lines read so far may show
     for k, line in enumerate(lines):
-        parts = [_shown(p) for p in line.split("\r")]
+        if not line:
+            continue
         # readline horizontal-scroll mode (e.g. TERM=dumb) redraws only the
         # visible tail of a long line, prefixed with '<'
-        tail = parts[-1]
-        if ends == {0} and len(tail) > 1 and tail[0] == "<" and target.endswith(tail[1:]):
-            return "\n".join(lines[k + 1 :])
-        ends = {end for start in ends for end in _extend(target, start, parts)}
+        tail = line.rpartition("\r")[2]
+        if ends == {0} and len(tail) <= limit:
+            tail = _shown(tail)
+            if len(tail) > 1 and tail[0] == "<" and target.endswith(tail[1:]):
+                return "\n".join(lines[k + 1 :])
+        ends = _extend(target, ends, line, limit)
         if len(target) in ends:
             return "\n".join(lines[k + 1 :])
         if not ends:
@@ -76,17 +91,52 @@ def strip_echo(text: str, sent: str) -> str:
     return text
 
 
-def _extend(target: str, start: int, parts: list[str]) -> set[int]:
-    """How much of `target` is shown after a captured line, `parts` at its `\\r`s, that began with `start` shown."""
-    ends = {start}
-    for j, part in enumerate(parts):
-        ends = {
-            max(end, at + len(part))
-            for end in ends
-            for at in (range(start, end + 1) if j else (end,))
-            if target.startswith(part, at)
-        }
-    return ends
+def _extend(target: str, starts: set[int], line: str, limit: int) -> set[int]:
+    """How much of `target` is shown after the captured `line`, which began with one of `starts` shown.
+
+    Empty when the line is no part of an echo of it, or is past the bounds: a part longer than `limit`,
+    or more parts than an echo of `target` has rows.
+    """
+    readings = {(start, start) for start in starts}  # where the line began, and how much is shown
+    rewrite = False
+    count = 0
+    for raw in line.split("\r"):
+        if len(raw) > limit:
+            return set()
+        part = _shown(raw) if raw else ""
+        if part:
+            count += 1
+            if count > ECHO_PARTS * len(target) + 2:
+                return set()
+            readings = _write(target, readings, part, rewrite)
+            if not readings:
+                return set()
+        rewrite = True
+    return {end for _, end in readings}
+
+
+def _write(target: str, readings: set[tuple[int, int]], part: str, rewrite: bool) -> set[tuple[int, int]]:
+    """The readings after `part` is written: at the end of what is shown, or, after a `\\r` (`rewrite`),
+    over text of its line that is shown, where it is the same text."""
+    size = len(part)
+    new: set[tuple[int, int]] = set()
+    for start, end in readings:
+        if target.startswith(part, end):
+            new.add((start, end + size))
+        if rewrite:
+            if target.find(part, start, end) != -1:
+                new.add((start, end))
+            # those that go past the end, the nearest to it first
+            high = end - 1 + size
+            for _ in range(ECHO_READINGS):
+                at = target.rfind(part, max(start, end - size + 1), high)
+                if at == -1:
+                    break
+                new.add((start, at + size))
+                high = at + size - 1
+    if len(new) > ECHO_READINGS:
+        new = set(sorted(new, key=lambda r: r[1])[-ECHO_READINGS:])
+    return new
 
 
 def _mid_echo(read: str, sent: str | None) -> bool:
@@ -95,7 +145,7 @@ def _mid_echo(read: str, sent: str | None) -> bool:
     if not sent or "\n" in read:
         return False
     target = _shown(sent)
-    return bool(target) and max(_extend(target, 0, [_shown(p) for p in read.split("\r")]), default=0) > 0
+    return bool(target) and max(_extend(target, {0}, read, ECHO_PART * len(sent) + 1024), default=0) > 0
 
 
 def _exit_note(cld: pexpect.spawn) -> str:
