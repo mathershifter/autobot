@@ -37,7 +37,7 @@ EXIT_INTERRUPTED = 130  # Ctrl-C, where the process can't end from the signal it
 EXPECTED = (
     ScriptError,  # a template, a rendered pattern, a block's sendEach collection
     RunError,  # a failed command, a prompt out of responses, a failed prepare
-    TimeoutError,
+    TimeoutError,  # an OSError as well, but named for what it means here: it is never one of BROAD
     EOFError,  # the connection closed
     pexpect.ExceptionPexpect,  # the spawn command wasn't found, the process couldn't be terminated
     OSError,  # the pty or a temp file
@@ -106,6 +106,53 @@ def _load(path: str) -> object:
 
 
 GOT_MAX = 60
+# Error types that get no `(got <value>)`: the location says it all (a missing or an unknown key), the
+# type's name says what the value is (empty), or the message is written with the value in it
+NO_VALUE = frozenset({
+    "missing", "extra_forbidden", "string_too_short", "too_short",
+    "value_error", "assertion_error", "unsupported_version", "control_char", "invalid_regex", "undefined_function",
+})
+EITHER = "Input should be a string or a list of strings"
+
+
+def _is_list_member(key: object) -> bool:
+    return isinstance(key, str) and key.startswith("list[")
+
+
+def _one_per_value(errors: list[Any]) -> list[Any]:
+    """A field that takes a string or a list of strings reports a wrong value once for each of the two, at
+    `<field>.str` and `<field>.list[str]`. Make that one error: at the field, saying what it takes, for a
+    value that is neither; at the item, for a list with a wrong item."""
+    def split(loc: tuple) -> tuple[tuple, object, tuple] | None:
+        for i, key in enumerate(loc):
+            if key == "str" or _is_list_member(key):
+                return loc[:i], key, loc[i + 1 :]
+        return None
+
+    groups: dict[tuple, list[tuple[Any, object, tuple]]] = {}
+    for err in errors:
+        if parts := split(err["loc"]):
+            groups.setdefault(parts[0], []).append((err, parts[1], parts[2]))
+    replace: dict[int, list[Any]] = {}
+    for base, members in groups.items():
+        whole = [err for err, key, rest in members if key == "str" and not rest]
+        lists = [(err, rest) for err, key, rest in members if _is_list_member(key)]
+        if len(whole) != 1 or whole[0]["type"] != "string_type" or len(whole) + len(lists) != len(members):
+            continue  # not the two members of one union: e.g. keys of a mapping that have these names
+        value = whole[0]["input"]
+        if isinstance(value, list):
+            if not lists or not all(rest and isinstance(rest[0], int) for _, rest in lists):
+                continue
+            new = [{**err, "loc": (*base, *rest)} for err, rest in lists]
+        elif len(lists) == 1 and not lists[0][1] and lists[0][0]["type"] == "list_type":
+            # an entry of `expect` is typed like these fields, but a list there is an error of its own
+            # (`grouped_expect`): only a string will do
+            new = [{**whole[0], "loc": base, **({} if "expect" in base else {"msg": EITHER})}]
+        else:
+            continue
+        replace[id(whole[0])] = new
+        replace.update({id(err): [] for err, _ in lists})
+    return [new for err in errors for new in replace.get(id(err), [err])]
 
 
 def _sent(loc: tuple) -> bool:
@@ -124,9 +171,7 @@ def _sent(loc: tuple) -> bool:
 
 def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
     """The offending value, as YAML writes it, for a validation error whose message doesn't show it."""
-    if type_ in ("missing", "extra_forbidden"):  # the location names the key; the value says nothing more
-        return ""
-    if _sent(loc):
+    if type_ in NO_VALUE or _sent(loc):
         return ""
     if isinstance(value, dict):
         keys = ", ".join(map(str, value))
@@ -135,11 +180,9 @@ def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
         shown = f"a list of {len(value)} item{'s' if len(value) != 1 else ''}"
     elif value is None or isinstance(value, (bool, int, float)):
         shown = "null" if value is None else text(value)
-        if msg.endswith(shown) or f"({shown})" in msg:
-            return ""
     elif isinstance(value, str):
         shown = repr(value)
-        if value and (shown in msg or f"'{value}'" in msg or msg.endswith(value) or (len(value) > 3 and value in msg)):
+        if shown in msg:  # quoted in full, as a message that shows the value does: not a word that happens to match
             return ""
     else:
         shown = _kind(value)
@@ -252,7 +295,7 @@ def _cmd_run(args):
         config = Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
         log.error("Validation errors:")
-        for err in e.errors():
+        for err in _one_per_value(e.errors()):
             where = ".".join(map(str, err["loc"])) or "(document)"
             what = err["msg"].removeprefix("Value error, ")
             # the message is the model's, or a plugin model's, and may show a value of the script as it is

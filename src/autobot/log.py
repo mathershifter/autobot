@@ -27,6 +27,7 @@ KINDS = {
 ERROR = "bold red"
 WARN = "bold yellow"
 INDENT = "  "
+MAX_INDENT = 8  # levels: deeper steps stay at this one, so a deep recursion doesn't run off the screen
 
 depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
 
@@ -87,7 +88,7 @@ def say(text: str, kind: str = "step") -> None:
     label, up to the first `: `, is styled."""
     mark, label_style, rest_style = KINDS[kind]
     label, sep, rest = text.partition(": ")
-    _print(Text.assemble((MARK, mark), " " + INDENT * depth, (label + sep, label_style), (rest, rest_style)))
+    _print(Text.assemble((MARK, mark), " " + INDENT * min(depth, MAX_INDENT), (label + sep, label_style), (rest, rest_style)))
 
 
 def error(head: str, detail: str | None = None, style: str = ERROR) -> None:
