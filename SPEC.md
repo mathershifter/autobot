@@ -375,9 +375,16 @@ A console echoes each line it is sent, and a line editor (readline, a network CL
 
 The sent line is read the same way, so a backspace or another control character in it counts for what a terminal shows of it. A device that echoes such a character as text (`^G`) doesn't echo the line in this sense.
 
-The echo ends at the first line break by which all of the sent line is shown, and the output starts after that line break. Empty lines before the echo go with it. Only the echo is read this way: the output after it is kept as described above, control characters included, and a second line that reads as the sent line is output.
+The echo ends at the first line break by which all of the sent line is shown, and the output starts after that line break. Lines before the echo that show nothing go with it: empty lines, and lines of only blanks and control characters (`\x07`, a line break, `\x00`, a line break, `ls`, a line break and `out` is captured as `out` for the sent line `ls`). Only the echo is read this way: the output after it is kept as described above, control characters included, and a second line that reads as the sent line is output.
 
 The output is left unchanged, echo included, when it doesn't start with the echo: the echo is disabled (`stty -echo`, a password), the device writes something else for the line, text follows the echo on its last line, or the sent line shows nothing (an empty line, only blanks or control characters). Nothing is reported for it. One case is beyond the comparison: with the echo disabled, output whose first line reads as the sent line is taken for the echo.
+
+Forms that are not recognized, for which the echo stays in the captured output:
+
+- A long line shown scrolled sideways with a marker other than readline's `<`, e.g. the `$` some network CLIs put at the edge of a line that doesn't fit.
+- A control character of the sent line echoed as text (`^C`, `^G`).
+- Escape sequences that the session doesn't remove (see [ANSI escape sequences](#ansi-escape-sequences)), e.g. `ESC 7` and `ESC 8`, and text that an editor writes at a place it moved to with a removed sequence, when that text differs from what the echo shows there.
+- Anything else the editor writes into the line, such as a completion or the prompt of a continuation line.
 
 The reading is bounded, so that output which is no echo is left alone quickly whatever its size. A captured line is no part of an echo when one of its parts between two `\r` is longer than 8 characters per character of the sent line plus 1024, blanks and control characters included, or when it has more parts that show something than twice the characters the sent line shows, plus 2. And where a sent line repeats itself (`=====`), so that text after a `\r` fits in many places, 8 of the readings are kept: the one that continues the echo, and those that reach furthest. An echo past these bounds is not recognized, and the output is left unchanged.
 

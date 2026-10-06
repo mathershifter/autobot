@@ -145,6 +145,8 @@ def test_p8_30_other_control_characters_show_nothing(text: str, sent: str, expec
         # the row written again from its start, then continued
         ("echo ab\recho abcd\nout\n", "echo abcd", "out\n"),
         ("echo abcd\rabcd\nout\n", "echo abcd", "out\n"),
+        # less than what is shown, written again: the line stays complete
+        ("echo abcd\recho\nout\n", "echo abcd", "out\n"),
         # what is written again differs from what is shown
         ("echo ab\rxcd\nout\n", "echo abcd", "echo ab\rxcd\nout\n"),
         ("echo ab\rout\n", "echo ab", "echo ab\rout\n"),
@@ -381,6 +383,9 @@ def test_p8_31_line_then_cmd(fake_device: FakeDevice):
 # -- P8-32: GNU readline on a narrow terminal ----------------------------------------------------------
 
 NARROW = 40
+# a terminal that wraps, and readline as it comes: with `INPUTRC=/dev/null` it reads neither `~/.inputrc`
+# nor `/etc/inputrc`, where `set horizontal-scroll-mode on` would replace the wrap by the `<` form
+VT100 = "env INPUTRC=/dev/null TERM=vt100"
 WIDTHS = [NARROW, COLS]
 UTF8 = next((n for n in ("C.UTF-8", "en_US.UTF-8") if n.lower().replace("-", "") in _locales()), None)
 
@@ -394,7 +399,7 @@ def readline(script: list[dict], lc_all: str, cols: int = NARROW) -> dict:
     """Local bash on a terminal that wraps: readline wraps the line at the margin. The pty is 80 columns
     wide, and `stty` makes it narrower. The locale is on the spawn line: readline's wrap depends on it."""
     resize = [{"cmd": f"stty cols {cols}"}] if cols != COLS else []
-    return run([*resize, *script], spawn=f"env TERM=vt100 LC_ALL={lc_all} {BASH}")
+    return run([*resize, *script], spawn=f"{VT100} LC_ALL={lc_all} {BASH}")
 
 
 @pytest.mark.parametrize("cols", WIDTHS)
@@ -451,7 +456,7 @@ def test_p4_44_redrawn_prompt_does_not_end_the_wait(cols: int):
     out = run(
         [{"cmd": f"stty cols {cols}"}]
         + [{"cmd": c, "register": n} for n, c in (("a", first), ("b", "echo second"), ("c", "echo third"))],
-        spawn=f"env TERM=vt100 LC_ALL=C {BASH}",
+        spawn=f"{VT100} LC_ALL=C {BASH}",
         errors=["NOPE"],
     )
     assert (out["a"], out["b"], out["c"]) == (first[5:], "second", "third")
@@ -461,13 +466,13 @@ def test_p4_44_redrawn_prompt_does_not_end_the_wait(cols: int):
 def test_p4_44_error_of_a_command_with_a_redrawn_prompt_is_raised_on_it(cols: int):
     fatal = at_margin(cols, "FATAL ")
     script = [{"cmd": f"stty cols {cols}"}, {"cmd": fatal, "register": "a"}, {"cmd": "echo fine", "register": "b"}]
-    runner = make_runner(script, spawn=f"env TERM=vt100 LC_ALL=C {BASH}", errors=["^FATAL"])
+    runner = make_runner(script, spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
     with pytest.raises(CommandError, match="command error: FATAL"):
         runner.run()
     assert "b" not in runner.config.vars
     # ignored, the error leaves the command its output and the next command its own
     script[1]["ignore_error"] = True
-    out = run(script, spawn=f"env TERM=vt100 LC_ALL=C {BASH}", errors=["^FATAL"])
+    out = run(script, spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
     assert (out["a"], out["b"]) == (fatal[5:], "fine")
 
 
@@ -494,7 +499,7 @@ def test_p4_44_multibyte_locale_writes_no_prompt_again(cols: int):
     out = run(
         [{"cmd": f"stty cols {cols}"}]
         + [{"cmd": c, "register": n} for n, c in (("a", first), ("b", "echo second"), ("c", "echo third"))],
-        spawn=f"env TERM=vt100 LC_ALL={UTF8} {BASH}",
+        spawn=f"{VT100} LC_ALL={UTF8} {BASH}",
         errors=["NOPE"],
     )
     assert (out["a"], out["b"], out["c"]) == (first[5:], "second", "third")
