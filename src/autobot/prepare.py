@@ -39,8 +39,26 @@ f,d,i=map(int,sys.argv[1:4])
 try:s=os.fstat(f)
 except OSError:sys.exit(1)
 if(s.st_dev,s.st_ino)!=(d,i):sys.exit(1)
-os.write(f,b''.join(k+b'='+v+b'\\0' for k,v in os.environb.items())+b'\\0')
+{read}
+os.write(f,e+b'\\0')
 """
+# The dump must be the shell's environment, and Python changes its own when it starts: under the C locale
+# it sets LC_CTYPE (PEP 538). So the environment is read as the kernel recorded it when the dumper
+# started, where there is a /proc for that.
+PROC: str | None = "/proc/self/environ"
+_READ_PROC = """\
+e=open({proc!r},'rb').read()
+if e[-1:]not in(b'',b'\\0'):e+=b'\\0'"""
+# Elsewhere it is read from `os.environb`, with LC_CTYPE as a plain `/bin/sh` started by the shell sees it:
+# `s<value>.` when it is set, `.` when it isn't.
+_READ_ENVIRON = """\
+v=dict(os.environb)
+w=os.fsencode(sys.argv[4])
+if w[:1]==b's'and w[-1:]==b'.':v[b'LC_CTYPE']=w[1:-1]
+elif w==b'.':v.pop(b'LC_CTYPE',None)
+else:sys.exit(1)
+e=b''.join(k+b'='+x+b'\\0' for k,x in v.items())"""
+_LC_CTYPE = """ "$(/bin/sh -c 'printf %s. "${LC_CTYPE+s}${LC_CTYPE-}"')\""""
 # The descriptor the shell inherits the dump file on is at least this, out of the way of a script's own
 DUMP_FD = 200
 _DUMPED = "__autobot_dumped"
@@ -101,7 +119,11 @@ def _wrapper(script: str, dump: tuple[int, int, int], options: str = "") -> str:
     is the shell's. A failing script leaves one dump, so nothing is read back from it.
     """
     q = shlex.quote
-    dumper = f"{q(sys.executable)} -ISc {q(_DUMP)} {dump[0]} {dump[1]} {dump[2]}"
+    if PROC and os.path.exists(PROC):
+        code, witness = _DUMP.format(read=_READ_PROC.format(proc=PROC)), ""
+    else:
+        code, witness = _DUMP.format(read=_READ_ENVIRON), _LC_CTYPE
+    dumper = f"{q(sys.executable)} -ISc {q(code)} {dump[0]} {dump[1]} {dump[2]}{witness}"
     trap = f'[ $? -ne 0 ] || [ "${{2-}}" = {_DUMPED} ] || {dumper}'
     return (
         f"{dumper} || exit 125\n"
@@ -122,8 +144,9 @@ def _dumps(data: bytes) -> list[dict[str, str]]:
     current: dict[str, str] = {}
     for entry in data[:-1].split(b"\0"):
         if entry:
-            name, _, value = entry.partition(b"=")
-            current[os.fsdecode(name)] = os.fsdecode(value)
+            name, eq, value = entry.partition(b"=")
+            if eq:  # as `os.environ` reads an environment: the first of a name, and nothing without `=`
+                current.setdefault(os.fsdecode(name), os.fsdecode(value))
         else:
             dumps.append(current)
             current = {}

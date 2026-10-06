@@ -586,6 +586,61 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
         assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ")
     assert marker.exists() == (status == 3)
 
+# -- P5-78: the dump is the shell's environment, exactly -------------------------
+
+LOCALE = {
+    "lang-to-c": ({"LANG": "C.UTF-8"}, "export LANG=C\n", {"LANG": "C"}, set()),
+    "lc-ctype-c": ({"LANG": "C.UTF-8"}, "export LC_CTYPE=C\n", {"LC_CTYPE": "C"}, set()),
+    "lc-ctype-posix": ({}, "export LC_CTYPE=POSIX\n", {"LC_CTYPE": "POSIX"}, set()),
+    "unset-lang": ({"LANG": "C.UTF-8"}, "unset LANG\n", {}, {"LANG"}),
+    "c-to-utf8": ({"LANG": "C"}, "export LANG=C.UTF-8\n", {"LANG": "C.UTF-8"}, set()),
+    "c-untouched": ({"LANG": "C"}, "export AB_A=1\n", {"AB_A": "1"}, set()),
+    "lc-ctype-kept": ({"LC_CTYPE": "POSIX"}, "export LANG=C\n", {"LANG": "C"}, set()),
+    "lc-ctype-unset": ({"LC_CTYPE": "C.UTF-8"}, "unset LC_CTYPE\n", {}, {"LC_CTYPE"}),
+    "lc-ctype-not-exported": ({}, "LC_CTYPE=C\nLANG=C\nAB_A=1\n", {}, set()),
+    "lc-ctype-empty": ({"LANG": "C"}, "export LC_CTYPE=\n", {"LC_CTYPE": ""}, set()),
+    "lc-ctype-odd": ({}, "export LC_CTYPE='s. x\n'\n", {"LC_CTYPE": "s. x\n"}, set()),
+    "lc-all": ({"LANG": "C"}, "export LC_ALL=C\n", {"LC_ALL": "C"}, set()),
+    "lc-all-empty": ({"LC_ALL": "", "LANG": "C"}, "unset LANG\n", {}, {"LANG"}),
+}
+
+
+@pytest.fixture(params=["proc", "environ"])
+def dump_source(request, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Both ways the dumper reads its environment: `/proc/self/environ`, and `os.environb` where there is none."""
+    if request.param == "environ":
+        monkeypatch.setattr(prepare, "PROC", None, raising=False)
+    elif not os.path.exists("/proc/self/environ"):
+        pytest.skip("no /proc/self/environ")
+    return request.param
+
+
+@pytest.mark.parametrize("shebang", ["", "#!/bin/bash\n"], ids=["sh", "bash"])
+@pytest.mark.parametrize(("os_env", "script", "set_", "unset"), LOCALE.values(), ids=LOCALE.keys())
+def test_p5_78_locale_variables_are_read_exactly(dump_source, prep_tmp, capsys, shebang, os_env, script, set_, unset):
+    """SPEC "prepare as an rc script": the helper's own locale handling adds, changes and removes nothing."""
+    changes = prepare.run(shebang + script, {"PATH": os.environ["PATH"], **os_env})
+    assert (changes.set, changes.unset) == (set_, unset)
+    counts = [line for line in capsys.readouterr().err.splitlines() if "environment:" in line]
+    assert counts == ([f">> prepare: environment: {len(set_)} set, {len(unset)} unset"] if set_ or unset else [])
+    assert list(prep_tmp.iterdir()) == []
+
+
+def test_p5_78_values_and_shell_bookkeeping_with_either_source(dump_source, prep_tmp):
+    """SPEC "prepare as an rc script": the same differences whichever way the environment is read."""
+    environ = {"PATH": os.environ["PATH"], "AB_OS": "caf\udce9", "AB_GONE": "g", "LANG": "C"}
+    changes = prepare.run("cd /\nexport AB_A=$(printf 'l1\\nl2=\\377')\nunset AB_GONE\nexport AB_OS\nexit 0\n", environ)
+    assert (changes.set, changes.unset) == ({"AB_A": "l1\nl2=\udcff"}, {"AB_GONE"})
+
+
+def test_p5_78_spawned_process_gets_no_invented_locale(spawn_env, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": `export LANG=C` gives the process no `LC_CTYPE`."""
+    for name in ("LC_ALL", "LC_CTYPE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    env = spawn_env(prepare="export LANG=C\n")
+    assert env["LANG"] == "C" and "LC_CTYPE" not in env
+
 
 @pytest.mark.parametrize("name", ["later", "_later", "why", "raw", "environ", "__dict__"])
 def test_p5_74_env_holds_nothing_but_variables(timeline: Timeline, name: str):
