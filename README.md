@@ -88,7 +88,7 @@ A script is a YAML file with the following top-level fields:
 ```yaml
 autobot: 2026-10
 
-env:                    # string key-value defaults (overridden by OS env vars)
+env:                    # defaults for environment variables (a variable that is set wins)
   IMAGE_URL: https://...
 
 vars:                   # arbitrary data accessible as {{ vars.KEY }}
@@ -123,7 +123,7 @@ script:                 # main steps to execute
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
 | `autobot` | yes      | Schema version: `2026-10` |
-| `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
+| `env`     | no       | Defaults for environment variables. `{{ env.KEY }}` reads any variable of the environment, declared here or not; a key of this section gives a variable a value when the environment doesn't set it (a value of the environment is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking                         |
@@ -479,7 +479,7 @@ Available context:
 
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
-| `env.*`          | `env` section; an OS env var overrides a key of the same name, and OS vars not declared in `env` aren't visible |
+| `env.*`          | The whole environment (`{{ env.HOME }}`), plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |

@@ -38,7 +38,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 | Field | Required | Description |
 |-------|----------|-------------|
 | `autobot` | yes | Schema version: exactly `2026-10`. Surrounding whitespace or a trailing newline is rejected. Any other value is a validation error (`unsupported_version`) at `autobot`: `unsupported autobot version '<value>'; expected 2026-10`, or for the earlier version `2026-08`, `autobot 2026-08 is no longer supported; use 2026-10`. That includes a value that isn't a string, e.g. what YAML makes of an unquoted `2026` (a number), `2026.10` (the number 2026.1) or `2026-10-04` (a date): the message shows the value as text, `unsupported autobot version '2026'; expected 2026-10`. Only a missing key (`missing`) and an explicit null (`string_type`) are reported as what they are. |
-| `env` | no | String key-value defaults, overridden by OS environment variables. Supports nesting: a value may reference other keys (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), in any order. Each default is rendered once, after the values it references; the text it renders to isn't rendered again. Any read of a key's value counts as a reference, including `env.get('KEY')` and `env.items()`. An OS variable's value is used exactly as written: it isn't a template and is never rendered, so `{{` in it is plain text, and a key that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a value that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a key that isn't in `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. Accessible as `{{ env.KEY }}` |
+| `env` | no | Defaults for environment variables: string values under string keys. In a template, `env` is the whole environment Autobot was started with, so `{{ env.HOME }}` reads any variable, whether it is a key of this section or not (see [The environment in templates](#the-environment-in-templates)). A key of this section is a default: it gives the variable a value where the environment doesn't set it. A variable that the environment sets keeps its value, even an empty one, and its default isn't used. The defaults are for templates only: they aren't added to the environment of the spawned process (see [`attach`](#attach)). Supports nesting: a default may reference other variables (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), keys of this section in any order and variables of the environment alike. Each default is rendered once, after the values it references; the text it renders to isn't rendered again. Any read of a variable's value counts as a reference, including `env.get('KEY')` and `env.items()`. A variable of the environment is used exactly as it is set: its value isn't a template and is never rendered, so `{{` in it is plain text, and a default that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a default that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a variable that the environment doesn't set and that isn't a key of `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects under string keys, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
 | `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking. Each pattern is a valid, non-empty regex: an empty one (`''`) would match any output and fail every command, so it is a validation error (`string_too_short` at `errors.N`: `an errors pattern must not be empty: an empty regex matches any output, so every command would fail`), and one that doesn't compile is `invalid_regex`. `errors: []` is the same as no `errors`. |
@@ -610,7 +610,7 @@ Available context:
 
 | Variable | Source |
 |----------|--------|
-| `env` | `env` section of the YAML |
+| `env` | The environment: every variable Autobot was started with, and the defaults of the YAML's `env` section for the variables it doesn't set (see [The environment in templates](#the-environment-in-templates)) |
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
 | `args` | CLI `--arg KEY=VALUE` arguments |
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check, embedded-script cleanup and the first prompt wait of a `cmd` with `after` don't change it. |
@@ -619,6 +619,19 @@ Available context:
 `env`, `vars`, `args` and `session` are mappings. On a mapping, `x.name` and `x['name']` both read the key `name`, and with `x.name` a key always wins over a mapping method of the same name: with `register: values`, `{{ vars.values }}` is the registered output, not the `values` method (plain Jinja2 would render `<built-in method values of dict object ...>`). The same goes for `items`, `keys`, `get`, `copy` and the rest, and for mappings nested in `vars` (`vars.site.values`). A method is reachable as `x.name` only while there is no key of that name, so `vars.items()`, `vars.get('k', 'default')` and `env.get('KEY')` work as long as no key is named `items` or `get`. Filters don't depend on key names: `vars | items`, `vars | length`, `vars | tojson`.
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
+
+### The environment in templates
+
+`env` holds one value for each variable name, taken from the first of these that has it:
+
+1. the environment Autobot was started with,
+2. the default of that name in the YAML's `env` section (see [Top-level fields](#top-level-fields)).
+
+So `{{ env.HOME }}`, `{{ env['SSH_AUTH_SOCK'] }}` and `{{ env.get('HTTPS_PROXY', '') }}` work without an `env` section, and a key of the `env` section is needed only to give a variable a default. A variable that is set to an empty string is set: `env.X` is `''`, and its default isn't used. The environment is read once, when the run starts.
+
+A variable that neither has is not in `env`. `{{ env.KEY }}` and `{{ env['KEY'] }}` are then an undefined variable, a template error with the message `template error: env has no key 'KEY'`; `{{ env.KEY | default('x') }}`, `env.get('KEY', 'x')`, `'KEY' in env` and `env.KEY is defined` deal with it as they do on any mapping.
+
+`env` is one mapping of all these variables, and its methods and the filters see all of them: `env | length` counts them, `env | items`, `env.keys()` and `{% for name in env %}` go through them, and `{{ env | tojson }}` writes them all out, values included. The keys of the `env` section come first, in the order written, whether the environment sets them or not; the other variables follow, sorted by name. Every value is a string. A value of the environment that isn't valid UTF-8 keeps its other bytes as lone surrogates, as Python's `os.environ` reads it; text with one can't be sent to the session (a `UnicodeError`, see [CLI](#cli)).
 
 ### Booleans are not text
 

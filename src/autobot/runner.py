@@ -131,19 +131,29 @@ def trail(error: BaseException) -> tuple[StepRef, ...]:
     return getattr(error, "autobot_trail", ())
 
 
+class Env(dict):
+    """`env` in templates: every variable of the environment, and the script's defaults for those not set."""
+
+    def __missing__(self, key: Any) -> Any:
+        return StrictUndefined(hint=f"env has no key '{key}'")
+
+
 class _EnvRefs(Mapping[str, Any]):
     """`env` while it's resolved: a default is rendered once, when first read, so a cycle is caught.
 
-    Values in `fixed` (from the OS environment) are used as they are, never rendered.
+    A variable of `environ` is used as it is, never rendered, and the default of the same name isn't used.
     """
 
-    def __init__(self, raw: dict[str, str], fixed: dict[str, str], ctx: dict[str, Any]):
+    def __init__(self, raw: dict[str, str], environ: dict[str, str], ctx: dict[str, Any]):
         self.__raw = raw
+        self.__environ = environ
         self.__ctx = {**ctx, "env": self}
-        self.__done: dict[str, Any] = dict(fixed)
+        self.__done: dict[str, Any] = {}
         self.__path: list[str] = []
 
     def __getitem__(self, key: str) -> Any:
+        if key in self.__environ:
+            return self.__environ[key]
         if key not in self.__raw:
             return StrictUndefined(hint=f"env has no key '{key}'")
         if key not in self.__done:
@@ -160,16 +170,18 @@ class _EnvRefs(Mapping[str, Any]):
         return self.__done[key]
 
     def __contains__(self, key: object) -> bool:
-        return key in self.__raw
+        return key in self.__environ or key in self.__raw
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self[key] if key in self.__raw else default
+        return self[key] if key in self else default
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.__raw)
+        # the script's own keys in the order written, then the rest of the environment by name
+        yield from self.__raw
+        yield from sorted(k for k in self.__environ if k not in self.__raw)
 
     def __len__(self) -> int:
-        return len(self.__raw)
+        return len(self.__raw.keys() | self.__environ.keys())
 
 
 class Runner:
@@ -178,7 +190,8 @@ class Runner:
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
-        self._env = self._resolve_env(config.env)
+        self._environ = dict(os.environ)
+        self._env = self._resolve_env()
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
@@ -227,10 +240,9 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
-        fixed = {k: os.environ[k] for k in defaults if k in os.environ}
-        refs = _EnvRefs(defaults, fixed, {"vars": self._config.vars, "args": self._cli_args})
-        return {k: refs[k] for k in defaults}
+    def _resolve_env(self) -> Env:
+        refs = _EnvRefs(self._config.env, self._environ, {"vars": self._config.vars, "args": self._cli_args})
+        return Env((k, refs[k]) for k in refs)
 
     @property
     def _ctx(self) -> dict:

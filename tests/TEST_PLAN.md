@@ -24,11 +24,11 @@ Finding numbers #1 to #17 come from the reviewer brief. #18 and #19 are new; I f
 | P2 | `cmd` forms, embedded scripts | 24 | 0 | 0 | 24 | 1 |
 | P3 | Common step properties, templating context | 22 | 0 | 0 | 22 | 0 |
 | P4 | `get_prompt`, prompts, credential cycling | 39 | 0 | 0 | 39 | 7 |
-| P5 | attach / block lifecycles, env | 60 | 0 | 0 | 60 | 1 |
+| P5 | attach / block lifecycles, env | 64 | 0 | 0 | 64 | 1 |
 | P6 | model / schema / example / CLI parity | 87 | 0 | 0 | 87 | 0 |
 | P7 | registry and plugins | 26 | 0 | 0 | 26 | 0 |
 | P8 | Low priority: types, strip_echo, simple steps, log output | 29 | 0 | 0 | 29 | 0 |
-| **Total** | | **310** | **0** | **0** | **310** | **10** |
+| **Total** | | **314** | **0** | **0** | **314** | **10** |
 
 The counts are recounted from the section tables and checked against the `test_pN_MM_*` names in the test files (2026-10-06, branch `feat/cli-output`, which added seven rows, P6-83 to P6-89, for the CLI's run-time error reports, and eight, P8-22 to P8-29, for the styles of its messages, the line they start on, their indentation, the lines for what is sent without a `cmd`, the validation report and the line of a failing step; before it 2026-10-05, branch `refactor/flat-breakout`, which added two rows: P5-60 and P6-82; before it, branch `fix/open-items`, which added sixteen rows and removed one: P2-23, P5-56, P6-75, P6-76 and P6-77 for the open items, then P3-22, P4-43, P5-57, P5-58, P6-78, P6-79, P6-80 and P7-26 for the follow-ups, with P6-77 removed again when the schema download went, then P2-24, P5-59 and P6-81 for the review fixes; it added five slow tests, four in P2-24 and one in P5-59, and the one test with the `build` marker; before it 2026-10-04, branch `fix/audit-2-findings`, which added 15 rows: P1-23, P3-21, P4-42, P5-54, P5-55, P6-68..74, P7-24, P7-25, P8-21; before it, PR #44); the previous recount (2026-10-02) had fallen behind by P6-61, P6-62, P7-20, P7-21 and P8-17..19. Each row counts once per plan ID: a parametrized test, or a row marked `(xN)` that covers several test functions, counts as one. `removed` rows (P4-03, P4-10, P4-11, P4-16, P6-08, P6-77) are not counted.
 
@@ -118,7 +118,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | SPEC section | Existing tests | Gaps closed by |
 |--------------|----------------|----------------|
 | Architecture / validation (SPEC.md:5-18) | `test_plugins::test_typo_step_key_*` | P6 (P6-41, P6-70: nulls and `!!binary`) |
-| Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P6-31, P6-72 |
+| Top-level fields, `autobot` version, `env` (SPEC.md:20-31) | none | P6-05, P6-15, P5-19..22, P5-27..31, P5-61..64, P6-31, P6-72 |
 | `prompts`, `send` forms, `sendEach`, Response selection | none | P4-12..15, P4-17, P4-20..31, P5-25/26, P6-07, P6-38..40, P6-46..59 |
 | `fn` / `call` (SPEC.md:55-66, 180-184) | none | P3-15, P8-12, P7-08 |
 | `attach` fields and lifecycle (SPEC.md:68-85) | `test_lifecycle::test_attach_*` (breakout failure, error preserved) | P5-01..09, P5-17..24, P5-32..34, P5-42..45, P5-52, P5-54, P5-55, P6-71, P8-14 |
@@ -134,7 +134,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 | Common step properties, order (SPEC.md:272-288) | `test_plugin_common_props` (plugin only) | P3-01..16, P3-21, P6-73 |
 | `when` (SPEC.md:290-305) | `test_plugin_when` (2 values) | P3-02..06 |
 | Duration format (SPEC.md:307-313) | none | P6-09, P8-01, P6-69 |
-| Jinja2 templating, filters, `range` (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05 |
+| Jinja2 templating, filters, `range`, the environment in templates (SPEC.md:315-334) | none | P3-06..09, P4-18, P8-09/10, P5-05, P5-61..64 |
 | `get_prompt` (SPEC.md:336-346) | `test_lifecycle::test_expect_timeout_*`, `test_sleep_and_check_rc_eof_*` (session exceptions only) | P4-01..20, P4-42 |
 | CLI (SPEC.md:348-355) | `test_plugins::test_plugin_step_runs_through_cli`, `test_typo_step_key_is_clean_cli_error` | P6-21..37, P6-83..89 (errors while the script runs, exit status), P7-07, P7-09..11 |
 | Plugins (SPEC.md:286) | `test_plugins` (discovery lazy/idempotent), `test_plugin_common_props` | P7-01..19, P7-24, P7-25 |
@@ -358,8 +358,12 @@ Files: `tests/test_lifecycle.py` (extend) and `tests/test_env.py` (new). SPEC.md
 | P5-58 | `test_p5_58_get_prompt_after_detach_is_not_attached`, `test_p5_58_session_that_never_attached_is_not_attached`, `test_p5_58_reattached_session_waits_for_its_own_prompt` | Prompt Handling (at a shell prompt) | raw `Session` on bash, F4 | after a prompt wait and `detach()`, `_at_prompt` is false and `get_prompt` and `check_rc` raise `RuntimeError` `not attached` (`get_prompt` returned `""`); every wait and send of a session that never attached raises it too; a session attached a second time reads the new child's prompt and captures `two\n` for `echo two` (it sent at once, before the new prompt, and captured nothing) | pass (follow-up I.1) (x3) |
 | P5-59 | `test_p5_59_reattached_session_strips_no_stale_echo`, `test_p5_59_first_wait_of_a_reattached_session_solicits` (`slow`) | Prompt Handling, Captured output | raw `Session`: reach a prompt on bash, `sendline("echo stale-cmd")`, `detach()` without waiting, then attach a child whose first output is the lines `echo stale-cmd` and `real`, or the F2 device with `--wait-enter` | `session.before` and `session.match` are empty after the second attach, and its first wait returns `echo stale-cmd\nreal\n` (the first line was removed as an echo); on the idle device the first wait sends one `""` and returns (it sent nothing and timed out) | pass (review fix 6) (x2) |
 | P5-60 | `test_p5_60_breakout_without_steps_is_no_breakout` (parametrized: `breakout` omitted, `breakout: []`, on the block and on `attach` at once) | attach, block | F1 `run_script`, F4 `sent`, `capsys`; one block with `script: [cmd: echo in]` | `>> block enter: b` and `>> block completed: b` on stderr, no `>> block breakout` and no `>> breakout` line; sent lines exactly `echo in, RC` | pass |
+| P5-61 | `test_p5_61_undeclared_variable_is_readable`, `test_p5_61_default_may_reference_an_undeclared_variable` | The environment in templates, Top-level fields | `environ`: `os.environ` replaced by `{AB_OS: o, AB_Z: 'z z', AB_B: os-b, AB_EMPTY: ''}`; no `env:`, `env: {}` and an `env:` that doesn't name the variables; `Runner(...).render` (no spawn) | `env.AB_OS`, `env['AB_Z']`, `env.get('AB_B')`, `env.get('AB_NOPE', 'd')`, `'AB_OS' in env` and `env.AB_OS is defined` read the environment in all three; a default `http://{{ env.AB_OS }}/{{ env.AB_Y }}` renders with the undeclared variable and another default | pass |
+| P5-62 | `test_p5_62_default_is_used_only_when_the_variable_is_unset` | Top-level fields | `environ`; defaults `AB_B: "{{ 1/0 }}"` and `AB_EMPTY: "{{ env.AB_NOPE }}"` for set variables, `AB_Y: dflt` for an unset one | `[os-b][][dflt]`: a set variable, also an empty one, keeps its value and its default is never rendered; a variable set in `os.environ` after the runner is built isn't seen | pass |
+| P5-63 | `test_p5_63_variable_set_nowhere_is_undefined` (parametrized: `env.X`, `env['X']`, an attribute of it) | The environment in templates | `environ`; a template and an `env` default that read `AB_NOPE` | `ValueError` exactly `template error: env has no key 'AB_NOPE'`, from `render` and from building the runner; `{{ env.AB_NOPE \| default('d') }}` is `d` | pass |
+| P5-64 | `test_p5_64_mapping_methods_see_the_merged_view`, `test_p5_64_variable_named_like_a_method_wins` (parametrized: `items`, `keys`, `get`, `values`), `test_p5_64_env_cycle_and_depth_with_the_whole_environment` | The environment in templates, Jinja2 Templating, Top-level fields | `environ`; `env: {AB_Y: "{{ env.AB_OS }}y", AB_B: unused, AB_A: a}`; an environment variable named like a mapping method; cycles and chains among defaults that also read the environment | `env \| length` is 6; `env.keys()`, iteration and `env \| items` give the `env:` keys as written and then the rest by name, with the merged values; `env \| tojson` and `{{ env }}` hold all six; `env.items` is the variable; `env cycle: AB_A -> AB_C -> AB_A`, a cycle through `env.items()`, a cycle broken by a set variable, the 50-level error, and a 51-key chain that ends at a set variable resolves | pass |
 
-Totals: 60 pass (P5-01..60). Slow: one test of P5-59.
+Totals: 64 pass (P5-01..64). Slow: one test of P5-59.
 
 ## P6: model, schema, example and CLI parity
 
