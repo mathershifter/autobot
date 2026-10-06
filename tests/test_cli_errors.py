@@ -601,11 +601,12 @@ def _pids(cmdline: str) -> list[str]:
     return subprocess.run(["pgrep", "-x", "-f", cmdline], capture_output=True, text=True, check=False).stdout.split()
 
 
-def test_p6_88_ctrl_c_is_interrupted_with_status_130_after_the_cleanup(tmp_path: Path):
-    """SPEC "CLI": Ctrl-C ends the run with `Interrupted`, the step it stopped in, status 130 and no traceback.
+def test_p6_88_ctrl_c_is_interrupted_and_ends_from_sigint_after_the_cleanup(tmp_path: Path):
+    """SPEC "CLI": Ctrl-C ends the run with `Interrupted`, the step it stopped in and no traceback, and the
+    process then ends from SIGINT itself (a shell reports 130), not with an exit status of its own.
     The block's breakout and `attach.breakout` run first, as after any failure, and the process is closed."""
     res, log, spawn = _interrupt(tmp_path)
-    assert res.returncode == 130, res.stderr
+    assert res.returncode == -signal.SIGINT, res.stderr
     assert "Traceback" not in res.stderr and "KeyboardInterrupt" not in res.stderr
     assert _lines(res) == ["Interrupted", "  at script.1.block.script.0 (cmd: sleep 30)"]
     assert log.read_text().split() == ["block", "attach"]
@@ -619,7 +620,7 @@ def test_p6_88_ctrl_c_with_traceback_flag(tmp_path: Path):
     """With `--traceback` the interrupt's traceback comes before the same two lines."""
     res, log, _ = _interrupt(tmp_path, "--traceback")
     lines = _lines(res)
-    assert res.returncode == 130, res.stderr
+    assert res.returncode == -signal.SIGINT, res.stderr
     assert lines[0] == "Traceback (most recent call last):" and "KeyboardInterrupt" in lines
     assert lines[-2:] == ["Interrupted", "  at script.1.block.script.0 (cmd: sleep 30)"]
     assert log.read_text().split() == ["block", "attach"]
@@ -633,7 +634,37 @@ def test_p6_88_ctrl_c_while_loading_is_interrupted_too(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli.yaml, "load", interrupt)
-    assert _main(monkeypatch, capsys, str(_script(tmp_path))) == (130, "", "Interrupted\n")
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    handler = signal.getsignal(signal.SIGINT)
+    try:
+        # the process signals itself; where that returns (here: replaced), it exits with status 130
+        assert _main(monkeypatch, capsys, str(_script(tmp_path))) == (130, "", "Interrupted\n")
+        assert killed == [(os.getpid(), signal.SIGINT)]
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL  # nothing of Python's stands in the signal's way
+    finally:
+        signal.signal(signal.SIGINT, handler)
+
+
+def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):
+    """A shell that runs autobot in a loop stops at Ctrl-C, as it does for any command the signal kills: the
+    next iteration, which would be the next device, doesn't start."""
+    started = tmp_path / "started"
+    path = _script(tmp_path, [{"cmd": f"echo x >> {started}"}, {"cmd": "sleep 30", "timeout": "20s"}])
+    loop = f"for i in 1 2; do {sys.executable} -W ignore -m autobot.cli {path}; echo ITER-$i-rc=$?; done; echo LOOP-DONE"
+    env = {**os.environ, "NO_COLOR": "1"}
+    child = pexpect.spawn("bash", ["--norc", "--noprofile", "-c", loop], env=env, encoding="utf-8", timeout=60)
+    try:
+        child.expect_exact(">> cmd: sleep 30")
+        child.expect_exact("sleep 30")  # the session's echo: the command has reached the shell
+        child.sendintr()
+        seen = child.expect([pexpect.EOF, "ITER-1-rc", "LOOP-DONE"])
+        output = child.before
+    finally:
+        child.close(force=True)
+    assert seen == 0, "the loop went on after Ctrl-C"
+    assert "Interrupted" in output and "Traceback" not in output
+    assert started.read_text().split() == ["x"]  # one iteration
 
 
 # -- exit status ---------------------------------------------------------------------

@@ -4,11 +4,13 @@ import argparse
 import copy
 import importlib.resources
 import json
+import os
+import signal
 import sys
 import traceback
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import pexpect
 import pydantic
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
 EXIT_LOAD = 1  # the script can't be loaded: nothing ran
 EXIT_RUN = 3  # the run failed
 EXIT_UNEXPECTED = 70  # a bug in autobot or a plugin (EX_SOFTWARE)
-EXIT_INTERRUPTED = 130  # Ctrl-C
+EXIT_INTERRUPTED = 130  # Ctrl-C, where the process can't end from the signal itself
 
 # What a script, the device or the environment explains, so the user can act on it: reported without a
 # traceback. Anything else that ends a run is a bug in autobot or in a plugin.
@@ -160,6 +162,19 @@ def _unexpected(e: Exception) -> None:
         )
     _where(e)
     log.more("".join(traceback.format_exception(e)).rstrip("\n"))
+
+
+def _interrupted() -> NoReturn:
+    """End as a process that SIGINT killed: a shell reports status 130, and a loop around autobot stops,
+    which it wouldn't for a process that exits with a status of its own."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):  # no stream, or a closed one
+            pass
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGINT)
+    sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:
@@ -318,7 +333,7 @@ def main():
         _traceback(args, e)
         log.error("Interrupted", style=log.WARN)
         _where(e)
-        sys.exit(EXIT_INTERRUPTED)
+        _interrupted()
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
         sys.exit(EXIT_UNEXPECTED)

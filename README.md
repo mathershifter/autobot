@@ -66,7 +66,7 @@ Run failed in upgrade.autobot.yaml: timed out after 30.0s waiting for a shell pr
 
 The first line says what went wrong, the `at` line where: the step's path in the script (the second step of the block that is the fourth step of `script`) and what it is. A step of a function is at `fn.<name>.script.<i>`, followed by a `called from` line for each `call` that led to it. A failed step, a timeout, a closed connection, a template error, a failed `prepare` and a `spawn` command that isn't found are all reported this way, without a Python traceback.
 
-Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in.
+Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
 
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
@@ -77,7 +77,7 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 2      | Malformed command line |
 | 3      | The run failed |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
-| 130    | Interrupted (Ctrl-C) |
+| 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
 
 `--traceback` also prints the Python traceback of an error that is normally reported without one. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 
