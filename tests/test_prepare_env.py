@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import AttachRecorded, Timeline, make_doc, make_runner, run_cli
 
 from autobot import prepare
@@ -343,7 +347,7 @@ def test_p5_70_other_interpreter_runs_as_a_program_and_sets_nothing(prepared, pr
         env={"AB_A": "dflt"},
     )
     script, files = out.read_text().split()
-    assert script.startswith(f"{prep_tmp}/_autobot_") and files == "1"  # no dump file either
+    assert script.startswith(f"{prep_tmp}/_autobot_") and files == "1"
     assert r.render("{{ env.AB_A }} {{ env.AB_B | default('-') }}") == "dflt -"
     assert progress(capsys.readouterr().err) == [">> prepare: running local script", ">> prepare: done"]
 
@@ -377,34 +381,80 @@ def test_p5_71_shell_bookkeeping_is_not_taken(prepared, monkeypatch: pytest.Monk
 # -- P5-72: temp files and quoting ---------------------------------------------
 
 
-def test_p5_72_dump_file_is_private_and_removed(prepared, prep_tmp: Path, tmp_path: Path):
-    """SPEC "attach": the file the environment is read from is mode 0600 and removed with the script."""
+def test_p5_72_environment_is_never_in_a_named_file(prepared, prep_tmp: Path, tmp_path: Path, monkeypatch):
+    """SPEC "attach": the environment is read from a file without a name; the temp dir holds the script only."""
+    monkeypatch.setenv("AB_OS", "S3CRET-os")
     out = tmp_path / "out"
-    prepared(f"ls -l {prep_tmp} > {out}\n")  # `prepared` checks that nothing is left
-    lines = [line.split() for line in out.read_text().splitlines() if "_autobot_" in line]
-    assert sorted((line[0][:10], line[-1].rsplit(".", 1)[-1]) for line in lines) == [
-        ("-rw-------", "env"),
-        ("-rwx------", "sh"),
-    ]
+    # the needle is split so that the script's own file doesn't hold it
+    r = prepared(f'export AB_A=1\nls {prep_tmp} > {out}\ngrep -rl "S3CRET""-os" {prep_tmp} /dev/null >> {out}\ntrue\n')
+    (name,) = out.read_text().splitlines()
+    assert name.startswith("_autobot_") and name.endswith(".sh")
+    assert r._env["AB_A"] == "1" and r._env["AB_OS"] == "S3CRET-os"
 
 
-@pytest.mark.parametrize("fails", ["mkstemp", "open"])
-def test_p5_72_files_removed_when_the_dump_fails(timeline, prep_tmp: Path, monkeypatch, fails: str):
-    """SPEC "attach": every temp file is removed in every case."""
-    if fails == "mkstemp":
-        def mkstemp(*a, **k):
-            raise OSError(28, "No space left on device")
+def test_p5_72_script_file_removed_when_the_dump_file_fails(timeline, prep_tmp: Path, monkeypatch):
+    """SPEC "attach": the temp file is removed whatever fails."""
 
-        monkeypatch.setattr(tempfile, "mkstemp", mkstemp)
-        script = "true\n"
-    else:
-        script = f"chmod 000 {prep_tmp}/_autobot_*.env\n"
-        if os.geteuid() == 0:
-            pytest.skip("root reads a file of mode 000")
+    def temporary_file(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", temporary_file)
     with pytest.raises(OSError):
-        make_runner([], prepare=script).run()
+        make_runner([], prepare="true\n").run()
     assert list(prep_tmp.iterdir()) == []
     assert "attach" not in timeline.names()
+
+
+def test_p5_72_dump_is_not_written_to_a_file_of_the_script(prepared, tmp_path: Path):
+    """SPEC "attach": a script that reuses the descriptor's number for its own file gets no dump in it."""
+    out = tmp_path / "out"
+    reuse = "".join(f"exec {fd}>>{out}\n" for fd in range(prepare.DUMP_FD, prepare.DUMP_FD + 8))
+    r = prepared(f"#!/bin/bash\nexport AB_A=S3CRET\n{reuse}")
+    assert out.read_bytes() == b""
+    assert "AB_A" not in r._env
+
+
+def test_p5_72_no_descriptor_is_left_open(prepared):
+    """The dump file and its copy for the shell are closed when `prepare` ends."""
+    fds = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
+    before = sorted(os.listdir(fds))
+    prepared("export AB_A=1\n")
+    assert sorted(os.listdir(fds)) == before
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGKILL], ids=lambda s: s.name)
+def test_p5_72_signal_while_prepare_runs(tmp_path: Path, sig: signal.Signals):
+    """SPEC "attach": SIGTERM and an interrupt remove the script's temp file; SIGKILL leaves it, and nothing
+    that holds a value of the environment."""
+    tdir, started = tmp_path / "tmp", tmp_path / "started"
+    tdir.mkdir()
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([], prepare=f"export AB_A=1\ntouch {started}\nexec sleep 20 > /dev/null 2>&1\n")))
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "autobot.cli", str(path)],
+        env={**os.environ, "TMPDIR": str(tdir), "AB_OS": "S3CRET-os"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not started.exists():
+            assert proc.poll() is None and time.monotonic() < deadline, proc.stderr.read()
+            time.sleep(0.05)
+        proc.send_signal(sig)
+        err = proc.communicate(timeout=20)[1]
+    finally:
+        proc.kill()
+    left = list(tdir.iterdir())
+    if sig == signal.SIGKILL:
+        assert proc.returncode == -signal.SIGKILL
+        assert [f.suffix for f in left] == [".sh"]
+        assert b"S3CRET" not in left[0].read_bytes()
+    else:
+        assert left == []
+        assert proc.returncode == (-signal.SIGTERM if sig == signal.SIGTERM else 130), err
+        assert "Traceback" not in err
 
 
 def test_p5_72_temp_path_is_quoted(timeline: Timeline, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

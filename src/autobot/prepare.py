@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import IO
 
 from . import log
 from .types import RunError
@@ -25,12 +29,20 @@ OPTIONS_RE = re.compile(r"-[aefuxC]+")
 # The shell's own bookkeeping, never taken from the script: a `cd` in it doesn't move autobot
 IGNORED = ("_", "SHLVL", "PWD", "OLDPWD")
 
-# Appends the environment it is started with to the file it is given: `NAME=value` entries, each ended by a
-# NUL, and one more NUL to end the dump. Bytes in, bytes out: nothing in a value can break an entry.
-_DUMP = (
-    "import os,sys;"
-    "open(sys.argv[1],'ab').write(b''.join(k+b'='+v+b'\\0' for k,v in os.environb.items())+b'\\0')"
-)
+# Writes the environment it is started with to the file descriptor it is given: `NAME=value` entries, each
+# ended by a NUL, and one more NUL to end the dump. Bytes in, bytes out: nothing in a value can break an
+# entry. The descriptor must still be the file autobot opened (its device and inode are the other two
+# arguments): a script may have reused the number for a file of its own, which must not get the dump.
+_DUMP = """\
+import os,sys
+f,d,i=map(int,sys.argv[1:4])
+try:s=os.fstat(f)
+except OSError:sys.exit(1)
+if(s.st_dev,s.st_ino)!=(d,i):sys.exit(1)
+os.write(f,b''.join(k+b'='+v+b'\\0' for k,v in os.environb.items())+b'\\0')
+"""
+# The descriptor the shell inherits the dump file on is at least this, out of the way of a script's own
+DUMP_FD = 200
 _DUMPED = "__autobot_dumped"
 
 
@@ -78,17 +90,18 @@ def shell_of(shebang: str) -> tuple[list[str], str] | None:
     return None if options is None else (command, options)
 
 
-def _wrapper(script: str, dump: str, options: str = "") -> str:
-    """Shell code that sources `script` and appends its environment to `dump`, before and after.
+def _wrapper(script: str, dump: tuple[int, int, int], options: str = "") -> str:
+    """Shell code that sources `script` and writes its environment to `dump`, before and after.
 
-    `options` are the shebang's: they are turned on with `set`, just before the script.
+    `dump` is the inherited descriptor of the dump file, and the file's device and inode. `options` are
+    the shebang's: they are turned on with `set`, just before the script.
 
-    The paths are quoted into the code: the script may change the positional parameters. The dump after
+    The path is quoted into the code: the script may change the positional parameters. The dump after
     the script is also taken when the script calls `exit 0` (the EXIT trap), and the script's exit status
     is the shell's. A failing script leaves one dump, so nothing is read back from it.
     """
     q = shlex.quote
-    dumper = f"{q(sys.executable)} -ISc {q(_DUMP)} {q(dump)}"
+    dumper = f"{q(sys.executable)} -ISc {q(_DUMP)} {dump[0]} {dump[1]} {dump[2]}"
     trap = f'[ $? -ne 0 ] || [ "${{2-}}" = {_DUMPED} ] || {dumper}'
     return (
         f"{dumper} || exit 125\n"
@@ -128,6 +141,46 @@ def _changes(data: bytes) -> Changes | None:
     )
 
 
+class _Terminated(BaseException):
+    """SIGTERM arrived while the script ran."""
+
+
+@contextlib.contextmanager
+def _terminable() -> Iterator[None]:
+    """While `prepare` runs, SIGTERM unwinds like an interrupt, so the script's shell is killed and its
+    temp file removed; then autobot ends by the signal, as it would have without this.
+
+    Only where SIGTERM has its default action and a handler can be set: in the main thread.
+    """
+
+    def unwind(signum: int, frame: object) -> None:
+        raise _Terminated
+
+    try:
+        default = signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+        if default:
+            signal.signal(signal.SIGTERM, unwind)
+    except ValueError:  # not the main thread
+        default = False
+    try:
+        yield
+    except _Terminated:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise
+    finally:
+        if default:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def _inherited(fd: int) -> int:
+    """A copy of `fd` for the shell to inherit, on a high number where there is one."""
+    try:
+        return fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, DUMP_FD)
+    except OSError:  # e.g. a limit on open files below that number
+        return os.dup(fd)
+
+
 def run(script: str, environ: dict[str, str] | None = None) -> Changes:
     """Run the rendered `prepare` script in `environ`, and return what it did to the environment.
 
@@ -145,29 +198,34 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
         shell, plain = (["/bin/sh"], ""), ["/bin/sh"]
         log.say("prepare: running local script (no shebang, using /bin/sh)")
     source = shell is not None and bool(sys.executable)  # the dump is written by this Python
+    dump: IO[bytes]
     changes: Changes | None = Changes({}, frozenset())
-    with contextlib.ExitStack() as files:  # every temp file is removed, whatever fails
+    # the temp file is removed, whatever fails
+    with _terminable(), contextlib.ExitStack() as files:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         tmp = f.name
         files.callback(os.unlink, tmp)
         with f:
             f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
         os.chmod(tmp, 0o700)
-        argv = [*plain, tmp]
+        argv, fds = [*plain, tmp], ()
         if shell is not None and source:
-            fd, dump = tempfile.mkstemp(prefix="_autobot_", suffix=".env")  # mode 0600: it holds the environment
-            files.callback(os.unlink, dump)
-            os.close(fd)
-            argv = [*shell[0], "-c", _wrapper(tmp, dump, shell[1]), tmp]
+            # the environment is read from a file without a name: nothing that holds its values can be
+            # left behind. A file, not a pipe: a process the script leaves running can't keep it waiting
+            dump = files.enter_context(tempfile.TemporaryFile())
+            fd = _inherited(dump.fileno())
+            files.callback(os.close, fd)
+            stat = os.fstat(fd)
+            argv, fds = [*shell[0], "-c", _wrapper(tmp, (fd, stat.st_dev, stat.st_ino), shell[1]), tmp], (fd,)
         try:
-            result = subprocess.run(argv, check=False, env=environ)
+            result = subprocess.run(argv, check=False, env=environ, pass_fds=fds)
         except OSError as e:
             raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
         if result.returncode != 0:
             raise RunError(f"prepare script failed with exit code {result.returncode}")
         if source:
-            with open(dump, "rb") as d:
-                changes = _changes(d.read())
+            dump.seek(0)
+            changes = _changes(dump.read())
     if changes is None:
         log.say("prepare: environment not read: the script ended its shell before the shell could report it", "warn")
         changes = Changes({}, frozenset())
