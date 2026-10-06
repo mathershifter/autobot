@@ -879,7 +879,7 @@ KeyError: 'x'
 
 When a plugin step was running, the first line names the plugin instead, whether the step that failed is the plugin step itself or a step the plugin runs with `ctx.run_steps(...)` (the nearest plugin step, if one runs another). A step that a plugin builds can fail in ways no step of a script can, e.g. a `call` to a function that isn't defined: `Unexpected error in plugin '<key>': this is a bug in the plugin, not in the script. Please report it to the plugin's author with the traceback below.` An exception outside a run, while the script is loaded or in `autobot schema`, is reported the same way, without the `at` line. `SystemExit` is not caught.
 
-With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report and the exit status are the same as without the flag.
+With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
 
 ### Exit status
 
