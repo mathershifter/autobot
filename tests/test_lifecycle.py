@@ -23,6 +23,7 @@ from conftest import (
     FakeDevice,
     ProbeExecutor,
     SentLog,
+    SpawnRecorded,
     Timeline,
     handler_names,
     make_doc,
@@ -1334,3 +1335,16 @@ def test_p5_24_attach_timeout_default_and_spawn_templated(
     _, args, kwargs = next(c for c in timeline.calls if c[0] == "attach")
     assert args[0] == "bash --norc -i"
     assert kwargs["timeout"] == 300
+
+
+def test_p5_82_session_attach_defaults_to_the_run_environment(spawned, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": a `Session.attach` without `env` (a plugin's own) spawns
+    in the environment a run uses, not in an empty one; an `env` that is given is used as it is."""
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("AB_OS", "os")
+    spawned.stop = True
+    for env, expected in [(None, {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}), ({"A": "b"}, {"A": "b"}), ({}, {})]:
+        with pytest.raises(SpawnRecorded):
+            Session([]).attach("true", **({} if env is None else {"env": env}))
+        assert spawned[-1][1]["env"] == expected

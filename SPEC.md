@@ -294,7 +294,7 @@ None of these is reported as the script's failure: `prepare script failed with e
 
 The spawned process gets these variables, each line overriding the ones before it:
 
-1. The environment Autobot was started with. So the process inherits `HOME`, `PATH`, `SSH_AUTH_SOCK`, the proxy and locale settings and everything else, as a command started from the same shell would.
+1. The environment Autobot was started with. So the process inherits `HOME`, `PATH`, `SSH_AUTH_SOCK`, the proxy and locale settings and everything else, as a command started from the same shell would. An entry whose name is empty (`=value`, which a program can be started with but no shell sets) is not part of the run's environment: no process can be spawned with it, and `env` in templates doesn't have it.
 2. `TERM=dumb` and `NO_COLOR=1`, whatever the terminal Autobot runs in: the session is read by a program, and a plain terminal keeps colors, line editing and pagers out of its output.
 3. What `attach.prepare` changed: the variables it set, and without the ones it unset (see [`prepare` as an rc script](#prepare-as-an-rc-script)).
 
@@ -306,7 +306,7 @@ The `spawn` command is looked up in the `PATH` of this environment, so a directo
 
 Inheriting everything has a price where the variables mean something to the command. A `spawn` that runs a local shell hands it `PROMPT_COMMAND`, `BASH_ENV`, `ENV`, `PS1` and the like, which change its prompt and what it runs when it starts, and `ssh` forwards `LANG` and the `LC_*` variables to a server that accepts them. A `prepare` can unset what is in the way.
 
-There are two ways to give the spawned command a variable: export it in `prepare`, or set it on the `spawn` line with `env`, which is a command like any other (`spawn: env LC_ALL=C ssh host`). `spawn` is a template, so the value can come from one (`spawn: env TOKEN={{ env.TOKEN }} ssh host`); the rendered command line is printed, so a secret interpolated there appears in the `>> attach:` line. A command that must inherit nothing is spawned the same way: `spawn: env -i PATH=/usr/bin:/bin TERM=dumb ssh host`.
+There are two ways to give the spawned command a variable: export it in `prepare`, or set it on the `spawn` line with `env`, which is a command like any other (`spawn: env LC_ALL=C ssh host`). `spawn` is a template, so the value can come from one, e.g. from an `--arg` or a default of the `env` section: `spawn: env "SITE={{ args.site }}" ssh host`. The rendered command line is split into words, so quote a templated value as here; otherwise a value with a space in it changes which command is run. A value that may contain `"` or `\` can't be quoted this way and belongs in `prepare`. The rendered command line is also printed, so a secret interpolated there appears in the `>> attach:` line. A command that must inherit nothing is spawned the same way: `spawn: env -i PATH=/usr/bin:/bin TERM=dumb ssh host`.
 
 ## Step Types
 
