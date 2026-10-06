@@ -194,8 +194,8 @@ class Runner:
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
-        self._environ = dict(os.environ)
-        self._prepared: set[str] = set()  # the variables `prepare` set or unset
+        # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
+        self._environ = {**os.environ, **DEFAULT_ENV}
         # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
         self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
@@ -286,10 +286,8 @@ class Runner:
         return spawn
 
     def _spawn_env(self) -> dict[str, str]:
-        """The spawned process's environment: autobot's own, as `prepare` changed it, plus `attach.env`."""
-        # a plain terminal, unless `prepare` said otherwise
-        plain = {k: v for k, v in DEFAULT_ENV.items() if k not in self._prepared}
-        return {**self._environ, **plain, **(self._config.attach.env or {})}
+        """The spawned process's environment: the run's, as `prepare` changed it, plus `attach.env`."""
+        return {**self._environ, **(self._config.attach.env or {})}
 
     def run(self):
         attach = self._config.attach
@@ -303,7 +301,6 @@ class Runner:
             self._environ.update(changes.set)
             for key in changes.unset:
                 self._environ.pop(key, None)
-            self._prepared = changes.set.keys() | changes.unset
             self._env = self._resolve_env()
         if spawn is None:
             spawn = self._spawn_command()

@@ -190,9 +190,9 @@ attach:
 
 - A script without a shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh` (`#!/bin/bash`, `#!/usr/bin/env bash`) is sourced by that shell. A script for any other interpreter (`#!/usr/bin/env python3`) is executed as a program and sets nothing: a process can't change its parent's environment.
 - Autobot takes what the script changed: an exported variable with a new value is set, one that is gone is unset. `_`, `SHLVL`, `PWD` and `OLDPWD` are never taken, and a `cd` in the script doesn't move Autobot.
-- Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
+- Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, Autobot's `TERM=dumb` and `NO_COLOR=1`, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
 - `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.
-- The spawned process gets, each overriding the one before: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, what `prepare` set (so a `prepare` that exports `TERM` keeps it), and the entries of `attach.env`. The `env` section's defaults are for templates and aren't passed on. For a process that inherits nothing, spawn it through `env`: `spawn: env -i PATH=/usr/bin:/bin ssh host`.
+- The spawned process gets, each overriding the one before: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, what `prepare` changed, and the entries of `attach.env`. `prepare` itself runs with `TERM=dumb` and `NO_COLOR=1`, and `{{ env.TERM }}` reads the same, so a `prepare` that exports or unsets `TERM` or `NO_COLOR` decides it. The `env` section's defaults are for templates and aren't passed on. For a process that inherits nothing, spawn it through `env`: `spawn: env -i PATH=/usr/bin:/bin ssh host`.
 - A script that exits non-zero aborts the run and sets nothing. The script's output stays its own, and Autobot prints only how many variables were set and unset, never a name or a value.
 - A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so. End such a script at the end of the file or with `return`.
 
@@ -499,7 +499,7 @@ Available context:
 
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
-| `env.*`          | The whole environment (`{{ env.HOME }}`), with the variables `attach.prepare` exported, plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
+| `env.*`          | The whole environment (`{{ env.HOME }}`), with `TERM=dumb` and `NO_COLOR=1` and the variables `attach.prepare` exported, plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |

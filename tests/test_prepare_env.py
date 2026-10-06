@@ -329,7 +329,7 @@ def test_p5_71_shell_bookkeeping_is_not_taken(prepared, monkeypatch: pytest.Monk
     r = prepared(f"{shebang}cd {tmp_path}\ncd /\n/bin/true\nexport SHLVL=42 PWD=/x OLDPWD=/y _=z AB_OS=os AB_A=1\n")
     assert os.getcwd() == cwd
     assert [r._environ[k] for k in ("SHLVL", "PWD", "OLDPWD", "_")] == ["7", "/before", "/older", "/before/cmd"]
-    assert r._environ == {**os.environ, "AB_A": "1"}
+    assert r._environ == {**os.environ, "TERM": "dumb", "NO_COLOR": "1", "AB_A": "1"}
 
 
 # -- P5-72: temp files and quoting ---------------------------------------------
@@ -554,19 +554,39 @@ def test_p5_76_plain_terminal_over_the_inherited_environment(spawn_env, monkeypa
     ("script", "term", "no_color"),
     [
         ("export TERM=vt100\n", "vt100", "1"),
+        ("export TERM=xterm-256color\n", "xterm-256color", "1"),
         ("unset TERM\nexport NO_COLOR=\n", None, ""),
         ("unset NO_COLOR\n", "dumb", None),
+        ("export NO_COLOR=0\n", "dumb", "0"),
         ("export TERM=dumb NO_COLOR=1 AB_A=1\n", "dumb", "1"),
-        ("export TERM=xterm-256color\n", "dumb", "1"),
+        ("export AB_A=1\n", "dumb", "1"),
     ],
-    ids=["term-set", "term-unset", "no-color-unset", "set-to-the-defaults", "exported-unchanged"],
+    ids=["term-set", "term-set-to-a-terminal's", "term-unset", "no-color-unset", "no-color-set", "set-to-the-defaults", "untouched"],
 )
-def test_p5_76_prepare_decides_term_and_no_color(spawn_env, monkeypatch, script: str, term, no_color):
-    """SPEC "The environment of the spawned process": line 3 over line 2, only for what `prepare` changed."""
-    monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setenv("NO_COLOR", "0")
-    env = spawn_env(attach_env=None, prepare=script)
+@pytest.mark.parametrize("os_env", [{}, {"TERM": "xterm-256color", "NO_COLOR": "0"}, {"TERM": "dumb", "NO_COLOR": "1"}], ids=["os-unset", "os-set", "os-plain"])
+def test_p5_76_prepare_decides_term_and_no_color(spawn_env, monkeypatch, tmp_path, os_env, script: str, term, no_color):
+    """SPEC "The environment of the spawned process": `prepare` runs with the plain terminal set, so whatever
+    it does to `TERM` or `NO_COLOR` is a change, whatever Autobot was started with."""
+    for name in ("TERM", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in os_env.items():
+        monkeypatch.setenv(name, value)
+    seen = tmp_path / "seen"
+    env = spawn_env(attach_env=None, prepare=f'echo "$TERM/$NO_COLOR/{{{{ env.TERM }}}}/{{{{ env.NO_COLOR }}}}" > {seen}\n' + script)
+    assert seen.read_text() == "dumb/1/dumb/1\n"
     assert (env.get("TERM"), env.get("NO_COLOR")) == (term, no_color)
+
+
+@pytest.mark.parametrize("os_env", [{}, {"TERM": "xterm-256color", "NO_COLOR": "0"}], ids=["os-unset", "os-set"])
+def test_p5_76_templates_read_the_environment_the_process_gets(prepared, monkeypatch, os_env):
+    """SPEC "The environment in templates": `env.TERM` and `env.NO_COLOR` are the run's, before and after."""
+    for name in ("TERM", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in os_env.items():
+        monkeypatch.setenv(name, value)
+    assert make_runner([]).render("{{ env.TERM }}/{{ env.NO_COLOR }}") == "dumb/1"
+    r = prepared("export TERM=vt100\nunset NO_COLOR\n", env={"NO_COLOR": "dflt"})
+    assert r.render("{{ env.TERM }}/{{ env.NO_COLOR }}") == "vt100/dflt"
 
 
 def test_p5_76_attach_env_overrides_everything(spawn_env, monkeypatch: pytest.MonkeyPatch):

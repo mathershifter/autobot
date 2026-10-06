@@ -182,11 +182,12 @@ def test_p5_64_mapping_methods_see_the_merged_view(environ: dict[str, str]):
     """SPEC "The environment in templates": one mapping; `env:` keys first as written, then the rest by name."""
     r = make_runner([], env={"AB_Y": "{{ env.AB_OS }}y", "AB_B": "unused", "AB_A": "a"})
     merged = {"AB_Y": "oy", "AB_B": "os-b", "AB_A": "a", "AB_EMPTY": "", "AB_OS": "o", "AB_Z": "z z"}
-    assert r.render("{{ env | length }}") == "6"
+    merged |= {"NO_COLOR": "1", "TERM": "dumb"}
+    assert r.render("{{ env | length }}") == "8"
     assert r.render("{{ env.keys() | join(',') }}") == ",".join(merged)
     assert r.render("{% for k in env %}{{ k }},{% endfor %}") == ",".join(merged) + ","
     assert r.render("{% for k, v in env | items %}{{ k }}={{ v }};{% endfor %}") == "".join(f"{k}={v};" for k, v in merged.items())
-    assert r.render("{{ env.items() | list | length }} {{ env.values() | list | first }}") == "6 oy"
+    assert r.render("{{ env.items() | list | length }} {{ env.values() | list | first }}") == "8 oy"
     assert json.loads(r.render("{{ env | tojson }}")) == merged
     assert r.render("{{ env }}") == str(merged)
 
@@ -197,7 +198,7 @@ def test_p5_64_variable_named_like_a_method_wins(environ: dict[str, str], name: 
     environ[name] = "from-os"
     r = make_runner([], env={"AB_REF": f"{{{{ env.{name} }}}}!"})
     assert r.render(f"{{{{ env.{name} }}}} {{{{ env['{name}'] }}}} {{{{ env.AB_REF }}}}") == "from-os from-os from-os!"
-    assert r.render("{{ env | length }}") == "6"
+    assert r.render("{{ env | length }}") == "8"
 
 
 def test_p5_64_env_cycle_and_depth_with_the_whole_environment(environ: dict[str, str]):

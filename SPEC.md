@@ -262,7 +262,7 @@ attach:
 - it has no shebang: the shell is `/bin/sh`;
 - its shebang names `sh`, `bash`, `dash`, `ksh` or `zsh`, by the interpreter's file name in whatever directory: that shell sources it. The shell is named directly, with at most the one argument a shebang line carries (`#!/bin/bash`, `#!/bin/sh -eu`), or through `env` (`#!/usr/bin/env bash`, `#!/usr/bin/env -S bash -eu`). The argument or arguments are the shell's options, as when the script is executed.
 
-In the script, `$0` is the temp file and there are no positional parameters, as for a script that is executed. Because it is sourced, `return` at its top level ends it like the end of the file.
+The script runs in the run's environment, a shell script and any other alike: the environment Autobot was started with, with `TERM=dumb` and `NO_COLOR=1` (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). In the script, `$0` is the temp file and there are no positional parameters, as for a script that is executed. Because it is sourced, `return` at its top level ends it like the end of the file.
 
 A script with any other shebang (`#!/usr/bin/env python3`, `#!/usr/bin/perl`, a shell not listed, `env` with other arguments) is executed as a program, and the variables it sets are not read back: a process can't change the environment of the process that started it. Everything else about it is the same: its output, its exit status, the temp file. It sets up what lives outside the environment (a tunnel, a ticket, a file).
 
@@ -286,8 +286,10 @@ The spawned process gets these variables, each line overriding the ones before i
 
 1. The environment Autobot was started with. So the process inherits `HOME`, `PATH`, `SSH_AUTH_SOCK`, the proxy and locale settings and everything else, as a command started from the same shell would.
 2. `TERM=dumb` and `NO_COLOR=1`, whatever the terminal Autobot runs in: the session is read by a program, and a plain terminal keeps colors, line editing and pagers out of its output.
-3. The variables `attach.prepare` set, and without the ones it unset (see [`prepare` as an rc script](#prepare-as-an-rc-script)). A `prepare` that gives `TERM` or `NO_COLOR` another value, or unsets one, said so on purpose, and gets its way over line 2. Only a change counts, as for every variable: a `prepare` that exports `TERM` with the value Autobot was started with changed nothing, and the process gets `TERM=dumb`; `attach.env` sets it whatever its value.
+3. What `attach.prepare` changed: the variables it set, and without the ones it unset (see [`prepare` as an rc script](#prepare-as-an-rc-script)).
 4. The entries of `attach.env`.
+
+Lines 1 and 2 are the run's environment from its start, and there is one environment everywhere: the `prepare` script itself runs with `TERM=dumb` and `NO_COLOR=1`, and `env` in templates has them, before `prepare` and after (see [The environment in templates](#the-environment-in-templates)). So whatever a `prepare` does to `TERM` or `NO_COLOR` is a change, and it gets its way whatever terminal Autobot was started in: `export TERM=xterm-256color` gives the process that `TERM`, and `unset NO_COLOR` gives it no `NO_COLOR`. The `TERM` and `NO_COLOR` Autobot was started with are not in the run's environment: neither a template nor `prepare` reads them.
 
 | | `attach.env` omitted or `{}` | `attach.env` with entries |
 |---|---|---|
@@ -670,7 +672,7 @@ Available context:
 
 | Variable | Source |
 |----------|--------|
-| `env` | The environment: every variable Autobot was started with, as `attach.prepare` changed them, and the defaults of the YAML's `env` section for the variables that aren't set (see [The environment in templates](#the-environment-in-templates)) |
+| `env` | The run's environment: every variable Autobot was started with, `TERM=dumb` and `NO_COLOR=1`, as `attach.prepare` changed them, and the defaults of the YAML's `env` section for the variables that aren't set (see [The environment in templates](#the-environment-in-templates)) |
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
 | `args` | CLI `--arg KEY=VALUE` arguments |
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check, embedded-script cleanup and the first prompt wait of a `cmd` with `after` don't change it. |
@@ -684,15 +686,15 @@ Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ item
 
 `env` holds one value for each variable name, taken from the first of these that has it:
 
-1. the environment: the one Autobot was started with, with the variables that [`attach.prepare`](#prepare-as-an-rc-script) set and without those it unset,
+1. the run's environment: the one Autobot was started with, with `TERM=dumb` and `NO_COLOR=1` set over it, then with the variables that [`attach.prepare`](#prepare-as-an-rc-script) set and without those it unset,
 2. the default of that name in the YAML's `env` section (see [Top-level fields](#top-level-fields)).
 
-So the precedence is, lowest to highest: a default of the `env` section, the environment Autobot was started with, a variable set by `prepare`. A variable that `prepare` unset is not in the environment: its default applies, if it has one.
+So the precedence is, lowest to highest: a default of the `env` section, the environment Autobot was started with, Autobot's `TERM=dumb` and `NO_COLOR=1`, a variable set by `prepare`. A variable that `prepare` unset is not in the environment: its default applies, if it has one. This is the environment the spawned process gets, before the entries of `attach.env` (see [The environment of the spawned process](#the-environment-of-the-spawned-process)): `{{ env.TERM }}` is `dumb` unless `prepare` changed it, whatever terminal Autobot runs in.
 
 So `{{ env.HOME }}`, `{{ env['SSH_AUTH_SOCK'] }}` and `{{ env.get('HTTPS_PROXY', '') }}` work without an `env` section, and a key of the `env` section is needed only to give a variable a default. A variable that is set to an empty string is set: `env.X` is `''`, and its default isn't used. The environment is read once, when the run starts, and changes once, when `prepare` has run.
 
 So `env` has two states, and a template sees the one of the moment it is rendered:
-- Before `prepare` has run: the environment Autobot was started with, and the defaults rendered against it. `attach.prepare` itself is rendered in this state, and so is an `attach.spawn` that doesn't read `env`.
+- Before `prepare` has run: the environment Autobot was started with, with `TERM=dumb` and `NO_COLOR=1`, and the defaults rendered against it. `attach.prepare` itself is rendered in this state, and so is an `attach.spawn` that doesn't read `env`.
 - Once `prepare` has run: the environment as the script left it, and the defaults rendered again, against it. Everything else is rendered in this state: an `attach.spawn` that reads `env`, every step, every prompt's `send`. A script without `prepare`, or whose `prepare` changes nothing, has the same `env` in both.
 
 The defaults are rendered once for each state. So after `prepare`, a default that references a variable `prepare` set has the new value, and a default whose own variable `prepare` set is not used: `env.KEY` is the value `prepare` set, also when the `prepare` template itself read the default.
