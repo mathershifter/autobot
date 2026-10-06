@@ -473,7 +473,7 @@ def test_p5_72_signal_while_prepare_runs(tmp_path: Path, sig: signal.Signals):
         assert b"S3CRET" not in left[0].read_bytes()
     else:
         assert left == []
-        assert proc.returncode == (-signal.SIGTERM if sig == signal.SIGTERM else 130), err
+        assert proc.returncode == -sig, err  # after Ctrl-C, too, the CLI ends from the signal
         assert "Traceback" not in err
 
 

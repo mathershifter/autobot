@@ -298,6 +298,8 @@ class Runner:
         spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
             raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
+        if "\0" in spawn:
+            raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
         return spawn
 
     def _spawn_env(self) -> dict[str, str]:

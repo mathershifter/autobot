@@ -86,9 +86,18 @@ class CleanWriter:
         if m and len(data) - m.start() <= ESCAPE_HOLD:
             data, self._held = data[: m.start()], data[m.start() :]
         if data:
-            self._stream.write(data)
+            self._write(data)
             self._stream.flush()
             log.echoed(data)
+
+    def _write(self, data: str):
+        try:
+            self._stream.write(data)
+        except UnicodeEncodeError:
+            # the stream's encoding can't represent a character the session sent (e.g. an ASCII stdout):
+            # write its escape rather than fail the step that was only reading
+            encoding = getattr(self._stream, "encoding", None) or "ascii"
+            self._stream.write(data.encode(encoding, "backslashreplace").decode(encoding))
 
     def flush(self):
         # pexpect flushes after every read, so this must not release what is held
@@ -98,7 +107,7 @@ class CleanWriter:
         """Write out what is still held: nothing more will come to complete it. The stream stays open."""
         held, self._held = self._held, ""
         if held:
-            self._stream.write(held)
+            self._write(held)
             log.echoed(held)
         self._stream.flush()
 

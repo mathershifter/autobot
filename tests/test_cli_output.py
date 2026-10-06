@@ -13,7 +13,7 @@ import pexpect
 import pydantic
 import pytest
 import yaml
-from conftest import make_config, make_doc
+from conftest import make_config, make_doc, plugin_dist
 
 from autobot import cli, log
 from autobot.models import Config
@@ -111,6 +111,17 @@ def test_p8_22_color_on_a_terminal(tmp_path: Path):
     assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho hi" in out
 
 
+def test_p8_22_nothing_but_the_documented_variables_decides(tmp_path: Path):
+    """SPEC "Output": whether stderr is a terminal, `TERM`, `NO_COLOR` and `FORCE_COLOR` decide, and nothing
+    else: rich's own `TTY_COMPATIBLE` neither styles a pipe nor unstyles a terminal."""
+    path = _write(tmp_path, PALETTE)
+    assert ESC not in piped(path, TTY_COMPATIBLE="1").stderr
+    out, _ = on_terminal(path, TTY_COMPATIBLE="0")
+    assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho hi" in out
+    out, _ = on_terminal(path, TTY_COMPATIBLE="1", NO_COLOR="1")
+    assert ESC not in out
+
+
 # -- the palette -------------------------------------------------------------------
 
 
@@ -171,6 +182,25 @@ def test_p8_24_session_output_is_literal_on_a_terminal(tmp_path: Path):
     assert status == 0
     assert MARKUP in out.split("\n")
     assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho '{MARKUP}'" in out
+
+
+ARROW = "printf 'a \\342\\206\\222 b\\n'"  # the bytes of U+2192, which ASCII and Latin-1 can't write
+
+
+@pytest.mark.parametrize(
+    ("encoding", "shown"),
+    [("ascii", b"a \\u2192 b"), ("latin-1", b"a \\u2192 b"), ("utf-8", "a \u2192 b".encode()), ("utf-8:strict", "a \u2192 b".encode())],
+)
+def test_p8_24_character_the_stdout_encoding_cannot_write_is_escaped(tmp_path: Path, encoding: str, shown: bytes):
+    """SPEC "Output": a character of the session's output that stdout's encoding can't represent is written as
+    its backslash escape, and the run goes on; a stdout that can represent it gets it unchanged."""
+    res = subprocess.run(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(_write(tmp_path, [{"cmd": ARROW, "register": "out"}, {"cmd": "echo next"}]))],
+        check=False, capture_output=True, timeout=120, env=_env(PYTHONIOENCODING=encoding),
+    )
+    assert res.returncode == 0, res.stderr
+    assert shown + b"\r\n" in res.stdout
+    assert b">> cmd: echo next" in res.stderr and b"step failed" not in res.stderr
 
 
 def test_p8_24_messages_have_no_automatic_highlighting(tmp_path: Path):
@@ -442,6 +472,46 @@ def test_p8_29_unexpected_error_and_interrupt_in_a_step(capsys: pytest.CaptureFi
     assert capsys.readouterr().err.splitlines() == [">> step failed (KeyError): 'x'", ">> step interrupted"]
 
 
+CATCHING_PLUGIN = '''
+import pydantic
+
+from autobot.models import CmdStep
+from autobot.steps import StepFailure
+
+
+class TryStep(pydantic.BaseModel):
+    attempt: str
+
+
+class TryExecutor:
+    key = "attempt"
+    model = TryStep
+
+    def execute(self, step, ctx, timeout):
+        try:
+            ctx.run_steps([CmdStep(cmd=step.attempt, timeout=5)])
+        except StepFailure:
+            pass
+'''
+
+
+def test_p8_29_step_failed_is_printed_even_if_a_plugin_then_catches_the_error(tmp_path: Path):
+    """SPEC "Output": the line is printed when the error leaves the step it was raised in, at once. A plugin
+    step that catches the error from `ctx.run_steps` can't take the line back: the run goes on and completes."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    plugin_dist(root, "attempt", CATCHING_PLUGIN, "TryExecutor")
+    res = piped(_write(tmp_path, [{"attempt": "false"}, {"cmd": "true"}]), PYTHONPATH=str(root))
+    assert res.returncode == 0, res.stderr
+    assert res.stderr.splitlines() == [
+        ">> attach: bash --norc --noprofile -i",
+        ">>   cmd: false",
+        ">>   step failed (StepFailure): command returned exit code 1",
+        ">> cmd: true",
+        ">> run completed",
+    ]
+
+
 # -- a message starts on a line of its own -------------------------------------------
 
 STEPS = [{"cmd": "echo hi"}, {"block": {"name": "b", "script": [{"cmd": "echo in"}]}}, {"cmd": "false"}]
@@ -564,12 +634,12 @@ script:
 REPORT = [
     "Validation errors:",
     "  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]",
-    "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return (got 'x') [return_with_send]",
+    "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return [return_with_send]",
     "  prompts.0.expect.1: invalid regex '(': missing ), unterminated subpattern at position 0 [invalid_regex]",
     "  prompts.1.send: send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, "
-    "on, off, true, false and numbers as booleans or numbers) (got true) [send_type]",
+    "on, off, true, false and numbers as booleans or numbers) [send_type]",
     "  errors.0: an errors pattern must not be empty: an empty regex matches any output, so every command would fail "
-    "(got '') [string_too_short]",
+    "[string_too_short]",
     "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
     "  attach.timeout: invalid duration: 5 minutes [value_error]",
     "  attach.env.DEBUG: an environment value is a string, and unquoted this one is a boolean (true); quote it to set "
@@ -640,6 +710,126 @@ def test_p8_28_validation_report_of_a_document_error(tmp_path: Path, raw: str, l
     assert res.stderr.splitlines() == ["Validation errors:", line]
 
 
+SH = {"name": "sh", "expect": "x"}
+SECRETS = {
+    "send-on-a-return-prompt": {"prompts": [{**SH, "return": True, "send": "hunter2-secret"}]},
+    "send-number": {"prompts": [SH, {"name": "pin", "expect": "PIN:", "send": 20240917}]},
+    "send-each-part": {"prompts": [SH, {"name": "pin", "expect": "PIN:", "send": {"each": 20240917}}]},
+    "send-each-field": {
+        "prompts": [SH, {"name": "l", "send": {"each": "vars.c", "fields": [{"match": "x", "field": 20240917}]}}]
+    },
+    "block-prompt-send": {
+        "script": [{"block": {"name": "b", "prompts": [{**SH, "return": True, "send": "hunter2-secret"}]}}]
+    },
+    "line-number": {"script": [{"line": 20240917}]},
+    "line-list-item": {"script": [{"line": ["enable", 20240917]}]},
+    "line-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"line": 20240917}]}}]},
+    "env-value": {"env": {"PASSWORD": 20240917}},
+    "attach-env-value": {"attach": {"spawn": "sh", "env": {"PASSWORD": 20240917}}},
+    "env-not-a-mapping": {"env": "hunter2-secret"},
+}
+
+
+@pytest.mark.parametrize("case", SECRETS)
+def test_p8_28_value_that_would_be_sent_is_never_in_the_report(tmp_path: Path, case: str):
+    """SPEC "CLI": the report shows no value for an error at a prompt's `send` (the parts of a `sendEach`
+    included), at a `line` or at an `env` or `attach.env` value: it may be a password."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | SECRETS[case]))
+    res = piped(path)
+    lines = res.stderr.splitlines()
+    assert res.returncode == 1 and lines[0] == "Validation errors:" and len(lines) > 1
+    assert "hunter2" not in res.stderr and "20240917" not in res.stderr and "(got" not in res.stderr
+
+
+def test_p8_28_other_values_are_still_shown(tmp_path: Path):
+    """The rule is about those locations only: a `cmd`, a prompt's `expect` or a `fn` named `line` keep their value."""
+    doc = {
+        "prompts": [{"name": "sh", "expect": 5}],
+        "fn": {"line": {"script": 7}},
+        "script": [{"cmd": 20240917}, {"return": "many"}],
+    }
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | doc))
+    got = [line.rsplit(" [", 1)[0].rsplit(" (got ", 1)[-1] for line in piped(path).stderr.splitlines()[1:]]
+    assert got == ["5)", "7)", "20240917)", "'many')"]
+
+
+CONTROL_MSG = "a control value is one character, a letter or one of @ ` [ { \\ | ] } ^ ~ _ ?, got "
+VALIDATOR_PLUGIN = '''
+import pydantic
+
+
+class ShoutStep(pydantic.BaseModel):
+    shout: str
+
+    @pydantic.field_validator("shout")
+    @classmethod
+    def _check(cls, v):
+        raise ValueError("bad\\nvalue \\x1b[31mred\\ttab\\rend \\x07")
+
+
+class ShoutExecutor:
+    key = "shout"
+    model = ShoutStep
+
+    def execute(self, step, ctx, timeout):
+        pass
+'''
+
+
+@pytest.mark.parametrize(
+    ("doc", "line"),
+    [
+        ({"script": [{"control": "a\nb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'a\\nb' [control_char]"),
+        ({"script": [{"control": "a\rb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'a\\rb' [control_char]"),
+        ({"script": [{"control": "\tb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'\\tb' [control_char]"),
+        (
+            {"script": [{"control": "\x1b[31mred"}]},
+            "  script.0.control.control: " + CONTROL_MSG + "'\\x1b[31mred' [control_char]",
+        ),
+        (
+            {"script": [{"cmd": "true", "timeout": "5 min\nutes"}]},
+            "  script.0.cmd.timeout: invalid duration: 5 min\\nutes [value_error]",
+        ),
+        (
+            {"script": [], "fn": {"a\nb\x1b": {"script": 5}}},
+            "  fn.a\\nb\\x1b.script: Input should be a valid list (got 5) [list_type]",
+        ),
+        (
+            {"script": [{"cmd": "true", "after": {"k\ney": 1}}]},
+            "  script.0.cmd.after: Input should be a valid string (got a mapping with the key k\\ney) [string_type]",
+        ),
+    ],
+    ids=["newline", "carriage-return", "tab", "escape", "duration", "location", "mapping-key"],
+)
+def test_p8_28_control_characters_in_a_validation_error_are_escaped(tmp_path: Path, doc: dict, line: str):
+    """SPEC "CLI": an error is one line whatever its message, location or value holds: a control character is
+    written as its escape (`\\n`, `\\x1b`), so no line break and no ESC from the script reaches the terminal."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | doc))
+    res = piped(path, FORCE_COLOR="1")
+    assert res.returncode == 1
+    assert _plain(res.stderr).split("\n") == ["Validation errors:", line, ""]
+    # the only escape sequences are the report's own styles
+    assert ESC not in ANSI_ESCAPE_RE.sub("", res.stderr) and "\r" not in res.stderr and "\t" not in res.stderr
+    assert piped(path).stderr.split("\n") == ["Validation errors:", line, ""]
+
+
+def test_p8_28_control_characters_in_a_plugin_models_message_are_escaped(tmp_path: Path):
+    """The rule holds for a message the CLI doesn't write itself: a plugin model's validator."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    plugin_dist(root, "shout", VALIDATOR_PLUGIN, "ShoutExecutor")
+    res = piped(_write(tmp_path, [{"shout": "x"}]), PYTHONPATH=str(root))
+    assert res.returncode == 1
+    assert res.stderr.split("\n") == [
+        "Validation errors:",
+        "  script.0.shout: bad\\nvalue \\x1b[31mred\\ttab\\rend \\x07 [value_error]",
+        "",
+    ]
+
+
 @pytest.mark.parametrize(
     ("type_", "msg", "value", "got"),
     [
@@ -653,23 +843,106 @@ def test_p8_28_validation_report_of_a_document_error(tmp_path: Path, raw: str, l
         ("string_type", "Input should be a valid string", [], " (got a list of 0 items)"),
         ("string_type", "Input should be a valid string", b"hi", " (got binary data)"),
         ("list_type", "Input should be a valid list", "x" * 80, " (got '" + "x" * 59 + "...)"),
-        ("string_too_short", "must not be empty", "", " (got '')"),
+        # a value that happens to be a word of the message is still shown: the type decides, not the text
+        ("list_type", "Input should be a valid list", "list", " (got 'list')"),
+        ("string_type", "Input should be a valid string", "string", " (got 'string')"),
+        ("int_type", "Input should be a valid integer", "valid", " (got 'valid')"),
+        ("some_type", "a is not allowed", "a", " (got 'a')"),
+        ("nul_character", "spawn must not contain a NUL character", "a\0b", " (got 'a\\x00b')"),
+        ("empty_command", "spawn must be a command, not an empty or blank string", "  ", " (got '  ')"),
+        # these types have a message that shows the value, or a name that says what it is
+        ("empty_command", "spawn must name a command: the first word of \"'' ls\" is empty", "'' ls", ""),
+        ("string_too_short", "a regex must not be empty", "", ""),
+        ("too_short", "expect must be a regex or a non-empty list of regexes", [], ""),
         ("value_error", "invalid duration: 5 minutes", "5 minutes", ""),
         ("value_error", "invalid duration: null", None, ""),
         ("value_error", "invalid duration: true", True, ""),
-        ("string_type", "this one is a boolean (false); quote it", False, ""),
+        ("value_error", "invalid duration: nan (not a finite number)", float("nan"), ""),
+        ("value_error", "invalid duration: b'hi'", b"hi", ""),
         ("control_char", "one character, got 'ab'", "ab", ""),
         ("invalid_regex", "invalid regex '(': missing )", "(", ""),
         ("unsupported_version", "autobot 2026-08 is no longer supported", "2026-08", ""),
-        ("some_type", "a is not allowed", "a", " (got 'a')"),
+        ("unsupported_version", "unsupported autobot version '2026'; expected 2026-10", 2026, ""),
+        ("undefined_function", "call to undefined function 'nope'", "nope", ""),
         ("missing", "Field required", {"a": 1}, ""),
         ("extra_forbidden", "Extra inputs are not permitted", "5s", ""),
     ],
 )
 def test_p8_28_offending_value_is_shown_unless_the_message_shows_it(type_: str, msg: str, value: object, got: str):
     """The value is written as YAML writes it, cut at 60 characters; a mapping shows its keys and a list its
-    length. A missing key and an unknown key have no value worth showing."""
+    length. Whether it is shown depends on the error's type: not for the types whose message shows the value
+    or whose name says what it is, and not for a missing or an unknown key."""
     assert cli._got(type_, msg, value) == got
+
+
+@pytest.mark.parametrize(
+    ("doc", "lines"),
+    [
+        ({"autobot": 2026}, ["  autobot: unsupported autobot version '2026'; expected 2026-10 [unsupported_version]"]),
+        (
+            {"script": [{"sleep": float("nan")}]},
+            ["  script.0.sleep.sleep: invalid duration: nan (not a finite number) [value_error]"],
+        ),
+        ({"script": [{"sleep": b"hi"}]}, ["  script.0.sleep.sleep: invalid duration: b'hi' [value_error]"]),
+        ({"script": "list"}, ["  script: Input should be a valid list (got 'list') [list_type]"]),
+        # a value that is neither a string nor a list of strings is one error, not one for each of the two
+        (
+            {"script": [{"cmd": 5}]},
+            ["  script.0.cmd.cmd: Input should be a string or a list of strings (got 5) [string_type]"],
+        ),
+        (
+            {"script": [{"cmd": {"a": 1}}]},
+            ["  script.0.cmd.cmd: Input should be a string or a list of strings (got a mapping with the key a) [string_type]"],
+        ),
+        ({"script": [{"line": 5}]}, ["  script.0.line.line: Input should be a string or a list of strings [string_type]"]),
+        (
+            {"script": [{"control": 5}, {"cmd": "true", "assert": 7}]},
+            [
+                "  script.0.control.control: Input should be a string or a list of strings (got 5) [string_type]",
+                "  script.1.cmd.assert: Input should be a string or a list of strings (got 7) [string_type]",
+            ],
+        ),
+        # an entry of `expect` takes a string only: a list in it is `grouped_expect`
+        (
+            {"prompts": [{"name": "sh", "expect": ["x", 5]}]},
+            ["  prompts.0.expect.1: Input should be a valid string (got 5) [string_type]"],
+        ),
+        # a list with a bad item: the item is the error, at its index
+        (
+            {"script": [{"cmd": ["ok", 5, None]}]},
+            [
+                "  script.0.cmd.cmd.1: Input should be a valid string (got 5) [string_type]",
+                "  script.0.cmd.cmd.2: Input should be a valid string (got null) [string_type]",
+            ],
+        ),
+        ({"script": [{"line": ["ok", 5]}]}, ["  script.0.line.line.1: Input should be a valid string [string_type]"]),
+        # a mapping that only has keys named like the members of the union is left alone
+        ({"env": {"str": 5, "list[str]": 6}}, [
+            "  env.list[str]: Input should be a valid string [string_type]",
+            "  env.str: Input should be a valid string [string_type]",
+        ]),
+    ],
+    ids=["version", "nan", "binary", "word", "cmd", "cmd-mapping", "line", "control-assert", "expect-entry", "cmd-item", "line-item", "env-keys"],
+)
+def test_p8_28_one_line_for_one_mistake(tmp_path: Path, doc: dict, lines: list[str]):
+    """SPEC "CLI": the value is not repeated after a message that shows it, and a value that is neither a
+    string nor a list of strings is reported once, at the field, with what the field accepts."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.dump(make_doc([]) | doc))
+    res = piped(path)
+    assert res.stderr.splitlines() == ["Validation errors:", *lines]
+
+
+def test_p8_26_indentation_stops_at_eight_levels(tmp_path: Path):
+    """SPEC "Output": the indentation grows for eight levels and no further, so a deep recursion stays readable."""
+    fn = {"f": {"script": [{"call": "f"}]}}
+    res = piped(_write(tmp_path, [{"call": "f"}], fn=fn))
+    assert res.returncode == 3
+    calls = [line for line in res.stderr.splitlines() if line.endswith("call: f")]
+    assert len(calls) > 100
+    assert calls[:10] == [">> " + "  " * min(n, 8) + "call: f" for n in range(10)]
+    assert set(calls[8:]) == {">> " + "  " * 8 + "call: f"}
+    assert max(map(len, res.stderr.splitlines()[:-12])) < 120
 
 
 # -- log: the unit ------------------------------------------------------------------

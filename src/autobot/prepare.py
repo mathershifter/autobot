@@ -221,6 +221,11 @@ def _terminable() -> Iterator[None]:
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
+def _remove(path: str) -> None:
+    with contextlib.suppress(FileNotFoundError):  # the script may remove itself
+        os.unlink(path)
+
+
 def _inherited(fd: int) -> int:
     """A copy of `fd` for the shell to inherit, on a high number where there is one."""
     try:
@@ -252,7 +257,7 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
     with _terminable(), contextlib.ExitStack() as files:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         tmp = f.name
-        files.callback(os.unlink, tmp)
+        files.callback(_remove, tmp)
         with f:
             f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
         os.chmod(tmp, 0o700)
@@ -273,8 +278,10 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             raise RunError(f"prepare script failed with exit code {result.returncode}")
         if shell is not None:
             dump.seek(0)
-            with open(tmp, "rb") as written:
-                changes = _changes(dump.read(), written.read().endswith(_FAILED))
+            failed = False
+            with contextlib.suppress(FileNotFoundError), open(tmp, "rb") as written:
+                failed = written.read().endswith(_FAILED)
+            changes = _changes(dump.read(), failed)
     if changes.unread:
         log.say(f"prepare: environment not read: {changes.unread}", "warn")
     elif changes.set or changes.unset:
