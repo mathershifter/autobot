@@ -672,6 +672,7 @@ attach:
     #!/bin/bash
     arr=(a b c)
     {% raw %}echo "${#arr[@]}"{% endraw %}
+  spawn: ssh host
 ```
 
 Available context:
