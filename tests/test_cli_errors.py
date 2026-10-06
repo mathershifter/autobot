@@ -122,11 +122,12 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
         [{"cmd": "true"}], {"spawn": "true"}, "connection closed before any output from 'true' (exit status 0)", None,
     ),
     "responses-exhausted": (
-        # the echo of the command shows `PIN:` twice, and there is one PIN to answer with
-        [{"cmd": "printf 'PIN:'; read a; printf 'PIN:'; read b"}],
+        # the shell asks for a PIN twice, and there is one to answer with. The question is printed in two
+        # pieces, so the echo of the command doesn't show it: only the shell's own questions are answered
+        [{"cmd": "printf 'PI'; printf 'N:'; read a; printf 'PI'; printf 'N:'; read b"}],
         {"prompts": [SHELL_PROMPT, PIN], "vars": {"pins": ["1234"]}},
         "prompt 'pin': responses exhausted",
-        "script.0 (cmd: printf 'PIN:'; read a; printf 'PIN:'; read b)",
+        "script.0 (cmd: printf 'PI'; printf 'N:'; read a; printf 'PI'; printf 'N:'; read b)",
     ),
     "block-send-each": (
         [{"block": {"name": "b", "prompts": [SHELL_PROMPT, {**PIN, "send": {"each": "vars.nope"}}]}}],
@@ -157,10 +158,9 @@ def test_p6_83_cli_expected_run_failure_has_no_traceback(case: str, tmp_path: Pa
     assert "Run failed" not in res.stdout
     # a failure after the spawn wait still breaks out; one before it has nothing to break out of
     assert (">> breakout: detaching" in res.stderr.splitlines()) == (at is not None)
-    # the breakout's own steps fail where the shell is gone; a shell still at its `PIN:` question may or may
-    # not get back to a prompt in time
-    if case != "responses-exhausted":
-        assert log.exists() == (at is not None and case != "connection-closed")
+    # and its steps get through, also from a shell that is still waiting at a question (the breakout's
+    # Ctrl-C ends that); only where the shell is gone do they fail
+    assert log.exists() == (at is not None and case != "connection-closed")
 
 
 def _main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[Any, str, str]:
@@ -378,37 +378,41 @@ def test_p6_85_paths_of_attach_script_and_block_enter(tmp_path: Path, part: str,
     assert _lines(res)[1:] == [f"  at {at}"]
 
 
+FAILS = {"when": "{{ nope }}"}  # an undefined variable: the step fails before it does anything
+
+
 @pytest.mark.parametrize(
     ("step", "what"),
     [
-        ({"cmd": "echo " + "x" * 100}, "cmd: echo " + "x" * 67 + "..."),
-        ({"cmd": "\n\n  echo first\necho second\n"}, "cmd: echo first"),
-        ({"cmd": "#!/bin/sh\necho hi\n"}, "cmd: #!/bin/sh"),
-        ({"cmd": []}, "cmd"),
-        ({"cmd": ["echo {{ vars.v }}"]}, "cmd: echo {{ vars.v }}"),
-        ({"line": "hunter2"}, "line"),
-        ({"line": ["a", "b"]}, "line"),
-        ({"return": 2}, "return"),
-        ({"control": "c"}, "control"),
-        ({"sleep": "1s"}, "sleep"),
-        ({"call": "f"}, "call: f"),
-        ({"block": {"name": "Host Console"}}, "block: Host Console"),
+        ({"cmd": "echo " + "x" * 100, **FAILS}, "cmd: echo " + "x" * 67 + "..."),
+        ({"cmd": "\n\n  echo first\necho second\n", **FAILS}, "cmd: echo first"),
+        ({"cmd": "#!/bin/sh\necho hi\n", **FAILS}, "cmd: #!/bin/sh"),
+        ({"cmd": [], **FAILS}, "cmd"),
+        ({"cmd": ["echo {{ vars.v }}"], **FAILS}, "cmd: echo {{ vars.v }}"),
+        ({"cmd": ["echo a", "echo b", "echo c"], **FAILS}, "cmd: echo a (+2 more)"),
+        ({"line": "hunter2", **FAILS}, "line"),
+        ({"line": ["a", "b"], **FAILS}, "line"),
+        ({"return": 2, **FAILS}, "return"),
+        ({"control": "c", **FAILS}, "control"),
+        ({"sleep": "5s"}, "sleep"),
+        ({"call": "f", **FAILS}, "call: f"),
+        ({"block": {"name": "Host Console"}, **FAILS}, "block: Host Console"),
     ],
-    ids=["long", "first-line", "embedded", "empty-list", "template", "line", "lines", "return", "control", "sleep", "call", "block"],
+    ids=[
+        "long", "first-line", "embedded", "empty-list", "template", "list", "line", "lines", "return", "control",
+        "sleep", "call", "block",
+    ],
 )
-def test_p6_85_what_a_step_is_called_in_a_report(step: dict, what: str):
-    """A `cmd` shows its first line as written, not rendered, cut at 72 characters; `call` and `block` their
-    name. A `line` shows nothing of what it sends: it may be a password, which the session never echoes."""
-    runner = Runner(make_config([step], fn={"f": {"script": []}}, step_timeout=None), {})
-    seen: list[tuple[StepRef, ...]] = []
-
-    def record(_step: object) -> None:
-        seen.append(tuple(runner._stack))
-
-    runner._step = record  # type: ignore[method-assign]
-    runner.run_steps(runner.config.script)
-    assert seen == [(StepRef("script.0", next(iter(step)), what),)]
-    assert runner._stack == []
+def test_p6_85_what_a_step_is_called_in_a_report(tmp_path: Path, step: dict, what: str):
+    """SPEC "CLI": in the `at` line a `cmd` shows its first line as written, not rendered, cut at 72 characters;
+    `call` and `block` their name. A `line` shows nothing of what it sends: it may be a password, which the
+    session never echoes."""
+    # a `sleep` has no `when` to fail it: it fails because the step before it has closed the connection
+    script = [{"line": "exit"}, step] if "sleep" in step else [step]
+    res = run_cli(make_doc(script, fn={"f": {"script": []}}, step_timeout=None), tmp_path)
+    assert res.returncode == 3, res.stderr
+    assert _lines(res)[1:] == [f"  at script.{len(script) - 1} ({what})"]
+    assert "hunter2" not in res.stderr
 
 
 def test_p6_85_trail_is_set_once_by_the_innermost_step(monkeypatch: pytest.MonkeyPatch):
@@ -738,21 +742,20 @@ def _interrupt(tmp_path: Path, *cli_args: str) -> tuple[subprocess.CompletedProc
     )
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "autobot.cli", str(path), *cli_args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    try:
-        deadline = time.monotonic() + 30
-        while not started.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert started.exists(), "the script never started"
-        time.sleep(1)  # the next step, `sleep 30`, is sent and running
-        proc.send_signal(signal.SIGINT)
-        out, err = proc.communicate(timeout=60)
-    finally:
-        proc.kill()
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err), log, spawn
+    echo, messages = tmp_path / "stdout", tmp_path / "stderr"
+    with open(echo, "w") as out, open(messages, "w") as err:
+        proc = subprocess.Popen([sys.executable, "-m", "autobot.cli", str(path), *cli_args], stdout=out, stderr=err)
+        try:
+            # the session echoes the command once the shell has it: from then on `sleep 30` is what runs
+            deadline = time.monotonic() + 30
+            while "\nsleep 30" not in echo.read_text().replace("PROMPT$ ", "\n") and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert started.exists() and "sleep 30" in echo.read_text(), "the script never got to `sleep 30`"
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=60)
+        finally:
+            proc.kill()
+    return subprocess.CompletedProcess(proc.args, proc.returncode, echo.read_text(), messages.read_text()), log, spawn
 
 
 def _pids(cmdline: str) -> list[str]:
