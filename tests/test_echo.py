@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import time
 
 import pytest
-from conftest import BASH, FakeDevice
+from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.session import strip_echo
+from autobot.session import CommandError, strip_echo
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
 EOS_PROMPTS = [{"name": "eos", "expect": [r"^cmp474\(s1\)\(vrf:MGMT\)#"], "return": True}]
@@ -42,10 +43,10 @@ def _locales() -> set[str]:
     return {n.lower().replace("-", "") for n in out.split()}
 
 
-def command(length: int) -> str:
+def command(length: int, lead: str = "") -> str:
     """A command of `length` characters with no repeats near a margin, and blanks inside."""
     words = " ".join(f"w{i:03d}" for i in range(length))
-    return ("echo " + words)[:length].rstrip().ljust(length, "x")
+    return (f"echo {lead}" + words)[:length].rstrip().ljust(length, "x")
 
 
 def echo_of(cmd: str, wrap: str, again: bool = False, cols: int = COLS, prompt: str = EOS_PROMPT) -> str:
@@ -333,7 +334,7 @@ def readline(script: list[dict], lc_all: str, cols: int = NARROW) -> dict:
 @pytest.mark.parametrize("over", [-1, 1, 20, 100, 200], ids=["under", "over", "one-wrap", "two-wraps", "more-wraps"])
 def test_p8_32_readline_wrapped_echo_is_removed(over: int, cols: int):
     """In a single-byte locale readline writes the character after the margin, a return, and that
-    character again. (A line that ends at the margin makes it write the prompt again: see TEST_PLAN.)"""
+    character again. (A line that ends at the margin makes it write the prompt again: see P4-44.)"""
     cmd = command(full(cols) + over)
     out = readline([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], "C", cols)
     assert out["out"] == cmd[5:]
@@ -365,3 +366,101 @@ def test_p8_32_readline_wrapped_list_and_script():
     )
     assert out["out"] == f"{a[5:]}\n{b[5:]}"
     assert out["script"] == "\n".join(f"line{i}" for i in range(40))
+
+
+# -- P4-44: a prompt that the line editor writes again while it echoes --------------------------------
+
+
+def at_margin(cols: int, lead: str = "") -> str:
+    """A command that, after `PROMPT$ `, ends exactly at the right margin: in a single-byte locale readline
+    answers its Return with a blank, a return, cursor-up, the prompt and the line again."""
+    return command(full(cols), lead)
+
+
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_p4_44_redrawn_prompt_does_not_end_the_wait(cols: int):
+    """With `errors` and no `$?` check: each command registers its own output."""
+    first = at_margin(cols)
+    out = run(
+        [{"cmd": f"stty cols {cols}"}]
+        + [{"cmd": c, "register": n} for n, c in (("a", first), ("b", "echo second"), ("c", "echo third"))],
+        spawn=f"env TERM=vt100 LC_ALL=C {BASH}",
+        errors=["NOPE"],
+    )
+    assert (out["a"], out["b"], out["c"]) == (first[5:], "second", "third")
+
+
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_p4_44_error_of_a_command_with_a_redrawn_prompt_is_raised_on_it(cols: int):
+    fatal = at_margin(cols, "FATAL ")
+    script = [{"cmd": f"stty cols {cols}"}, {"cmd": fatal, "register": "a"}, {"cmd": "echo fine", "register": "b"}]
+    runner = make_runner(script, spawn=f"env TERM=vt100 LC_ALL=C {BASH}", errors=["^FATAL"])
+    with pytest.raises(CommandError, match="command error: FATAL"):
+        runner.run()
+    assert "b" not in runner.config.vars
+    # ignored, the error leaves the command its output and the next command its own
+    script[1]["ignore_error"] = True
+    out = run(script, spawn=f"env TERM=vt100 LC_ALL=C {BASH}", errors=["^FATAL"])
+    assert (out["a"], out["b"]) == (fatal[5:], "fine")
+
+
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_p4_44_assert_sees_the_output_of_a_command_with_a_redrawn_prompt(cols: int):
+    cmd = at_margin(cols)
+    out = readline([{"cmd": cmd, "assert": "w001", "register": "out"}, {"cmd": "echo next", "register": "n"}], "C", cols)
+    assert (out["out"], out["n"]) == (cmd[5:], "next")
+
+
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_p4_44_list_with_redrawn_prompts_and_the_exit_code_check(cols: int):
+    a, b = at_margin(cols), at_margin(cols, "second ")
+    out = readline([{"cmd": [a, "echo two", b], "register": "out"}, {"cmd": "echo next", "register": "n"}], "C", cols)
+    assert out["out"] == f"{a[5:]}\ntwo\n{b[5:]}"
+    assert out["n"] == "next"
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+@pytest.mark.parametrize("cols", WIDTHS)
+def test_p4_44_multibyte_locale_writes_no_prompt_again(cols: int):
+    """A guard: in a multibyte locale readline moves the cursor instead, and nothing is held back."""
+    first = at_margin(cols)
+    out = run(
+        [{"cmd": f"stty cols {cols}"}]
+        + [{"cmd": c, "register": n} for n, c in (("a", first), ("b", "echo second"), ("c", "echo third"))],
+        spawn=f"env TERM=vt100 LC_ALL={UTF8} {BASH}",
+        errors=["NOPE"],
+    )
+    assert (out["a"], out["b"], out["c"]) == (first[5:], "second", "third")
+
+
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+def test_p4_44_waits_that_have_no_echo_to_finish_are_as_before(lc_all: str):
+    """On the same terminal: a command without output, an empty command, a `line` then a `cmd`, an
+    interrupted `line`, and a command sent with the echo off. None is held back for the idle poll."""
+    cmd = at_margin(COLS)
+    script = [
+        {"cmd": "true", "register": "nothing"},
+        {"cmd": "", "register": "empty"},
+        {"line": "echo from-line"},
+        {"cmd": "echo after-line", "register": "after_line"},
+        {"line": "sleep 30"},
+        {"sleep": "300ms"},
+        {"control": "c"},
+        {"cmd": "echo after-interrupt", "register": "after_interrupt", "ignore_error": True},
+        {"cmd": cmd, "register": "margin"},
+        {"cmd": "stty -echo"},
+        {"cmd": cmd, "register": "silent"},
+        {"cmd": "echo last", "register": "last"},
+    ]
+    started = time.monotonic()
+    out = readline(script, lc_all, COLS)
+    assert time.monotonic() - started < 4
+    assert out == {
+        "nothing": "",
+        "empty": "",
+        "after_line": "after-line",
+        "after_interrupt": "after-interrupt",
+        "margin": cmd[5:],
+        "silent": cmd[5:],
+        "last": "last",
+    }

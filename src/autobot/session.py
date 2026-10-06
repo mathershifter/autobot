@@ -89,6 +89,15 @@ def _extend(target: str, start: int, parts: list[str]) -> set[int]:
     return ends
 
 
+def _mid_echo(read: str, sent: str | None) -> bool:
+    """Whether `read`, all that came since the line `sent` went out, is its echo still being written:
+    no line break yet, and what it shows is the start of the line or all of it."""
+    if not sent or "\n" in read:
+        return False
+    target = _shown(sent)
+    return bool(target) and max(_extend(target, 0, [_shown(p) for p in read.split("\r")]), default=0) > 0
+
+
 def _exit_note(cld: pexpect.spawn) -> str:
     """The closed child's exit status, or the signal that ended it. SIGHUP is left out: closing the pty sends it."""
     if cld.exitstatus is not None:
@@ -250,23 +259,30 @@ class Session:
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
         self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
 
-    def _is_shell_prompt(self, text: str, whole: bool = False) -> bool:
+    def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
         """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
 
         `whole`: and the prompt's match ends where `text` ends, so nothing was read past the prompt.
+        `sent`: the line sent before `text` came, when no line break came before `text`.
         """
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
             return False  # the next get_prompt reports it
+        read = ""
         while True:
             found = [(m.start(), i, m.end()) for i, r in enumerate(regexes) if (m := r.search(text))]
             if not found:
                 return False
-            _, i, end = min(found)
+            start, i, end = min(found)
+            read += text[:start]
             if 1 < i < self._stray:
                 is_return = next(h for h in self._handlers if h.start <= i < h.end).is_return
-                return is_return and (not whole or end == len(text))
+                if not (is_return and _mid_echo(read, sent)):
+                    return is_return and (not whole or end == len(text))
+                read += "\r"  # a prompt written again inside the echo: get_prompt reads on
+            elif i == 0:
+                read += "\n"
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
     def _forget(self):
@@ -354,6 +370,7 @@ class Session:
         for h in self._handlers:
             h.reset()
         output: list[str] = []
+        redrawn: tuple[int, str, str] | None = None  # a prompt taken for one written again inside the echo
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -366,6 +383,11 @@ class Session:
                 continue
             if i == len(self._patterns) - 2:
                 # unmatched text stays buffered; it comes back with the next match
+                if redrawn and redrawn[0] == len(output) and not self._cld.buffer:
+                    # nothing came after it: it was the prompt
+                    output.pop()
+                    self._prompt = redrawn[1]
+                    return self._finish(output, sent, errors, capture, redrawn[2])
                 if not solicited and all(h.is_fresh for h in self._handlers):
                     self._cld.sendline("")
                     solicited = True
@@ -379,8 +401,14 @@ class Session:
             for h in self._handlers:
                 if h.start <= i < h.end:
                     if h.is_return:
+                        if _mid_echo("".join(output), sent):
+                            # the line editor wrote the prompt again while echoing the line (readline does
+                            # for a line that ends at the right margin): the echo goes on from the row's start
+                            output.append("\r")
+                            redrawn = (len(output), before + str(self._cld.after), str(self._cld.after))
+                            break
                         self._prompt = before + str(self._cld.after)
-                        return self._finish(output, sent, errors, capture)
+                        return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
                     self._cld.sendline(h.respond(i - h.start))
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
@@ -390,7 +418,7 @@ class Session:
         return f"a shell prompt ({names})"
 
     def _finish(
-        self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool
+        self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool, match: str
     ) -> str:
         self._at_prompt = True
         text = "".join(output)
@@ -399,7 +427,7 @@ class Session:
             text = strip_echo(text, sent)
         if capture:
             self._ctx["before"] = text
-            self._ctx["match"] = str(self._cld.after or "") if self._cld else ""
+            self._ctx["match"] = match
         for pattern in errors or []:
             m = re.search(pattern, text, re.MULTILINE)
             if m:
@@ -424,8 +452,9 @@ class Session:
         self._ctx["match"] = str(self._cld.after or "")
         # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
         # session is at it, as after a prompt wait
-        line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")[2]
-        if not self._at_prompt and not self._cld.buffer and self._is_shell_prompt(line, whole=True):
+        _, broke, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
+        sent = None if broke else self._sent
+        if not self._at_prompt and not self._cld.buffer and self._is_shell_prompt(line, whole=True, sent=sent):
             self._at_prompt, self._prompt = True, line
         return idx
 
