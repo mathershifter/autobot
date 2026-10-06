@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
@@ -118,20 +119,19 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
         log.say("prepare: running local script (no shebang, using /bin/sh)")
     source = shell is not None and bool(sys.executable)  # the dump is written by this Python
     changes: Changes | None = Changes({}, frozenset())
-    paths: list[str] = []
-    try:
+    with contextlib.ExitStack() as files:  # every temp file is removed, whatever fails
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         tmp = f.name
-        paths.append(tmp)
+        files.callback(os.unlink, tmp)
         with f:
             f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
         os.chmod(tmp, 0o700)
         argv = [*plain, tmp]
-        if source:
+        if shell is not None and source:
             fd, dump = tempfile.mkstemp(prefix="_autobot_", suffix=".env")  # mode 0600: it holds the environment
+            files.callback(os.unlink, dump)
             os.close(fd)
-            paths.append(dump)
-            argv = [*(shell or []), "-c", _wrapper(tmp, dump), tmp]
+            argv = [*shell, "-c", _wrapper(tmp, dump), tmp]
         try:
             result = subprocess.run(argv, check=False, env=environ)
         except OSError as e:
@@ -141,9 +141,6 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
         if source:
             with open(dump, "rb") as d:
                 changes = _changes(d.read())
-    finally:
-        for path in paths:
-            os.unlink(path)
     if changes is None:
         log.say("prepare: environment not read: the script ended its shell before the shell could report it", "warn")
         changes = Changes({}, frozenset())
