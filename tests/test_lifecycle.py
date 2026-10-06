@@ -205,7 +205,7 @@ def test_block_breakout_template_error_is_best_effort(attached, capsys):
         assert handler_names(r) == ["top"]
     finally:
         r.session.detach()
-    assert "block breakout error (ValueError): template error: " in capsys.readouterr().err
+    assert "block breakout error (ScriptError): template error: " in capsys.readouterr().err
 
 
 # -- attach lifecycle -------------------------------------------------------
@@ -522,7 +522,10 @@ def test_p5_33_banner_then_exit_runs_breakout(
         ">> prepare: running local script",
         ">> prepare: done",
         f">> attach: {spawn}",
+        ">> step failed (EOFError): connection closed while waiting for a shell prompt ('sh')",
         ">> breakout: detaching",
+        ">> line sent",
+        ">> step failed (EOFError): connection closed while waiting for a shell prompt ('sh')",
         ">> breakout error (EOFError): connection closed while waiting for a shell prompt ('sh')",
     ]
 
@@ -533,13 +536,17 @@ def _pids(cmdline: str) -> list[str]:
 
 @pytest.mark.parametrize("case", [*SPAWN_FAILURES, "banner"])
 def test_p5_34_spawn_failure_cli_exit_status(case: str, tmp_path: Path, fake_device: FakeDevice):
-    """SPEC CLI: a spawn failure is a run-time error: traceback, status 1, no child left."""
+    """SPEC CLI: a spawn failure fails the run: its message without a traceback, status 3, no child left."""
     if case == "banner":
         spawn, _ = fake_device("--exit-after-banner")
-        error = "EOFError"
+        message = "connection closed while waiting for a shell prompt ('sh')"
     else:
-        spawn, exc, _ = SPAWN_FAILURES[case]
-        error = f"{exc.__module__}.{exc.__qualname__}" if exc.__module__ != "builtins" else exc.__name__
+        spawn, _, _ = SPAWN_FAILURES[case]
+        message = {
+            "timeout": f"timed out after 1.0s waiting for the first output from 'sleep 9{os.getpid()}' (attach.timeout)",
+            "exits": "connection closed before any output from 'true' (exit status 0)",
+            "not-found": "The command was not found or was not executable: autobot_no_such_cmd.",
+        }[case]
     if case == "timeout":
         spawn = f"sleep 9{os.getpid()}"  # unique, so a leaked child can be found
     log = tmp_path / "log"
@@ -556,9 +563,9 @@ def test_p5_34_spawn_failure_cli_exit_status(case: str, tmp_path: Path, fake_dev
     finally:
         for pid in _pids(spawn) if case == "timeout" else []:
             os.kill(int(pid), signal.SIGKILL)
-    assert res.returncode == 1, res.stderr
-    assert "Traceback" in res.stderr
-    assert res.stderr.rstrip().splitlines()[-1].startswith(f"{error}: ")
+    assert res.returncode == 3, res.stderr
+    assert "Traceback" not in res.stderr
+    assert f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}" in res.stderr.splitlines()
     assert (">> breakout: detaching" in res.stderr) == (case == "banner")
     assert log.read_text().split() == ["prepare"]
     assert leaked == []

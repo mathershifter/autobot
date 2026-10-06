@@ -1083,11 +1083,13 @@ def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Ca
 
 
 def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
-    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed."""
+    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed.
+    `attach.env` also says which names a process environment takes (P6-90)."""
     names = {"type": "string"}
     props, defs = schema["properties"], schema["$defs"]
-    for node in (props["env"], props["vars"], props["fn"], defs["attach"]["properties"]["env"], defs["stepCommon"]):
+    for node in (props["env"], props["vars"], props["fn"], defs["stepCommon"]):
         assert node["propertyNames"] == names
+    assert defs["attach"]["properties"]["env"]["propertyNames"] == {**names, "pattern": "^[^=\\u0000]+$"}
 
     def objects(node: Any, path: str = "") -> Any:
         if isinstance(node, dict):
@@ -1322,3 +1324,49 @@ def test_p6_82_schema_and_models_give_breakout_the_shape_of_enter(schema: dict[s
     fields = models.Block.model_fields
     assert fields["breakout"].annotation == fields["enter"].annotation
     assert models.Attach.model_fields["breakout"].annotation == models.Attach.model_fields["script"].annotation
+
+
+# -- P6-90: what is handed to exec (attach.spawn, attach.env) -------------------
+
+ENV_NAME_MSG = "an environment variable name must not be empty or contain '=' or a NUL character (\\0)"
+NOT_FOR_EXEC = {
+    "spawn-nul": ({"spawn": "bash\0 --norc"}, ("attach", "spawn"), "nul_character"),
+    "spawn-nul-in-an-argument": ({"spawn": "echo a\0b"}, ("attach", "spawn"), "nul_character"),
+    "spawn-nul-in-a-template": ({"spawn": "{{ args.c }}\0"}, ("attach", "spawn"), "nul_character"),
+    "env-value-nul": ({"spawn": "sh", "env": {"A": "x\0y"}}, ("attach", "env", "A"), "nul_character"),
+    "env-name-nul": ({"spawn": "sh", "env": {"A\0B": "x"}}, ("attach", "env", "A\0B", "[key]"), "env_name"),
+    "env-name-equals": ({"spawn": "sh", "env": {"A=B": "x"}}, ("attach", "env", "A=B", "[key]"), "env_name"),
+    "env-name-empty": ({"spawn": "sh", "env": {"": "x"}}, ("attach", "env", "", "[key]"), "env_name"),
+}
+
+
+@pytest.mark.parametrize("case", NOT_FOR_EXEC)
+def test_p6_90_parity_what_exec_cannot_take_is_rejected(both_validate: Callable, case: str):
+    """SPEC "attach": a NUL in `spawn` or in an `attach.env` value, and an `attach.env` name that is empty or
+    has `=` or a NUL, can't be handed to a process: the schema and the models reject them when the script is
+    loaded."""
+    attach, loc, type_ = NOT_FOR_EXEC[case]
+    doc = d(attach=attach)
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (loc, type_)
+    assert "\0" not in err["msg"]  # the message names the character, it doesn't hold one
+    if type_ == "env_name":
+        assert err["msg"] == ENV_NAME_MSG
+
+
+@pytest.mark.parametrize(
+    "attach",
+    [
+        {"spawn": "ssh host", "env": {"TERM": "dumb", "A_b1": "", "lower": "x=y", "X Y": "multi\nline"}},
+        {"spawn": "ssh\thost\n", "env": {}},
+    ],
+)
+def test_p6_90_parity_ordinary_spawn_and_env_accepted(both_validate: Callable, attach: dict):
+    """Only those characters are refused: `=` in a value, an empty value and a line break are fine."""
+    assert both_validate(d(attach=attach)) == (True, True)
+
+
+def test_p6_90_top_level_env_is_not_handed_to_exec(both_validate: Callable):
+    """The top-level `env` holds template values, not a process environment: its names aren't checked."""
+    assert both_validate(d(env={"A=B": "x"})) == (True, True)

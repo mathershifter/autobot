@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +42,13 @@ def test_p6_23_cli_arg_without_equals_is_clean_error(tmp_path: Path):
     assert "Traceback" not in res.stderr
 
 
+def test_p6_23_cli_empty_arg_is_reported_with_its_colon(tmp_path: Path):
+    """The message keeps its `: ` when the argument it shows is empty."""
+    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "")
+    assert res.returncode == 1
+    assert res.stderr.splitlines()[-1] == "--arg requires KEY=VALUE format, got: "
+
+
 @pytest.mark.parametrize("raw", ["", "- a\n- b\n"], ids=["empty-file", "top-level-list"])
 def test_p6_24_cli_non_mapping_yaml_is_clean_error(tmp_path: Path, raw: str):
     """SPEC.md:12, 18: a non-mapping document is a validation error, not a crash."""
@@ -65,6 +73,19 @@ def _cli(*argv: str) -> subprocess.CompletedProcess[str]:
 
 def _first_line(stderr: str) -> str:
     return next(line for line in stderr.splitlines() if "RuntimeWarning" not in line)
+
+
+REPORT_LINE = re.compile(r"  (?P<loc>\S+): (?P<msg>.*?)(?: \(got (?P<got>.*)\))? \[(?P<type>\w+)\]")
+
+
+def _validation(res: subprocess.CompletedProcess[str]) -> list[dict[str, Any]]:
+    """The entries of a `Validation errors:` report: one line each, `  <loc>: <msg> (got <value>) [<type>]`."""
+    lines = res.stderr.split("Validation errors:\n", 1)[1].splitlines()
+    found = [REPORT_LINE.fullmatch(line) for line in lines]
+    assert all(found), lines
+    return [
+        {**m.groupdict(), "loc": [int(k) if k.isdigit() else k for k in m["loc"].split(".")]} for m in found if m
+    ]
 
 
 def _load_error(res: subprocess.CompletedProcess[str]) -> str:
@@ -153,7 +174,7 @@ def test_p6_29_cli_errors_print_markup_like_text_verbatim(tmp_path: Path):
 
     res = run_cli(None, tmp_path, raw='autobot: 2026-10\nscript: "[/x]"\n')
     assert _load_error(res) == "Validation errors:"
-    assert '"input": "[/x]"' in res.stderr
+    assert "  script: Input should be a valid list (got '[/x]') [list_type]" in res.stderr.splitlines()
 
     missing = tmp_path / "[/d]" / "[b]x.yaml"
     assert _load_error(_cli(str(missing))) == f"Cannot read script {missing}: No such file or directory"
@@ -223,7 +244,7 @@ def test_p6_67_cli_bad_pattern_is_validation_error_before_prepare(tmp_path: Path
     doc = make_doc([GOT], prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}") | change
     res = run_cli(doc, tmp_path)
     assert res.returncode == 1
-    assert "Validation errors:" in res.stderr and f'"type": "{type_}"' in res.stderr
+    assert "Validation errors:" in res.stderr and f" [{type_}]" in res.stderr
     assert "Traceback" not in res.stderr
     assert not prepared.exists() and not spawned.exists()
 
@@ -233,18 +254,19 @@ def test_p6_67_cli_empty_spawn_is_validation_error(tmp_path: Path):
     prepared = tmp_path / "prepared"
     res = run_cli(make_doc([GOT], prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=""), tmp_path)
     assert res.returncode == 1
-    assert "Validation errors:" in res.stderr and '"type": "empty_command"' in res.stderr
+    assert "Validation errors:" in res.stderr and " [empty_command]" in res.stderr
     assert "Traceback" not in res.stderr
     assert not prepared.exists()
 
 
 def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
-    """Only building the Runner is guarded: a template error in a step still fails at run time, after attach."""
+    """A template error in a step isn't a load error: it fails the run, after attach, with status 3."""
     res = run_cli(make_doc([{"cmd": "echo {{ nope( }}"}]), tmp_path)
-    assert res.returncode == 1
+    assert res.returncode == 3
     assert ">> attach: " in res.stderr
     assert "Script error" not in res.stderr
-    assert "ValueError: template error: " in res.stderr
+    assert f"Run failed in {tmp_path / 'script.autobot.yaml'}: template error: " in res.stderr
+    assert "Traceback" not in res.stderr
 
 
 # -- duplicate mapping keys ------------------------------------------------------
@@ -429,7 +451,7 @@ def test_p6_46_cli_fields_list_of_names_is_validation_error_with_hint(tmp_path: 
     doc["prompts"][1]["expect"] = [["login:", "Password:"]]
     res = run_cli(doc, tmp_path)
     assert _load_error(res) == "Validation errors:"
-    errs = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    errs = _validation(res)
     assert [(e["loc"], e["type"]) for e in errs] == [
         (["prompts", 1, "send", "fields", 0], "fields_entry"),
         (["prompts", 1, "send", "fields", 1], "fields_entry"),
@@ -447,7 +469,7 @@ def test_p6_47_cli_old_version_is_validation_error_with_hint(tmp_path: Path):
     doc["autobot"] = "2026-08"
     res = run_cli(doc, tmp_path)
     assert _load_error(res) == "Validation errors:"
-    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    [err] = _validation(res)
     assert (err["loc"], err["type"]) == (["autobot"], "unsupported_version")
     assert err["msg"] == "autobot 2026-08 is no longer supported; use 2026-10"
     assert not (tmp_path / "prepared").exists()
@@ -489,7 +511,7 @@ def test_p6_55_cli_unquoted_send_scalar_is_validation_error_with_hint(
     text, log = _confirm_text(tmp_path, fake_device)
     res = run_cli(None, tmp_path, raw=text.replace("send: 'yes'", f"send: {value}"))
     assert _load_error(res) == "Validation errors:"
-    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    [err] = _validation(res)
     assert (err["loc"], err["type"], err["msg"]) == (["prompts", 1, "send"], "send_type", SEND_TYPE_MSG)
     assert FakeDevice.read(log) == []
 
@@ -512,7 +534,7 @@ def test_p6_56_cli_removed_prompt_forms_are_validation_errors_with_hint(
     doc["prompts"][1] = prompt
     res = run_cli(doc, tmp_path)
     assert _load_error(res) == "Validation errors:"
-    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    [err] = _validation(res)
     assert (err["loc"], err["type"]) == (loc, type_)
     assert SEQUENCE_HINT in err["msg"]
     assert "SPEC.md" not in err["msg"]
@@ -544,7 +566,7 @@ def test_p6_59_cli_empty_expect_or_match_is_validation_error(
     """SPEC prompts, sendEach: an empty expect or regex fails validation; rc 1, before prepare/spawn."""
     res = run_cli(None, tmp_path, raw=_marked_head(tmp_path) + "prompts:\n" + tail + "script:\n  - cmd: echo one\n")
     assert _load_error(res) == "Validation errors:"
-    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    [err] = _validation(res)
     assert (err["loc"], err["type"], err["msg"]) == (loc, type_, msg)
     assert not (tmp_path / "prepared").exists()
     assert not (tmp_path / "spawned").exists()
@@ -567,7 +589,7 @@ def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, lo
     """SPEC "YAML Script Structure": an empty value is invalid (omit the key); rc 1, before prepare/spawn."""
     res = run_cli(None, tmp_path, raw=_marked_head(tmp_path) + tail)
     assert _load_error(res) == "Validation errors:"
-    [err] = json.loads(res.stderr.split("Validation errors:\n", 1)[1])
+    [err] = _validation(res)
     assert err["loc"] == loc
     assert msg in err["msg"]
     assert not (tmp_path / "prepared").exists()

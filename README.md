@@ -17,8 +17,8 @@ pipx install git+https://github.com/mathershifter/autobot.git
 ## Usage
 
 ```
-autobot [run] <script.yaml> [-a KEY=VALUE ...]
-autobot schema
+autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
+autobot schema [--traceback]
 ```
 
 `autobot <script.yaml>` is short for `autobot run <script.yaml>`: anything other than `run`, `schema`, `-h` or `--help` as the first argument runs a script. To run a script file named `run` or `schema`, use `autobot run schema` or `autobot ./schema`.
@@ -26,13 +26,60 @@ autobot schema
 | Flag                              | Description                                                 |
 |-----------------------------------|-------------------------------------------------------------|
 | `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument accessible as `{{ args.KEY }}` in templates. Repeat the flag for more arguments; the value is everything after the first `=`, and the last value given for a key wins |
+| `--traceback`                     | Also print the Python traceback of an error that is reported without one (see [Errors and exit status](#errors-and-exit-status)) |
 | `-h`, `--help`                    | Show help (`autobot -h` lists the subcommands, `autobot run -h` the options) |
 
 `autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
 
-A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs (a failed `prepare`, a timeout, a closed connection, a failed step) is printed as a Python traceback on stderr, after any breakouts, and exits with status 1. Its last line names the error, e.g. `EOFError: connection closed while waiting for a shell prompt ('sh')`.
+A run that completes prints `>> run completed` and exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure (`Validation errors:`, then one line for each error: `  <location>: <message> [<type>]`, with the offending value where that helps, but never the value of a prompt's `send`, a `line` or an `env` entry), an `--arg` without `=`, a closed stdout (`>&-`; use `> /dev/null` to discard the session's output), a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs is reported after any breakouts have run; see [Errors and exit status](#errors-and-exit-status).
 
-Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
+Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed and otherwise exactly as the device sent it: it is never wrapped, cut or styled. So `autobot script.yaml > device.log` keeps the device's transcript, and `2> run.log` keeps what Autobot did. Where both go to the same terminal or file, each message starts on a line of its own, after the device's prompt.
+
+On a terminal Autobot's messages are styled so they stand apart from the device's output: the `>>` marker is blue for a step, green for something completed, yellow for a failure the run goes on from, red for the step that fails (`>> step failed (...): ...`, printed where it fails, before the breakouts), and dim for bookkeeping; an error report starts in red. The steps of a block or of a called function are indented under the line that starts them (`>>   cmd: ...`). The words are the same without the styles, and a pipe or a file gets plain text. Set `NO_COLOR` to turn the styles off on a terminal, or `FORCE_COLOR` to keep them in a pipe. A password is never among them: a `line` step prints `>> line sent`, and an answered prompt `>> prompt answered: <name>`, without the text. The full list of messages is in [SPEC.md](SPEC.md#output).
+
+A run on a terminal looks like this:
+
+```
+>> attach: ssh admin@sonic
+admin@sonic's password: 
+>> prompt answered: login
+admin@sonic:~$ 
+>> block enter: Upgrade
+>>   cmd: show version
+show version
+SONiC Software Version: SONiC.4.2.0
+admin@sonic:~$ 
+>> block completed: Upgrade
+>> breakout: detaching
+>> line sent
+>> run completed
+```
+
+### Errors and exit status
+
+An error while the script runs is reported after the breakouts have run and the session is closed:
+
+```
+Run failed in upgrade.autobot.yaml: timed out after 30.0s waiting for a shell prompt ('sonic')
+  at script.3.block.script.1 (cmd: sonic-installer install -y image.swi)
+```
+
+The first line says what went wrong, the `at` line where: the step's path in the script (the second step of the block that is the fourth step of `script`) and what it is. A step of a function is at `fn.<name>.script.<i>`, followed by a `called from` line for each `call` that led to it. A failed step, a timeout, a closed connection, a template error, a failed `prepare` and a `spawn` command that isn't found are all reported this way, without a Python traceback.
+
+Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
+
+Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
+
+| Status | Meaning |
+|--------|---------|
+| 0      | The run completed |
+| 1      | The script couldn't be loaded; nothing ran |
+| 2      | Malformed command line |
+| 3      | The run failed |
+| 70     | Unexpected error (a bug in Autobot or a plugin) |
+| 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
+
+`--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 
 ## Script Structure
 
@@ -108,7 +155,7 @@ The `attach` block controls how autobot connects to the remote console.
 
 The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
 
-If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`TimeoutError: timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`EOFError: connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (pexpect's `ExceptionPexpect`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails with `EOFError`, and the breakout runs (its errors are logged).
+If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (`The command was not found or was not executable: <command>`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails (`connection closed while waiting for a shell prompt (...)`), and the breakout runs (its errors are logged).
 
 ### Example
 
@@ -455,7 +502,7 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
   ignore_error: true
 ```
 
-`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`EOFError: connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for), template errors and prompt-response failures (`responses exhausted`) always abort the script.
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for), template errors and prompt-response failures (`responses exhausted`) always abort the script.
 
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 
@@ -506,6 +553,8 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
+
+A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these as a failed run with the step's path, and likewise a `TimeoutError`, an `EOFError` or a pexpect error, whether the session raises it or the plugin does. Any other exception that the plugin's own code raises is reported as a bug in the plugin, with its traceback. That includes an `OSError`, `UnicodeError` or `RecursionError` of the plugin's own; the same error from Autobot's session underneath, e.g. a write to a pty that is gone, is a failed run (see [Errors and exit status](#errors-and-exit-status)).
 
 ## Schema
 

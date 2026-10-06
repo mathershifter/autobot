@@ -7,12 +7,10 @@ import time
 from collections.abc import Callable
 
 import pexpect
-from rich.console import Console
 
-from .types import ANSI_ESCAPE_RE
+from . import log
+from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 
-# markup off: log lines echo errors that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
@@ -23,7 +21,7 @@ DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 STRAY_RE = re.compile(r"\A[\r\x00\x07]+(?=[^\r\n\x00\x07])")
 
 
-class CommandError(RuntimeError):
+class CommandError(RunError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
@@ -88,8 +86,18 @@ class CleanWriter:
         if m and len(data) - m.start() <= ESCAPE_HOLD:
             data, self._held = data[: m.start()], data[m.start() :]
         if data:
-            self._stream.write(data)
+            self._write(data)
             self._stream.flush()
+            log.echoed(data)
+
+    def _write(self, data: str):
+        try:
+            self._stream.write(data)
+        except UnicodeEncodeError:
+            # the stream's encoding can't represent a character the session sent (e.g. an ASCII stdout):
+            # write its escape rather than fail the step that was only reading
+            encoding = getattr(self._stream, "encoding", None) or "ascii"
+            self._stream.write(data.encode(encoding, "backslashreplace").decode(encoding))
 
     def flush(self):
         # pexpect flushes after every read, so this must not release what is held
@@ -99,7 +107,8 @@ class CleanWriter:
         """Write out what is still held: nothing more will come to complete it. The stream stays open."""
         held, self._held = self._held, ""
         if held:
-            self._stream.write(held)
+            self._write(held)
+            log.echoed(held)
         self._stream.flush()
 
 
@@ -133,7 +142,7 @@ class PromptHandler:
 
     def respond(self, i: int) -> str:
         if not self._sets:
-            raise RuntimeError(f"prompt '{self.name}': no response available")
+            raise RunError(f"prompt '{self.name}': no response available")
         slot = self.slots[i]
         if slot is None:
             slot = self._next_unused()
@@ -153,7 +162,7 @@ class PromptHandler:
 
     def _advance(self):
         if self._set + 1 >= len(self._sets):
-            raise RuntimeError(f"prompt '{self.name}': responses exhausted")
+            raise RunError(f"prompt '{self.name}': responses exhausted")
         self._set += 1
         self._used = set()
 
@@ -169,8 +178,8 @@ class SimpleHandler(PromptHandler):
     def respond(self, i: int) -> str:
         try:
             value = self._render(self._send)
-        except ValueError as e:
-            raise ValueError(f"prompt '{self.name}': {e}") from e
+        except ScriptError as e:
+            raise ScriptError(f"prompt '{self.name}': {e}") from e
         self._fired = True
         return value
 
@@ -288,7 +297,7 @@ class Session:
         except Exception as e:  # noqa: BLE001 - must not replace the error that is propagating
             if not failing:
                 raise
-            console.print(f">> close error ({type(e).__name__}): {e}")
+            log.say(f"close error ({type(e).__name__}): {e}", "warn")
 
     def get_prompt(
         self,
@@ -337,6 +346,7 @@ class Session:
                         self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture)
                     self._cld.sendline(h.respond(i - h.start))
+                    log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
     def _prompt_what(self) -> str:

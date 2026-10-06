@@ -1,24 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import os
 import subprocess
 import tempfile
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from jinja2 import StrictUndefined
-from rich.console import Console
 
-from .models import Config, PluginStep, Prompt, SendEach, Step, names_command
+from . import log
+from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, check_regex, check_template, text
+from .types import EnvError, RunError, ScriptError, check_regex, check_template, text
 from .types import render as render_template
 
-# markup off: log lines echo commands, names and errors that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 register_builtins(registry)
 
@@ -51,8 +51,8 @@ def _not_text(value: bool) -> str:
 def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list[str]]:
     """Credential sets from `send.each` (a `vars.a.b` path of mapping keys), one per item."""
 
-    def fail(problem: str) -> ValueError:
-        return ValueError(f"prompt '{name}': sendEach '{send.each}': {problem}")
+    def fail(problem: str) -> ScriptError:
+        return ScriptError(f"prompt '{name}': sendEach '{send.each}': {problem}")
 
     obj: Any = vars
     at = "vars"
@@ -89,6 +89,47 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
 
 
 ENV_DEPTH = 50
+WHAT_MAX = 72
+
+
+@dataclass(frozen=True)
+class StepRef:
+    """A step of the script, for error reports: its path, its key and what it does."""
+
+    path: str
+    key: str
+    what: str
+    plugin: bool = False
+
+
+def _ref(step: Any, path: str) -> StepRef:
+    if isinstance(step, PluginStep):
+        key = step.plugin_key_ or "plugin"
+        return StepRef(path, key, key, True)
+    fields = getattr(type(step), "model_fields", None)
+    if not fields:  # not a step model: the registry reports it
+        return StepRef(path, type(step).__name__, type(step).__name__)
+    # a built-in step's first field is its key
+    name, info = next(iter(fields.items()))
+    key, value = info.alias or name, getattr(step, name)
+    more = ""
+    if key == "block":
+        value = value.name
+    elif key == "cmd" and isinstance(value, list):
+        more = f" (+{len(value) - 1} more)" if len(value) > 1 else ""
+        value = value[0] if value else ""
+    elif key not in ("cmd", "call"):  # a `line` may be a password; the others say nothing more than the key
+        return StepRef(path, key, key)
+    # as written, not rendered, and only the first line
+    first = next((l for l in str(value).splitlines() if l.strip()), "").strip()
+    if len(first) > WHAT_MAX:
+        first = first[:WHAT_MAX] + "..."
+    return StepRef(path, key, f"{key}: {first}{more}" if first or more else key)
+
+
+def trail(error: BaseException) -> tuple[StepRef, ...]:
+    """The steps that were running when `error` was raised, outermost first; empty outside a step."""
+    return getattr(error, "autobot_trail", ())
 
 
 class _EnvRefs(Mapping[str, Any]):
@@ -142,6 +183,21 @@ class Runner:
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
+        self._stack: list[StepRef] = []
+        # the path of every step list of the script, by the list's identity: executors pass run_steps the list
+        self._paths: dict[int, str] = {}
+        self._index(config.attach.script, "attach.script")
+        self._index(config.script, "script")
+        self._index(config.attach.breakout, "attach.breakout")
+        for name, fn in config.fn.items():
+            self._index(fn.script, f"fn.{name}.script")
+
+    def _index(self, steps: list[Step], path: str):
+        self._paths[id(steps)] = path
+        for i, step in enumerate(steps):
+            if isinstance(step, BlockStep):
+                for part in ("enter", "script", "breakout"):
+                    self._index(getattr(step.block, part), f"{path}.{i}.block.{part}")
 
     @property
     def session(self) -> Session:
@@ -202,10 +258,10 @@ class Runner:
             first = first.removesuffix("\r")
             script = first + nl + rest
             argv: list[str] = []
-            console.print(">> prepare: running local script")
+            log.say("prepare: running local script")
         else:
             argv = ["/bin/sh"]
-            console.print(">> prepare: running local script (no shebang, using /bin/sh)")
+            log.say("prepare: running local script (no shebang, using /bin/sh)")
         f = tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
         )
@@ -217,28 +273,31 @@ class Runner:
             try:
                 result = subprocess.run([*argv, tmp], check=False)
             except OSError as e:
-                raise RuntimeError(
+                raise RunError(
                     f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}"
                 ) from e
             if result.returncode != 0:
-                raise RuntimeError(
+                raise RunError(
                     f"prepare script failed with exit code {result.returncode}"
                 )
         finally:
-            os.unlink(tmp)
-        console.print(">> prepare: done")
+            with contextlib.suppress(FileNotFoundError):  # the script may remove itself
+                os.unlink(tmp)
+        log.say("prepare: done", "ok")
 
     def run(self):
         attach = self._config.attach
         # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
         spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
-            raise ValueError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
+            raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
+        if "\0" in spawn:
+            raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
         timeout = self._get_timeout(attach)
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
 
-        console.print(f">> attach: {spawn}")
+        log.say(f"attach: {spawn}")
         try:
             self._session.attach(spawn, env=attach.env, timeout=timeout)
             try:
@@ -247,33 +306,56 @@ class Runner:
                 self.run_steps(self._config.script)
             finally:
                 if attach.breakout:
-                    console.print(">> breakout: detaching")
+                    log.say("breakout: detaching", "group")
                     try:
                         self._session.reset_handlers()
                         self.run_steps(attach.breakout)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        console.print(f">> breakout error ({type(e).__name__}): {e}")
+                        log.say(f"breakout error ({type(e).__name__}): {e}", "warn")
         except BaseException:
             self._session.detach(failing=True)  # a close that fails must not replace this error
             raise
         self._session.detach()
 
     def run_steps(self, steps: list[Step]):
-        for step in steps:
-            self._run_step(step)
+        path = self._paths.get(id(steps))
+        if path is None:
+            # a list built in code, e.g. by a plugin: named after the step that runs it
+            path = f"{self._stack[-1].path}.{self._stack[-1].key}" if self._stack else "steps"
+        for i, step in enumerate(steps):
+            self._run_step(step, f"{path}.{i}")
 
     def _get_timeout(self, step: Any) -> float:
         timeout = getattr(step, "timeout", None)
         return timeout if timeout is not None else self._default_timeout
 
-    def _run_step(self, step: Step):
+    def _run_step(self, step: Step, path: str = "steps.0"):
+        self._stack.append(_ref(step, path))
+        log.depth = len(self._stack) - 1
+        try:
+            self._step(step)
+        except BaseException as e:
+            # where it failed, for the CLI's report: set once, by the innermost step, which also says so
+            # at once, before any breakout runs
+            if not hasattr(e, "autobot_trail"):
+                e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
+                if isinstance(e, KeyboardInterrupt):
+                    log.say("step interrupted", "fail")
+                elif isinstance(e, Exception):
+                    log.say(f"step failed ({type(e).__name__}): {e}", "fail")
+            raise
+        finally:
+            self._stack.pop()
+            log.depth = max(len(self._stack) - 1, 0)
+
+    def _step(self, step: Step):
         timeout = self._get_timeout(step)
 
         after = getattr(step, "after", None)
         if after is not None:
             pattern = self.render(after)
             if not pattern:
-                raise ValueError("after: the pattern rendered to an empty regex, which matches at once")
+                raise ScriptError("after: the pattern rendered to an empty regex, which matches at once")
             check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 

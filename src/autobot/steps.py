@@ -5,8 +5,8 @@ import re
 import uuid
 from typing import TYPE_CHECKING
 
-from rich.console import Console
 
+from . import log
 from .models import (
     BlockStep,
     CallStep,
@@ -17,14 +17,12 @@ from .models import (
     SleepStep,
 )
 from .session import CommandError
-from .types import check_regex, ensure_list
+from .types import RunError, ScriptError, check_regex, ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext
     from .registry import StepRegistry
 
-# markup off: log lines echo commands, names and errors that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 # base64 chars per upload line; keeps each line (~600 chars) under the
 # smallest common canonical-mode line limit (MAX_CANON 1024 on BSD/macOS,
@@ -33,7 +31,7 @@ SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
 
 
-class StepFailure(RuntimeError):
+class StepFailure(RunError):
     """A command failure that `ignore_error` swallows (exit code, assert, upload)."""
 
 
@@ -58,7 +56,7 @@ class CmdExecutor:
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
                 ctx.session.sendline(cmd)
-                console.print(f">> cmd: {cmd}")
+                log.say(f"cmd: {cmd}")
             if lines:
                 output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
             self._check(step, ctx, "".join(output), timeout, probe=bool(lines))
@@ -67,7 +65,7 @@ class CmdExecutor:
                 output.append(e.output)
             if not step.ignore_error:
                 raise
-            console.print(f">> error ignored: {e}")
+            log.say(f"error ignored: {e}", "warn")
         self._register(step, ctx, "".join(output))
 
     @staticmethod
@@ -97,7 +95,7 @@ class CmdExecutor:
             rendered = [ctx.render(a) for a in assertions]
             for p in rendered:
                 if not p:
-                    raise ValueError("assert: a pattern rendered to an empty regex, which matches any output")
+                    raise ScriptError("assert: a pattern rendered to an empty regex, which matches any output")
                 check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
@@ -109,7 +107,7 @@ class CmdExecutor:
     def _register(self, step: CmdStep, ctx: RunnerContext, output: str) -> None:
         if step.register_:
             ctx.config.vars[step.register_] = output.strip()
-            console.print(f">> register: vars.{step.register_}")
+            log.say(f"register: vars.{step.register_}", "detail")
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
@@ -121,9 +119,9 @@ class CmdExecutor:
         if not script.endswith("\n"):
             script += "\n"  # jinja drops the trailing newline
         try:
-            console.print(f">> script: writing to {tmp}")
+            log.say(f"script: writing to {tmp}", "detail")
             self._upload(ctx, script.encode(), tmp, timeout)
-            console.print(f">> script: executing {tmp}")
+            log.say(f"script: executing {tmp}", "detail")
             ctx.session.sendline(tmp)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
             self._check(step, ctx, output, timeout)
@@ -132,7 +130,7 @@ class CmdExecutor:
                 output = e.output
             if not step.ignore_error:
                 raise
-            console.print(f">> error ignored: {e}")
+            log.say(f"error ignored: {e}", "warn")
         except BaseException:
             # e.g. a timeout: the script or an upload line may still be running
             interrupt = True
@@ -165,13 +163,13 @@ class CmdExecutor:
         try:
             if interrupt:
                 ctx.session.sendcontrol("c")
-                console.print(">> script: interrupt sent: ^C")
+                log.say("script: interrupt sent: ^C", "warn")
             ctx.session.get_prompt(timeout=timeout, capture=False)
             ctx.session.sendline(f"rm -f {tmp} {tmp}.b64")
             ctx.session.get_prompt(timeout=timeout, capture=False)
-            console.print(f">> script: cleaned up {tmp}")
+            log.say(f"script: cleaned up {tmp}", "detail")
         except Exception as e:  # noqa: BLE001 - best-effort, must not mask the step error
-            console.print(f">> script: cleanup of {tmp} failed ({type(e).__name__}): {e}")
+            log.say(f"script: cleanup of {tmp} failed ({type(e).__name__}): {e}", "warn")
 
 
 class SleepExecutor:
@@ -179,7 +177,7 @@ class SleepExecutor:
     model = SleepStep
 
     def execute(self, step: SleepStep, ctx: RunnerContext, timeout: float) -> None:
-        console.print(f">> sleep: {step.sleep}s")
+        log.say(f"sleep: {step.sleep}s")
         ctx.session.sleep(step.sleep)
 
 
@@ -191,8 +189,8 @@ class CallExecutor:
         fn = ctx.config.fn.get(step.call)
         if not fn:
             raise ValueError(f"undefined function: {step.call}")
+        log.say(f"call: {step.call}", "group")
         ctx.run_steps(fn.script)
-        console.print(f">> called {step.call}")
 
 
 class BlockExecutor:
@@ -200,7 +198,7 @@ class BlockExecutor:
     model = BlockStep
 
     def execute(self, step: BlockStep, ctx: RunnerContext, timeout: float) -> None:
-        console.print(f">> block enter: {step.block.name}")
+        log.say(f"block enter: {step.block.name}", "group")
         if step.block.prompts:
             saved_handlers = ctx.session.save_handlers()
             block_handlers = [ctx.build_handler(p) for p in step.block.prompts]
@@ -214,16 +212,16 @@ class BlockExecutor:
                 ctx.run_steps(step.block.script)
             finally:
                 if step.block.breakout:
-                    console.print(f">> block breakout: {step.block.name}")
+                    log.say(f"block breakout: {step.block.name}", "group")
                     try:
                         ctx.session.reset_handlers()
                         ctx.run_steps(step.block.breakout)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        console.print(f">> block breakout error ({type(e).__name__}): {e}")
+                        log.say(f"block breakout error ({type(e).__name__}): {e}", "warn")
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)
-        console.print(f">> block completed: {step.block.name}")
+        log.say(f"block completed: {step.block.name}", "ok")
 
 
 class LineExecutor:
@@ -233,6 +231,7 @@ class LineExecutor:
     def execute(self, step: LineStep, ctx: RunnerContext, timeout: float) -> None:
         for line in ensure_list(step.line):
             ctx.session.sendline(ctx.render(line), solicit=True)
+            log.say("line sent")  # not the text: it may be a password, which the session doesn't echo
 
 
 class ReturnExecutor:
@@ -242,6 +241,7 @@ class ReturnExecutor:
     def execute(self, step: ReturnStep, ctx: RunnerContext, timeout: float) -> None:
         for _ in range(step.newline_count):
             ctx.session.sendline("", solicit=True)
+            log.say("return sent")
 
 
 class ControlExecutor:
@@ -251,7 +251,7 @@ class ControlExecutor:
     def execute(self, step: ControlStep, ctx: RunnerContext, timeout: float) -> None:
         for char in ensure_list(step.control):
             ctx.session.sendcontrol(char)
-            console.print(f">> control sent: ^{char.upper()}")
+            log.say(f"control sent: ^{char.upper()}")
 
 
 def register_builtins(reg: StepRegistry):
