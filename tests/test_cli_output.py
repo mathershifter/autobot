@@ -13,7 +13,7 @@ import pexpect
 import pydantic
 import pytest
 import yaml
-from conftest import make_config, make_doc
+from conftest import make_config, make_doc, plugin_dist
 
 from autobot import cli, log
 from autobot.models import Config
@@ -638,6 +638,81 @@ def test_p8_28_validation_report_of_a_document_error(tmp_path: Path, raw: str, l
     res = piped(_invalid(tmp_path, raw))
     assert res.returncode == 1
     assert res.stderr.splitlines() == ["Validation errors:", line]
+
+
+CONTROL_MSG = "a control value is one character, a letter or one of @ ` [ { \\ | ] } ^ ~ _ ?, got "
+VALIDATOR_PLUGIN = '''
+import pydantic
+
+
+class ShoutStep(pydantic.BaseModel):
+    shout: str
+
+    @pydantic.field_validator("shout")
+    @classmethod
+    def _check(cls, v):
+        raise ValueError("bad\\nvalue \\x1b[31mred\\ttab\\rend \\x07")
+
+
+class ShoutExecutor:
+    key = "shout"
+    model = ShoutStep
+
+    def execute(self, step, ctx, timeout):
+        pass
+'''
+
+
+@pytest.mark.parametrize(
+    ("doc", "line"),
+    [
+        ({"script": [{"control": "a\nb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'a\\nb' [control_char]"),
+        ({"script": [{"control": "a\rb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'a\\rb' [control_char]"),
+        ({"script": [{"control": "\tb"}]}, "  script.0.control.control: " + CONTROL_MSG + "'\\tb' [control_char]"),
+        (
+            {"script": [{"control": "\x1b[31mred"}]},
+            "  script.0.control.control: " + CONTROL_MSG + "'\\x1b[31mred' [control_char]",
+        ),
+        (
+            {"script": [{"cmd": "true", "timeout": "5 min\nutes"}]},
+            "  script.0.cmd.timeout: invalid duration: 5 min\\nutes [value_error]",
+        ),
+        (
+            {"script": [], "fn": {"a\nb\x1b": {"script": 5}}},
+            "  fn.a\\nb\\x1b.script: Input should be a valid list (got 5) [list_type]",
+        ),
+        (
+            {"script": [{"cmd": "true", "after": {"k\ney": 1}}]},
+            "  script.0.cmd.after: Input should be a valid string (got a mapping with the key k\\ney) [string_type]",
+        ),
+    ],
+    ids=["newline", "carriage-return", "tab", "escape", "duration", "location", "mapping-key"],
+)
+def test_p8_28_control_characters_in_a_validation_error_are_escaped(tmp_path: Path, doc: dict, line: str):
+    """SPEC "CLI": an error is one line whatever its message, location or value holds: a control character is
+    written as its escape (`\\n`, `\\x1b`), so no line break and no ESC from the script reaches the terminal."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | doc))
+    res = piped(path, FORCE_COLOR="1")
+    assert res.returncode == 1
+    assert _plain(res.stderr).split("\n") == ["Validation errors:", line, ""]
+    # the only escape sequences are the report's own styles
+    assert ESC not in ANSI_ESCAPE_RE.sub("", res.stderr) and "\r" not in res.stderr and "\t" not in res.stderr
+    assert piped(path).stderr.split("\n") == ["Validation errors:", line, ""]
+
+
+def test_p8_28_control_characters_in_a_plugin_models_message_are_escaped(tmp_path: Path):
+    """The rule holds for a message the CLI doesn't write itself: a plugin model's validator."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    plugin_dist(root, "shout", VALIDATOR_PLUGIN, "ShoutExecutor")
+    res = piped(_write(tmp_path, [{"shout": "x"}]), PYTHONPATH=str(root))
+    assert res.returncode == 1
+    assert res.stderr.split("\n") == [
+        "Validation errors:",
+        "  script.0.shout: bad\\nvalue \\x1b[31mred\\ttab\\rend \\x07 (got 'x') [value_error]",
+        "",
+    ]
 
 
 @pytest.mark.parametrize(

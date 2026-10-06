@@ -128,6 +128,12 @@ def _got(type_: str, msg: str, value: object) -> str:
     return f" (got {shown})"
 
 
+def _visible(text: str) -> str:
+    """`text` on one line and safe for a terminal: every character that isn't printable (a line break, a tab,
+    ESC and the other control characters) as its escape, e.g. `\\n`, `\\x1b`."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
+
+
 def _traceback(args: argparse.Namespace | None, e: BaseException) -> None:
     if getattr(args, "traceback", False):
         log.more("".join(traceback.format_exception(e)).rstrip("\n"))
@@ -198,7 +204,8 @@ def _cmd_run(args):
         for err in e.errors():
             where = ".".join(map(str, err["loc"])) or "(document)"
             what = err["msg"].removeprefix("Value error, ")
-            log.problem(where, what + _got(err["type"], what, err["input"]), err["type"])
+            # the message is the model's, or a plugin model's, and may show a value of the script as it is
+            log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"])), err["type"])
         sys.exit(EXIT_LOAD)
 
     cli_args = {}
