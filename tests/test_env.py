@@ -1,4 +1,4 @@
-"""P5-17..22, P5-27..31, P5-61..64: environment handling (SPEC "Top-level fields", "The environment in templates")."""
+"""P5-18..22, P5-27..31, P5-61..64: environment handling (SPEC "Top-level fields", "The environment in templates")."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 
 import pytest
-from conftest import SpawnLog, SpawnRecorded, make_runner, run_vars
+from conftest import SpawnLog, SpawnRecorded, make_runner
 
 NESTED = {"AB_A": "a", "AB_B": "{{ env.AB_A }}-b", "AB_C": "{{ env.AB_B }}-c"}
 
@@ -17,22 +17,13 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_p5_17_attach_env_adds_to_the_inherited_env(monkeypatch: pytest.MonkeyPatch):
-    """SPEC "The environment of the spawned process": attach.env is set on top of the inherited environment."""
-    monkeypatch.setenv("AUTOBOT_KEPT", "1")
-    monkeypatch.setenv("PS1", "os-prompt> ")
-    # the run reaches its prompt only if attach.env's PS1 replaced the inherited one
-    out = run_vars([{"cmd": 'echo "kept=${AUTOBOT_KEPT:-unset}"', "register": "out"}])
-    assert out["out"] == "kept=1"
-
-
-def test_p5_18_attach_env_default_when_omitted(spawned: SpawnLog, monkeypatch: pytest.MonkeyPatch):
-    """SPEC "The environment of the spawned process": without attach.env, the inherited one with a plain terminal."""
+def test_p5_18_spawn_env_is_the_inherited_one_with_a_plain_terminal(spawned: SpawnLog, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The environment of the spawned process": the inherited environment with a plain terminal."""
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.delenv("NO_COLOR", raising=False)
     spawned.stop = True
     with pytest.raises(SpawnRecorded):
-        make_runner([], attach_env=None).run()
+        make_runner([]).run()
     _, kwargs = spawned[0]
     assert kwargs["env"] == {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}
 

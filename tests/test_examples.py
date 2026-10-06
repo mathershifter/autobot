@@ -4,12 +4,13 @@ prompts and nothing else."""
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from conftest import ROOT, SHELL_ENV, run_vars
+from conftest import ROOT, run_vars
 
 from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
@@ -326,7 +327,7 @@ def test_example_prompt_regex_registers_clean_output(name: str, ps1: str):
     out = run_vars(
         [{"cmd": "echo hello", "register": "a"}, {"cmd": "echo again {{ vars.a }}", "register": "b"}],
         prompts=shell_prompts(name),
-        attach_env={**SHELL_ENV, "PS1": ps1},
+        prepare=f"export PS1={shlex.quote(ps1)}\n",
     )
     assert out["a"] == "hello"
     assert out["b"] == "again hello"

@@ -302,10 +302,6 @@ class Runner:
             raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
         return spawn
 
-    def _spawn_env(self) -> dict[str, str]:
-        """The spawned process's environment: the run's, as `prepare` changed it, plus `attach.env`."""
-        return {**self._environ, **(self._config.attach.env or {})}
-
     def run(self):
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
@@ -325,7 +321,7 @@ class Runner:
 
         log.say(f"attach: {spawn}")
         try:
-            self._session.attach(spawn, env=self._spawn_env(), timeout=timeout)
+            self._session.attach(spawn, env=self._environ, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)

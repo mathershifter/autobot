@@ -605,6 +605,7 @@ def test_p8_25_streams_without_a_file_descriptor_are_not_shared(capsys: pytest.C
 
 INVALID = """\
 autobot: "2026-08"
+env: {DEBUG: true}
 prompts:
   - name: sh
     expect: ['^PROMPT\\$ $', '(']
@@ -617,7 +618,6 @@ errors: ['']
 attach:
   spawn: ''
   timeout: 5 minutes
-  env: {DEBUG: true}
 script:
   - cmd: echo start
     timout: 5s
@@ -634,6 +634,8 @@ script:
 REPORT = [
     "Validation errors:",
     "  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]",
+    "  env.DEBUG: an environment value is a string, and unquoted this one is a boolean (true); quote it to set "
+    "it as written, e.g. 'true' or 'yes' [string_type]",
     "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return [return_with_send]",
     "  prompts.0.expect.1: invalid regex '(': missing ), unterminated subpattern at position 0 [invalid_regex]",
     "  prompts.1.send: send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, "
@@ -642,8 +644,6 @@ REPORT = [
     "[string_too_short]",
     "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
     "  attach.timeout: invalid duration: 5 minutes [value_error]",
-    "  attach.env.DEBUG: an environment value is a string, and unquoted this one is a boolean (true); quote it to set "
-    "it as written, e.g. 'true' or 'yes' [string_type]",
     "  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]",
     "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control or a "
     "registered plugin step (got a mapping with the key cmdd) [invalid_step]",
@@ -725,7 +725,6 @@ SECRETS = {
     "line-list-item": {"script": [{"line": ["enable", 20240917]}]},
     "line-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"line": 20240917}]}}]},
     "env-value": {"env": {"PASSWORD": 20240917}},
-    "attach-env-value": {"attach": {"spawn": "sh", "env": {"PASSWORD": 20240917}}},
     "env-not-a-mapping": {"env": "hunter2-secret"},
 }
 
@@ -733,7 +732,7 @@ SECRETS = {
 @pytest.mark.parametrize("case", SECRETS)
 def test_p8_28_value_that_would_be_sent_is_never_in_the_report(tmp_path: Path, case: str):
     """SPEC "CLI": the report shows no value for an error at a prompt's `send` (the parts of a `sendEach`
-    included), at a `line` or at an `env` or `attach.env` value: it may be a password."""
+    included), at a `line` or at an `env` value: it may be a password."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(make_doc([]) | SECRETS[case]))
     res = piped(path)

@@ -40,13 +40,17 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 @pytest.fixture(autouse=True)
 def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The spawned shell inherits the suite's environment, and `env` in templates holds all of it: drop
-    what would change how bash behaves, the suite's own `AB_*` names, and names of mapping methods."""
+    what would change how bash behaves, the suite's own `AB_*` names, and names of mapping methods, and
+    give the shell the prompt that `SHELL_PROMPT` matches."""
     for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *dir({}), *(k for k in os.environ if k.startswith("AB_"))):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PS1", PS1)
 
 
 BASH = "bash --norc --noprofile -i"
-SHELL_ENV = {"TERM": "dumb", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]}
+PS1 = "PROMPT$ "
+# for a `Session.attach` of its own; a run's shell inherits its `PS1` from `_plain_shell_env`
+SHELL_ENV = {"TERM": "dumb", "PS1": PS1, "PATH": os.environ["PATH"]}
 SHELL_PROMPT = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
 RC_PROBE = "echo __AUTOBOT_RC=$?"
 
@@ -63,7 +67,6 @@ def make_doc(
     env: dict[str, str] | None = None,
     fn: dict[str, Any] | None = None,
     spawn: str = BASH,
-    attach_env: Any = _DEFAULT,
     attach_script: list[dict[str, Any]] | None = None,
     breakout: list[dict[str, Any]] | None = None,
     prepare: str | None = None,
@@ -79,10 +82,6 @@ def make_doc(
     attach: dict[str, Any] = {"spawn": spawn}
     if timeout is not None:
         attach["timeout"] = timeout
-    if attach_env is _DEFAULT:
-        attach["env"] = dict(SHELL_ENV)
-    elif attach_env is not None:
-        attach["env"] = attach_env
     if attach_script:
         attach["script"] = copy.deepcopy(attach_script)
     if breakout is not None:
