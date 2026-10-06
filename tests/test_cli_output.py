@@ -1,4 +1,4 @@
-"""P8-22..: what Autobot prints, where, and when it is styled (SPEC "CLI", Output)."""
+"""P8-22..29: what Autobot prints, where, and when it is styled (SPEC "CLI", Output)."""
 
 from __future__ import annotations
 
@@ -178,6 +178,14 @@ def test_p8_24_messages_have_no_automatic_highlighting(tmp_path: Path):
     cmd = 'echo "quoted" 12345 /usr/bin 10.0.0.1 True None'
     res = piped(_write(tmp_path, [{"cmd": cmd}]), FORCE_COLOR="1")
     assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0m{cmd}" in res.stderr.splitlines()
+
+
+def test_p8_24_control_characters_in_a_message(capsys: pytest.CaptureFixture[str]):
+    """SPEC "Output": in a message a tab becomes spaces up to the next multiple of eight columns, and a BEL,
+    backspace, vertical tab, form feed or carriage return is left out. A line break in it stays."""
+    log.say("cmd: a\tb\x07c\x08d\x0be\x0cf\rg")
+    log.say("error ignored: two\nlines", "warn")
+    assert capsys.readouterr().err == ">> cmd: a       bcdefg\n>> error ignored: two\nlines\n"
 
 
 def test_p8_24_long_line_is_not_wrapped_on_a_narrow_terminal(tmp_path: Path):

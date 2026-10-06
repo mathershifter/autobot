@@ -790,13 +790,13 @@ The line break goes to stderr, never to stdout, and none is written when the two
 >> block completed: Host Console
 ```
 
-A block's own lines (`block enter`, `block breakout`, `block completed`) and a `call:` line are at the level of the block or `call` step itself, and so is every other line a step prints (`error ignored`, `register`, `script: ...`). The steps of `attach.script`, `script` and `attach.breakout` are at the top level, as are the lines before and after them (`prepare`, `attach`, `breakout: detaching`, `close error`). The steps a plugin step runs with `ctx.run_steps(...)` are one level below it. A function has no line for its end: the next line at the level of its `call:` line, or above, is no longer part of it. The table above shows every line as at the top level. The session's output is never indented, and neither are the CLI's reports.
+A block's own lines (`block enter`, `block breakout`, `block completed`) and a `call:` line are at the level of the block or `call` step itself, and so is every other line a step prints (`error ignored`, `register`, `script: ...`). The steps of `attach.script`, `script` and `attach.breakout` are at the top level, as are the lines before and after them (`prepare`, `attach`, `breakout: detaching`, `close error`). The steps a plugin step runs with `ctx.run_steps(...)` are one level below it. A function has no line for its end: the next line at the level of its `call:` line, or above, is not part of it. The table above shows every line as at the top level. The session's output is never indented, and neither are the CLI's reports.
 
 Autobot says that a `line` step sent a line and that a prompt was answered, never what was sent: the text may be a password, and it shows only as far as the device echoes it. That goes for a `send` string and for the values of a `sendEach` alike. A `cmd` line is printed, since a command is echoed by the device anyway. The newline that a prompt wait sends on its own to an idle console (see [Prompt Handling](#prompt-handling-get_prompt)) prints no line.
 
 **The CLI's reports** have no marker: the load errors, `Run failed in ...`, `Interrupted` and `Unexpected error in ...` (see below). They start at the first column with what happened, then `: ` and the message.
 
-A message is printed as it is. Nothing in it is read as markup or as an emoji code, and numbers, quoted strings and paths get no highlighting. A message is one line whatever the width of the terminal: Autobot never wraps or cuts it.
+A message is printed as it is. Nothing in it is read as markup or as an emoji code, and numbers, quoted strings and paths get no highlighting. Only a few control characters are not passed on: a tab is written as spaces, up to the next multiple of eight columns, and a BEL, backspace, vertical tab, form feed or carriage return is left out. Autobot adds no line break to a message and never cuts it, whatever the width of the terminal.
 
 **Styles.** On a terminal the messages are styled; the words are the same with and without styles, and no meaning is carried by a style alone.
 
@@ -844,7 +844,7 @@ Run failed in <path>: <reason>
 | A timeout: waiting for a prompt, an `after` pattern, the `$?` result or the spawned process's first output | `TimeoutError` | `timed out after 30.0s waiting for a shell prompt ('sh')` |
 | A closed connection | `EOFError` | `connection closed while waiting for a shell prompt ('sh')` |
 | A `spawn` command that isn't found, or a process that can't be terminated when the session is closed | `pexpect.ExceptionPexpect` | `The command was not found or was not executable: sssh.` |
-| An operating-system error on the session's pty or a temp file, e.g. a line sent to a process that has exited | `OSError` | `[Errno 5] Input/output error` |
+| An operating-system error on the session's pty or on the temp file of the `prepare` script, e.g. a full disk | `OSError` | `[Errno 28] No space left on device` |
 | Text that can't be encoded for the session or the `prepare` script, e.g. the lone surrogate a non-UTF-8 byte of an `--arg` becomes | `UnicodeError` | `'utf-8' codec can't encode character '\udcff' in position 5: surrogates not allowed` |
 | Functions that call each other without end | `RecursionError` | `functions call each other too deeply (maximum recursion depth exceeded)` |
 
