@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from jinja2 import StrictUndefined
-from rich.console import Console
 
+from . import log
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
@@ -18,8 +18,6 @@ from .steps import register_builtins
 from .types import EnvError, RunError, ScriptError, check_regex, check_template, text
 from .types import render as render_template
 
-# markup off: log lines echo commands, names and errors that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 register_builtins(registry)
 
@@ -259,10 +257,10 @@ class Runner:
             first = first.removesuffix("\r")
             script = first + nl + rest
             argv: list[str] = []
-            console.print(">> prepare: running local script")
+            log.say("prepare: running local script")
         else:
             argv = ["/bin/sh"]
-            console.print(">> prepare: running local script (no shebang, using /bin/sh)")
+            log.say("prepare: running local script (no shebang, using /bin/sh)")
         f = tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
         )
@@ -283,7 +281,7 @@ class Runner:
                 )
         finally:
             os.unlink(tmp)
-        console.print(">> prepare: done")
+        log.say("prepare: done", "ok")
 
     def run(self):
         attach = self._config.attach
@@ -295,7 +293,7 @@ class Runner:
         if attach.prepare:
             self._run_prepare(self.render(attach.prepare))
 
-        console.print(f">> attach: {spawn}")
+        log.say(f"attach: {spawn}")
         try:
             self._session.attach(spawn, env=attach.env, timeout=timeout)
             try:
@@ -304,12 +302,12 @@ class Runner:
                 self.run_steps(self._config.script)
             finally:
                 if attach.breakout:
-                    console.print(">> breakout: detaching")
+                    log.say("breakout: detaching", "group")
                     try:
                         self._session.reset_handlers()
                         self.run_steps(attach.breakout)
                     except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        console.print(f">> breakout error ({type(e).__name__}): {e}")
+                        log.say(f"breakout error ({type(e).__name__}): {e}", "warn")
         except BaseException:
             self._session.detach(failing=True)  # a close that fails must not replace this error
             raise

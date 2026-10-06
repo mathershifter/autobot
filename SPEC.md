@@ -300,7 +300,7 @@ The session removes ANSI escape sequences that match `types.ANSI_ESCAPE_RE`: CSI
 
 Stripped text, which never contains a removed sequence:
 - The captured output of a command (see above), and so the text `assert` and `errors` patterns are matched against, the value `register` stores, and `session.before` after a shell prompt.
-- The session output echoed to the operator. Everything read from the session is written to stdout with the sequences removed (`session.CleanWriter`), while autobot's own `>> ...` messages and errors go to stderr. A sequence that arrives in two reads is removed like any other: when a read ends in the start of a sequence (an `ESC`, or `ESC [` with parameter and intermediate bytes but no final byte yet), the echo writes the text before it and holds the start back until the next read completes it. What is still held when the session is closed is written out then, as it is. At most 64 characters are held; a longer run after an `ESC` is no real sequence and is written out at once.
+- The session output echoed to the operator. Everything read from the session is written to stdout with the sequences removed (`session.CleanWriter`), while autobot's own `>> ...` messages and errors go to stderr (see [Output](#output)). A sequence that arrives in two reads is removed like any other: when a read ends in the start of a sequence (an `ESC`, or `ESC [` with parameter and intermediate bytes but no final byte yet), the echo writes the text before it and holds the start back until the next read completes it. What is still held when the session is closed is written out then, as it is. At most 64 characters are held; a longer run after an `ESC` is no real sequence and is written out at once.
 
 Raw text, with escape sequences as received:
 - `after` patterns are matched against the raw output stream, and the `session.before` and `session.match` set by an `after` match are raw: escape sequences, `\r\n` line endings and the command echo are all kept. A pattern such as `AABBCC` doesn't match output printed as `AA ESC[1m BB ESC[0m CC`; match around the sequence instead (e.g. `AA.*CC`).
@@ -716,6 +716,59 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...`, `Script error in <path>: env cycle: A -> B -> A` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
 
 Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The installed plugins are loaded first, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
+
+### Output
+
+Autobot writes to two streams, and each carries one kind of text:
+
+| Stream | Carries |
+|--------|---------|
+| stdout | The session's output: everything read from the spawned process, with ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)). During a run nothing else is written to it. `autobot schema` and the help also print to stdout. |
+| stderr | Autobot's own messages: the `>> ` progress lines, the CLI's error reports and tracebacks. |
+
+So `autobot script.yaml > device.log` keeps the device's transcript and shows what Autobot did, and `2> run.log` does the opposite. The output of `attach.prepare` is the script's own: it inherits both streams.
+
+**The session's output is never restyled.** It is written as the device sent it, less the escape sequences: not wrapped, cut, reflowed or highlighted. Text in it that looks like markup or an emoji code (`[bold]`, `[/]`, `:warning:`) is printed as it is, and no style is ever added to it.
+
+**A progress line** starts with the marker `>> `, so the lines are told apart from the device's in a plain log (`grep '^>> '`). After the marker comes a label, which ends at the first `: `, and the rest of the text. These are the progress lines:
+
+| Line | Kind | Printed |
+|------|------|---------|
+| `>> prepare: running local script`, `>> prepare: running local script (no shebang, using /bin/sh)` | step | before `attach.prepare` runs |
+| `>> attach: <spawn>` | step | before the process is spawned, with the rendered command line |
+| `>> cmd: <line>` | step | for each line a `cmd` sends, as it is sent |
+| `>> sleep: <seconds>s` | step | by a `sleep` step |
+| `>> control sent: ^<C>` | step | for each character a `control` step sends |
+| `>> block enter: <name>`, `>> block breakout: <name>`, `>> breakout: detaching` | group | when a block starts, when its breakout starts, when `attach.breakout` starts |
+| `>> prepare: done`, `>> block completed: <name>`, `>> called <function>` | completed | when `attach.prepare`, a block or a `call` has finished without an error |
+| `>> register: vars.<name>`, `>> script: writing to <file>`, `>> script: executing <file>`, `>> script: cleaned up <file>` | detail | by `register`, and by an embedded script |
+| `>> error ignored: <message>`, `>> breakout error (<type>): <message>`, `>> block breakout error (<type>): <message>`, `>> close error (<type>): <message>`, `>> script: interrupt sent: ^C`, `>> script: cleanup of <file> failed (<type>): <message>` | warning | for a failure the run goes on from; `<type>` is the exception's class name |
+
+A `line` step, a `return` step and the answer to a prompt print no line: what they send may be a password, and it shows only as far as the device echoes it.
+
+**The CLI's reports** have no marker: the load errors, `Run failed in ...`, `Interrupted` and `Unexpected error in ...` (see below). They start at the first column with what happened, then `: ` and the message.
+
+A message is printed as it is. Nothing in it is read as markup or as an emoji code, and numbers, quoted strings and paths get no highlighting. A message is one line whatever the width of the terminal: Autobot never wraps or cuts it.
+
+**Styles.** On a terminal the messages are styled; the words are the same with and without styles, and no meaning is carried by a style alone.
+
+| What | Style |
+|------|-------|
+| step | marker bold blue, label bold, the rest plain |
+| group | marker bold blue, the whole text bold |
+| completed | marker bold green, text green |
+| detail | marker and text dim |
+| warning | marker bold yellow, label yellow, the rest plain |
+| a report's first words, up to the `: ` | bold red; `Interrupted` is bold yellow |
+| the `at` and `called from` labels of a report | dim |
+
+Only bold, dim and four of the terminal's own eight colors are used (SGR 1, 2 and 31 to 34), never a fixed RGB value or a background color, so the terminal's theme decides the exact colors and keeps them readable on a dark and on a light background.
+
+The messages are styled when stderr is a terminal whose `TERM` isn't `dumb` or `unknown`. Otherwise they are plain text without any escape sequence, so a pipe or a file gets a clean log. Two environment variables change that, each when set to a non-empty value:
+- `NO_COLOR`: no escape sequences at all, bold and dim included. It wins over `FORCE_COLOR`.
+- `FORCE_COLOR`: styles even when stderr isn't a terminal, and for a `dumb` terminal. Any non-empty value counts, `0` too.
+
+The session's output on stdout has no styles in any of these cases.
 
 ### Errors while the script runs
 

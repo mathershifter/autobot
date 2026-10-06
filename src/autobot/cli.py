@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any
 import pexpect
 import pydantic
 import yaml
-from rich.console import Console
 from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
+from . import log
 from .models import Config
 from .registry import PluginError, registry
 from .runner import Runner, trail
@@ -24,9 +24,6 @@ from .types import RunError, ScriptError
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
-
-# markup off: messages echo user text (paths, --arg, YAML input) that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 EXIT_LOAD = 1  # the script can't be loaded: nothing ran
 EXIT_RUN = 3  # the run failed
@@ -85,20 +82,20 @@ def _load(path: str) -> object:
         with open(path, "rb") as f:
             return yaml.load(f, Loader=UniqueKeyLoader)
     except OSError as e:
-        console.print(f"Cannot read script {path}: {e.strerror or e}")
+        log.error(f"Cannot read script {path}", str(e.strerror or e))
     except yaml.MarkedYAMLError as e:
         mark = e.problem_mark
         at = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        console.print(f"YAML error in {path}{at}: {e.problem}")
+        log.error(f"YAML error in {path}{at}", str(e.problem))
         if e.context:
             mark = e.context_mark
             at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-            console.print(f"  {e.context}{at}")
+            log.more(f"  {e.context}{at}")
     except ReaderError as e:
         what = "character" if e.encoding == "unicode" else f"{e.encoding} byte"
-        console.print(f"YAML error in {path}, position {e.position}: {e.reason} ({what} #x{e.character:02x})")
+        log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
-        console.print(f"YAML error in {path}: {e}")
+        log.error(f"YAML error in {path}", str(e))
     sys.exit(EXIT_LOAD)
 
 
@@ -113,25 +110,26 @@ def _where(e: BaseException) -> None:
     if not steps:
         return
     *outer, last = steps
-    console.print(f"  at {last.path} ({last.what})")
+    log.note("at", f"{last.path} ({last.what})")
     callers = [ref for ref in reversed(outer) if ref.key != "block"]
     for ref in callers[:CALLERS]:
-        console.print(f"  called from {ref.path} ({ref.what})")
+        log.note("called from", f"{ref.path} ({ref.what})")
     if len(callers) > CALLERS:
-        console.print(f"  ... and {len(callers) - CALLERS} more callers")
+        log.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
 def _unexpected(e: Exception) -> None:
     steps = trail(e)
     if steps and steps[-1].plugin:
-        console.print(
-            f"Unexpected error in plugin '{steps[-1].key}': this is a bug in the plugin, not in the script. "
-            "Please report it to the plugin's author with the traceback below."
+        log.error(
+            f"Unexpected error in plugin '{steps[-1].key}'",
+            "this is a bug in the plugin, not in the script. "
+            "Please report it to the plugin's author with the traceback below.",
         )
     else:
-        console.print(
-            "Unexpected error in Autobot: this is a bug, not a problem with the script. "
-            "Please report it with the traceback below."
+        log.error(
+            "Unexpected error in Autobot",
+            "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
     _where(e)
     traceback.print_exception(e, file=sys.stderr)
@@ -143,7 +141,7 @@ def _discover(args: argparse.Namespace | None = None) -> None:
         registry.discover()
     except PluginError as e:
         _traceback(args, e)
-        console.print(f"Plugin error: {e}")
+        log.error("Plugin error", str(e))
         sys.exit(EXIT_LOAD)
 
 
@@ -154,14 +152,14 @@ def _cmd_run(args):
     try:
         config = Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
-        console.print("Validation errors:")
-        console.print(e.json(indent=2))
+        log.error("Validation errors:")
+        log.more(e.json(indent=2))
         sys.exit(EXIT_LOAD)
 
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
-            console.print(f"--arg requires KEY=VALUE format, got: {item}")
+            log.error("--arg requires KEY=VALUE format, got", item)
             sys.exit(EXIT_LOAD)
         key, value = item.split("=", 1)
         cli_args[key] = value
@@ -170,7 +168,7 @@ def _cmd_run(args):
         runner = Runner(config, cli_args)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
         _traceback(args, e)
-        console.print(f"Script error in {args.script}: {e}")
+        log.error(f"Script error in {args.script}", str(e))
         sys.exit(EXIT_LOAD)
     try:
         runner.run()
@@ -179,7 +177,7 @@ def _cmd_run(args):
         reason = str(e) or type(e).__name__
         if isinstance(e, RecursionError):
             reason = f"functions call each other too deeply ({reason})"
-        console.print(f"Run failed in {args.script}: {reason}")
+        log.error(f"Run failed in {args.script}", reason)
         _where(e)
         sys.exit(EXIT_RUN)
 
@@ -215,7 +213,7 @@ def _cmd_schema(args: argparse.Namespace | None = None):
     try:
         schema = load_schema()
     except SchemaError as e:
-        console.print(f"Cannot read the schema: {e}")
+        log.error("Cannot read the schema", str(e))
         sys.exit(EXIT_LOAD)
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
@@ -287,7 +285,7 @@ def main():
             sys.exit(EXIT_LOAD)
     except KeyboardInterrupt as e:
         _traceback(args, e)
-        console.print("Interrupted")
+        log.error("Interrupted", style=log.WARN)
         _where(e)
         sys.exit(EXIT_INTERRUPTED)
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback

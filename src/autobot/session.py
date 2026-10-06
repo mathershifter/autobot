@@ -7,12 +7,10 @@ import time
 from collections.abc import Callable
 
 import pexpect
-from rich.console import Console
 
+from . import log
 from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 
-# markup off: log lines echo errors that may look like [tags]
-console = Console(stderr=True, markup=False, soft_wrap=True)
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
@@ -288,7 +286,7 @@ class Session:
         except Exception as e:  # noqa: BLE001 - must not replace the error that is propagating
             if not failing:
                 raise
-            console.print(f">> close error ({type(e).__name__}): {e}")
+            log.say(f"close error ({type(e).__name__}): {e}", "warn")
 
     def get_prompt(
         self,

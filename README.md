@@ -33,7 +33,9 @@ autobot schema [--traceback]
 
 A run that completes exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure, an `--arg` without `=`, a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs is reported after any breakouts have run; see [Errors and exit status](#errors-and-exit-status).
 
-Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed.
+Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed and otherwise exactly as the device sent it: it is never wrapped, cut or styled. So `autobot script.yaml > device.log` keeps the device's transcript, and `2> run.log` keeps what Autobot did.
+
+On a terminal Autobot's messages are styled so they stand apart from the device's output: the `>>` marker is blue for a step, green for something completed, yellow for a failure the run goes on from, and dim for bookkeeping; an error report starts in red. The words are the same without the styles, and a pipe or a file gets plain text. Set `NO_COLOR` to turn the styles off on a terminal, or `FORCE_COLOR` to keep them in a pipe. The full list of messages is in [SPEC.md](SPEC.md#output).
 
 ### Errors and exit status
 
