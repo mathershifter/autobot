@@ -1,19 +1,14 @@
-"""P8-06..14: line, return, control, sleep and call steps (SPEC.md:55-66, 174-270)."""
+"""P8-06..13: line, return, control, sleep and call steps (SPEC.md:55-66, 174-270)."""
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 
-import pytest
 from conftest import (
     FakeDevice,
     SentLog,
-    SpawnLog,
-    SpawnRecorded,
     Timeline,
-    make_runner,
     run_script,
     run_vars,
     steps,
@@ -103,13 +98,3 @@ def test_p8_13_call_steps_see_registered_vars():
     fn = {"f": {"script": [{"cmd": "echo got-{{ vars.v }}", "register": "g", "timeout": "5s"}]}}
     out = run_vars([{"cmd": "echo v", "register": "v"}, {"call": "f"}], fn=fn)
     assert out["g"] == "got-v"
-
-
-def test_p8_14_attach_env_empty_dict_sets_nothing(spawned: SpawnLog, monkeypatch: pytest.MonkeyPatch):
-    """SPEC "attach": `env: {}` is the same as no `env`: the inherited environment with a plain terminal."""
-    monkeypatch.setenv("TERM", "xterm")
-    spawned.stop = True
-    with pytest.raises(SpawnRecorded):
-        make_runner([], attach_env={}).run()
-    _, kwargs = spawned[0]
-    assert kwargs["env"] == {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}

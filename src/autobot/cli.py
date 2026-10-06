@@ -156,9 +156,9 @@ def _one_per_value(errors: list[Any]) -> list[Any]:
 
 
 def _sent(loc: tuple) -> bool:
-    """Whether an error at `loc` is about text that is sent to the device or set in an environment, which may
-    be a password: a prompt's `send` and what is in it, a `line` step, an `env` or `attach.env` value."""
-    if loc[:1] == ("env",) or loc[:2] == ("attach", "env"):
+    """Whether an error at `loc` is about text that is sent to the device or is a value of `env`, which may
+    be a password: a prompt's `send` and what is in it, a `line` step, an `env` value."""
+    if loc[:1] == ("env",):
         return True
     for i, key in enumerate(loc):
         if key == "send" and "prompts" in loc[:i]:

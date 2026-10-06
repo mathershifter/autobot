@@ -296,7 +296,7 @@ def test_p8_21_session_echo_on_stdout_has_no_split_sequence(tmp_path: Path, caps
     device = tmp_path / "echo_device.py"
     device.write_text(ECHO_DEVICE)
     # the first sleep reads both halves before anything is sent, so no tty echo comes between them
-    run([{"sleep": "1s"}, {"line": "x"}, {"sleep": "500ms"}], spawn=f"{sys.executable} {device}", attach_env={"PATH": "/usr/bin:/bin"})
+    run([{"sleep": "1s"}, {"line": "x"}, {"sleep": "500ms"}], spawn=f"{sys.executable} {device}")
     captured = capsys.readouterr()
     assert captured.out.startswith("abcd\r\nPROMPT$ ")
     assert captured.out.endswith(f"bye{ESC}")

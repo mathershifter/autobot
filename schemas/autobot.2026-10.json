@@ -93,11 +93,6 @@
           "not": { "pattern": "\\u0000" }
         },
         "timeout": { "$ref": "#/$defs/duration" },
-        "env": {
-          "type": "object",
-          "propertyNames": { "type": "string", "pattern": "^[^=\\u0000]+$" },
-          "additionalProperties": { "type": "string", "not": { "pattern": "\\u0000" } }
-        },
         "script": {
           "type": "array",
           "items": { "$ref": "#/$defs/step" }

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import os
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -11,7 +10,7 @@ from jinja2 import StrictUndefined, UndefinedError
 from . import log, prepare
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
-from .session import DEFAULT_ENV, PromptHandler, Session, SimpleHandler
+from .session import PromptHandler, Session, SimpleHandler, run_environ
 from .steps import register_builtins
 from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
@@ -199,7 +198,7 @@ class Runner:
         self._cli_args = cli_args
         self._default_timeout = 300
         # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
-        self._environ = {**os.environ, **DEFAULT_ENV}
+        self._environ = run_environ()
         self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
         self._unread = ""  # why the environment `prepare` left wasn't read, if it wasn't
         # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
@@ -302,10 +301,6 @@ class Runner:
             raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
         return spawn
 
-    def _spawn_env(self) -> dict[str, str]:
-        """The spawned process's environment: the run's, as `prepare` changed it, plus `attach.env`."""
-        return {**self._environ, **(self._config.attach.env or {})}
-
     def run(self):
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
@@ -325,7 +320,7 @@ class Runner:
 
         log.say(f"attach: {spawn}")
         try:
-            self._session.attach(spawn, env=self._spawn_env(), timeout=timeout)
+            self._session.attach(spawn, env=self._environ, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)

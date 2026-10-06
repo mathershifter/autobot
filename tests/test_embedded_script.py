@@ -4,13 +4,14 @@ import base64
 import hashlib
 import math
 import os
+import shlex
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SHELL_ENV, SentLog, Timeline, steps
+from conftest import BASH, SentLog, Timeline, steps
 from conftest import run_vars as run
 
 import autobot.steps
@@ -21,6 +22,12 @@ GENERIC = r"[>#\$] ?$"
 
 def prompts(pattern: str) -> list[dict[str, Any]]:
     return [{"name": "sh", "expect": [pattern]}]
+
+
+def first_on_path(directory: Path) -> str:
+    """The spawn line of a shell that looks for a command in `directory` first."""
+    path = f"{directory}:{os.environ['PATH']}"
+    return f"env PATH={shlex.quote(path)} {BASH}"
 
 
 @pytest.fixture
@@ -108,7 +115,7 @@ def test_temp_file_removed_on_upload_failure(tmp_path_hex: Path, tmp_path: Path)
     fake.write_text("#!/bin/sh\necho 'base64: broken' >&2\nexit 1\n")
     fake.chmod(0o755)
     with pytest.raises(RuntimeError, match="script upload .* failed"):
-        run([{"cmd": "#!/bin/sh\necho hi\n"}], attach_env={**SHELL_ENV, "PATH": f"{tmp_path}:{os.environ['PATH']}"})
+        run([{"cmd": "#!/bin/sh\necho hi\n"}], spawn=first_on_path(tmp_path))
     assert not Path(f"{tmp_path_hex}.b64").exists()
     assert not tmp_path_hex.exists()
 
@@ -183,11 +190,12 @@ def assert_removed(tmp: Path) -> None:
     assert not Path(f"{tmp}.b64").exists()
 
 
-def fake_wc_env(tmp_path: Path) -> dict[str, str]:
+def fake_wc(tmp_path: Path) -> str:
+    """The spawn line of a shell whose `wc` always counts one byte."""
     fake = tmp_path / "wc"
     fake.write_text("#!/bin/sh\ncat >/dev/null\necho 1\n")
     fake.chmod(0o755)
-    return {**SHELL_ENV, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    return first_on_path(tmp_path)
 
 
 def test_p2_07_upload_chunks_at_most_512(sent: SentLog):
@@ -236,7 +244,7 @@ def test_p2_11_embedded_assert_failure_cleans_up(tmp_path_hex: Path):
 def test_p2_12_byte_count_mismatch_fails_step(tmp_path_hex: Path, tmp_path: Path):
     """SPEC.md:167: a byte-count mismatch is a step failure."""
     with pytest.raises(RuntimeError, match="script upload .* failed"):
-        run([{"cmd": "#!/bin/sh\necho hi\n"}], attach_env=fake_wc_env(tmp_path))
+        run([{"cmd": "#!/bin/sh\necho hi\n"}], spawn=fake_wc(tmp_path))
     assert_removed(tmp_path_hex)
 
 
@@ -247,7 +255,7 @@ def test_p2_13_byte_count_mismatch_ignorable(tmp_path_hex: Path, tmp_path: Path)
             {"cmd": "#!/bin/sh\necho hi\n", "ignore_error": True},
             {"cmd": "echo next", "register": "next"},
         ],
-        attach_env=fake_wc_env(tmp_path),
+        spawn=fake_wc(tmp_path),
     )
     assert out["next"] == "next"
     assert_removed(tmp_path_hex)
@@ -323,11 +331,10 @@ def test_p2_18_timed_out_upload_interrupted_and_removed(
     fake = tmp_path / hang
     fake.write_text("#!/bin/sh\nsleep 30\n")
     fake.chmod(0o755)
-    env = {**SHELL_ENV, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
     start = time.monotonic()
     try:
         with pytest.raises(TimeoutError):
-            run([{"cmd": "#!/bin/sh\necho hi\n", "timeout": "2s"}], attach_env=env)
+            run([{"cmd": "#!/bin/sh\necho hi\n", "timeout": "2s"}], spawn=first_on_path(tmp_path))
         assert time.monotonic() - start < 6
         assert sent.controls() == ["c"]
         assert not any(line == str(tmp_path_hex) for line in sent.lines())  # never executed
