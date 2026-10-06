@@ -375,7 +375,7 @@ def test_p1_23_exit_code_split_across_reads_is_read_whole(split_rc_device: Calla
 def test_p1_23_split_exit_code_fails_the_step_with_the_real_code(split_rc_device: Callable[[str], str]):
     """SPEC "cmd": the step reports the command's exit code, not its first digit."""
     with pytest.raises(StepFailure, match=r"^command returned exit code 127$"):
-        run_vars([{"cmd": "x"}], spawn=split_rc_device(r"\r\n"), attach_env={"PATH": "/usr/bin:/bin"})
+        run_vars([{"cmd": "x"}], spawn=split_rc_device(r"\r\n"))
 
 
 def test_p1_23_echoed_probe_is_not_taken_for_the_marker(shell_session: Session):

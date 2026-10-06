@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import signal
 import sys
@@ -13,6 +14,12 @@ from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
+
+
+def run_environ() -> dict[str, str]:
+    """The environment of a run: the process's own, on a plain terminal. An entry without a name is left
+    out: no process can be started with one."""
+    return {**{k: v for k, v in os.environ.items() if k}, **DEFAULT_ENV}
 
 
 # Stray carriage returns, NULs and BELs at the start of the unread output: a prompt wait drops them, so
@@ -278,7 +285,7 @@ class Session:
             timeout=timeout,
             encoding="utf-8",
             codec_errors="replace",
-            env=dict(DEFAULT_ENV) if env is None else env,
+            env=run_environ() if env is None else env,
         )
         self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
         cld = self._cld

@@ -58,7 +58,6 @@ ACCEPT = {
             "prepare": "#!/bin/sh\ntrue\n",
             "spawn": "ssh host",
             "timeout": "30s",
-            "env": {"TERM": "dumb"},
             "script": [{"line": "x"}],
             "breakout": [{"control": "]"}],
         },
@@ -789,7 +788,6 @@ STRING_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "fields-field": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": v}]}}]),
     "attach-spawn": lambda v: d(attach={"spawn": v}),
     "attach-prepare": lambda v: d(attach={"spawn": "ssh host", "prepare": v}),
-    "attach-env-value": lambda v: d(attach={"spawn": "ssh host", "env": {"A": v}}),
     "cmd": lambda v: s({"cmd": v}),
     "cmd-item": lambda v: s({"cmd": ["x", v]}),
     "cmd-assert": lambda v: s({"cmd": "x", "assert": v}),
@@ -1011,7 +1009,6 @@ FREE_KEYS: dict[str, tuple[Callable[[Any], dict[str, Any]], tuple]] = {
     "env": (lambda k: d(env={"A": "a", k: "x"}), ("env",)),
     "vars": (lambda k: d(vars={"a": 1, k: "x"}), ("vars",)),
     "fn": (lambda k: d(fn={"f": {"script": []}, k: {"script": []}}), ("fn",)),
-    "attach-env": (lambda k: d(attach={"spawn": "ssh host", "env": {"A": "a", k: "x"}}), ("attach", "env")),
 }
 # the mappings with fixed keys: doc(key) -> a document with `key` as one more key of that mapping
 FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
@@ -1038,7 +1035,7 @@ FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
 @pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
 @pytest.mark.parametrize("where", list(FREE_KEYS))
 def test_p6_75_parity_non_string_key_rejected(both_validate: Callable, where: str, literal: str):
-    """SPEC "YAML Script Structure": a key of `env`, `vars`, `fn` or `attach.env` is a string, in both.
+    """SPEC "YAML Script Structure": a key of `env`, `vars` or `fn` is a string, in both.
 
     The models always rejected `vars: {1: x}`; the schema accepted it, having nothing to say about a key's type.
     """
@@ -1083,13 +1080,11 @@ def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Ca
 
 
 def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
-    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed.
-    `attach.env` also says which names a process environment takes (P6-90)."""
+    """`propertyNames` is on the three free-form mappings and on `stepCommon`; every other object is closed."""
     names = {"type": "string"}
     props, defs = schema["properties"], schema["$defs"]
     for node in (props["env"], props["vars"], props["fn"], defs["stepCommon"]):
         assert node["propertyNames"] == names
-    assert defs["attach"]["properties"]["env"]["propertyNames"] == {**names, "pattern": "^[^=\\u0000]+$"}
 
     def objects(node: Any, path: str = "") -> Any:
         if isinstance(node, dict):
@@ -1126,28 +1121,25 @@ ENV_HINT = (
 
 
 @pytest.mark.parametrize("literal", BOOLEAN_LITERALS)
-@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
-def test_p6_78_boolean_env_value_says_to_quote_it(both_validate: Callable, where: str, literal: str):
+def test_p6_78_boolean_env_value_says_to_quote_it(both_validate: Callable, literal: str):
     """SPEC "Booleans are not text": `DEBUG: true` or `NO_COLOR: yes` is rejected by both, and the models say to quote it.
 
     It was always `string_type`; the message used to be only `Input should be a valid string`.
     """
     value = yaml.safe_load(literal)
     assert isinstance(value, bool)
-    doc = STRING_FIELDS[where](value)
+    doc = STRING_FIELDS["env-value"](value)
     assert both_validate(doc) == (False, False)
     [err] = model_errors(doc)
-    loc = ("env", "A") if where == "env-value" else ("attach", "env", "A")
-    assert (err["loc"], err["type"], err["msg"]) == (loc, "string_type", ENV_HINT.format(str(value).lower()))
+    assert (err["loc"], err["type"], err["msg"]) == (("env", "A"), "string_type", ENV_HINT.format(str(value).lower()))
     # quoted, it is the text as written
-    assert both_validate(STRING_FIELDS[where](literal)) == (True, True)
+    assert both_validate(STRING_FIELDS["env-value"](literal)) == (True, True)
 
 
 @pytest.mark.parametrize("value", [1, 2.5], ids=repr)
-@pytest.mark.parametrize("where", ["env-value", "attach-env-value"])
-def test_p6_78_number_env_value_keeps_its_error(both_validate: Callable, where: str, value: Any):
+def test_p6_78_number_env_value_keeps_its_error(both_validate: Callable, value: Any):
     """Only booleans get the hint: a number is still the plain `string_type` it was."""
-    doc = STRING_FIELDS[where](value)
+    doc = STRING_FIELDS["env-value"](value)
     assert both_validate(doc) == (False, False)
     [err] = model_errors(doc)
     assert (err["type"], err["msg"]) == ("string_type", "Input should be a valid string")
@@ -1326,47 +1318,48 @@ def test_p6_82_schema_and_models_give_breakout_the_shape_of_enter(schema: dict[s
     assert models.Attach.model_fields["breakout"].annotation == models.Attach.model_fields["script"].annotation
 
 
-# -- P6-90: what is handed to exec (attach.spawn, attach.env) -------------------
+# -- P6-90: what is handed to exec (attach.spawn) --------------------------------
 
-ENV_NAME_MSG = "an environment variable name must not be empty or contain '=' or a NUL character (\\0)"
 NOT_FOR_EXEC = {
-    "spawn-nul": ({"spawn": "bash\0 --norc"}, ("attach", "spawn"), "nul_character"),
-    "spawn-nul-in-an-argument": ({"spawn": "echo a\0b"}, ("attach", "spawn"), "nul_character"),
-    "spawn-nul-in-a-template": ({"spawn": "{{ args.c }}\0"}, ("attach", "spawn"), "nul_character"),
-    "env-value-nul": ({"spawn": "sh", "env": {"A": "x\0y"}}, ("attach", "env", "A"), "nul_character"),
-    "env-name-nul": ({"spawn": "sh", "env": {"A\0B": "x"}}, ("attach", "env", "A\0B", "[key]"), "env_name"),
-    "env-name-equals": ({"spawn": "sh", "env": {"A=B": "x"}}, ("attach", "env", "A=B", "[key]"), "env_name"),
-    "env-name-empty": ({"spawn": "sh", "env": {"": "x"}}, ("attach", "env", "", "[key]"), "env_name"),
+    "spawn-nul": "bash\0 --norc",
+    "spawn-nul-in-an-argument": "echo a\0b",
+    "spawn-nul-in-a-template": "{{ args.c }}\0",
 }
 
 
 @pytest.mark.parametrize("case", NOT_FOR_EXEC)
 def test_p6_90_parity_what_exec_cannot_take_is_rejected(both_validate: Callable, case: str):
-    """SPEC "attach": a NUL in `spawn` or in an `attach.env` value, and an `attach.env` name that is empty or
-    has `=` or a NUL, can't be handed to a process: the schema and the models reject them when the script is
-    loaded."""
-    attach, loc, type_ = NOT_FOR_EXEC[case]
-    doc = d(attach=attach)
+    """SPEC "attach": a NUL in `spawn` can't be handed to a process: the schema and the models reject it when
+    the script is loaded."""
+    doc = d(attach={"spawn": NOT_FOR_EXEC[case]})
     assert both_validate(doc) == (False, False)
     [err] = model_errors(doc)
-    assert (err["loc"], err["type"]) == (loc, type_)
+    assert (err["loc"], err["type"]) == (("attach", "spawn"), "nul_character")
     assert "\0" not in err["msg"]  # the message names the character, it doesn't hold one
-    if type_ == "env_name":
-        assert err["msg"] == ENV_NAME_MSG
 
 
-@pytest.mark.parametrize(
-    "attach",
-    [
-        {"spawn": "ssh host", "env": {"TERM": "dumb", "A_b1": "", "lower": "x=y", "X Y": "multi\nline"}},
-        {"spawn": "ssh\thost\n", "env": {}},
-    ],
-)
-def test_p6_90_parity_ordinary_spawn_and_env_accepted(both_validate: Callable, attach: dict):
-    """Only those characters are refused: `=` in a value, an empty value and a line break are fine."""
-    assert both_validate(d(attach=attach)) == (True, True)
+def test_p6_90_parity_ordinary_spawn_accepted(both_validate: Callable):
+    """Only that character is refused: a tab and a line break are fine."""
+    assert both_validate(d(attach={"spawn": "ssh\thost\n"})) == (True, True)
 
 
 def test_p6_90_top_level_env_is_not_handed_to_exec(both_validate: Callable):
-    """The top-level `env` holds template values, not a process environment: its names aren't checked."""
-    assert both_validate(d(env={"A=B": "x"})) == (True, True)
+    """The top-level `env` holds template values, not a process environment: its names and values aren't checked."""
+    assert both_validate(d(env={"A=B": "x", "": "x", "C": "x\0y"})) == (True, True)
+
+
+# -- P6-92: `attach` has no `env` ------------------------------------------------
+
+
+@pytest.mark.parametrize("value", [{"A": "x"}, {}, None, "A=x"], ids=["mapping", "empty-mapping", "null", "string"])
+def test_p6_92_parity_attach_env_is_an_unknown_key(both_validate: Callable, schema: dict[str, Any], value: Any):
+    """SPEC "attach": the fields of `attach` are `prepare`, `spawn`, `timeout`, `script` and `breakout`. An
+    `env` there is rejected by both like any other unknown key, whatever its value."""
+    assert both_validate(d(attach={"spawn": "ssh host", "env": value})) == (False, False)
+    [err] = model_errors(d(attach={"spawn": "ssh host", "env": value}))
+    [other] = model_errors(d(attach={"spawn": "ssh host", "nope": value}))
+    assert (err["loc"], err["type"], err["msg"]) == (("attach", "env"), "extra_forbidden", other["msg"])
+    assert (other["loc"], other["type"]) == (("attach", "nope"), "extra_forbidden")
+    assert sorted(schema["$defs"]["attach"]["properties"]) == sorted(models.Attach.model_fields) == [
+        "breakout", "prepare", "script", "spawn", "timeout",
+    ]

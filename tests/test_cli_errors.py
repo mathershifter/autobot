@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import pexpect
 import pydantic
 import pytest
 import yaml
-from conftest import BASH, SHELL_ENV, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli
+from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli
 
 from autobot import cli
 from autobot.registry import PluginError
@@ -737,7 +738,6 @@ def _interrupt(tmp_path: Path, *cli_args: str) -> tuple[subprocess.CompletedProc
             },
         ],
         spawn=spawn,
-        attach_env=dict(SHELL_ENV),
         breakout=[{"cmd": f"echo attach >> {log}", "timeout": "5s"}],
     )
     path = tmp_path / "script.autobot.yaml"
@@ -812,7 +812,9 @@ def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):
     next iteration, which would be the next device, doesn't start."""
     started = tmp_path / "started"
     path = _script(tmp_path, [{"cmd": f"echo x >> {started}"}, {"cmd": "sleep 30", "timeout": "20s"}])
-    loop = f"for i in 1 2; do {sys.executable} -W ignore -m autobot.cli {path}; echo ITER-$i-rc=$?; done; echo LOOP-DONE"
+    # a shell that isn't interactive drops the `PS1` it inherits, so the loop gives autobot the suite's
+    autobot = f"PS1={shlex.quote(PS1)} {sys.executable} -W ignore -m autobot.cli {path}"
+    loop = f"for i in 1 2; do {autobot}; echo ITER-$i-rc=$?; done; echo LOOP-DONE"
     env = {**os.environ, "NO_COLOR": "1"}
     child = pexpect.spawn("bash", ["--norc", "--noprofile", "-c", loop], env=env, encoding="utf-8", timeout=60)
     try:

@@ -579,11 +579,11 @@ def test_p6_59_cli_empty_expect_or_match_is_validation_error(
     ("tail", "loc", "msg"),
     [
         ("script:\n  - cmd: echo one\n    after:\n", ["script", 0, "cmd", "after"], "null (an empty value)"),
-        ("  env:\nscript: []\n", ["attach", "env"], "null (an empty value)"),
+        ("  timeout:\nscript: []\n", ["attach", "timeout"], "null (an empty value)"),
         ("script:\n  - line: x\n    timeout: ~\n", ["script", 0, "line", "timeout"], "Extra inputs"),
         ("script:\n  - sleep:\n", ["script", 0, "sleep", "sleep"], "invalid duration: null"),
     ],
-    ids=["step-after", "attach-env", "unsupported-prop", "sleep"],
+    ids=["step-after", "attach-timeout", "unsupported-prop", "sleep"],
 )
 def test_p6_45_cli_empty_value_is_validation_error(tmp_path: Path, tail: str, loc: list[Any], msg: str):
     """SPEC "YAML Script Structure": an empty value is invalid (omit the key); rc 1, before prepare/spawn."""
