@@ -155,6 +155,11 @@ def test_p8_30_other_control_characters_show_nothing(text: str, sent: str, expec
         ("echo ab\nbcd\nout\n", "echo abcd", "echo ab\nbcd\nout\n"),
         # the line is never completed
         ("echo ab\rab\rab\nout\n", "echo abcd", "echo ab\rab\rab\nout\n"),
+        # a row that ends after `re` or `ab`: the row after it is written, then written again
+        ("reload\rload\nout\n", "reload", "out\n"),
+        ("abcd\rcdef\nout\n", "abcdef", "out\n"),
+        # each return is read on its own: no one width has a row start at `h` and then at `o` (SPEC says so)
+        ("sho\rhow\row\nout\n", "show", "out\n"),
     ],
 )
 def test_p8_30_carriage_return_continues_or_rewrites(text: str, sent: str, expected: str):
