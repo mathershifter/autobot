@@ -711,9 +711,28 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | The file can't be read (missing, a directory, permission denied) | `Cannot read script <path>: <reason>` |
 | The file isn't valid YAML (syntax error, tab indentation, more than one document, an undefined alias, an unsupported tag such as `!!python/object`, a duplicate key) | `YAML error in <path>, line <L>, column <C>: <problem>`, followed by an indented context line when YAML gives one. For a duplicate key the problem is `found duplicate key '<key>'` at the repeated key, and the context line is `  first defined (line <L>, column <C>)` |
 | The file has bytes that aren't valid UTF-8, or disallowed control characters | `YAML error in <path>, position <N>: <reason> (...)` |
-| The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by the details |
+| The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by one line for each error (see below) |
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
 | The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...`, `Script error in <path>: env cycle: A -> B -> A` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
+
+A validation report is the line `Validation errors:` and then one line for each error, in the order the models report them:
+
+```
+Validation errors:
+  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]
+  attach.timeout: invalid duration: 5 minutes [value_error]
+  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]
+  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control or a registered plugin step (got a mapping with the key cmdd) [invalid_step]
+  script.2.block.block.script.1.return.return: Input should be greater than or equal to 1 (got 0) [greater_than_equal]
+```
+
+A line is two spaces, then `<location>: <message>`, then ` (got <value>)` where it applies, then ` [<type>]`:
+- The location is the error's location as the models report it, its keys and indexes joined with `.` (a step's type tag included, as in `script.0.cmd.timout`). An error of the document as a whole, such as a file that is empty or holds a list, is at `(document)`.
+- The message is the error's message; pydantic's `Value error, ` prefix is left out.
+- The value is the offending value as YAML writes it: a string in quotes, a number, `true`, `false` or `null`. A mapping is shown as `a mapping with the keys <key>, ...` (`an empty mapping`), a list as `a list of <N> items`, and any other value by its YAML type (`a timestamp`, `binary data`). What is shown is cut after 60 characters with `...`. No value is shown when the message already shows it (in quotes, at its end, in parentheses for a boolean or number, or anywhere for a string of more than three characters), and none for a `missing` or `extra_forbidden` error, where the location says it all.
+- The type is the error's type, as named throughout this document (`invalid_regex`, `string_type`, ...).
+
+Each error is one line, however long its message: the report is never wrapped. On a terminal the location is bold and the type dim (see [Output](#output)).
 
 Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. The installed plugins are loaded first, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
@@ -788,6 +807,7 @@ A message is printed as it is. Nothing in it is read as markup or as an emoji co
 | detail | marker and text dim |
 | warning | marker bold yellow, label yellow, the rest plain |
 | a report's first words, up to the `: ` | bold red; `Interrupted` is bold yellow |
+| a validation error's location, and its type | bold, and dim |
 | the `at` and `called from` labels of a report | dim |
 
 Only bold, dim and four of the terminal's own eight colors are used (SGR 1, 2 and 31 to 34), never a fixed RGB value or a background color, so the terminal's theme decides the exact colors and keeps them readable on a dark and on a light background.

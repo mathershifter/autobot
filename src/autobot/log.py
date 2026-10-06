@@ -90,6 +90,11 @@ def note(label: str, text: str) -> None:
     _print(Text.assemble((f"  {label} ", "dim"), text))
 
 
+def problem(where: str, what: str, tag: str) -> None:
+    """Print one entry of a list of problems: where it is, what it is, and its type."""
+    _print(Text.assemble("  ", (where, "bold"), f": {what} ", (f"[{tag}]", "dim")))
+
+
 def more(text: str) -> None:
     """Print further lines of a report as they are, unstyled."""
     _print(Text(text))

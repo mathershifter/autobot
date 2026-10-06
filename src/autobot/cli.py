@@ -19,8 +19,8 @@ from yaml.reader import ReaderError
 from . import log
 from .models import Config
 from .registry import PluginError, registry
-from .runner import Runner, trail
-from .types import RunError, ScriptError
+from .runner import Runner, _kind, trail
+from .types import RunError, ScriptError, text
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -99,6 +99,33 @@ def _load(path: str) -> object:
     sys.exit(EXIT_LOAD)
 
 
+GOT_MAX = 60
+
+
+def _got(type_: str, msg: str, value: object) -> str:
+    """The offending value, as YAML writes it, for a validation error whose message doesn't show it."""
+    if type_ in ("missing", "extra_forbidden"):  # the location names the key; the value says nothing more
+        return ""
+    if isinstance(value, dict):
+        keys = ", ".join(map(str, value))
+        shown = f"a mapping with the key{'s' if len(value) != 1 else ''} {keys}" if value else "an empty mapping"
+    elif isinstance(value, list):
+        shown = f"a list of {len(value)} item{'s' if len(value) != 1 else ''}"
+    elif value is None or isinstance(value, (bool, int, float)):
+        shown = "null" if value is None else text(value)
+        if msg.endswith(shown) or f"({shown})" in msg:
+            return ""
+    elif isinstance(value, str):
+        shown = repr(value)
+        if value and (shown in msg or f"'{value}'" in msg or msg.endswith(value) or (len(value) > 3 and value in msg)):
+            return ""
+    else:
+        shown = _kind(value)
+    if len(shown) > GOT_MAX:
+        shown = shown[:GOT_MAX] + "..."
+    return f" (got {shown})"
+
+
 def _traceback(args: argparse.Namespace | None, e: BaseException) -> None:
     if getattr(args, "traceback", False):
         log.more("".join(traceback.format_exception(e)).rstrip("\n"))
@@ -153,7 +180,10 @@ def _cmd_run(args):
         config = Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
         log.error("Validation errors:")
-        log.more(e.json(indent=2))
+        for err in e.errors():
+            where = ".".join(map(str, err["loc"])) or "(document)"
+            what = err["msg"].removeprefix("Value error, ")
+            log.problem(where, what + _got(err["type"], what, err["input"]), err["type"])
         sys.exit(EXIT_LOAD)
 
     cli_args = {}

@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Any
 
 import pexpect
+import pydantic
 import pytest
 import yaml
 from conftest import make_config, make_doc
 
-from autobot import log
+from autobot import cli, log
+from autobot.models import Config
 from autobot.runner import Runner
 from autobot.types import ANSI_ESCAPE_RE
 
@@ -433,6 +435,147 @@ def test_p8_25_line_break_goes_to_stderr_once(monkeypatch: pytest.MonkeyPatch, c
 def test_p8_25_streams_without_a_file_descriptor_are_not_shared(capsys: pytest.CaptureFixture[str]):
     """Captured or replaced streams (no `fileno`) count as different."""
     assert log._shared() is False
+
+
+# -- the validation report ----------------------------------------------------------------
+
+INVALID = """\
+autobot: "2026-08"
+prompts:
+  - name: sh
+    expect: ['^PROMPT\\$ $', '(']
+    return: true
+    send: 'x'
+  - name: confirm
+    expect: 'continue\\?'
+    send: yes
+errors: ['']
+attach:
+  spawn: ''
+  timeout: 5 minutes
+  env: {DEBUG: true}
+script:
+  - cmd: echo start
+    timout: 5s
+  - cmdd: oops
+  - block:
+      name: B
+      script:
+        - control: ab
+        - return: 0
+  - sleep:
+  - line: [a, b]
+    after: {x: 1, y: 2}
+"""
+REPORT = [
+    "Validation errors:",
+    "  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]",
+    "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return (got 'x') [return_with_send]",
+    "  prompts.0.expect.1: invalid regex '(': missing ), unterminated subpattern at position 0 [invalid_regex]",
+    "  prompts.1.send: send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, "
+    "on, off, true, false and numbers as booleans or numbers) (got true) [send_type]",
+    "  errors.0: an errors pattern must not be empty: an empty regex matches any output, so every command would fail "
+    "(got '') [string_too_short]",
+    "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
+    "  attach.timeout: invalid duration: 5 minutes [value_error]",
+    "  attach.env.DEBUG: an environment value is a string, and unquoted this one is a boolean (true); quote it to set "
+    "it as written, e.g. 'true' or 'yes' [string_type]",
+    "  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]",
+    "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control or a "
+    "registered plugin step (got a mapping with the key cmdd) [invalid_step]",
+    "  script.2.block.block.script.0.control.control: a control value is one character, a letter or one of "
+    "@ ` [ { \\ | ] } ^ ~ _ ?, got 'ab' [control_char]",
+    "  script.2.block.block.script.1.return.return: Input should be greater than or equal to 1 (got 0) [greater_than_equal]",
+    "  script.3.sleep.sleep: invalid duration: null [value_error]",
+    "  script.4.line.after: Input should be a valid string (got a mapping with the keys x, y) [string_type]",
+]
+
+
+def _invalid(tmp_path: Path, raw: str = INVALID) -> Path:
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(raw)
+    return path
+
+
+def test_p8_28_validation_report_is_one_line_an_error(tmp_path: Path):
+    """SPEC "CLI": after `Validation errors:` comes one line for each error: where it is, what it is, the
+    value where the message doesn't show it, and the error's type."""
+    res = piped(_invalid(tmp_path))
+    assert (res.returncode, res.stdout) == (1, "")
+    assert res.stderr.splitlines() == REPORT
+
+
+def test_p8_28_validation_report_locations_are_the_models(tmp_path: Path):
+    """The location is the error's `loc` as the models report it, joined with dots, and the lines keep the
+    models' order."""
+    try:
+        Config.model_validate(yaml.safe_load(INVALID))
+    except pydantic.ValidationError as e:
+        errors = e.errors()
+    assert [line.split(": ")[0] for line in REPORT[1:]] == ["  " + ".".join(map(str, err["loc"])) for err in errors]
+    assert [line.rsplit(" [", 1)[1] for line in REPORT[1:]] == [err["type"] + "]" for err in errors]
+
+
+def test_p8_28_validation_report_styles(tmp_path: Path):
+    """The location is bold and the type dim; the message is plain, and `[...]` in it is text."""
+    lines = piped(_invalid(tmp_path), FORCE_COLOR="1").stderr.splitlines()
+    assert lines[0] == f"{ESC}[1;31mValidation errors:{ESC}[0m"
+    assert lines[1] == (
+        f"  {ESC}[1mautobot{ESC}[0m: autobot 2026-08 is no longer supported; use 2026-10 {ESC}[2m[unsupported_version]{ESC}[0m"
+    )
+    assert [_plain(line) for line in lines] == REPORT
+
+
+@pytest.mark.parametrize(
+    ("raw", "line"),
+    [
+        ("- a\n- b\n", "  (document): Input should be a valid dictionary or instance of Config (got a list of 2 items) [model_type]"),
+        ("", "  (document): Input should be a valid dictionary or instance of Config (got null) [model_type]"),
+        ("autobot: '2026-10'\nattach: {spawn: sh}\n", "  script: Field required [missing]"),
+        (
+            "autobot: '2026-10'\nattach: {spawn: sh}\nscript: '[bold]x[/bold]'\n",
+            "  script: Input should be a valid list (got '[bold]x[/bold]') [list_type]",
+        ),
+    ],
+    ids=["list", "empty", "missing", "markup"],
+)
+def test_p8_28_validation_report_of_a_document_error(tmp_path: Path, raw: str, line: str):
+    """An error of the document as a whole is at `(document)`; a missing key shows no value."""
+    res = piped(_invalid(tmp_path, raw))
+    assert res.returncode == 1
+    assert res.stderr.splitlines() == ["Validation errors:", line]
+
+
+@pytest.mark.parametrize(
+    ("type_", "msg", "value", "got"),
+    [
+        ("string_type", "Input should be a valid string", 5, " (got 5)"),
+        ("string_type", "Input should be a valid string", 2.5, " (got 2.5)"),
+        ("string_type", "Input should be a valid string", True, " (got true)"),
+        ("string_type", "Input should be a valid string", None, " (got null)"),
+        ("string_type", "Input should be a valid string", {}, " (got an empty mapping)"),
+        ("string_type", "Input should be a valid string", {"a": 1, 2: 3}, " (got a mapping with the keys a, 2)"),
+        ("string_type", "Input should be a valid string", ["a"], " (got a list of 1 item)"),
+        ("string_type", "Input should be a valid string", [], " (got a list of 0 items)"),
+        ("string_type", "Input should be a valid string", b"hi", " (got binary data)"),
+        ("list_type", "Input should be a valid list", "x" * 80, " (got '" + "x" * 59 + "...)"),
+        ("string_too_short", "must not be empty", "", " (got '')"),
+        ("value_error", "invalid duration: 5 minutes", "5 minutes", ""),
+        ("value_error", "invalid duration: null", None, ""),
+        ("value_error", "invalid duration: true", True, ""),
+        ("string_type", "this one is a boolean (false); quote it", False, ""),
+        ("control_char", "one character, got 'ab'", "ab", ""),
+        ("invalid_regex", "invalid regex '(': missing )", "(", ""),
+        ("unsupported_version", "autobot 2026-08 is no longer supported", "2026-08", ""),
+        ("some_type", "a is not allowed", "a", " (got 'a')"),
+        ("missing", "Field required", {"a": 1}, ""),
+        ("extra_forbidden", "Extra inputs are not permitted", "5s", ""),
+    ],
+)
+def test_p8_28_offending_value_is_shown_unless_the_message_shows_it(type_: str, msg: str, value: object, got: str):
+    """The value is written as YAML writes it, cut at 60 characters; a mapping shows its keys and a list its
+    length. A missing key and an unknown key have no value worth showing."""
+    assert cli._got(type_, msg, value) == got
 
 
 # -- log: the unit ------------------------------------------------------------------
