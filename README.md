@@ -88,7 +88,7 @@ A script is a YAML file with the following top-level fields:
 ```yaml
 autobot: 2026-10
 
-env:                    # string key-value defaults (overridden by OS env vars)
+env:                    # defaults for environment variables (a variable that is set wins)
   IMAGE_URL: https://...
 
 vars:                   # arbitrary data accessible as {{ vars.KEY }}
@@ -123,7 +123,7 @@ script:                 # main steps to execute
 | Field     | Required | Description                                                                                                                  |
 |-----------|----------|------------------------------------------------------------------------------------------------------------------------------|
 | `autobot` | yes      | Schema version: `2026-10` |
-| `env`     | no       | String key-value defaults, overridden by OS env vars (an OS value is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error. Accessible as `{{ env.KEY }}` |
+| `env`     | no       | Defaults for environment variables. `{{ env.KEY }}` reads any variable of the environment, declared here or not; a key of this section gives a variable a value when the environment doesn't set it (a value of the environment is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking                         |
@@ -137,16 +137,16 @@ The `attach` block controls how autobot connects to the remote console.
 
 | Field      | Required | Description                                                                                                                         |
 |------------|----------|-------------------------------------------------------------------------------------------------------------------------------------|
-| `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
+| `prepare`  | no       | Local script to run before spawning (e.g. auth, tunnel setup). A shell script is the run's rc script: the variables it exports are set for the rest of the run (see [`prepare` as an rc script](#prepare-as-an-rc-script)). Leading blank lines, whitespace and a BOM are ignored. Uses the shebang for the interpreter, or `/bin/sh` without one. Aborts on non-zero exit, or if the interpreter can't run (`prepare script could not run ('#!...'): ...`) |
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
-| `env`      | no       | Environment variables for the spawned process. Replaces the full process env (not merged). Defaults to `TERM=dumb` and `NO_COLOR=1`; `env: {}` means an empty env. Without `PATH`, the spawn command is looked up in `/bin:/usr/bin` |
+| `env`      | no       | Environment variables to set for the spawned process, on top of what it inherits: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, and the variables `prepare` exported. An entry overrides an inherited variable, `TERM` included; `env: {}` sets nothing. The spawn command is looked up in the `PATH` of that environment |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
 | `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
 
 ### Lifecycle
 
-1. `attach.prepare` runs locally (if defined) — aborts on failure
+1. `attach.prepare` runs locally (if defined) — aborts on failure. The variables it exports are applied, and a `spawn` that reads `env` is rendered after it
 2. `pexpect.spawn(attach.spawn)` — waits up to `attach.timeout` (default 300s) for initial output. The output is left unconsumed, so a login or shell prompt that arrives with the banner is handled by the first prompt wait.
 3. `attach.script` steps execute (e.g. jump-host commands)
 4. Main `script` steps execute
@@ -175,6 +175,26 @@ attach:
     - control: "]"
     - line: logout
 ```
+
+### `prepare` as an rc script
+
+A `prepare` script that a shell runs works like an rc file: the variables it exports are set for the rest of the run. Templates read them through `env`, and the spawned command (`ssh`, `telnet`, ...) inherits them.
+
+```yaml
+attach:
+  prepare: |
+    . ~/.config/lab/credentials.sh
+    export JUMP_HOST=$(lab-inventory jump-host)
+  spawn: ssh -J {{ env.JUMP_HOST }} admin@{{ args.host }}
+```
+
+- A script without a shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh` (`#!/bin/bash`, `#!/usr/bin/env bash`) is sourced by that shell. The shebang may carry `set` options (`#!/bin/sh -eu`) or the end-of-options `-` (`#!/bin/sh -`). A script for any other interpreter (`#!/usr/bin/env python3`), or for a shell with any other argument (`#!/bin/bash -r`), is executed as a program and sets nothing: a process can't change its parent's environment.
+- Autobot takes what the script changed: an exported variable with a new value is set, one that is gone is unset. `_`, `SHLVL`, `PWD` and `OLDPWD` are never taken, and a `cd` in the script doesn't move Autobot.
+- Precedence, lowest to highest: a default of the `env` section, the environment Autobot was started with, Autobot's `TERM=dumb` and `NO_COLOR=1`, a variable `prepare` set. The `env` defaults are rendered again after `prepare`, so a default may reference a variable that only `prepare` sets.
+- `prepare` is itself a template and sees `env` as it is before the script runs. A `spawn` that reads `env` is rendered after it.
+- The spawned process gets, each overriding the one before: Autobot's own environment, `TERM=dumb` and `NO_COLOR=1`, what `prepare` changed, and the entries of `attach.env`. `prepare` itself runs with `TERM=dumb` and `NO_COLOR=1`, and `{{ env.TERM }}` reads the same, so a `prepare` that exports or unsets `TERM` or `NO_COLOR` decides it. The `env` section's defaults are for templates and aren't passed on. A local shell therefore inherits `PROMPT_COMMAND`, `BASH_ENV`, `ENV` and `PS1`, and `ssh` forwards `LANG` and `LC_*`; unset what is in the way in `prepare`, or, for a process that inherits nothing, spawn it through `env`: `spawn: env -i PATH=/usr/bin:/bin ssh host`.
+- A script that exits non-zero aborts the run and sets nothing. The script's output stays its own, and Autobot prints only how many variables were set and unset, never a name or a value. A value that a template puts into `spawn` or a command is printed with it (`>> attach: ...`, `>> cmd: ...`), so leave a secret in the environment for the process to inherit rather than interpolating it. The environment is read back through a temp file that has no name, so no file with its values is left behind, however Autobot ends.
+- A script that sets its own `EXIT` trap and then calls `exit`, or that ends with `exec`, ends its shell before the environment can be read: it sets nothing, and a warning says so (`>> prepare: environment not read: ...`). End such a script at the end of the file or with `return`. The same warning, with its own reason, is printed when the environment can't be read for another cause, e.g. an exported value too large to start a command with. The run goes on in each case.
 
 ## Prompts
 
@@ -479,7 +499,7 @@ Available context:
 
 | Variable         | Source                                  |
 |------------------|-----------------------------------------|
-| `env.*`          | `env` section; an OS env var overrides a key of the same name, and OS vars not declared in `env` aren't visible |
+| `env.*`          | The whole environment (`{{ env.HOME }}`), with `TERM=dumb` and `NO_COLOR=1` and the variables `attach.prepare` exported, plus the `env` section's defaults for the variables that aren't set; a variable set nowhere is undefined, so `{{ env.X \| default('y') }}` works |
 | `vars.*`         | `vars` section (also populated at runtime by `cmd` steps with `register`) |
 | `args.*`         | CLI `--arg` flags                       |
 | `session.before` | Text before the last `after` match, or the captured output of the last command (see [What counts as output](#what-counts-as-output)) |

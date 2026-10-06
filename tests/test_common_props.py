@@ -471,7 +471,7 @@ def test_p3_19_dict_methods_still_work_without_such_a_key():
     assert r.render("{{ vars.keys() | list }} {{ vars.get('nope', 'd') }} {{ vars | length }}") == "['a', 'b'] d 2"
     assert r.render("{{ vars }} {{ vars | tojson }}") == "{'a': 1, 'b': {'c': 2}} {\"a\": 1, \"b\": {\"c\": 2}}"
     assert r.render("{{ 'a' in vars }} {{ vars == {'a': 1, 'b': {'c': 2}} }}", condition=True) == "True True"
-    assert r.render("{{ env.E }} {{ env.items() | list }} {{ args.get('k') }}") == "d [('E', 'd')] v"
+    assert r.render("{{ env.E }} {{ env.items() | first }} {{ args.get('k') }}") == "d ('E', 'd') v"
     with pytest.raises(ValueError, match="^template error: "):
         r.render("{{ vars.nope }}")
 

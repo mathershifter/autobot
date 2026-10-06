@@ -1,30 +1,23 @@
 from __future__ import annotations
 
-import contextlib
 import datetime
 import os
-import subprocess
-import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jinja2 import StrictUndefined
+from jinja2 import StrictUndefined, UndefinedError
 
-from . import log
+from . import log, prepare
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
-from .session import PromptHandler, Session, SimpleHandler
+from .session import DEFAULT_ENV, PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
-from .types import EnvError, RunError, ScriptError, check_regex, check_template, text
+from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
 
 
 register_builtins(registry)
-
-# Stripped before looking for a shebang: whitespace and line breaks, a BOM,
-# and the zero-width characters that copy and paste leave behind.
-_PREPARE_JUNK = " \t\r\n\ufeff\u200b\u2060"
 
 _KINDS = {
     dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
@@ -132,21 +125,45 @@ def trail(error: BaseException) -> tuple[StepRef, ...]:
     return getattr(error, "autobot_trail", ())
 
 
+class _Unset(UndefinedError):
+    """A default read a variable that nothing sets; `prepare` may still set it."""
+
+
+def _env(values: dict[str, Any], why: Callable[[Any], str]) -> dict[str, Any]:
+    """`env` in templates: every variable of the environment, and the script's defaults for those not set.
+
+    A variable it doesn't have is undefined, and `why` says why. The mapping holds the variables and
+    nothing else: a template reads attributes too, so what the runner knows about them stays off it.
+    """
+
+    class Env(dict):
+        __slots__ = ()
+
+        def __missing__(self, key: Any) -> Any:
+            return StrictUndefined(hint=why(key))
+
+    return Env(values)
+
+
 class _EnvRefs(Mapping[str, Any]):
     """`env` while it's resolved: a default is rendered once, when first read, so a cycle is caught.
 
-    Values in `fixed` (from the OS environment) are used as they are, never rendered.
+    A variable of `environ` is used as it is, never rendered, and the default of the same name isn't used.
     """
 
-    def __init__(self, raw: dict[str, str], fixed: dict[str, str], ctx: dict[str, Any]):
+    def __init__(self, raw: dict[str, str], environ: dict[str, str], ctx: dict[str, Any], why: Callable[[Any], str]):
         self.__raw = raw
+        self.__environ = environ
+        self.__why = why
         self.__ctx = {**ctx, "env": self}
-        self.__done: dict[str, Any] = dict(fixed)
+        self.__done: dict[str, Any] = {}
         self.__path: list[str] = []
 
     def __getitem__(self, key: str) -> Any:
+        if key in self.__environ:
+            return self.__environ[key]
         if key not in self.__raw:
-            return StrictUndefined(hint=f"env has no key '{key}'")
+            return StrictUndefined(hint=self.__why(key), exc=_Unset)
         if key not in self.__done:
             if key in self.__path:
                 cycle = [*self.__path[self.__path.index(key):], key]
@@ -161,16 +178,18 @@ class _EnvRefs(Mapping[str, Any]):
         return self.__done[key]
 
     def __contains__(self, key: object) -> bool:
-        return key in self.__raw
+        return key in self.__environ or key in self.__raw
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self[key] if key in self.__raw else default
+        return self[key] if key in self else default
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.__raw)
+        # the script's own keys in the order written, then the rest of the environment by name
+        yield from self.__raw
+        yield from sorted(k for k in self.__environ if k not in self.__raw)
 
     def __len__(self) -> int:
-        return len(self.__raw)
+        return len(self.__raw.keys() | self.__environ.keys())
 
 
 class Runner:
@@ -179,7 +198,12 @@ class Runner:
         self._config = config
         self._cli_args = cli_args
         self._default_timeout = 300
-        self._env = self._resolve_env(config.env)
+        # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
+        self._environ = {**os.environ, **DEFAULT_ENV}
+        self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
+        self._unread = ""  # why the environment `prepare` left wasn't read, if it wasn't
+        # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
+        self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
@@ -228,10 +252,26 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self, defaults: dict[str, str]) -> dict[str, str]:
-        fixed = {k: os.environ[k] for k in defaults if k in os.environ}
-        refs = _EnvRefs(defaults, fixed, {"vars": self._config.vars, "args": self._cli_args})
-        return {k: refs[k] for k in defaults}
+    def _resolve_env(self, later: bool = False) -> dict[str, Any]:
+        ctx = {"vars": self._config.vars, "args": self._cli_args}
+        self._later = {}
+        refs = _EnvRefs(self._config.env, self._environ, ctx, self._why_unset)
+        values: dict[str, Any] = {}
+        for key in refs:
+            try:
+                values[key] = refs[key]
+            except ScriptError as e:
+                if not (later and isinstance(e.__cause__, _Unset)):
+                    raise
+                self._later[key] = str(e.__cause__)
+        return _env(values, self._why_unset)
+
+    def _why_unset(self, key: Any) -> str:
+        if key in self._later:
+            return f"env.{key} can't be read before prepare has run: {self._later[key]}"
+        # a variable the script exported may be what is missing
+        lost = f" (the environment prepare left was not read: {self._unread})" if self._unread else ""
+        return f"env has no key '{key}'{lost}"
 
     @property
     def _ctx(self) -> dict:
@@ -250,42 +290,9 @@ class Runner:
             ctx = {**ctx, **extra_ctx}
         return render_template(template, ctx, condition=condition)
 
-    @staticmethod
-    def _run_prepare(script: str):
-        script = script.lstrip(_PREPARE_JUNK)
-        first, nl, rest = script.partition("\n")
-        if script.startswith("#!"):
-            first = first.removesuffix("\r")
-            script = first + nl + rest
-            argv: list[str] = []
-            log.say("prepare: running local script")
-        else:
-            argv = ["/bin/sh"]
-            log.say("prepare: running local script (no shebang, using /bin/sh)")
-        f = tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False
-        )
-        tmp = f.name
-        try:
-            with f:
-                f.write(script)  # may fail, e.g. on a lone surrogate from a non-UTF-8 --arg
-            os.chmod(tmp, 0o700)
-            try:
-                result = subprocess.run([*argv, tmp], check=False)
-            except OSError as e:
-                raise RunError(
-                    f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}"
-                ) from e
-            if result.returncode != 0:
-                raise RunError(
-                    f"prepare script failed with exit code {result.returncode}"
-                )
-        finally:
-            with contextlib.suppress(FileNotFoundError):  # the script may remove itself
-                os.unlink(tmp)
-        log.say("prepare: done", "ok")
+    _run_prepare = staticmethod(prepare.run)
 
-    def run(self):
+    def _spawn_command(self) -> str:
         attach = self._config.attach
         # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
         spawn = self.render(attach.spawn).lstrip()
@@ -293,13 +300,32 @@ class Runner:
             raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         if "\0" in spawn:
             raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
+        return spawn
+
+    def _spawn_env(self) -> dict[str, str]:
+        """The spawned process's environment: the run's, as `prepare` changed it, plus `attach.env`."""
+        return {**self._environ, **(self._config.attach.env or {})}
+
+    def run(self):
+        attach = self._config.attach
+        # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
+        # any other is rendered first, so one that names no command stops the run before `prepare`
+        late = bool(attach.prepare) and "env" in template_names(attach.spawn)
+        spawn = None if late else self._spawn_command()
         timeout = self._get_timeout(attach)
         if attach.prepare:
-            self._run_prepare(self.render(attach.prepare))
+            changes = self._run_prepare(self.render(attach.prepare), self._environ)
+            self._environ.update(changes.set)
+            for key in changes.unset:
+                self._environ.pop(key, None)
+            self._unread = changes.unread
+            self._env = self._resolve_env()
+        if spawn is None:
+            spawn = self._spawn_command()
 
         log.say(f"attach: {spawn}")
         try:
-            self._session.attach(spawn, env=attach.env, timeout=timeout)
+            self._session.attach(spawn, env=self._spawn_env(), timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)
