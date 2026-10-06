@@ -296,7 +296,7 @@ None of these is reported as the script's failure: `prepare script failed with e
 The spawned process gets these variables, each line overriding the ones before it:
 
 1. The environment Autobot was started with. So the process inherits `HOME`, `PATH`, `SSH_AUTH_SOCK`, the proxy and locale settings and everything else, as a command started from the same shell would.
-2. `TERM=dumb` and `NO_COLOR=1`, whatever the terminal Autobot runs in: the session is read by a program, and a plain terminal keeps colors, line editing and pagers out of its output.
+2. `TERM=dumb` and `NO_COLOR=1`, whatever the terminal Autobot runs in: the session is read by a program, and a plain terminal keeps colors, line editing and pagers out of its output. A run that gives the process another `TERM` gets a line editor that wraps long lines and moves the cursor: the echo of a wrapped line is still removed from the captured output, with one exception, a redrawn prompt (see [The echo of a sent line](#the-echo-of-a-sent-line)).
 3. What `attach.prepare` changed: the variables it set, and without the ones it unset (see [`prepare` as an rc script](#prepare-as-an-rc-script)).
 4. The entries of `attach.env`.
 
@@ -361,13 +361,30 @@ The `$?` check sends `echo __AUTOBOT_RC=$?` and reads the digits that follow the
 #### Captured output
 
 The captured output of a command line is the text the session prints between sending the line and the next shell prompt, with:
-- The terminal echo of the sent command removed. The echo is matched ignoring whitespace and `\r`, across wrapped lines, and in readline's horizontal-scroll form (`\r<` + visible tail) used for long lines. If the echo doesn't match (e.g. echo disabled), the output is left unchanged.
+- The terminal echo of the sent line removed (see [The echo of a sent line](#the-echo-of-a-sent-line)). Output that doesn't start with the echo is left unchanged.
 - Line endings normalized to `\n`.
 - ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)).
 - Stray carriage returns, NULs and BELs removed where they come first in the unread output, i.e. at the start of a line or right after an escape sequence, and something other than a line break follows them (see [Prompt Handling](#prompt-handling-get_prompt)): `\rtwo\rthree` is captured as `two\rthree`. Everywhere else NULs and BELs are kept, and so are carriage returns, with one exception: carriage returns right before a line break are dropped with it, so `out\r\r` and a line break is captured as `out\n`, while `\x00` and a line break is `\x00\n`.
 - The trailing partial line before the prompt match (the prompt prefix) dropped. Output that doesn't end with a newline is therefore not captured.
 
 `errors` patterns are matched with `re.MULTILINE` against the captured output after the shell prompt returns, so they never match the echoed command, and the session is left at the prompt when the error is raised. An error that is printed without a prompt returning results in a timeout rather than an error match.
+
+#### The echo of a sent line
+
+A console echoes each line it is sent, and a line editor (readline, a network CLI) writes more than the line when the line reaches the right margin of its terminal: it wraps it, pads it, moves the cursor or draws part of it again. The session (`session.strip_echo`) takes the start of the output for the echo when, read as a terminal shows it, it is the line that was sent:
+
+- Blanks don't count: spaces, tabs and any other whitespace are left out of both the output and the sent line before they are compared.
+- A backspace moves back one character, and a character written after it replaces the one that was there. `" \b"` (a blank and a backspace, written to make the terminal wrap) shows nothing, `x\by` shows `y`, and `x\b \b` shows nothing. A backspace at the start of a line, or right after a `\r`, moves nowhere.
+- The other control characters show nothing: `\x00` to `\x1f` (NUL padding, BEL, a lone ESC), DEL (`\x7f`) and `\x80` to `\x9f`. Escape sequences are already removed (see [ANSI escape sequences](#ansi-escape-sequences)).
+- A line break continues the echo on the next captured line, at the point the lines before it reached. An editor that breaks the line at the margin (`\r\n`) is read this way.
+- A carriage return goes back to the start of a row. Where a row starts depends on the width of the device's terminal, which Autobot doesn't know, so the text up to the next `\r` or line break is read in one of two ways: it continues the echo, or it writes again, unchanged, text of the sent line that the same captured line already shows, and may go on past it. It never goes back before the start of its captured line. `" \r"` and `"\r"` at the margin continue the echo. Readline on a terminal that wraps writes, in a single-byte locale, the character after the margin, a `\r` and that character again (`...ab\rbcd...`); in a multibyte locale it writes, after a line that ends exactly at the margin, a blank, a `\r` and the last character of the line again. Text after a `\r` that differs from what it would overwrite is not part of an echo.
+- Readline's horizontal-scroll form, used with `TERM=dumb`: the first line of the output, after its last `\r`, is `<` and the end of the sent line (the part that is still visible). It counts as the whole echo.
+
+The sent line is read the same way, so a backspace or another control character in it counts for what a terminal shows of it. A device that echoes such a character as text (`^G`) doesn't echo the line in this sense.
+
+The echo ends at the first line break by which all of the sent line is shown, and the output starts after that line break. Empty lines before the echo go with it. Only the echo is read this way: the output after it is kept as described above, control characters included, and a second line that reads as the sent line is output.
+
+The output is left unchanged, echo included, when it doesn't start with the echo: the echo is disabled (`stty -echo`, a password), the device writes something else for the line, text follows the echo on its last line, or the sent line shows nothing (an empty line, only blanks or control characters). Nothing is reported for it. Two cases are beyond the comparison. With the echo disabled, output whose first line is the sent line is taken for the echo. And an editor that writes the prompt again while it echoes ends the prompt wait at that prompt, before the output: readline does it in a single-byte locale (`LC_ALL=C`), on a terminal that wraps (a `TERM` other than `dumb`, e.g. `vt100` or `xterm`), for a line that with its prompt ends exactly at the margin; `register` then stores an empty string for that command. The default `TERM=dumb` avoids it, and so does a multibyte locale.
 
 #### ANSI escape sequences
 

@@ -818,13 +818,14 @@ def test_p4_42_stray_cr_in_a_read_of_its_own(raw_device: Callable[..., Session],
 @pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
 @pytest.mark.parametrize(
     "line",
-    ["10%\r50%\r100%", "ab\x00cd\x07ef", "a\r", "x\x00", "\x00", "\x07\x00", "tab\there"],
+    ["10%\r50%\r100%", "ab\x00cd\x07ef", "a\r", "y\x00", "\x00", "\x07\x00", "tab\there"],
     ids=["progress", "nul-bel-inside", "cr-at-end", "nul-at-end", "only-nul", "only-bel-nul", "tab"],
 )
 def test_p4_42_control_characters_inside_a_line_are_captured(raw_device: Callable[..., Session], line: str, regex: str):
     """Only the start of the unread output is affected: a line that rewrites itself is captured as before.
 
     A run of them that makes up the whole line is kept as well, since a line break follows it.
+    (No line reads as `x`, the line the device was sent: with no echo, that one would be taken for it.)
     (A `\\r` right before the line break was always dropped, as part of the break.)
     """
     s = raw_device(f"{line}\r\nPROMPT$ ", regex=regex)

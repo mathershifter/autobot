@@ -27,30 +27,59 @@ class CommandError(RunError):
         self.output = output
 
 
-def _norm(text: str) -> str:
-    return "".join(text.split())
+def _shown(text: str) -> str:
+    """What a terminal shows of `text`, less the blanks: a backspace steps back one cell, a character
+    replaces the one in its cell, and the other control characters show nothing."""
+    cells: list[str] = []
+    col = 0
+    for ch in text:
+        if ch == "\b":
+            col = max(col - 1, 0)
+        elif ch in " \t" or not (ch < " " or "\x7f" <= ch <= "\x9f"):
+            cells[col : col + 1] = [ch]
+            col += 1
+    return "".join("".join(cells).split())
 
 
 def strip_echo(text: str, sent: str) -> str:
-    target = _norm(sent)
+    """`text` without the echo of the line `sent` at its start, or as it is when it doesn't start with one.
+
+    The echo is what a line editor writes for the line: the line itself, broken where it wraps. Blanks
+    don't count. A line break continues it. A `\\r` returns to the start of a row, and the width of a row
+    isn't known: what follows either continues the echo or writes again, unchanged, part of what the
+    captured line already shows of it.
+    """
+    target = _shown(sent)
     if not target:
         return text
     lines = text.split("\n")
-    seen = ""
+    ends = {0}  # how much of `target` the lines read so far may show
     for k, line in enumerate(lines):
+        parts = [_shown(p) for p in line.split("\r")]
         # readline horizontal-scroll mode (e.g. TERM=dumb) redraws only the
         # visible tail of a long line, prefixed with '<'
-        tail = line.rsplit("\r", 1)[-1].lstrip()
-        if not seen and tail.startswith("<"):
-            shown = _norm(tail[1:])
-            if shown and target.endswith(shown):
-                return "\n".join(lines[k + 1 :])
-        seen += _norm(line)
-        if seen == target:
+        tail = parts[-1]
+        if ends == {0} and len(tail) > 1 and tail[0] == "<" and target.endswith(tail[1:]):
             return "\n".join(lines[k + 1 :])
-        if not target.startswith(seen):
+        ends = {end for start in ends for end in _extend(target, start, parts)}
+        if len(target) in ends:
+            return "\n".join(lines[k + 1 :])
+        if not ends:
             break
     return text
+
+
+def _extend(target: str, start: int, parts: list[str]) -> set[int]:
+    """How much of `target` is shown after a captured line, `parts` at its `\\r`s, that began with `start` shown."""
+    ends = {start}
+    for j, part in enumerate(parts):
+        ends = {
+            max(end, at + len(part))
+            for end in ends
+            for at in (range(start, end + 1) if j else (end,))
+            if target.startswith(part, at)
+        }
+    return ends
 
 
 def _exit_note(cld: pexpect.spawn) -> str:
