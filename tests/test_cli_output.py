@@ -111,6 +111,17 @@ def test_p8_22_color_on_a_terminal(tmp_path: Path):
     assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho hi" in out
 
 
+def test_p8_22_nothing_but_the_documented_variables_decides(tmp_path: Path):
+    """SPEC "Output": whether stderr is a terminal, `TERM`, `NO_COLOR` and `FORCE_COLOR` decide, and nothing
+    else: rich's own `TTY_COMPATIBLE` neither styles a pipe nor unstyles a terminal."""
+    path = _write(tmp_path, PALETTE)
+    assert ESC not in piped(path, TTY_COMPATIBLE="1").stderr
+    out, _ = on_terminal(path, TTY_COMPATIBLE="0")
+    assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho hi" in out
+    out, _ = on_terminal(path, TTY_COMPATIBLE="1", NO_COLOR="1")
+    assert ESC not in out
+
+
 # -- the palette -------------------------------------------------------------------
 
 

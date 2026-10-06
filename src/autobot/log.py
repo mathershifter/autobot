@@ -31,16 +31,25 @@ INDENT = "  "
 depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
 
 
-def _console() -> Console:
-    # markup, highlighting and emoji codes off: a line shows commands, names and errors as they are.
-    # soft_wrap: a log line is one line, whatever the terminal's width
-    options: dict = {"stderr": True, "markup": False, "highlight": False, "emoji": False, "soft_wrap": True}
+def _styled() -> bool:
+    """Whether the messages are styled: these three things decide, and nothing else rich would consult."""
     if os.environ.get("NO_COLOR"):
-        # no escape sequences at all: rich by itself would keep bold and dim
-        options["color_system"] = None
-    elif os.environ.get("FORCE_COLOR") and os.environ.get("TERM", "").lower() in ("dumb", "unknown"):
-        options["color_system"] = "standard"  # rich forces the terminal, but not a color system for these
-    return Console(**options)
+        return False  # no escape sequences at all: rich by itself would keep bold and dim
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    try:
+        terminal = sys.stderr.isatty()
+    except (AttributeError, ValueError):  # no stderr, or a closed one
+        return False
+    return terminal and os.environ.get("TERM", "").lower() not in ("dumb", "unknown")
+
+
+def _console() -> Console:
+    # Every message is printed as a `Text`, never as a string: that is what keeps rich from reading markup
+    # or emoji codes in it and from highlighting numbers and quotes. soft_wrap: a log line is one line,
+    # whatever the terminal's width
+    styled = _styled()
+    return Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
 
 
 console = _console()

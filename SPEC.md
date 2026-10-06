@@ -814,7 +814,7 @@ A message is printed as it is. Nothing in it is read as markup or as an emoji co
 
 Only bold, dim and four of the terminal's own eight colors are used (SGR 1, 2 and 31 to 34: red, green, yellow and blue), never a fixed RGB value or a background color, so the terminal's theme decides the exact colors and keeps them readable on a dark and on a light background.
 
-The messages are styled when stderr is a terminal whose `TERM` isn't `dumb` or `unknown`. Otherwise they are plain text without any escape sequence, so a pipe or a file gets a clean log. Two environment variables change that, each when set to a non-empty value:
+The messages are styled when stderr is a terminal whose `TERM` isn't `dumb` or `unknown`. Otherwise they are plain text without any escape sequence, so a pipe or a file gets a clean log. Two environment variables change that, each when set to a non-empty value, and no other does (`TTY_COMPATIBLE`, which rich reads on its own, has no effect):
 - `NO_COLOR`: no escape sequences at all, bold and dim included. It wins over `FORCE_COLOR`.
 - `FORCE_COLOR`: styles even when stderr isn't a terminal, and for a `dumb` terminal. Any non-empty value counts, `0` too.
 
