@@ -610,6 +610,7 @@ def test_p6_88_ctrl_c_is_interrupted_with_status_130_after_the_cleanup(tmp_path:
     assert _lines(res) == ["Interrupted", "  at script.1.block.script.0 (cmd: sleep 30)"]
     assert log.read_text().split() == ["block", "attach"]
     progress = [line for line in res.stderr.splitlines() if line.startswith(">> ")]
+    assert progress.index(">>   step interrupted") < progress.index(">> block breakout: long")
     assert progress.index(">> block breakout: long") < progress.index(">> breakout: detaching")
     assert _pids(spawn) == []
 

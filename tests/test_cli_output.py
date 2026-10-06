@@ -18,6 +18,7 @@ from conftest import make_config, make_doc
 from autobot import cli, log
 from autobot.models import Config
 from autobot.runner import Runner
+from autobot.steps import CmdExecutor, StepFailure
 from autobot.types import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
@@ -126,6 +127,7 @@ def test_p8_23_each_kind_of_line_has_its_style(tmp_path: Path):
         f"{yellow}>>{off}   {ESC}[33merror ignored: {off}command returned exit code 1",  # a warning
         f"{dim}>>{off}   {dim}register: {off}{dim}vars.x{off}",  # a detail
         f"{green}>>{off} {ESC}[32mblock completed: {off}{ESC}[32mb{off}",  # completed
+        f"{red}>>{off} {ESC}[31mstep failed (StepFailure): {off}assertion failed: expected ['nope']",  # a failure
         f"{red}Run failed in {path}{off}: assertion failed: expected ['nope']",  # the verdict
         f"{dim}  at {off}script.1 (cmd: echo hi)",
     ]:
@@ -236,6 +238,7 @@ def test_p8_26_progress_lines_are_indented_by_nesting(tmp_path: Path):
         ">> call: g",
         ">>   cmd: echo g",
         ">> cmd: false",
+        ">> step failed (StepFailure): command returned exit code 1",
         ">> breakout: detaching",
         ">> cmd: echo bye",
         f"Run failed in {path}: command returned exit code 1",
@@ -258,6 +261,7 @@ def test_p8_26_depth_is_back_at_zero_after_a_failure_deep_in_the_script(tmp_path
         ">>   block enter: b",
         ">>     call: f",
         ">>       cmd: false",
+        ">>       step failed (StepFailure): command returned exit code 1",
         ">>   block breakout: b",
         ">>     cmd: true",
         ">> block breakout: a",
@@ -349,6 +353,87 @@ def test_p8_27_run_completed_starts_a_line_after_the_last_prompt(tmp_path: Path)
     assert lines[-3:] == ["PROMPT$ ", ">> run completed", ""]
 
 
+# -- where a step fails -------------------------------------------------------------------
+
+
+def test_p8_29_failed_step_says_so_before_the_breakouts(tmp_path: Path):
+    """SPEC "Output": the step that fails prints `>> step failed (<type>): <message>` at its own level as it
+    fails, so the log shows why the breakouts start; the CLI's report follows after them. An ignored failure
+    and a step that completes print no such line, and a breakout's failing step prints its own."""
+    script = [
+        {"cmd": "false", "ignore_error": True},
+        {"block": {"name": "b", "script": [{"cmd": "echo hi", "assert": "nope"}, {"cmd": "echo never"}],
+                   "breakout": [{"cmd": "false"}, {"cmd": "echo never"}]}},
+    ]
+    path = _write(tmp_path, script)
+    res = piped(path)
+    assert res.returncode == 3, res.stderr
+    assert res.stderr.splitlines() == [
+        ">> attach: bash --norc --noprofile -i",
+        ">> cmd: false",
+        ">> error ignored: command returned exit code 1",
+        ">> block enter: b",
+        ">>   cmd: echo hi",
+        ">>   step failed (StepFailure): assertion failed: expected ['nope']",
+        ">> block breakout: b",
+        ">>   cmd: false",
+        ">>   step failed (StepFailure): command returned exit code 1",
+        ">> block breakout error (StepFailure): command returned exit code 1",
+        f"Run failed in {path}: assertion failed: expected ['nope']",
+        "  at script.1.block.script.0 (cmd: echo hi)",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("script", "line"),
+    [
+        ([{"cmd": "sleep 30", "timeout": "1s"}], ">> step failed (TimeoutError): timed out after 1.0s waiting for a shell prompt ('sh')"),
+        ([{"cmd": "echo {{ nope }}"}], ">> step failed (ScriptError): template error: 'nope' is undefined"),
+        ([{"line": "exit"}, {"sleep": "5s"}], ">> step failed (EOFError): connection closed while waiting for the end of a sleep"),
+    ],
+    ids=["timeout", "template", "closed"],
+)
+def test_p8_29_failed_step_names_the_error_type(tmp_path: Path, script: list, line: str):
+    """The line names the exception's class, as the breakout and close error lines do."""
+    res = piped(_write(tmp_path, script))
+    assert res.returncode == 3, res.stderr
+    assert res.stderr.splitlines().count(line) == 1
+
+
+def test_p8_29_failed_step_is_printed_once_by_the_innermost_step(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch):
+    """A failure deep in blocks and calls is one line, at the failing step's level, in red on a terminal."""
+    def execute(self: CmdExecutor, step: object, ctx: object, timeout: float) -> None:
+        raise StepFailure("stop [/here]")
+
+    monkeypatch.setattr(CmdExecutor, "execute", execute)
+    script = [{"block": {"name": "b", "script": [{"call": "f"}]}}]
+    runner = Runner(make_config(script, fn={"f": {"script": [{"cmd": "true"}]}}), {})
+    with pytest.raises(StepFailure):
+        runner.run_steps(runner.config.script)
+    assert capsys.readouterr().err.splitlines() == [
+        ">> block enter: b",
+        ">>   call: f",
+        ">>     step failed (StepFailure): stop [/here]",
+    ]
+    assert log.KINDS["fail"] == ("bold red", "red", "")
+
+
+def test_p8_29_unexpected_error_and_interrupt_in_a_step(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch):
+    """An unexpected error is named the same way; an interrupt prints `>> step interrupted`. `SystemExit`
+    prints nothing."""
+    errors: list[BaseException] = [KeyError("x"), KeyboardInterrupt(), SystemExit(3)]
+
+    def execute(self: CmdExecutor, step: object, ctx: object, timeout: float) -> None:
+        raise errors.pop(0)
+
+    monkeypatch.setattr(CmdExecutor, "execute", execute)
+    runner = Runner(make_config([{"cmd": "true"}]), {})
+    for error in (KeyError, KeyboardInterrupt, SystemExit):
+        with pytest.raises(error):
+            runner.run_steps(runner.config.script)
+    assert capsys.readouterr().err.splitlines() == [">> step failed (KeyError): 'x'", ">> step interrupted"]
+
+
 # -- a message starts on a line of its own -------------------------------------------
 
 STEPS = [{"cmd": "echo hi"}, {"block": {"name": "b", "script": [{"cmd": "echo in"}]}}, {"cmd": "false"}]
@@ -380,6 +465,7 @@ def test_p8_25_message_starts_a_new_line_when_the_streams_are_one(tmp_path: Path
         ">>   cmd: echo in",
         ">> block completed: b",
         ">> cmd: false",
+        ">> step failed (StepFailure): command returned exit code 1",
         f"Run failed in {path}: command returned exit code 1",
         "  at script.2 (cmd: false)",
     ]

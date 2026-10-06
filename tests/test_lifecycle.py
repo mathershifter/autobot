@@ -522,8 +522,10 @@ def test_p5_33_banner_then_exit_runs_breakout(
         ">> prepare: running local script",
         ">> prepare: done",
         f">> attach: {spawn}",
+        ">> step failed (EOFError): connection closed while waiting for a shell prompt ('sh')",
         ">> breakout: detaching",
         ">> line sent",
+        ">> step failed (EOFError): connection closed while waiting for a shell prompt ('sh')",
         ">> breakout error (EOFError): connection closed while waiting for a shell prompt ('sh')",
     ]
 

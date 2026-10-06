@@ -776,6 +776,7 @@ The line break goes to stderr, never to stdout, and none is written when the two
 | `>> prepare: done`, `>> block completed: <name>`, `>> run completed` | completed | when `attach.prepare` or a block has finished without an error; `run completed` is the CLI's last line of a run that completed |
 | `>> register: vars.<name>`, `>> script: writing to <file>`, `>> script: executing <file>`, `>> script: cleaned up <file>` | detail | by `register`, and by an embedded script |
 | `>> error ignored: <message>`, `>> breakout error (<type>): <message>`, `>> block breakout error (<type>): <message>`, `>> close error (<type>): <message>`, `>> script: interrupt sent: ^C`, `>> script: cleanup of <file> failed (<type>): <message>` | warning | for a failure the run goes on from; `<type>` is the exception's class name |
+| `>> step failed (<type>): <message>`, `>> step interrupted` | failure | by the step that ends with an error, as it fails: an error that the step doesn't ignore, or an interrupt. It is printed once, by the innermost step, at that step's level and before any breakout runs. A failing step of a breakout prints it too, before the breakout's own `breakout error` line |
 
 **Nesting.** The steps of a block and of a called function are indented under the line that starts them, two spaces a level. The indentation comes after the marker, which stays in the first column:
 
@@ -806,11 +807,12 @@ A message is printed as it is. Nothing in it is read as markup or as an emoji co
 | completed | marker bold green, text green |
 | detail | marker and text dim |
 | warning | marker bold yellow, label yellow, the rest plain |
+| failure | marker bold red, label red, the rest plain |
 | a report's first words, up to the `: ` | bold red; `Interrupted` is bold yellow |
 | a validation error's location, and its type | bold, and dim |
 | the `at` and `called from` labels of a report | dim |
 
-Only bold, dim and four of the terminal's own eight colors are used (SGR 1, 2 and 31 to 34), never a fixed RGB value or a background color, so the terminal's theme decides the exact colors and keeps them readable on a dark and on a light background.
+Only bold, dim and four of the terminal's own eight colors are used (SGR 1, 2 and 31 to 34: red, green, yellow and blue), never a fixed RGB value or a background color, so the terminal's theme decides the exact colors and keeps them readable on a dark and on a light background.
 
 The messages are styled when stderr is a terminal whose `TERM` isn't `dumb` or `unknown`. Otherwise they are plain text without any escape sequence, so a pipe or a file gets a clean log. Two environment variables change that, each when set to a non-empty value:
 - `NO_COLOR`: no escape sequences at all, bold and dim included. It wins over `FORCE_COLOR`.
@@ -830,7 +832,7 @@ Run failed in <path>: <reason>
   called from <step path> (<step>)
 ```
 
-`<path>` is the script file as given on the command line, and `<reason>` is the error's message. These are the failed runs:
+`<path>` is the script file as given on the command line, and `<reason>` is the error's message. The step that failed has said so already, where it failed in the log (`>> step failed (<type>): <message>`, see [Output](#output)); the report comes last, after the breakouts. These are the failed runs:
 
 | Failure | Exception | `<reason>`, e.g. |
 |---------|-----------|------------------|

@@ -22,6 +22,7 @@ KINDS = {
     "ok": ("bold green", "green", "green"),  # something completed
     "detail": ("dim", "dim", "dim"),  # bookkeeping
     "warn": ("bold yellow", "yellow", ""),  # a failure the run goes on from
+    "fail": ("bold red", "red", ""),  # the failure that ends a step
 }
 ERROR = "bold red"
 WARN = "bold yellow"

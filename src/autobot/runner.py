@@ -331,9 +331,14 @@ class Runner:
         try:
             self._step(step)
         except BaseException as e:
-            # where it failed, for the CLI's report: set once, by the innermost step
+            # where it failed, for the CLI's report: set once, by the innermost step, which also says so
+            # at once, before any breakout runs
             if not hasattr(e, "autobot_trail"):
                 e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
+                if isinstance(e, KeyboardInterrupt):
+                    log.say("step interrupted", "fail")
+                elif isinstance(e, Exception):
+                    log.say(f"step failed ({type(e).__name__}): {e}", "fail")
             raise
         finally:
             self._stack.pop()
