@@ -594,10 +594,10 @@ script:
 REPORT = [
     "Validation errors:",
     "  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]",
-    "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return (got 'x') [return_with_send]",
+    "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return [return_with_send]",
     "  prompts.0.expect.1: invalid regex '(': missing ), unterminated subpattern at position 0 [invalid_regex]",
     "  prompts.1.send: send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, "
-    "on, off, true, false and numbers as booleans or numbers) (got true) [send_type]",
+    "on, off, true, false and numbers as booleans or numbers) [send_type]",
     "  errors.0: an errors pattern must not be empty: an empty regex matches any output, so every command would fail "
     "(got '') [string_too_short]",
     "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
@@ -668,6 +668,51 @@ def test_p8_28_validation_report_of_a_document_error(tmp_path: Path, raw: str, l
     res = piped(_invalid(tmp_path, raw))
     assert res.returncode == 1
     assert res.stderr.splitlines() == ["Validation errors:", line]
+
+
+SH = {"name": "sh", "expect": "x"}
+SECRETS = {
+    "send-on-a-return-prompt": {"prompts": [{**SH, "return": True, "send": "hunter2-secret"}]},
+    "send-number": {"prompts": [SH, {"name": "pin", "expect": "PIN:", "send": 20240917}]},
+    "send-each-part": {"prompts": [SH, {"name": "pin", "expect": "PIN:", "send": {"each": 20240917}}]},
+    "send-each-field": {
+        "prompts": [SH, {"name": "l", "send": {"each": "vars.c", "fields": [{"match": "x", "field": 20240917}]}}]
+    },
+    "block-prompt-send": {
+        "script": [{"block": {"name": "b", "prompts": [{**SH, "return": True, "send": "hunter2-secret"}]}}]
+    },
+    "line-number": {"script": [{"line": 20240917}]},
+    "line-list-item": {"script": [{"line": ["enable", 20240917]}]},
+    "line-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"line": 20240917}]}}]},
+    "env-value": {"env": {"PASSWORD": 20240917}},
+    "attach-env-value": {"attach": {"spawn": "sh", "env": {"PASSWORD": 20240917}}},
+    "env-not-a-mapping": {"env": "hunter2-secret"},
+}
+
+
+@pytest.mark.parametrize("case", SECRETS)
+def test_p8_28_value_that_would_be_sent_is_never_in_the_report(tmp_path: Path, case: str):
+    """SPEC "CLI": the report shows no value for an error at a prompt's `send` (the parts of a `sendEach`
+    included), at a `line` or at an `env` or `attach.env` value: it may be a password."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | SECRETS[case]))
+    res = piped(path)
+    lines = res.stderr.splitlines()
+    assert res.returncode == 1 and lines[0] == "Validation errors:" and len(lines) > 1
+    assert "hunter2" not in res.stderr and "20240917" not in res.stderr and "(got" not in res.stderr
+
+
+def test_p8_28_other_values_are_still_shown(tmp_path: Path):
+    """The rule is about those locations only: a `cmd`, a prompt's `expect` or a `fn` named `line` keep their value."""
+    doc = {
+        "prompts": [{"name": "sh", "expect": 5}],
+        "fn": {"line": {"script": 7}},
+        "script": [{"cmd": 20240917}, {"return": "many"}],
+    }
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | doc))
+    got = [line.rsplit(" [", 1)[0].rsplit(" (got ", 1)[-1] for line in piped(path).stderr.splitlines()[1:]]
+    assert got == ["5)", "7)", "20240917)", "20240917)", "'many')"]
 
 
 CONTROL_MSG = "a control value is one character, a letter or one of @ ` [ { \\ | ] } ^ ~ _ ?, got "

@@ -108,9 +108,25 @@ def _load(path: str) -> object:
 GOT_MAX = 60
 
 
-def _got(type_: str, msg: str, value: object) -> str:
+def _sent(loc: tuple) -> bool:
+    """Whether an error at `loc` is about text that is sent to the device or set in an environment, which may
+    be a password: a prompt's `send` and what is in it, a `line` step, an `env` or `attach.env` value."""
+    if loc[:1] == ("env",) or loc[:2] == ("attach", "env"):
+        return True
+    for i, key in enumerate(loc):
+        if key == "send" and "prompts" in loc[:i]:
+            return True
+        # a step's type tag follows its index, and the step's own field the tag: `script.0.line.line`
+        if key == "line" and i and isinstance(loc[i - 1], int) and loc[i + 1 : i + 2] == ("line",):
+            return True
+    return False
+
+
+def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
     """The offending value, as YAML writes it, for a validation error whose message doesn't show it."""
     if type_ in ("missing", "extra_forbidden"):  # the location names the key; the value says nothing more
+        return ""
+    if _sent(loc):
         return ""
     if isinstance(value, dict):
         keys = ", ".join(map(str, value))
@@ -230,7 +246,7 @@ def _cmd_run(args):
             where = ".".join(map(str, err["loc"])) or "(document)"
             what = err["msg"].removeprefix("Value error, ")
             # the message is the model's, or a plugin model's, and may show a value of the script as it is
-            log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"])), err["type"])
+            log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
         sys.exit(EXIT_LOAD)
 
     cli_args = {}
