@@ -101,7 +101,7 @@ def _load(path: str) -> object:
 
 def _traceback(args: argparse.Namespace | None, e: BaseException) -> None:
     if getattr(args, "traceback", False):
-        traceback.print_exception(e, file=sys.stderr)
+        log.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
 def _where(e: BaseException) -> None:
@@ -132,7 +132,7 @@ def _unexpected(e: Exception) -> None:
             "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
     _where(e)
-    traceback.print_exception(e, file=sys.stderr)
+    log.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:

@@ -88,6 +88,7 @@ class CleanWriter:
         if data:
             self._stream.write(data)
             self._stream.flush()
+            log.echoed(data)
 
     def flush(self):
         # pexpect flushes after every read, so this must not release what is held
@@ -98,6 +99,7 @@ class CleanWriter:
         held, self._held = self._held, ""
         if held:
             self._stream.write(held)
+            log.echoed(held)
         self._stream.flush()
 
 

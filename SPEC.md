@@ -728,6 +728,17 @@ Autobot writes to two streams, and each carries one kind of text:
 
 So `autobot script.yaml > device.log` keeps the device's transcript and shows what Autobot did, and `2> run.log` does the opposite. The output of `attach.prepare` is the script's own: it inherits both streams.
 
+When stdout and stderr are the same terminal, pipe or file (a terminal with nothing redirected, `2>&1`, `&> run.log`), their lines interleave, and the session's output seldom ends with a line break: a prompt such as `admin@sonic:~$ ` leaves its line open. A message would then continue that line. So where the two streams are one and the session's output has left a line open, Autobot writes a line break to stderr before the message, and every message starts at the first column:
+
+```
+admin@sonic:~$ 
+>> cmd: show version
+show version
+SONiC Software Version: ...
+```
+
+The line break goes to stderr, never to stdout, and none is written when the two streams are different or the session's output ended its line. So stdout is the same transcript however the streams are set up.
+
 **The session's output is never restyled.** It is written as the device sent it, less the escape sequences: not wrapped, cut, reflowed or highlighted. Text in it that looks like markup or an emoji code (`[bold]`, `[/]`, `:warning:`) is printed as it is, and no style is ever added to it.
 
 **A progress line** starts with the marker `>> `, so the lines are told apart from the device's in a plain log (`grep '^>> '`). After the marker comes a label, which ends at the first `: `, and the rest of the text. These are the progress lines:

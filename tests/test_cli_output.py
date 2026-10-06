@@ -79,7 +79,7 @@ def test_p8_22_no_escape_sequences_under_no_color_on_a_terminal(tmp_path: Path, 
     out, status = on_terminal(_write(tmp_path, PALETTE), **extra)
     assert status == 3
     assert ESC not in out
-    assert any(line.endswith(">> block enter: b") for line in out.splitlines())
+    assert ">> block enter: b" in out.splitlines()
 
 
 def test_p8_22_empty_no_color_is_not_set(tmp_path: Path):
@@ -180,7 +180,95 @@ def test_p8_24_long_line_is_not_wrapped_on_a_narrow_terminal(tmp_path: Path):
     cmd = "echo " + " ".join(f"word{i}" for i in range(40))
     out, status = on_terminal(_write(tmp_path, [{"cmd": cmd}]), columns=40, NO_COLOR="1")
     assert status == 0
-    assert any(line.endswith(f">> cmd: {cmd}") for line in out.split("\n"))
+    assert f">> cmd: {cmd}" in out.split("\n")
+
+
+# -- a message starts on a line of its own -------------------------------------------
+
+STEPS = [{"cmd": "echo hi"}, {"block": {"name": "b", "script": [{"cmd": "echo in"}]}}, {"cmd": "false"}]
+
+
+def _merged(path: Path, tmp_path: Path, how: str) -> str:
+    """The CLI's output with stdout and stderr on one terminal, one pipe or one file."""
+    argv = [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)]
+    if how == "terminal":
+        return on_terminal(path, NO_COLOR="1")[0]
+    if how == "pipe":
+        res = subprocess.run(argv, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_env())
+        return res.stdout.replace("\r\n", "\n")
+    with open(tmp_path / "run.log", "w") as f:
+        subprocess.run(argv, check=False, stdout=f, stderr=f, env=_env())
+    return (tmp_path / "run.log").read_text().replace("\r\n", "\n")
+
+
+@pytest.mark.parametrize("how", ["terminal", "pipe", "file"])
+def test_p8_25_message_starts_a_new_line_when_the_streams_are_one(tmp_path: Path, how: str):
+    """SPEC "Output": where stdout and stderr are the same terminal, pipe or file, a message never continues
+    the session's line: the prompt stays on its own line, and the message starts at the first column."""
+    path = _write(tmp_path, STEPS)
+    lines = _merged(path, tmp_path, how).split("\n")
+    assert [line for line in lines if ">> " in line or "Run failed" in line or " at " in line] == [
+        ">> attach: bash --norc --noprofile -i",
+        ">> cmd: echo hi",
+        ">> block enter: b",
+        ">> cmd: echo in",
+        ">> block completed: b",
+        ">> cmd: false",
+        f"Run failed in {path}: command returned exit code 1",
+        "  at script.2 (cmd: false)",
+    ]
+    # the session's lines around a message are whole: the prompt it interrupted, then the echo of the command
+    at = lines.index(">> cmd: echo hi")
+    assert lines[at - 1 : at + 3] == ["PROMPT$ ", ">> cmd: echo hi", "echo hi", "hi"]
+    # no line break is added where the session's output already ended a line
+    assert lines[lines.index(">> cmd: echo in") - 1] == ">> block enter: b"
+    assert "" not in lines[:-1]
+
+
+def test_p8_25_nothing_is_added_when_the_streams_differ(tmp_path: Path):
+    """On two pipes stderr gets no extra line break, and stdout is the session's output alone, whichever
+    way the streams are set up."""
+    res = piped(_write(tmp_path, STEPS))
+    assert "" not in res.stderr.split("\n")[:-1]
+    out = res.stdout.replace("\r\n", "\n")
+    assert out.startswith("PROMPT$ echo hi\nhi\nPROMPT$ echo __AUTOBOT_RC=$?\n__AUTOBOT_RC=0\nPROMPT$ echo in\nin\n")
+    assert ">> " not in out and "Run failed" not in out
+    # a pipe for the messages and a file for the session: the file is the same transcript
+    with open(tmp_path / "device.log", "w") as f:
+        subprocess.run(
+            [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(tmp_path / "script.autobot.yaml")],
+            check=False, stdout=f, stderr=subprocess.PIPE, env=_env(),
+        )
+    assert (tmp_path / "device.log").read_text() == res.stdout
+
+
+def test_p8_25_line_break_goes_to_stderr_once(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    """The unit: after an echo that ends mid-line, the next message is preceded by one line break on stderr,
+    only where the streams are one; an echo that ends a line needs none."""
+    monkeypatch.setattr(log, "_shared", lambda: True)
+    log.echoed("out\r\nPROMPT$ ")
+    log.say("cmd: a")
+    log.say("cmd: b")
+    log.echoed("a\r\n")
+    log.say("cmd: c")
+    log.echoed("")  # nothing written: the line state is unchanged
+    log.error("Run failed in x", "boom")
+    log.echoed("PROMPT$ ")
+    log.note("at", "script.0 (cmd: c)")
+    out = capsys.readouterr()
+    assert out.err == "\n>> cmd: a\n>> cmd: b\n>> cmd: c\nRun failed in x: boom\n\n  at script.0 (cmd: c)\n"
+    assert out.out == ""
+
+    monkeypatch.setattr(log, "_shared", lambda: False)
+    log.echoed("PROMPT$ ")
+    log.say("cmd: d")
+    assert capsys.readouterr().err == ">> cmd: d\n"
+    log.echoed("\n")
+
+
+def test_p8_25_streams_without_a_file_descriptor_are_not_shared(capsys: pytest.CaptureFixture[str]):
+    """Captured or replaced streams (no `fileno`) count as different."""
+    assert log._shared() is False
 
 
 # -- log: the unit ------------------------------------------------------------------

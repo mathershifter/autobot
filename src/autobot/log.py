@@ -6,6 +6,7 @@ The session's output never comes through here: `session.CleanWriter` writes it t
 from __future__ import annotations
 
 import os
+import sys
 
 from rich.console import Console
 from rich.text import Text
@@ -39,25 +40,52 @@ def _console() -> Console:
 
 
 console = _console()
+_open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
+
+
+def echoed(data: str) -> None:
+    """Note where the session echo left stdout: at the start of a line, or in the middle of one."""
+    global _open_line
+    if data:
+        _open_line = not data.endswith("\n")
+
+
+def _shared() -> bool:
+    """Whether stdout and stderr are the same terminal, pipe or file, so their lines interleave."""
+    try:
+        out, err = os.fstat(sys.stdout.fileno()), os.fstat(sys.stderr.fileno())
+    except (OSError, ValueError, AttributeError):  # a stream without a file descriptor
+        return False
+    return (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
+
+
+def _print(text: Text) -> None:
+    global _open_line
+    if _open_line and _shared():
+        # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
+        # so stdout stays what the session sent
+        console.file.write("\n")
+        _open_line = False
+    console.print(text)
 
 
 def say(text: str, kind: str = "step") -> None:
     """Print one `>> ` line. `text` is printed as it is; only its label, up to the first `: `, is styled."""
     mark, label_style, rest_style = KINDS[kind]
     label, sep, rest = text.partition(": ")
-    console.print(Text.assemble((MARK, mark), " ", (label + sep, label_style), (rest, rest_style)))
+    _print(Text.assemble((MARK, mark), " ", (label + sep, label_style), (rest, rest_style)))
 
 
 def error(head: str, detail: str = "", style: str = ERROR) -> None:
     """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
-    console.print(Text.assemble((head, style), f": {detail}" if detail else ""))
+    _print(Text.assemble((head, style), f": {detail}" if detail else ""))
 
 
 def note(label: str, text: str) -> None:
     """Print a line that belongs to the verdict above it, e.g. `  at script.0 (cmd: true)`."""
-    console.print(Text.assemble((f"  {label} ", "dim"), text))
+    _print(Text.assemble((f"  {label} ", "dim"), text))
 
 
 def more(text: str) -> None:
     """Print further lines of a report as they are, unstyled."""
-    console.print(Text(text))
+    _print(Text(text))
