@@ -173,6 +173,25 @@ def test_p8_24_session_output_is_literal_on_a_terminal(tmp_path: Path):
     assert f"{ESC}[1;34m>>{ESC}[0m {ESC}[1mcmd: {ESC}[0mecho '{MARKUP}'" in out
 
 
+ARROW = "printf 'a \\342\\206\\222 b\\n'"  # the bytes of U+2192, which ASCII and Latin-1 can't write
+
+
+@pytest.mark.parametrize(
+    ("encoding", "shown"),
+    [("ascii", b"a \\u2192 b"), ("latin-1", b"a \\u2192 b"), ("utf-8", "a \u2192 b".encode()), ("utf-8:strict", "a \u2192 b".encode())],
+)
+def test_p8_24_character_the_stdout_encoding_cannot_write_is_escaped(tmp_path: Path, encoding: str, shown: bytes):
+    """SPEC "Output": a character of the session's output that stdout's encoding can't represent is written as
+    its backslash escape, and the run goes on; a stdout that can represent it gets it unchanged."""
+    res = subprocess.run(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(_write(tmp_path, [{"cmd": ARROW, "register": "out"}, {"cmd": "echo next"}]))],
+        check=False, capture_output=True, timeout=120, env=_env(PYTHONIOENCODING=encoding),
+    )
+    assert res.returncode == 0, res.stderr
+    assert shown + b"\r\n" in res.stdout
+    assert b">> cmd: echo next" in res.stderr and b"step failed" not in res.stderr
+
+
 def test_p8_24_messages_have_no_automatic_highlighting(tmp_path: Path):
     """Numbers, quoted strings and paths in a command get no color of their own: a style always means something."""
     cmd = 'echo "quoted" 12345 /usr/bin 10.0.0.1 True None'

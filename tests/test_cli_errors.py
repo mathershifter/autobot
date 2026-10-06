@@ -87,6 +87,13 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
         None,
     ),
     "prepare-fails": ([{"cmd": "true"}], {"prepare": "#!/bin/sh\nexit 3\n"}, "prepare script failed with exit code 3", None),
+    "prepare-removes-itself": (
+        # the script deletes its own temp file: the report is still its exit code
+        [{"cmd": "true"}],
+        {"prepare": '#!/bin/sh\nrm -- "$0"\nexit 4\n'},
+        "prepare script failed with exit code 4",
+        None,
+    ),
     "prepare-cannot-run": (
         [{"cmd": "true"}],
         {"prepare": "#!/autobot/no/such/interpreter\n"},
@@ -173,40 +180,67 @@ def _validation_error() -> Exception:
     raise AssertionError("the document validated")
 
 
-EXPECTED_ERRORS: list[tuple[BaseException, str]] = [
-    (StepFailure("command returned exit code 2"), "command returned exit code 2"),
-    (CommandError("command error: % bad", "out"), "command error: % bad"),
-    (RunError("prompt 'p': no response available"), "prompt 'p': no response available"),
-    (ScriptError("template error: boom"), "template error: boom"),
-    (EnvError("env cycle: A -> A"), "env cycle: A -> A"),
-    (TimeoutError("timed out after 5s waiting for x"), "timed out after 5s waiting for x"),
-    (EOFError("connection closed while waiting for x"), "connection closed while waiting for x"),
-    (EOFError(), "EOFError"),
-    (pexpect.ExceptionPexpect("Could not terminate the child."), "Could not terminate the child."),
-    (OSError(5, "Input/output error"), "[Errno 5] Input/output error"),
+HINT = "  (run with --traceback for details)\n"
+# (the error, the reason reported, whether it is expected only for its broad built-in class)
+EXPECTED_ERRORS: list[tuple[BaseException, str, bool]] = [
+    (StepFailure("command returned exit code 2"), "command returned exit code 2", False),
+    (CommandError("command error: % bad", "out"), "command error: % bad", False),
+    (RunError("prompt 'p': no response available"), "prompt 'p': no response available", False),
+    (ScriptError("template error: boom"), "template error: boom", False),
+    (EnvError("env cycle: A -> A"), "env cycle: A -> A", False),
+    (TimeoutError("timed out after 5s waiting for x"), "timed out after 5s waiting for x", False),
+    (EOFError("connection closed while waiting for x"), "connection closed while waiting for x", False),
+    (EOFError(), "EOFError", False),
+    (pexpect.ExceptionPexpect("Could not terminate the child."), "Could not terminate the child.", False),
+    (OSError(5, "Input/output error"), "[Errno 5] Input/output error", True),
+    (BrokenPipeError(32, "Broken pipe"), "[Errno 32] Broken pipe", True),
     (
         UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogates not allowed"),
         "'utf-8' codec can't encode character '\\udcff' in position 0: surrogates not allowed",
+        True,
     ),
-    (
-        RecursionError("maximum recursion depth exceeded"),
-        "functions call each other too deeply (maximum recursion depth exceeded)",
-    ),
+    # outside any `call`, the reason is the error's own
+    (RecursionError("maximum recursion depth exceeded"), "maximum recursion depth exceeded", True),
 ]
 
 
-@pytest.mark.parametrize(("error", "reason"), EXPECTED_ERRORS, ids=[type(e).__name__ for e, _ in EXPECTED_ERRORS])
+@pytest.mark.parametrize(
+    ("error", "reason", "hint"), EXPECTED_ERRORS, ids=[type(e).__name__ for e, _, _ in EXPECTED_ERRORS]
+)
 def test_p6_84_expected_error_classes_exit_3_without_traceback(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, error: BaseException, reason: str
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    error: BaseException,
+    reason: str,
+    hint: bool,
 ):
-    """SPEC "CLI": each class of expected failure is one `Run failed` line, status 3, whatever raises it."""
+    """SPEC "CLI": each class of expected failure is one `Run failed` line, status 3, whatever raises it.
+    One that is expected only for its broad built-in class (`OSError`, `UnicodeError`, `RecursionError`) could
+    also be a bug, so its report ends with where to find the traceback; Autobot's own errors, a timeout and a
+    closed connection don't need that."""
     def run(self: Runner) -> None:
         raise error
 
     monkeypatch.setattr(Runner, "run", run)
     path = _script(tmp_path)
     code, out, err = _main(monkeypatch, capsys, str(path))
-    assert (code, out, err) == (3, "", f"Run failed in {path}: {reason}\n")
+    assert (code, out, err) == (3, "", f"Run failed in {path}: {reason}\n" + (HINT if hint else ""))
+
+
+def test_p6_84_hint_is_left_out_when_the_traceback_is_shown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """With `--traceback` the report doesn't point to the flag."""
+    def run(self: Runner) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Runner, "run", run)
+    path = _script(tmp_path)
+    code, _, err = _main(monkeypatch, capsys, str(path), "--traceback")
+    assert code == 3
+    assert err.startswith("Traceback (most recent call last):\n")
+    assert err.endswith(f"OSError: [Errno 5] Input/output error\nRun failed in {path}: [Errno 5] Input/output error\n")
 
 
 UNEXPECTED_ERRORS: list[BaseException] = [
@@ -403,7 +437,16 @@ def test_p6_85_endless_recursion_is_a_script_problem(tmp_path: Path):
     )
     assert lines[1] == "  at fn.f.script.0 (call: f)"
     assert lines[2:7] == ["  called from fn.f.script.0 (call: f)"] * 5
-    assert len(lines) == 8 and lines[7].startswith("  ... and ") and lines[7].endswith(" more callers")
+    assert len(lines) == 9 and lines[7].startswith("  ... and ") and lines[7].endswith(" more callers")
+    assert lines[8] == "  (run with --traceback for details)"
+
+
+def test_p6_83_prepare_that_removes_its_own_file_and_succeeds_runs_the_script(tmp_path: Path):
+    """SPEC "attach": the temp file of `prepare` is removed afterwards, and it is no error if the script has
+    removed it already."""
+    res = run_cli(make_doc([{"cmd": "echo ran-$((40+2))"}], prepare='#!/bin/sh\nrm -- "$0"\n'), tmp_path)
+    assert res.returncode == 0, res.stderr
+    assert "ran-42" in res.stdout
 
 
 # -- unexpected errors ------------------------------------------------------------
@@ -467,6 +510,97 @@ def test_p6_86_plugin_bug_keeps_its_traceback_and_names_the_plugin(tmp_path: Pat
     assert lines[-1] == "KeyError: 'x'"
     assert any("autobot_testplugin_boom.py" in line for line in lines)
     assert log.exists()
+
+
+OWN_PLUGIN = '''
+import pydantic
+
+
+class OwnStep(pydantic.BaseModel):
+    own: str
+
+
+def forever():
+    return forever()
+
+
+class OwnExecutor:
+    key = "own"
+    model = OwnStep
+
+    def execute(self, step, ctx, timeout):
+        if step.own == "oserror":
+            open("/autobot/no/such/file")
+        if step.own == "unicode":
+            "\\udcff".encode()
+        if step.own == "recursion":
+            forever()
+        if step.own == "timeout":
+            raise TimeoutError("the plugin gave up after 1s")
+        if step.own == "session":
+            # the session's own write fails: its pty is gone
+            ctx.session._cld.close()
+            ctx.session.sendline("true")
+'''
+
+
+def _own(tmp_path: Path, mode: str, *cli_args: str) -> subprocess.CompletedProcess[str]:
+    root = tmp_path / "plugin_own"
+    if not root.exists():
+        root.mkdir()
+        plugin_dist(root, "own", OWN_PLUGIN, "OwnExecutor")
+    return run_cli(make_doc([{"own": mode}]), tmp_path, *cli_args, pythonpath=root)
+
+
+@pytest.mark.parametrize(
+    ("mode", "last"),
+    [
+        ("oserror", "FileNotFoundError: [Errno 2] No such file or directory: '/autobot/no/such/file'"),
+        ("unicode", "UnicodeEncodeError: 'utf-8' codec can't encode character '\\udcff' in position 0: surrogates not allowed"),
+        ("recursion", "RecursionError: maximum recursion depth exceeded"),
+    ],
+)
+def test_p6_86_broad_error_of_a_plugins_own_code_is_the_plugins_bug(tmp_path: Path, mode: str, last: str):
+    """SPEC "CLI": an `OSError`, `UnicodeError` or `RecursionError` is a failed run when the engine raises it.
+    Raised by a plugin's own code, with no frame of Autobot below its `execute`, it is the plugin's bug like
+    any other exception: the plugin is named, the traceback is kept, status 70."""
+    res = _own(tmp_path, mode)
+    lines = _lines(res)
+    assert res.returncode == 70, res.stderr
+    assert lines[0].startswith("Unexpected error in plugin 'own': this is a bug in the plugin, not in the script.")
+    assert lines[1:3] == ["  at script.0 (own)", "Traceback (most recent call last):"]
+    assert lines[-1] == last
+    assert "Run failed" not in res.stderr and "--traceback for details" not in res.stderr
+
+
+def test_p6_86_broad_error_of_the_session_under_a_plugin_is_a_failed_run(tmp_path: Path):
+    """The same class raised by Autobot's session, which the plugin only called, is a failed run, reported
+    with the hint; `--traceback` shows that the session raised it."""
+    res = _own(tmp_path, "session")
+    assert res.returncode == 3, res.stderr
+    assert _lines(res) == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: [Errno 9] Bad file descriptor",
+        "  at script.0 (own)",
+        "  (run with --traceback for details)",
+    ]
+    res = _own(tmp_path, "session", "--traceback")
+    lines = _lines(res)
+    assert res.returncode == 3
+    assert any("autobot/session.py" in line and "in sendline" in line for line in lines)
+    assert lines[-2:] == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: [Errno 9] Bad file descriptor",
+        "  at script.0 (own)",
+    ]
+
+
+def test_p6_86_timeout_raised_by_a_plugin_is_a_failed_run_without_the_hint(tmp_path: Path):
+    """A plugin may raise the errors the session raises: a `TimeoutError` of its own is a failed run."""
+    res = _own(tmp_path, "timeout")
+    assert res.returncode == 3, res.stderr
+    assert _lines(res) == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: the plugin gave up after 1s",
+        "  at script.0 (own)",
+    ]
 
 
 def test_p6_86_expected_failure_inside_a_plugin_is_still_expected(tmp_path: Path, buggy: list[Path]):

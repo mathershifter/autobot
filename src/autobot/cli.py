@@ -41,10 +41,14 @@ EXPECTED = (
     EOFError,  # the connection closed
     pexpect.ExceptionPexpect,  # the spawn command wasn't found, the process couldn't be terminated
     OSError,  # the pty or a temp file
-    UnicodeError,  # text that can't be encoded for the pty or the prepare script
+    UnicodeError,  # text that can't be encoded for the prepare script
     RecursionError,  # functions that call each other without end
 )
+# Expected only for their built-in class, which a bug can raise as well: the report says where the
+# traceback is, and from a plugin's own code they are the plugin's bug. A timeout isn't one of them.
+BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
+PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
 VALUE_TAG = "tag:yaml.org,2002:value"  # a plain `=` key, which flatten_mapping turns into the string "="
@@ -153,6 +157,27 @@ def _where(e: BaseException) -> None:
         log.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
+def _broad(e: BaseException) -> bool:
+    return isinstance(e, BROAD) and not isinstance(e, TimeoutError)
+
+
+def _plugins_own(e: BaseException) -> bool:
+    """Whether a plugin's own code raised `e`, not the engine under it: the step that was running is a
+    plugin step, and the last frame of autobot in the traceback is the runner's call of its `execute`.
+    A frame of the session or of a step below that call means the plugin only called the engine."""
+    steps = trail(e)
+    if not (steps and steps[-1].plugin):
+        return False
+    last = None
+    tb = e.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if os.path.abspath(code.co_filename).startswith(PACKAGE):
+            last = code
+        tb = tb.tb_next
+    return last is not None and last.co_name == "_step" and os.path.basename(last.co_filename) == "runner.py"
+
+
 def _unexpected(e: Exception) -> None:
     steps = trail(e)
     if steps and steps[-1].plugin:
@@ -225,12 +250,16 @@ def _cmd_run(args):
     try:
         runner.run()
     except EXPECTED as e:
+        if _broad(e) and _plugins_own(e):
+            raise  # a bug in the plugin, like any other exception of its own
         _traceback(args, e)
         reason = str(e) or type(e).__name__
-        if isinstance(e, RecursionError):
+        if isinstance(e, RecursionError) and any(ref.key == "call" for ref in trail(e)):
             reason = f"functions call each other too deeply ({reason})"
         log.error(f"Run failed in {args.script}", reason)
         _where(e)
+        if _broad(e) and not args.traceback:
+            log.hint("(run with --traceback for details)")
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
 

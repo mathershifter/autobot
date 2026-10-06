@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import os
 import subprocess
@@ -280,7 +281,8 @@ class Runner:
                     f"prepare script failed with exit code {result.returncode}"
                 )
         finally:
-            os.unlink(tmp)
+            with contextlib.suppress(FileNotFoundError):  # the script may remove itself
+                os.unlink(tmp)
         log.say("prepare: done", "ok")
 
     def run(self):

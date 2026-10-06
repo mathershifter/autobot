@@ -79,7 +79,7 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
 | 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
 
-`--traceback` also prints the Python traceback of an error that is normally reported without one. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
+`--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 
 ## Script Structure
 
@@ -554,7 +554,7 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
 
-A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these, and the session's timeouts and closed connections, as a failed run with the step's path. Any other exception from `execute` is reported as a bug in the plugin, with its traceback (see [Errors and exit status](#errors-and-exit-status)).
+A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these as a failed run with the step's path, and likewise a `TimeoutError`, an `EOFError` or a pexpect error, whether the session raises it or the plugin does. Any other exception that the plugin's own code raises is reported as a bug in the plugin, with its traceback. That includes an `OSError`, `UnicodeError` or `RecursionError` of the plugin's own; the same error from Autobot's session underneath, e.g. a write to a pty that is gone, is a failed run (see [Errors and exit status](#errors-and-exit-status)).
 
 ## Schema
 

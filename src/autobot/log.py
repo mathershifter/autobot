@@ -91,6 +91,11 @@ def note(label: str, text: str) -> None:
     _print(Text.assemble((f"  {label} ", "dim"), text))
 
 
+def hint(text: str) -> None:
+    """Print a dim last line of a report, e.g. where to find more."""
+    _print(Text(f"  {text}", "dim"))
+
+
 def problem(where: str, what: str, tag: str) -> None:
     """Print one entry of a list of problems: where it is, what it is, and its type."""
     _print(Text.assemble("  ", (where, "bold"), f": {what} ", (f"[{tag}]", "dim")))
