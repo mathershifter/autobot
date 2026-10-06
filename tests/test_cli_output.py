@@ -12,9 +12,10 @@ from typing import Any
 import pexpect
 import pytest
 import yaml
-from conftest import make_doc
+from conftest import make_config, make_doc
 
 from autobot import log
+from autobot.runner import Runner
 from autobot.types import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
@@ -119,9 +120,9 @@ def test_p8_23_each_kind_of_line_has_its_style(tmp_path: Path):
     for line in [
         f"{blue}>>{off} {b}attach: {off}bash --norc --noprofile -i",  # a step: bold blue marker, bold label
         f"{blue}>>{off} {b}block enter: {off}{b}b{off}",  # a group: bold throughout
-        f"{blue}>>{off} {b}cmd: {off}false",
-        f"{yellow}>>{off} {ESC}[33merror ignored: {off}command returned exit code 1",  # a warning
-        f"{dim}>>{off} {dim}register: {off}{dim}vars.x{off}",  # a detail
+        f"{blue}>>{off}   {b}cmd: {off}false",  # a step of the block: indented after the marker
+        f"{yellow}>>{off}   {ESC}[33merror ignored: {off}command returned exit code 1",  # a warning
+        f"{dim}>>{off}   {dim}register: {off}{dim}vars.x{off}",  # a detail
         f"{green}>>{off} {ESC}[32mblock completed: {off}{ESC}[32mb{off}",  # completed
         f"{red}Run failed in {path}{off}: assertion failed: expected ['nope']",  # the verdict
         f"{dim}  at {off}script.1 (cmd: echo hi)",
@@ -183,6 +184,95 @@ def test_p8_24_long_line_is_not_wrapped_on_a_narrow_terminal(tmp_path: Path):
     assert f">> cmd: {cmd}" in out.split("\n")
 
 
+# -- nesting ---------------------------------------------------------------------------
+
+NESTED = [
+    {"cmd": "echo top"},
+    {
+        "block": {
+            "name": "outer",
+            "enter": [{"cmd": "echo enter"}],
+            "script": [
+                {"call": "f"},
+                {"block": {"name": "inner", "script": [{"cmd": "false", "ignore_error": True, "register": "x"}]}},
+                {"cmd": "echo back"},
+            ],
+            "breakout": [{"cmd": "echo out"}],
+        }
+    },
+    {"call": "g"},
+    {"cmd": "false"},
+]
+NESTED_FN = {"f": {"script": [{"call": "g"}, {"cmd": "echo f"}]}, "g": {"script": [{"cmd": "echo g"}]}}
+
+
+def test_p8_26_progress_lines_are_indented_by_nesting(tmp_path: Path):
+    """SPEC "Output": a step of a block or of a called function is indented two spaces a level after the
+    marker, which stays in the first column; a block's own lines and a `call:` line are at the level of
+    their step. The breakouts and the CLI's report are back at the level they belong to."""
+    path = _write(tmp_path, NESTED, fn=NESTED_FN, breakout=[{"cmd": "echo bye", "timeout": "5s"}])
+    res = piped(path)
+    assert res.returncode == 3, res.stderr
+    assert res.stderr.splitlines() == [
+        ">> attach: bash --norc --noprofile -i",
+        ">> cmd: echo top",
+        ">> block enter: outer",
+        ">>   cmd: echo enter",
+        ">>   call: f",
+        ">>     call: g",
+        ">>       cmd: echo g",
+        ">>     cmd: echo f",
+        ">>   block enter: inner",
+        ">>     cmd: false",
+        ">>     error ignored: command returned exit code 1",
+        ">>     register: vars.x",
+        ">>   block completed: inner",
+        ">>   cmd: echo back",
+        ">> block breakout: outer",
+        ">>   cmd: echo out",
+        ">> block completed: outer",
+        ">> call: g",
+        ">>   cmd: echo g",
+        ">> cmd: false",
+        ">> breakout: detaching",
+        ">> cmd: echo bye",
+        f"Run failed in {path}: command returned exit code 1",
+        "  at script.3 (cmd: false)",
+    ]
+    assert all(line.startswith(">> ") for line in res.stderr.splitlines()[:-2])
+
+
+def test_p8_26_depth_is_back_at_zero_after_a_failure_deep_in_the_script(tmp_path: Path):
+    """A failure inside nested blocks unwinds the indentation with the steps: each block's breakout line is
+    at its block's level, and `attach.breakout` at the top."""
+    script = [{"block": {"name": "a", "breakout": [{"cmd": "true"}], "script": [
+        {"block": {"name": "b", "breakout": [{"cmd": "true"}], "script": [{"call": "f"}]}},
+    ]}}]
+    path = _write(tmp_path, script, fn={"f": {"script": [{"cmd": "false"}]}}, breakout=[{"cmd": "true", "timeout": "5s"}])
+    res = piped(path)
+    assert res.returncode == 3, res.stderr
+    assert res.stderr.splitlines()[1:-3] == [
+        ">> block enter: a",
+        ">>   block enter: b",
+        ">>     call: f",
+        ">>       cmd: false",
+        ">>   block breakout: b",
+        ">>     cmd: true",
+        ">> block breakout: a",
+        ">>   cmd: true",
+        ">> breakout: detaching",
+        ">> cmd: true",
+    ]
+
+
+def test_p8_26_call_line_comes_before_the_functions_steps(capsys: pytest.CaptureFixture[str]):
+    """`>> call: <function>` is printed when the call starts, also for a function without steps."""
+    runner = Runner(make_config([{"call": "empty"}], fn={"empty": {"script": []}}), {})
+    runner.run_steps(runner.config.script)
+    assert capsys.readouterr().err == ">> call: empty\n"
+    assert log.depth == 0
+
+
 # -- a message starts on a line of its own -------------------------------------------
 
 STEPS = [{"cmd": "echo hi"}, {"block": {"name": "b", "script": [{"cmd": "echo in"}]}}, {"cmd": "false"}]
@@ -211,7 +301,7 @@ def test_p8_25_message_starts_a_new_line_when_the_streams_are_one(tmp_path: Path
         ">> attach: bash --norc --noprofile -i",
         ">> cmd: echo hi",
         ">> block enter: b",
-        ">> cmd: echo in",
+        ">>   cmd: echo in",
         ">> block completed: b",
         ">> cmd: false",
         f"Run failed in {path}: command returned exit code 1",
@@ -221,7 +311,7 @@ def test_p8_25_message_starts_a_new_line_when_the_streams_are_one(tmp_path: Path
     at = lines.index(">> cmd: echo hi")
     assert lines[at - 1 : at + 3] == ["PROMPT$ ", ">> cmd: echo hi", "echo hi", "hi"]
     # no line break is added where the session's output already ended a line
-    assert lines[lines.index(">> cmd: echo in") - 1] == ">> block enter: b"
+    assert lines[lines.index(">>   cmd: echo in") - 1] == ">> block enter: b"
     assert "" not in lines[:-1]
 
 

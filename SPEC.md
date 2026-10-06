@@ -750,10 +750,24 @@ The line break goes to stderr, never to stdout, and none is written when the two
 | `>> cmd: <line>` | step | for each line a `cmd` sends, as it is sent |
 | `>> sleep: <seconds>s` | step | by a `sleep` step |
 | `>> control sent: ^<C>` | step | for each character a `control` step sends |
-| `>> block enter: <name>`, `>> block breakout: <name>`, `>> breakout: detaching` | group | when a block starts, when its breakout starts, when `attach.breakout` starts |
-| `>> prepare: done`, `>> block completed: <name>`, `>> called <function>` | completed | when `attach.prepare`, a block or a `call` has finished without an error |
+| `>> block enter: <name>`, `>> block breakout: <name>`, `>> call: <function>`, `>> breakout: detaching` | group | when a block starts, when its breakout starts, when a `call` starts the function's steps, when `attach.breakout` starts |
+| `>> prepare: done`, `>> block completed: <name>` | completed | when `attach.prepare` or a block has finished without an error |
 | `>> register: vars.<name>`, `>> script: writing to <file>`, `>> script: executing <file>`, `>> script: cleaned up <file>` | detail | by `register`, and by an embedded script |
 | `>> error ignored: <message>`, `>> breakout error (<type>): <message>`, `>> block breakout error (<type>): <message>`, `>> close error (<type>): <message>`, `>> script: interrupt sent: ^C`, `>> script: cleanup of <file> failed (<type>): <message>` | warning | for a failure the run goes on from; `<type>` is the exception's class name |
+
+**Nesting.** The steps of a block and of a called function are indented under the line that starts them, two spaces a level. The indentation comes after the marker, which stays in the first column:
+
+```
+>> block enter: Host Console
+>>   cmd: show version
+>>   call: is_system_running
+>>     cmd: systemctl is-system-running --wait
+>> block breakout: Host Console
+>>   cmd: logout
+>> block completed: Host Console
+```
+
+A block's own lines (`block enter`, `block breakout`, `block completed`) and a `call:` line are at the level of the block or `call` step itself, and so is every other line a step prints (`error ignored`, `register`, `script: ...`). The steps of `attach.script`, `script` and `attach.breakout` are at the top level, as are the lines before and after them (`prepare`, `attach`, `breakout: detaching`, `close error`). The steps a plugin step runs with `ctx.run_steps(...)` are one level below it. A function has no line for its end: the next line at the level of its `call:` line, or above, is no longer part of it. The table above shows every line as at the top level. The session's output is never indented, and neither are the CLI's reports.
 
 A `line` step, a `return` step and the answer to a prompt print no line: what they send may be a password, and it shows only as far as the device echoes it.
 

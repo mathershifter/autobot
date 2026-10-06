@@ -316,7 +316,7 @@ def test_p6_85_failure_names_the_step_and_the_calls_that_led_to_it(tmp_path: Pat
         "  called from fn.check.script.1 (call: deep)",
         "  called from script.1.block.script.1.block.script.0 (call: check)",
     ]
-    assert ">> block breakout error (StepFailure): command returned exit code 1" in res.stderr.splitlines()
+    assert ">>   block breakout error (StepFailure): command returned exit code 1" in res.stderr.splitlines()
 
 
 @pytest.mark.parametrize(

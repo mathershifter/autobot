@@ -327,6 +327,7 @@ class Runner:
 
     def _run_step(self, step: Step, path: str = "steps.0"):
         self._stack.append(_ref(step, path))
+        log.depth = len(self._stack) - 1
         try:
             self._step(step)
         except BaseException as e:
@@ -336,6 +337,7 @@ class Runner:
             raise
         finally:
             self._stack.pop()
+            log.depth = max(len(self._stack) - 1, 0)
 
     def _step(self, step: Step):
         timeout = self._get_timeout(step)

@@ -167,7 +167,7 @@ def test_p8_15_log_lines_print_markup_like_text_verbatim(tmp_path: Path, text: s
     lines = res.stderr.splitlines()
     assert f">> attach: env X={text} {BASH}" in lines
     assert f">> block enter: {text}" in lines
-    assert f'>> cmd: echo "{text}"' in lines
+    assert f'>>   cmd: echo "{text}"' in lines  # a step of the block
     assert f">> block completed: {text}" in lines
 
 

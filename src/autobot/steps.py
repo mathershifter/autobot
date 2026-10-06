@@ -189,8 +189,8 @@ class CallExecutor:
         fn = ctx.config.fn.get(step.call)
         if not fn:
             raise ValueError(f"undefined function: {step.call}")
+        log.say(f"call: {step.call}", "group")
         ctx.run_steps(fn.script)
-        log.say(f"called {step.call}", "ok")
 
 
 class BlockExecutor:

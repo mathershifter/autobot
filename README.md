@@ -35,7 +35,7 @@ A run that completes exits with status 0. If the script can't be loaded, the CLI
 
 Autobot's own `>> ...` messages and errors go to stderr. The session's output is echoed to stdout, with ANSI escape sequences removed and otherwise exactly as the device sent it: it is never wrapped, cut or styled. So `autobot script.yaml > device.log` keeps the device's transcript, and `2> run.log` keeps what Autobot did. Where both go to the same terminal or file, each message starts on a line of its own, after the device's prompt.
 
-On a terminal Autobot's messages are styled so they stand apart from the device's output: the `>>` marker is blue for a step, green for something completed, yellow for a failure the run goes on from, and dim for bookkeeping; an error report starts in red. The words are the same without the styles, and a pipe or a file gets plain text. Set `NO_COLOR` to turn the styles off on a terminal, or `FORCE_COLOR` to keep them in a pipe. The full list of messages is in [SPEC.md](SPEC.md#output).
+On a terminal Autobot's messages are styled so they stand apart from the device's output: the `>>` marker is blue for a step, green for something completed, yellow for a failure the run goes on from, and dim for bookkeeping; an error report starts in red. The steps of a block or of a called function are indented under the line that starts them (`>>   cmd: ...`). The words are the same without the styles, and a pipe or a file gets plain text. Set `NO_COLOR` to turn the styles off on a terminal, or `FORCE_COLOR` to keep them in a pipe. The full list of messages is in [SPEC.md](SPEC.md#output).
 
 ### Errors and exit status
 

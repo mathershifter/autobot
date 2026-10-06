@@ -25,6 +25,9 @@ KINDS = {
 }
 ERROR = "bold red"
 WARN = "bold yellow"
+INDENT = "  "
+
+depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
 
 
 def _console() -> Console:
@@ -70,10 +73,11 @@ def _print(text: Text) -> None:
 
 
 def say(text: str, kind: str = "step") -> None:
-    """Print one `>> ` line. `text` is printed as it is; only its label, up to the first `: `, is styled."""
+    """Print one `>> ` line, indented by the running step's depth. `text` is printed as it is; only its
+    label, up to the first `: `, is styled."""
     mark, label_style, rest_style = KINDS[kind]
     label, sep, rest = text.partition(": ")
-    _print(Text.assemble((MARK, mark), " ", (label + sep, label_style), (rest, rest_style)))
+    _print(Text.assemble((MARK, mark), " " + INDENT * depth, (label + sep, label_style), (rest, rest_style)))
 
 
 def error(head: str, detail: str = "", style: str = ERROR) -> None:
