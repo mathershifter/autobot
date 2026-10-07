@@ -128,20 +128,26 @@ class _Unset(UndefinedError):
     """A default read a variable that nothing sets; `prepare` may still set it."""
 
 
-def _env(values: dict[str, Any], why: Callable[[Any], str]) -> dict[str, Any]:
-    """`env` in templates: every variable of the environment, and the script's defaults for those not set.
+def _strict(values: dict[str, Any], why: Callable[[Any], str]) -> dict[str, Any]:
+    """`env` or `args` in templates. For `env`: every variable of the environment, and the script's
+    defaults for those not set.
 
-    A variable it doesn't have is undefined, and `why` says why. The mapping holds the variables and
-    nothing else: a template reads attributes too, so what the runner knows about them stays off it.
+    A key it doesn't have is undefined, and `why` says why. The mapping holds its keys and nothing else:
+    a template reads attributes too, so what the runner knows about them stays off it.
     """
 
-    class Env(dict):
+    class Strict(dict):
         __slots__ = ()
 
         def __missing__(self, key: Any) -> Any:
             return StrictUndefined(hint=why(key))
 
-    return Env(values)
+    return Strict(values)
+
+
+def _why_no_arg(key: Any) -> str:
+    how = f"; pass it with --arg {key}=VALUE" if isinstance(key, str) and key else ""
+    return f"args has no key {key!r}{how}"
 
 
 class _EnvRefs(Mapping[str, Any]):
@@ -172,6 +178,14 @@ class _EnvRefs(Mapping[str, Any]):
             self.__path.append(key)
             try:
                 self.__done[key] = render_template(self.__raw[key], self.__ctx)
+            except ScriptError as e:
+                # name the default that has the error, once: one that reads it fails for the same reason.
+                # A cycle and a chain that is too deep name their keys themselves
+                if isinstance(e, EnvError) or hasattr(e, "env_default"):
+                    raise
+                named = ScriptError(f"env.{key}: {e}")
+                named.env_default = key  # type: ignore[attr-defined]
+                raise named from e.__cause__
             finally:
                 self.__path.pop()
         return self.__done[key]
@@ -192,36 +206,19 @@ class _EnvRefs(Mapping[str, Any]):
 
 
 class Runner:
-    def __init__(self, config: Config, cli_args: dict[str, str], problems: list[ScriptError] | None = None):
-        """Load the script: resolve `env` and build the prompt handlers. Nothing runs before `run`.
-
-        The first script error is raised. With `problems`, the error of `env` and the first error of each
-        prompt are added to it instead, so one pass finds them all; a runner that left any is not to be run.
-        """
+    def __init__(self, config: Config, cli_args: dict[str, str]):
         registry.discover()
         self._config = config
-        self._cli_args = cli_args
+        self._cli_args = _strict(cli_args, _why_no_arg)
         self._default_timeout = 300
         # the run's environment: a plain terminal from the start, so `prepare` runs in it and can change it
         self._environ = run_environ()
         self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
         self._unread = ""  # why the environment `prepare` left wasn't read, if it wasn't
-        self._env = _env({}, self._why_unset)
+        # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
+        self._env = self._resolve_env(later=bool(config.attach.prepare))
         self._session = Session([])
-        handlers: list[PromptHandler] = []
-
-        def resolve_env() -> None:
-            # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
-            self._env = self._resolve_env(later=bool(config.attach.prepare))
-
-        # `env` and each prompt are checked on their own: none reads what another resolves
-        for load in (resolve_env, *(lambda p=p: handlers.append(self.build_handler(p)) for p in config.prompts)):
-            try:
-                load()
-            except ScriptError as e:
-                if problems is None:
-                    raise
-                problems.append(e)
+        handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
         self._stack: list[StepRef] = []
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list
@@ -254,7 +251,10 @@ class Runner:
             return PromptHandler(prompt.name, expect, [], True)
         if isinstance(send, str):
             # a literal send is a template, rendered each time it is sent
-            check_template(send)
+            try:
+                check_template(send)
+            except ScriptError as e:  # named like the error of rendering it, and of a sendEach
+                raise ScriptError(f"prompt '{prompt.name}': {e}") from e
             return SimpleHandler(prompt.name, expect, send, self.render)
         patterns: list[str] = []
         slots: list[int | None] = []
@@ -280,7 +280,7 @@ class Runner:
                 if not (later and isinstance(e.__cause__, _Unset)):
                     raise
                 self._later[key] = str(e.__cause__)
-        return _env(values, self._why_unset)
+        return _strict(values, self._why_unset)
 
     def _why_unset(self, key: Any) -> str:
         if key in self._later:

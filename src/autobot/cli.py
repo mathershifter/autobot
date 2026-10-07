@@ -90,26 +90,43 @@ class UniqueKeyLoader(yaml.SafeLoader):
                     raise ConstructorError("first defined", first.start_mark, f"found duplicate key {name!r}", k.start_mark)
         super().flatten_mapping(node)
 
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return super().construct_object(node, deep)
+        except ValueError as e:
+            # a scalar that reads as one of YAML's types and that Python's type can't hold: the date
+            # 2001-99-99, an integer of 5000 digits. It is the document's error, at this node
+            kind = node.tag.rpartition(":")[2]
+            raise ConstructorError(
+                None, None, f"invalid {kind} ({e}); quote the value if it is meant as text", node.start_mark
+            ) from e
+
 
 def _load(path: str) -> object:
+    name = _visible(path)
     try:
         with open(path, "rb") as f:
             return yaml.load(f, Loader=UniqueKeyLoader)
     except OSError as e:
-        log.error(f"Cannot read script {path}", str(e.strerror or e))
+        log.error(f"Cannot read script {name}", str(e.strerror or e))
     except yaml.MarkedYAMLError as e:
         mark = e.problem_mark
         at = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        log.error(f"YAML error in {path}{at}", str(e.problem))
+        log.error(f"YAML error in {name}{at}", str(e.problem))
         if e.context:
             mark = e.context_mark
             at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
             log.more(f"  {e.context}{at}")
     except ReaderError as e:
         what = "character" if e.encoding == "unicode" else f"{e.encoding} byte"
-        log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
+        log.error(f"YAML error in {name}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
-        log.error(f"YAML error in {path}", str(e))
+        log.error(f"YAML error in {name}", str(e))
+    except RecursionError:
+        # the parser follows the nesting of the document with its own: hundreds of levels are too many
+        log.error(f"YAML error in {name}", "the document is nested too deeply")
+    except ValueError as e:  # from anywhere else in the loader: what the document holds, not a bug
+        log.error(f"YAML error in {name}", str(e) or type(e).__name__)
     raise LoadError
 
 
@@ -201,7 +218,8 @@ def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
 
 def _visible(text: str) -> str:
     """`text` on one line and safe for a terminal: every character that isn't printable (a line break, a tab,
-    ESC and the other control characters) as its escape, e.g. `\\n`, `\\x1b`."""
+    ESC and the other control characters) as its escape, e.g. `\\n`, `\\x1b`. A script's path is printed
+    this way wherever a report names it: a file name can hold any of them."""
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
 
 
@@ -261,6 +279,9 @@ def _unexpected(e: Exception) -> None:
             "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
     _where(e)
+    script = getattr(e, "autobot_script", None)
+    if script is not None:  # `validate` checks several: say which one it was
+        log.note("while checking", _visible(script))
     log.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
@@ -287,16 +308,13 @@ def _discover(args: argparse.Namespace | None = None) -> None:
         raise LoadError from None
 
 
-def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Runner:
-    """The runner of `script`, ready to run: the file read, parsed and validated, the `--arg` values checked,
-    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`.
-
-    The sequence stops at its first error. With `every`, the last stage reports all it has: the error of
-    `env` and of each prompt, which don't depend on each other."""
+def _config(script: str) -> Config:
+    """The validation stage, which `run` and `validate` share: the file read and parsed, and the document
+    validated against the models. Nothing of the script is rendered or run. A load error is reported, and
+    raised as `LoadError`."""
     config_dict = _load(script)
-
     try:
-        config = Config.model_validate(config_dict)
+        return Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
         log.error("Validation errors:")
         for err in _one_per_value(e.errors()):
@@ -306,6 +324,11 @@ def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Ru
             log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
         raise LoadError from None
 
+
+def _runner(args: argparse.Namespace, config: Config) -> Runner:
+    """What `run` adds to the validation stage before it runs anything: the `--arg` values checked, `env`
+    and `prompts` resolved. This renders the script's templates. An error is reported, and raised as
+    `LoadError`."""
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
@@ -314,17 +337,12 @@ def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Ru
         key, value = item.split("=", 1)
         cli_args[key] = value
 
-    problems: list[ScriptError] = []
     try:
-        runner = Runner(config, cli_args, problems if every else None)
+        return Runner(config, cli_args)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
-        problems = [e]
-    for e in problems:
         _traceback(args, e)
-        log.error(f"Script error in {script}", str(e))
-    if problems:
-        raise LoadError
-    return runner
+        log.error(f"Script error in {_visible(args.script)}", str(e))
+        raise LoadError from None
 
 
 def _cmd_run(args):
@@ -337,7 +355,7 @@ def _cmd_run(args):
         )
         raise LoadError
     _discover(args)
-    runner = _runner(args, args.script)
+    runner = _runner(args, _config(args.script))
     try:
         runner.run()
     except EXPECTED as e:
@@ -347,7 +365,7 @@ def _cmd_run(args):
         reason = str(e) or type(e).__name__
         if isinstance(e, RecursionError) and any(ref.key == "call" for ref in trail(e)):
             reason = f"functions call each other too deeply ({reason})"
-        log.error(f"Run failed in {args.script}", reason)
+        log.error(f"Run failed in {_visible(args.script)}", reason)
         _where(e)
         if _broad(e) and not args.traceback:
             log.hint("(run with --traceback for details)")
@@ -356,18 +374,22 @@ def _cmd_run(args):
 
 
 def _cmd_validate(args: argparse.Namespace) -> None:
-    """Load each script as `run` does, and run none. Nothing is written to stdout, so a closed one is no error."""
+    """`run`'s validation stage for each script, and nothing after it: no template is rendered and nothing
+    runs. Nothing is written to stdout, so a closed one is no error."""
     _discover(args)
     failed = False
     for script in args.script:
         try:
-            _runner(args, script, every=True)
+            _config(script)
         except LoadError:
             failed = True
-            log.verdict(script, "invalid", log.ERROR)
+            log.verdict(_visible(script), "invalid", log.ERROR)
+        except Exception as e:
+            e.autobot_script = script  # type: ignore[attr-defined]
+            raise
         else:
             if not args.quiet:
-                log.verdict(script, "valid", log.OK)
+                log.verdict(_visible(script), "valid", log.OK)
     if failed:
         raise LoadError
 
@@ -446,23 +468,20 @@ def main():
     validate_parser = subparsers.add_parser(
         "validate",
         help="Check autobot scripts without running them",
-        description="Check each script as `run` does before it runs anything, and run nothing: attach.prepare "
-        "is not run and no session is spawned. For each script, print `<script>: valid`, or the load error "
-        "`run` would report and `<script>: invalid`, on stderr. Exit with status 1 if any script is invalid.",
+        description="Validate each script as `run` does before anything else, and stop there: no template "
+        "is rendered, attach.prepare is not run and no session is spawned. For each script, print "
+        "`<script>: valid`, or the error `run` would report and `<script>: invalid`, on stderr. Exit with "
+        "status 1 if any script is invalid.",
     )
     validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
-    for sub, purpose in (
-        (run_parser, "Pass arguments to the script"),
-        (validate_parser, "Check the scripts with the arguments they would be run with"),
-    ):
-        sub.add_argument(
-            "-a",
-            "--arg",
-            action="append",
-            default=[],
-            metavar="KEY=VALUE",
-            help=f"{purpose} (e.g. --arg console_host=10.0.0.1)",
-        )
+    run_parser.add_argument(
+        "-a",
+        "--arg",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+    )
     validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 
     schema_parser = subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
@@ -476,7 +495,12 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] not in ("run", "validate", "schema", "-h", "--help"):
         sys.argv.insert(1, "run")
 
-    args = parser.parse_args()
+    if sys.argv[1:2] == ["validate"]:
+        # its options may come between the scripts, which the parser of the subcommands doesn't allow
+        args = validate_parser.parse_intermixed_args(sys.argv[2:])
+        args.command = "validate"
+    else:
+        args = parser.parse_args()
 
     try:
         if args.command == "schema":

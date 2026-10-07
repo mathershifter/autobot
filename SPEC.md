@@ -38,7 +38,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 | Field | Required | Description |
 |-------|----------|-------------|
 | `autobot` | yes | Schema version: exactly `2026-10`. Surrounding whitespace or a trailing newline is rejected. Any other value is a validation error (`unsupported_version`) at `autobot`: `unsupported autobot version '<value>'; expected 2026-10`, or for the earlier version `2026-08`, `autobot 2026-08 is no longer supported; use 2026-10`. That includes a value that isn't a string, e.g. what YAML makes of an unquoted `2026` (a number), `2026.10` (the number 2026.1) or `2026-10-04` (a date): the message shows the value as text, `unsupported autobot version '2026'; expected 2026-10`. Only a missing key (`missing`) and an explicit null (`string_type`) are reported as what they are. |
-| `env` | no | Defaults for environment variables: string values under string keys. In a template, `env` is the whole environment: the one Autobot was started with, as `attach.prepare` changed it. So `{{ env.HOME }}` reads any variable, whether it is a key of this section or not (see [The environment in templates](#the-environment-in-templates)). A key of this section is a default: it gives the variable a value where the environment doesn't set it. A variable that the environment sets keeps its value, even an empty one, and its default isn't used. The defaults are for templates only: they aren't added to the environment of the spawned process (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). Supports nesting: a default may reference other variables (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), keys of this section in any order and variables of the environment alike. Each default is rendered once, after the values it references, and once more when `attach.prepare` has run; the text it renders to isn't rendered again. Any read of a variable's value counts as a reference, including `env.get('KEY')` and `env.items()`. A variable of the environment is used exactly as it is set: its value isn't a template and is never rendered, so `{{` in it is plain text, and a default that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a default that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a variable that the environment doesn't set and that isn't a key of `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. In a script with `attach.prepare`, a default with such a reference waits for `prepare`, which may set the variable (see [The environment in templates](#the-environment-in-templates)). Accessible as `{{ env.KEY }}` |
+| `env` | no | Defaults for environment variables: string values under string keys. In a template, `env` is the whole environment: the one Autobot was started with, as `attach.prepare` changed it. So `{{ env.HOME }}` reads any variable, whether it is a key of this section or not (see [The environment in templates](#the-environment-in-templates)). A key of this section is a default: it gives the variable a value where the environment doesn't set it. A variable that the environment sets keeps its value, even an empty one, and its default isn't used. The defaults are for templates only: they aren't added to the environment of the spawned process (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). Supports nesting: a default may reference other variables (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), keys of this section in any order and variables of the environment alike. Each default is rendered once, after the values it references, and once more when `attach.prepare` has run; the text it renders to isn't rendered again. Any read of a variable's value counts as a reference, including `env.get('KEY')` and `env.items()`. A variable of the environment is used exactly as it is set: its value isn't a template and is never rendered, so `{{` in it is plain text, and a default that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a default that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a variable that the environment doesn't set and that isn't a key of `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. An error in a default names the default: its message starts with `env.<KEY>: `, e.g. `env.IMAGE: template error: env has no key 'BASE_URL'` or `env.HOST: template error: args has no key 'host'; pass it with --arg host=VALUE`. It names the default whose own template has the error, once, and not the defaults that reference it; a cycle and a chain that is too deep name their keys themselves and have no such prefix. In a script with `attach.prepare`, a default with such a reference waits for `prepare`, which may set the variable (see [The environment in templates](#the-environment-in-templates)). Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects under string keys, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
 | `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking. Each pattern is a valid, non-empty regex: an empty one (`''`) would match any output and fail every command, so it is a validation error (`string_too_short` at `errors.N`: `an errors pattern must not be empty: an empty regex matches any output, so every command would fail`), and one that doesn't compile is `invalid_regex`. `errors: []` is the same as no `errors`. |
@@ -67,7 +67,7 @@ Each prompt has:
 
   `send` must be a YAML string. Quote answers that YAML reads as something else: unquoted `yes`, `no`, `on`, `off`, `true` and `false` are booleans, and `1234` is a number. A literal sequence of answers (a list of strings, or a list of lists) is not a `send` form: a login or any other sequence of prompts uses a `sendEach` with `fields`, with the values in `vars`.
 
-  The `send` string is a Jinja2 template. It is rendered each time it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A syntax error is reported when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, prefixed with `prompt '<name>': `, and aborts the step waiting for the prompt. Both are [template errors](#jinja2-templating).
+  The `send` string is a Jinja2 template. It is rendered each time it is sent, so it sees `vars` registered by earlier steps and `session.*` as last set by an `after` or a shell prompt (the prompt match that triggers the response doesn't set them). A syntax error is reported when the prompts are loaded: before `attach.prepare` runs for the top-level `prompts`, and on entering the block for a block's `prompts`. An undefined variable is reported when the response is sent, and aborts the step waiting for the prompt. Both messages start with `prompt '<name>': `, e.g. `prompt 'confirm': template error: unexpected end of template, expected 'end of print statement'.`, and both are [template errors](#jinja2-templating).
 
 These are validation errors at the prompt, reported like any other before anything runs:
 
@@ -284,7 +284,7 @@ A value is taken exactly, byte for byte: line breaks, `=`, quotes, spaces, an em
 | `it could not be read before the script, which ran without that` | The helper could not be started before the script, e.g. the Python interpreter that runs Autobot is not where it was. The shell sources the script all the same. |
 | `Autobot doesn't know the Python interpreter it runs in (sys.executable is empty)` | There is no helper to start. The script is run without being sourced: under `/bin/sh` or as its shebang says. |
 
-After any of these warnings, an error for a variable that isn't set says so, since a variable the script exported may be the one that is missing: `template error: env has no key 'KEY' (the environment prepare left was not read: <reason>)`.
+After any of these warnings, an error for a variable that isn't set says so, since a variable the script exported may be the one that is missing: `template error: env has no key 'KEY' (the environment prepare left was not read: <reason>)`, after `env.<DEFAULT>: ` when a default reads the variable.
 
 None of these is reported as the script's failure: `prepare script failed with exit code <N>` is only ever the script's own exit status, in these cases too. They are warnings and not errors because a `prepare` may be there only for what it does outside the environment.
 
@@ -732,11 +732,13 @@ Available context:
 |----------|--------|
 | `env` | The run's environment: every variable Autobot was started with, `TERM=dumb` and `NO_COLOR=1`, as `attach.prepare` changed them, and the defaults of the YAML's `env` section for the variables that aren't set (see [The environment in templates](#the-environment-in-templates)) |
 | `vars` | `vars` section of the YAML (also populated at runtime by `cmd` steps with `register`) |
-| `args` | CLI `--arg KEY=VALUE` arguments |
+| `args` | CLI `--arg KEY=VALUE` arguments: a mapping of the keys given, each value a string (see below for a key that wasn't given) |
 | `session.before` | Text captured before the last `after` match (pexpect `before`), or the captured output of the last command when a shell prompt is reached (empty if it printed nothing). The `$?` check, embedded-script cleanup and the first prompt wait of a `cmd` with `after` don't change it. |
 | `session.match` | Text that matched the last `after` pattern (pexpect `after`), or the text the prompt regex matched when a shell prompt is reached. After an `after` match, `session.before` and `session.match` are raw text; after a shell prompt they have ANSI escape sequences removed (see [ANSI escape sequences](#ansi-escape-sequences)). |
 
 `env`, `vars`, `args` and `session` are mappings. On a mapping, `x.name` and `x['name']` both read the key `name`, and with `x.name` a key always wins over a mapping method of the same name: with `register: values`, `{{ vars.values }}` is the registered output, not the `values` method (plain Jinja2 would render `<built-in method values of dict object ...>`). The same goes for `items`, `keys`, `get`, `copy` and the rest, and for mappings nested in `vars` (`vars.site.values`). A method is reachable as `x.name` only while there is no key of that name, so `vars.items()`, `vars.get('k', 'default')` and `env.get('KEY')` work as long as no key is named `items` or `get`. Filters don't depend on key names: `vars | items`, `vars | length`, `vars | tojson`.
+
+An argument that wasn't given is not in `args`. `{{ args.KEY }}` and `{{ args['KEY'] }}` are then an undefined variable, a template error that says how to give it: `template error: args has no key 'KEY'; pass it with --arg KEY=VALUE`. It is raised where the template is rendered: when the script is loaded for an `env` default (`env.HOST: template error: args has no key 'host'; ...`), during the run for a step. `{{ args.KEY | default('x') }}`, `args.get('KEY', 'x')`, `'KEY' in args` and `args.KEY is defined` deal with it as they do on any mapping.
 
 Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
 
@@ -757,7 +759,7 @@ So `env` has two states, and a template sees the one of the moment it is rendere
 
 The defaults are rendered once for each state. So after `prepare`, a default that references a variable `prepare` set has the new value, and a default whose own variable `prepare` set is not used: `env.KEY` is the value `prepare` set, also when the `prepare` template itself read the default.
 
-In a script with `prepare`, a default may reference a variable that only `prepare` sets. When the script is loaded, a default that reads a variable set nowhere (directly or through another default) is therefore not an error: it waits. Until `prepare` has run it has no value: reading it in the `prepare` template is an undefined variable, `template error: env.KEY can't be read before prepare has run: env has no key 'OTHER'`. After `prepare` it is rendered like the others, and if its variable is still set nowhere, the run fails there, before anything is spawned (`template error: env has no key 'OTHER'`, a failed run; see [CLI](#cli)). Only this one error waits. Every other error in a default (a syntax error, any other template error, a reference cycle, a chain that is too deep) is reported when the script is loaded, with or without `prepare`, and against the environment of that moment: a cycle among defaults is an error even if `prepare` would set one of its keys. In a script without `prepare`, a default that reads a variable set nowhere is a load error like the others.
+In a script with `prepare`, a default may reference a variable that only `prepare` sets. When the script is loaded, a default that reads a variable set nowhere (directly or through another default) is therefore not an error: it waits. Until `prepare` has run it has no value: reading it in the `prepare` template is an undefined variable, `template error: env.KEY can't be read before prepare has run: env has no key 'OTHER'`. After `prepare` it is rendered like the others, and if its variable is still set nowhere, the run fails there, before anything is spawned (`env.KEY: template error: env has no key 'OTHER'`, a failed run; see [CLI](#cli)). Only this one error waits. Every other error in a default (a syntax error, any other template error, a reference cycle, a chain that is too deep) is reported when the script is loaded, with or without `prepare`, and against the environment of that moment: a cycle among defaults is an error even if `prepare` would set one of its keys. In a script without `prepare`, a default that reads a variable set nowhere is a load error like the others.
 
 A variable that neither has is not in `env`. `{{ env.KEY }}` and `{{ env['KEY'] }}` are then an undefined variable, a template error with the message `template error: env has no key 'KEY'`; `{{ env.KEY | default('x') }}`, `env.get('KEY', 'x')`, `'KEY' in env` and `env.KEY is defined` deal with it as they do on any mapping.
 
@@ -843,14 +845,14 @@ The solicit newline is for a console that is idle, not for a command that is sti
 
 ```
 autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
-autobot validate <script.yaml> [<script.yaml> ...] [-a KEY=VALUE ...] [-q] [--traceback]
+autobot validate <script.yaml> [<script.yaml> ...] [-q] [--traceback]
 autobot schema [--traceback]
 autobot -h | --help
 ```
 
 Subcommands:
 - `run <script>`: load, validate and execute the script. `script` is the path to the YAML script file.
-- `validate <script>...`: load and validate each script as `run` does, and run nothing (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
+- `validate <script>...`: read and validate each script as `run` does, and do nothing else: no template is rendered and nothing runs (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
 - `schema`: print the JSON schema to stdout (see below). It takes no arguments, and one option, `--traceback`.
 
 `run` is the default. If the first argument isn't `run`, `validate`, `schema`, `-h` or `--help`, the CLI treats the command line as `autobot run ...`, so `autobot <script>` is the same as `autobot run <script>`, and options may come before the script (`autobot -a k=v <script>`). A script file named `run`, `validate` or `schema` must be given with the subcommand (`autobot run schema`) or as a path (`autobot ./schema`).
@@ -863,7 +865,7 @@ Options of `run`:
 | `--traceback` | Also print the Python traceback of an error that is reported without one (see [Errors while the script runs](#errors-while-the-script-runs)). |
 | `-h`, `--help` | Print the `run` usage and exit with status 0. |
 
-`validate` takes the same three options, and `-q` (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
+`validate` takes `--traceback` and `-h`, and `-q`, but no `--arg` (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
 
 `autobot -h` prints the list of subcommands and exits with status 0. `autobot` with no arguments prints the same help to stdout and exits with status 1.
 
@@ -878,11 +880,13 @@ The script file is read as a single YAML document, encoded as UTF-8 (or UTF-16 w
 | An installed plugin can't be loaded: its entry point fails to import or to create the executor, or the plugin is rejected at registration (an executor without a usable `key`, `model` or `execute`, a reserved key or common-name field, a key another plugin registered, or the model of a built-in step; see [Common Step Properties](#common-step-properties)). Also reported by `autobot schema` | `Plugin error: <message>`, e.g. `Plugin error: entry point 'echo' (distribution pkg-b) failed to load: ModuleNotFoundError: No module named 'foo'` or `Plugin error: plugin pkg_b.EchoExecutor (distribution pkg-b, entry point 'echo'): step key 'echo' is already registered by plugin pkg_a.EchoExecutor (distribution pkg-a, entry point 'echo')` |
 | The file can't be read (missing, a directory, permission denied) | `Cannot read script <path>: <reason>` |
 | The file isn't valid YAML (syntax error, tab indentation, more than one document, an undefined alias, an unsupported tag such as `!!python/object`, a duplicate key) | `YAML error in <path>, line <L>, column <C>: <problem>`, followed by an indented context line when YAML gives one. For a duplicate key the problem is `found duplicate key '<key>'` at the repeated key, and the context line is `  first defined (line <L>, column <C>)` |
+| A plain value or key reads as one of YAML's types and isn't a value of it: a date or time that doesn't exist (`2001-99-99`, a time zone of `+99:99`), an integer of more digits than Python reads (4300), `0x_` | `YAML error in <path>, line <L>, column <C>: invalid <type> (<reason>); quote the value if it is meant as text`, at the value, e.g. `invalid timestamp (month must be in 1..12); ...` or `invalid int (Exceeds the limit (4300 digits) for integer string conversion: ...); ...`. `<type>` is the short name of the YAML tag, and `<reason>` is Python's |
+| The document is nested deeper than the parser can follow (hundreds of levels, e.g. 3000 `[`) | `YAML error in <path>: the document is nested too deeply` |
 | The file has bytes that aren't valid UTF-8, or disallowed control characters | `YAML error in <path>, position <N>: <reason> (...)` |
 | The script fails validation, including an empty file, a document that isn't a mapping, an undefined `call` target or invalid plugin step fields | `Validation errors:`, followed by one line for each error (see below) |
 | An `--arg` has no `=` | `--arg requires KEY=VALUE format, got: <arg>` |
 | stdout is closed (`autobot run script.yaml >&-`), so the session's output has nowhere to go. Use `> /dev/null` to discard it. Only `run` reports it | `Cannot write the session's output: stdout is closed (redirect it to /dev/null to discard the output)` |
-| The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep; in a script with `attach.prepare`, a default that reads a variable set nowhere waits for `prepare` instead, see [The environment in templates](#the-environment-in-templates)), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: template error: ...`, `Script error in <path>: env cycle: A -> B -> A` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
+| The top-level `env` can't be resolved (a template error, a reference cycle, or nesting more than 50 keys deep; in a script with `attach.prepare`, a default that reads a variable set nowhere waits for `prepare` instead, see [The environment in templates](#the-environment-in-templates)), a top-level prompt `send` string has a template syntax error, or a top-level prompt's `sendEach` collection can't be resolved (see [`sendEach`](#sendeach)) | `Script error in <path>: <message>`, e.g. `Script error in <path>: env.IMAGE: template error: ...`, `Script error in <path>: env.HOST: template error: args has no key 'host'; pass it with --arg host=VALUE`, `Script error in <path>: env cycle: A -> B -> A`, `Script error in <path>: prompt 'confirm': template error: unexpected end of template, expected 'end of print statement'.` or `Script error in <path>: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'` |
 
 A validation report is the line `Validation errors:` and then one line for each error, in the order the models report them:
 
@@ -903,21 +907,30 @@ A line is two spaces, then `<location>: <message>`, then ` (got <value>)` where 
 
 Each error is one line, whatever its message, location or value holds: the report is never wrapped, and a character in them that isn't printable (a line break, a tab, ESC or another control character, which a message may show as part of a value of the script) is written as its escape, e.g. `\n`, `\t`, `\x1b`. So a value can't break a line of the report or send an escape sequence to the terminal. That holds for the messages of a plugin's model as well. On a terminal the location is bold and the type dim (see [Output](#output)).
 
-Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported (`autobot validate` reports more where it can, see [Checking scripts with `validate`](#checking-scripts-with-validate)). A closed stdout is checked before anything else. The installed plugins are loaded next, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
+**The script's path in a report.** Wherever a report names the script (`Cannot read script <path>`, `YAML error in <path>`, `Script error in <path>`, `Run failed in <path>`, and, in `autobot validate`, the `<path>: valid` and `<path>: invalid` lines and the `while checking <path>` line), `<path>` is the script as given on the command line, with each character that isn't printable written as its escape, as in a validation report: a line break as `\n`, a carriage return as `\r`, a tab as `\t`, ESC as `\x1b`, and a byte of the name that isn't UTF-8 as the escape of the lone surrogate it is read as (`\udcff`). A file name may hold any of these, and so the path is always on one line: it can't end a line of the report and start one that reads like another script's, and it can't send an escape sequence to the terminal.
+
+Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. A closed stdout is checked before anything else. The installed plugins are loaded next, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated: these two are the validation stage, which is all that `autobot validate` does (see [Checking scripts with `validate`](#checking-scripts-with-validate)). Then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
 ### Checking scripts with `validate`
 
-`autobot validate <script>...` says whether each script would load, without running any of them. It is the command for an editor hook or a CI job. It loads a script with the code `run` loads it with, so the two can't disagree, and stops where `run` would start to run it:
+`autobot validate <script>...` says whether each script is a valid Autobot script, without running any of them. It is the command for an editor hook or a CI job. It is the validation stage of `run`, done with the code `run` does it with, so the two can't disagree, and nothing after it. For each script it does exactly this:
 
+1. reads the file and parses it as YAML (the `Cannot read script` and `YAML error` rows of the load errors above);
+2. validates the document against the models (the `Validation errors:` report): everything the JSON schema states, and what only the models can check, on the text as written: that a regex compiles (`errors`, `expect`, a `fields` entry's `match`, and an `assert` or `after` that isn't a template), that every `call` target is defined, that `spawn` names a command, that a plugin step's fields fit the plugin's model.
+
+It does none of what `run` does next: it doesn't check `--arg` values, resolve the top-level `env`, check a prompt's `send` template or resolve a `sendEach` collection, and it builds no session. So:
+
+- **No template is rendered.** A templated value is text to `validate`: it is not rendered, evaluated or even parsed as a template. A script whose `env` default is `{{ 1/0 }}`, has a template syntax error, or would call into Python if it were rendered is valid, and nothing of it has run.
 - **Nothing runs.** `attach.prepare` isn't run, no process is spawned, nothing is sent anywhere and no file is created, a temp file included. Nothing is written to stdout, so a closed stdout is not an error here.
-- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, so whatever a plugin does when it is imported happens under `validate` too. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
+- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, and the model of a plugin validates that plugin's steps, so whatever a plugin does when it is imported, and whatever the validators of its model do, happens under `validate` too. Validate with plugins you trust. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
+- **The result depends on the file and the installed plugins, and on nothing else**: not on the environment of the process, not on arguments (the command takes none for the script), and not on the other scripts given or their order.
 
-Each script is then checked in the order given, with the sequence of `run`: the file is read and parsed, then validated, then the `--arg` values are checked, then `env` and `prompts`. Everything is written to stderr, as plain or styled text by the rules of [Output](#output):
+The scripts are checked in the order given. Everything is written to stderr, as plain or styled text by the rules of [Output](#output):
 
-- A script that loads gets one line, `<path>: valid`.
-- A script that doesn't gets the report `run` prints for the same error, character for character (`Cannot read script ...`, `YAML error in ...`, `Validation errors:` and its lines, `--arg requires ...`, `Script error in ...`), and then the line `<path>: invalid`. The report masks what a validation report masks.
+- A valid script gets one line, `<path>: valid`.
+- An invalid one gets the report `run` prints for the same error, character for character (`Cannot read script ...`, `YAML error in ...`, or `Validation errors:` and its lines), and then the line `<path>: invalid`. The report masks what a validation report masks.
 
-`<path>` is the script as given on the command line. The `invalid` line is what ties a report to its file, since `Validation errors:` and `--arg requires ...` don't name one. The scripts are given together, with the options before or after them: an option between two scripts is a malformed command line. A script given twice is checked twice.
+`<path>` is the script as given on the command line, with each character that isn't printable written as its escape (see [The script's path in a report](#cli)). The `invalid` line is what ties a report to its file, since `Validation errors:` doesn't name one. A script given twice is checked twice.
 
 ```
 $ autobot validate upgrade.autobot.yaml login.autobot.yaml lab.autobot.yaml
@@ -925,29 +938,33 @@ upgrade.autobot.yaml: valid
 Validation errors:
   script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]
 login.autobot.yaml: invalid
-Script error in lab.autobot.yaml: env cycle: A -> B -> A
-Script error in lab.autobot.yaml: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'
+YAML error in lab.autobot.yaml, line 4, column 3: found duplicate key 'spawn'
+  first defined (line 3, column 3)
 lab.autobot.yaml: invalid
 ```
-
-**Which errors a script gets.** The sequence stops at the first stage that fails, as in `run`, because each stage needs what the one before it gives: an unreadable file has nothing to parse, and a script that fails validation has no `env` to resolve. Within the last stage `validate` goes on where `run` stops: it reports the error of `env`, and then the first error of each top-level prompt in the order of `prompts`, each as a `Script error in <path>: ...` line of its own. These don't depend on each other, so none is a consequence of another. The first of the lines is the one `run` reports. `env` has at most one line, the first error found: another default that reads the failed one would fail for the same reason.
 
 Options of `validate`:
 
 | Flag | Description |
 |------|-------------|
-| `-a KEY=VALUE`, `--arg KEY=VALUE` | As for `run`. The arguments are used for every script given. Give the arguments the script is run with: a script whose `env` reads `{{ args.KEY }}` is invalid without `--arg KEY=...`, with the `Script error` that `run` reports for it. An `--arg` without `=` is reported, as by `run`, for each script that gets as far as that check. |
 | `-q`, `--quiet` | Print nothing for a valid script. An invalid one keeps its report and its `invalid` line. |
-| `--traceback` | As for `run`: the Python traceback of a `Plugin error` or a `Script error` is printed before it. |
+| `--traceback` | The Python traceback of a `Plugin error` is printed before it. The reports about a script have none. |
 | `-h`, `--help` | Print the `validate` usage and exit with status 0. |
 
-`validate` exits with status 0 when every script is valid, and with status 1 when any is invalid, after all of them have been checked. A command line without a script, or with an unknown option, prints usage and exits with status 2. An unexpected error (see [Errors while the script runs](#errors-while-the-script-runs)) ends the command where it happens, with the traceback and status 70, and the scripts after it aren't checked; an interrupt prints `Interrupted`.
+The options may come before, between or after the scripts; a script whose name starts with `-` is given after `--`. There is no `--arg`: it is an unknown option here.
 
-**What a valid script may still do.** With the same arguments, plugins and environment, `validate` finds a script valid exactly when `run` gets past loading it: a valid script doesn't end `run` with one of the load errors and status 1 (a closed stdout aside, which is about the command line and not the script), and an invalid one does. The environment is part of that, because a variable of the process's environment replaces the `env` default of the same name, which is then never rendered. A valid script can still fail once it runs, with status 3 (see [Errors while the script runs](#errors-while-the-script-runs)). `validate` doesn't catch:
-- a template that is rendered during the run: `attach.prepare`, `attach.spawn`, and every templated field of a step, a block or a block's prompts. That includes an `{{ args.KEY }}` that only they read, so such a script is valid without the argument and fails in `run` without it;
-- a `spawn` that renders to no command. `run` renders a `spawn` that doesn't read `env` before `prepare`, but reports it as a failed run, not as a load error;
-- an `env` default that waits for `attach.prepare` (see [The environment in templates](#the-environment-in-templates)) and can't be rendered after it;
-- a block's `sendEach` collection, an `assert` or `after` that renders to an invalid regex;
+`validate` exits with status 0 when every script is valid, and with status 1 when any is invalid, after all of them have been checked. A command line without a script, or with an unknown option, prints the `validate` usage and exits with status 2. An unexpected error (see [Errors while the script runs](#errors-while-the-script-runs)) ends the command where it happens, with the traceback and status 70, and the scripts after it aren't checked. Its report names the script that was being checked, in a line `  while checking <path>` before the traceback, since no `invalid` line follows. An interrupt prints `Interrupted`.
+
+**What a valid script may still do.** With the same plugins installed, `validate` finds a script valid exactly when `run` gets past its validation stage: for a valid script `run` doesn't report `Cannot read script`, a `YAML error` or `Validation errors`, and for an invalid one it reports what `validate` reported. After that stage `run` can still stop before anything is spawned, with status 1:
+- an `--arg` without `=` (`--arg requires KEY=VALUE format, got: ...`);
+- a top-level `env` default that can't be resolved: a template error, an `{{ args.KEY }}` whose argument isn't given, a variable set nowhere in a script without `attach.prepare`, a reference cycle (`Script error in <path>: env.<KEY>: ...`, `Script error in <path>: env cycle: ...`);
+- a top-level prompt whose `send` has a template syntax error, or whose `sendEach` collection can't be resolved (`Script error in <path>: prompt '<name>': ...`).
+
+And it can fail once the script runs, with status 3 (see [Errors while the script runs](#errors-while-the-script-runs)):
+- a template that is rendered during the run fails: `attach.prepare`, `attach.spawn`, and every templated field of a step, a block or a block's prompts, an `{{ args.KEY }}` among them;
+- a `spawn` renders to no command;
+- an `env` default that waits for `attach.prepare` (see [The environment in templates](#the-environment-in-templates)) can't be rendered after it;
+- a block's `sendEach` collection can't be resolved, or an `assert` or `after` renders to an invalid regex;
 - anything the device does: a prompt that never comes, a failed command, a rejected login.
 
 ### Output
@@ -1048,7 +1065,7 @@ Run failed in <path>: <reason>
   (run with --traceback for details)
 ```
 
-`<path>` is the script file as given on the command line, and `<reason>` is the error's message. The step that failed has said so already, where it failed in the log (`>> step failed (<type>): <message>`, see [Output](#output)); the report comes last, after the breakouts. These are the failed runs:
+`<path>` is the script file as given on the command line, shown as in every report (see [The script's path in a report](#cli)), and `<reason>` is the error's message. The step that failed has said so already, where it failed in the log (`>> step failed (<type>): <message>`, see [Output](#output)); the report comes last, after the breakouts. These are the failed runs:
 
 | Failure | Exception | `<reason>`, e.g. |
 |---------|-----------|------------------|
@@ -1056,7 +1073,7 @@ Run failed in <path>: <reason>
 | An `errors` pattern match | `CommandError` (`autobot.session`), a `RunError` | `command error: % Invalid input` |
 | A `sendEach` prompt out of responses | `RunError` | `prompt 'login': responses exhausted` |
 | A failed `attach.prepare` | `RunError` | `prepare script failed with exit code 3` |
-| A template error at run time, an `assert` or `after` that renders to an invalid or empty regex, an `attach.spawn` that renders to no command, an `env` default that can't be rendered once `attach.prepare` has run, a block's `sendEach` collection that can't be resolved | `ScriptError` | `template error: 'dict object' has no attribute 'image'` |
+| A template error at run time, an `assert` or `after` that renders to an invalid or empty regex, an `attach.spawn` that renders to no command, an `env` default that can't be rendered once `attach.prepare` has run, a block's `sendEach` collection that can't be resolved | `ScriptError` | `template error: 'dict object' has no attribute 'image'`, `template error: args has no key 'host'; pass it with --arg host=VALUE` |
 | A timeout: waiting for a prompt, an `after` pattern, the `$?` result or the spawned process's first output | `TimeoutError` | `timed out after 30.0s waiting for a shell prompt ('sh')` |
 | A closed connection | `EOFError` | `connection closed while waiting for a shell prompt ('sh')` |
 | A `spawn` command that isn't found, or a process that can't be terminated when the session is closed | `pexpect.ExceptionPexpect` | `The command was not found or was not executable: sssh.` |
@@ -1091,16 +1108,16 @@ Traceback (most recent call last):
 KeyError: 'x'
 ```
 
-When a plugin step was running, the first line names the plugin instead, whether the step that failed is the plugin step itself or a step the plugin runs with `ctx.run_steps(...)` (the nearest plugin step, if one runs another). A step that a plugin builds can fail in ways no step of a script can, e.g. a `call` to a function that isn't defined: `Unexpected error in plugin '<key>': this is a bug in the plugin, not in the script. Please report it to the plugin's author with the traceback below.` An exception outside a run, while the script is loaded or in `autobot schema`, is reported the same way, without the `at` line. `SystemExit` is not caught.
+When a plugin step was running, the first line names the plugin instead, whether the step that failed is the plugin step itself or a step the plugin runs with `ctx.run_steps(...)` (the nearest plugin step, if one runs another). A step that a plugin builds can fail in ways no step of a script can, e.g. a `call` to a function that isn't defined: `Unexpected error in plugin '<key>': this is a bug in the plugin, not in the script. Please report it to the plugin's author with the traceback below.` An exception outside a run, while the script is loaded or in `autobot schema`, is reported the same way, without the `at` line; in `autobot validate`, with the line `  while checking <path>` in its place (see [Checking scripts with `validate`](#checking-scripts-with-validate)). An exception that a validator of a plugin's model raises while a script is validated, other than the `ValueError` and `AssertionError` that make a validation error, is one of these. `SystemExit` is not caught.
 
-With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report; in `autobot validate`, before each `Script error` line. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
+With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
 
 ### Exit status
 
 | Status | Meaning |
 |--------|---------|
 | 0 | The run completed; `autobot validate` found every script valid; `autobot schema` printed the schema; `-h` printed the help |
-| 1 | The script couldn't be loaded (the load errors above), and nothing ran; `autobot validate` found a script invalid, or a `Plugin error`. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
+| 1 | The script couldn't be loaded (the load errors above), and nothing ran; `autobot validate` found a script invalid (unreadable, not YAML, or with validation errors), or a `Plugin error`. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
 | 2 | A malformed command line |
 | 3 | The run failed. `attach.prepare` or the session may have run, and the breakouts have run if the session got past the spawn wait |
 | 70 | An unexpected error: a bug in Autobot or in a plugin |

@@ -1,7 +1,8 @@
 """`autobot validate`: SPEC "CLI", "Checking scripts with `validate`".
 
-The command loads a script with the code `run` loads it with and runs nothing. Most tests here compare the
-two commands on the same file, so a change to one that the other doesn't follow fails.
+The command is `run`'s validation stage and nothing after it: the file is read, parsed and validated with
+the code `run` uses, no template is rendered and nothing runs. Most tests here compare the two commands on
+the same file, so a change to one that the other doesn't follow fails.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from autobot.session import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
 # the program's name is `autobot` when installed and `cli.py` under `python -m autobot.cli`
-USAGE = re.compile(r"usage: \S+ validate \[-h\] \[-a KEY=VALUE\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
+USAGE = re.compile(r"usage: \S+ validate \[-h\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
 EXAMPLES = sorted((ROOT / "examples").glob("*.autobot.yaml"))
 STEP = {"cmd": "true"}
 
@@ -99,7 +100,7 @@ def test_p6_93_nothing_runs_and_no_file_is_created(m: Markers, tmp_path: Path):
     tmp.mkdir()
     path = m.write("ok.autobot.yaml", env={"A": "{{ args.a }}", "B": "{{ env.A }}-{{ env.NOT_SET_YET }}"})
     before = sorted(p.name for p in tmp_path.iterdir())
-    res = _cli("validate", path, "-a", "a=1", TMPDIR=str(tmp))
+    res = _cli("validate", path, TMPDIR=str(tmp))
     assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
     assert m.none()
     assert list(tmp.iterdir()) == []
@@ -150,6 +151,18 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
         lambda m: m.write("s", raw=yaml.safe_dump(m.doc()) + "script: []\n"), (), "YAML error in {path}, line "
     ),
     "yaml-two-documents": (lambda m: m.write("s", raw="a: 1\n---\nb: 2\n"), (), "YAML error in {path}, line 2, "),
+    "yaml-bad-date": (
+        lambda m: m.write("s", raw="vars: {d: 2001-99-99}\n"), (),
+        "YAML error in {path}, line 1, column 11: invalid timestamp (month must be in 1..12); "
+        "quote the value if it is meant as text\n",
+    ),
+    "yaml-huge-int": (
+        lambda m: m.write("s", raw="vars:\n  n: " + "9" * 5000 + "\n"), (),
+        "YAML error in {path}, line 2, column 6: invalid int (Exceeds the limit (4300 digits) ",
+    ),
+    "yaml-too-deep": (
+        lambda m: m.write("s", raw="[" * 3000), (), "YAML error in {path}: the document is nested too deeply\n"
+    ),
     "undecodable": (lambda m: m.write("s", raw=b"a: \xff\xfe\n"), (), "YAML error in {path}, position 3: "),
     "empty-file": (lambda m: m.write("s", raw=""), (), "Validation errors:\n  (document): "),
     "list-document": (lambda m: m.write("s", raw="- a\n- b\n"), (), "Validation errors:\n  (document): "),
@@ -170,17 +183,21 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     ),
     "masked-line": (lambda m: m.write("s", script=[{"line": {SECRET: 1}}]), (), "Validation errors:\n  script.0."),
     "masked-env": (lambda m: m.write("s", env={"PW": [SECRET]}), (), "Validation errors:\n  env.PW: "),
-    "arg-without-equals": (lambda m: m.write("s"), ("-a", "bogus"), "--arg requires KEY=VALUE format, got: bogus\n"),
-    "arg-empty": (lambda m: m.write("s"), ("-a", "k=v", "--arg", ""), "--arg requires KEY=VALUE format, got: \n"),
     "validation-before-arg": (
         lambda m: m.write("s", script=[{"cmdd": "true"}]), ("-a", "bogus"), "Validation errors:\n  script.0: "
     ),
+}
+# What `run` checks after the validation stage, before it runs anything: `validate` finds these scripts valid,
+# and `run` stops with status 1 and this line
+SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = {
+    "arg-without-equals": (lambda m: m.write("s"), ("-a", "bogus"), "--arg requires KEY=VALUE format, got: bogus\n"),
+    "arg-empty": (lambda m: m.write("s"), ("-a", "k=v", "--arg", ""), "--arg requires KEY=VALUE format, got: \n"),
     "env-template-syntax": (
-        lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: template error: unexpected '}'"
+        lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: env.A: template error: unexpected '}'"
     ),
     "env-zero-division": (
         lambda m: m.write("s", env={"A": "{{ 1/0 }}"}), (),
-        "Script error in {path}: template error: ZeroDivisionError: division by zero\n",
+        "Script error in {path}: env.A: template error: ZeroDivisionError: division by zero\n",
     ),
     "env-cycle": (
         lambda m: m.write("s", env={"A": "{{ env.B }}", "B": "{{ env.A }}"}), (),
@@ -188,15 +205,15 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     ),
     "env-unset-without-prepare": (
         lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}, prepare=None), (),
-        "Script error in {path}: template error: ",
+        "Script error in {path}: env.A: template error: env has no key 'AB_VALIDATE_NOT_SET'\n",
     ),
     "env-missing-arg": (
         lambda m: m.write("s", env={"H": "{{ args.host }}"}), ("-a", "other=1"),
-        "Script error in {path}: template error: 'dict object' has no attribute 'host'\n",
+        "Script error in {path}: env.H: template error: args has no key 'host'; pass it with --arg host=VALUE\n",
     ),
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
-        "Script error in {path}: template error: unexpected end of template",
+        "Script error in {path}: prompt 'p': template error: unexpected end of template",
     ),
     "send-each-unresolved": (
         lambda m: m.write("s", vars={"creds": [{"username": "a"}]}, prompts=[{"name": "login", "send": EACH}]), (),
@@ -208,24 +225,17 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", LOAD_ERRORS)
 def test_p6_94_invalid_script_gets_the_report_of_run_and_an_invalid_line(m: Markers, case: str, flags: tuple):
-    """For every class of load error the report is `run`'s, character for character, then `<path>: invalid`;
-    both commands exit with status 1 and neither runs anything."""
+    """For every error of the validation stage the report is `run`'s, character for character, then
+    `<path>: invalid`; both commands exit with status 1 and neither runs anything. `validate` takes no
+    `--arg`: the stage comes before `run` looks at its arguments."""
     make, args, head = LOAD_ERRORS[case]
     path = make(m)
     run = _cli("run", path, *args, *flags)
-    val = _cli("validate", path, *args, *flags)
+    val = _cli("validate", path, *flags)
     assert (run.returncode, val.returncode) == (1, 1), (run.stderr, val.stderr)
     assert (run.stdout, val.stdout) == ("", "")
-    head = head.replace("{path}", str(path))
-    assert head in run.stderr
-    if flags and head.startswith("Script error"):
-        # the traceback of an error comes before it; its frames are each command's own
-        for res in (run, val):
-            assert res.stderr.startswith("Traceback (most recent call last):\n")
-        assert val.stderr.splitlines()[-2:] == [run.stderr.splitlines()[-1], f"{path}: invalid"]
-    else:
-        assert run.stderr.startswith(head)
-        assert val.stderr == run.stderr + f"{path}: invalid\n"
+    assert run.stderr.startswith(head.replace("{path}", str(path)))
+    assert val.stderr == run.stderr + f"{path}: invalid\n"
     assert SECRET not in val.stderr
     assert m.none()
 
@@ -239,59 +249,104 @@ def test_p6_94_each_error_is_one_line_with_its_control_characters_escaped(m: Mar
     assert ESC not in val.stderr and "\\x1b[31m\\n" in lines[1]
 
 
-# -- --arg ------------------------------------------------------------------------------
-
-
-def test_p6_95_arg_is_used_by_load_time_templates(m: Markers):
-    """`env` may read `{{ args.KEY }}`: the script is valid with the argument and invalid without, as in `run`."""
-    path = m.write("s", env={"H": "{{ args.host }}", "U": "{{ env.H }}/{{ args.user | default('admin') }}"})
-    for args in (("-a", "host=h"), ("--arg", "host=a=b", "-a", "user=u"), ("-a", "host=x", "-a", "host=")):
-        res = _cli("validate", path, *args)
-        assert (res.returncode, res.stderr) == (0, f"{path}: valid\n"), args
-    missing = _cli("validate", path)
-    assert missing.returncode == 1
-    assert missing.stderr == (
-        f"Script error in {path}: template error: 'dict object' has no attribute 'host'\n{path}: invalid\n"
-    )
-    assert missing.stderr == _cli("run", path).stderr + f"{path}: invalid\n"
+def test_p6_105_what_yaml_types_cannot_hold_is_a_yaml_error(m: Markers):
+    """SPEC load errors: a date that isn't one, an integer too long to read and a document nested too deeply
+    are errors of the document, reported like any YAML error, and the scripts after them are checked."""
+    ok, ok2 = m.write("ok"), m.write("ok2", prepare=None)
+    bad = {
+        "date": ("vars: {d: 2001-99-99}\n", ", line 1, column 11: invalid timestamp (month must be in 1..12); quote"),
+        "key": ("vars:\n  2001-13-01: 1\n", ", line 2, column 3: invalid timestamp (month must be in 1..12); quote"),
+        "zone": ("vars:\n  - 2001-01-01 00:00:00 +99:99\n", ", line 2, column 5: invalid timestamp (offset must be"),
+        "digits": ("vars:\n  n: " + "9" * 5000 + "\n", ", line 2, column 6: invalid int (Exceeds the limit (4300 digits)"),
+        "hex": ("vars: {n: 0x_}\n", ", line 1, column 11: invalid int (invalid literal for int() with base 16: ''); quote"),
+        "flow": ("[" * 3000, ": the document is nested too deeply"),
+        "block": ("\n".join(" " * i + "a:" for i in range(3000)), ": the document is nested too deeply"),
+    }
+    for name, (raw, problem) in bad.items():
+        path = m.write(name, raw=raw)
+        val, run = _cli("validate", ok, path, ok2), _cli("run", path)
+        head = f"YAML error in {path}{problem}"
+        assert (val.returncode, run.returncode) == (1, 1), name
+        lines = val.stderr.splitlines()
+        assert len(lines) == 4 and lines[0] == f"{ok}: valid" and lines[2:] == [f"{path}: invalid", f"{ok2}: valid"], name
+        assert lines[1].startswith(head) and run.stderr == lines[1] + "\n", name
+        assert "Unexpected error" not in val.stderr + run.stderr and "Traceback" not in val.stderr + run.stderr
     assert m.none()
 
 
-def test_p6_95_arg_that_only_a_step_reads_is_not_needed(m: Markers):
-    """A template of a step is rendered during the run: `validate` can't tell that the argument is missing."""
-    path = m.write("s", script=[{"cmd": "echo {{ args.msg }}"}], prepare=None, spawn="true")
-    assert _cli("validate", path).returncode == 0
+def test_p6_105_quoted_values_and_ordinary_nesting_still_load(m: Markers):
+    """The same text as a string, a real date and a document nested a hundred levels deep are valid."""
+    doc = yaml.safe_dump(m.doc())
+    path = m.write("s", raw=doc + "vars:\n  d: '2001-99-99'\n  real: 2001-12-31\n  n: '" + "9" * 5000 + "'\n  deep: "
+                   + "[" * 100 + "]" * 100 + "\n")
+    res = _cli("validate", path)
+    assert (res.returncode, res.stderr) == (0, f"{path}: valid\n")
 
 
-def test_p6_95_args_apply_to_every_script(m: Markers):
-    a = m.write("a", env={"H": "{{ args.host }}"})
-    b = m.write("b", env={"H": "{{ args.host }}", "P": "{{ args.port }}"})
-    res = _cli("validate", a, b, "-a", "host=h")
-    assert res.returncode == 1
-    assert res.stderr.splitlines()[0] == f"{a}: valid" and res.stderr.splitlines()[-1] == f"{b}: invalid"
-    for argv in (("-a", "host=h", "--arg", "port=22", a, b), (a, b, "-a", "host=h", "-a", "port=22")):
+# -- what `run` checks after validation is not `validate`'s --------------------------------
+
+
+@pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
+@pytest.mark.parametrize("case", SCRIPT_ERRORS)
+def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str, flags: tuple):
+    """SPEC "What a valid script may still do": a malformed `--arg`, an `env` default that can't be resolved
+    and a prompt whose `send` or `sendEach` can't be loaded are not part of the validation stage. `validate`
+    finds the script valid; `run` stops with status 1, before anything runs."""
+    make, args, head = SCRIPT_ERRORS[case]
+    path = make(m)
+    val = _cli("validate", path, *flags)
+    assert (val.returncode, val.stdout, val.stderr) == (0, "", f"{path}: valid\n")
+    run = _cli("run", path, *args, *flags)
+    assert (run.returncode, run.stdout) == (1, "")
+    last = run.stderr.splitlines(keepends=True)[-1]
+    assert last.startswith(head.replace("{path}", str(path))) and "Validation errors" not in run.stderr
+    assert m.none()
+
+
+def test_p6_109_a_template_is_not_rendered_or_parsed(m: Markers):
+    """No templated field is looked at as a template, top-level or in a step: syntax errors, undefined
+    names and expressions that would fail are all valid, and so is the same text in a field that isn't one."""
+    bad = "{{ nope( }}{% if %}{{ 1/0 }}{{ vars.nope.x }}"
+    path = m.write(
+        "s",
+        m.doc(
+            [{"cmd": f"echo {bad}", "when": bad, "assert": bad, "after": bad}, {"line": bad}],
+            env={"A": bad, "B": "{{ env.B }}"}, vars={"v": bad},
+            prompts=[{"name": "sh", "expect": [r"\$ "], "return": True}, {"name": "p", "expect": ["x"], "send": bad}],
+        ) | {"attach": {"spawn": f"ssh {bad}", "prepare": f"#!/bin/sh\necho {bad}\n"}},
+    )
+    res = _cli("validate", path)
+    assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
+
+
+@pytest.mark.parametrize("argv", [("-a", "k=v"), ("--arg", "k=v"), ("-a",), ("--arg=k=v",)], ids=["short", "long", "bare", "equals"])
+def test_p6_110_validate_takes_no_arg_option(m: Markers, argv: tuple):
+    """A script's validity doesn't depend on arguments: `--arg` is an unknown option here, before or after
+    the scripts, and no script is checked."""
+    ok = m.write("ok")
+    for line in ((*argv, ok), (ok, *argv)):
+        res = _cli("validate", *line)
+        assert res.returncode == 2 and res.stdout == "" and USAGE.match(res.stderr)
+        assert "unrecognized arguments: -" in res.stderr or "expected one argument" in res.stderr
+        assert ": valid" not in res.stderr
+
+
+def test_p6_110_options_may_come_between_the_scripts(m: Markers):
+    """`-q` and `--traceback` are taken wherever they are given: before, between or after the scripts."""
+    a, bad, c = m.write("a"), m.write("b", script=[{"cmdd": 1}]), m.write("c")
+    plain = _cli("validate", a, bad, c)
+    assert plain.returncode == 1 and plain.stderr.splitlines()[0] == f"{a}: valid"
+    quiet = "".join(line for line in plain.stderr.splitlines(keepends=True) if not line.endswith(": valid\n"))
+    for argv in (("-q", a, bad, c), (a, "-q", bad, c), (a, bad, "--quiet", c), (a, bad, c, "-q"), (a, "--traceback", bad, "-q", c)):
         res = _cli("validate", *argv)
-        assert (res.returncode, res.stderr) == (0, f"{a}: valid\n{b}: valid\n")
-    # the scripts are given together: an option between them is a malformed command line
-    between = _cli("validate", a, "-a", "host=h", b)
-    assert between.returncode == 2 and between.stderr.startswith("usage: ") and "unrecognized arguments" in between.stderr
-
-
-def test_p6_95_malformed_arg_is_reported_for_each_script_that_reaches_the_check(m: Markers):
-    """The `--arg` check comes after validation, as in `run`: a script that fails earlier has its own error."""
-    ok, typo, ok2 = m.write("a"), m.write("b", script=[{"cmdd": 1}]), m.write("c")
-    res = _cli("validate", ok, typo, ok2, "-a", "bogus")
-    bad = "--arg requires KEY=VALUE format, got: bogus"
-    lines = res.stderr.splitlines()
-    assert res.returncode == 1
-    assert lines[:2] == [bad, f"{ok}: invalid"] and lines[-2:] == [bad, f"{ok2}: invalid"]
-    assert lines[2] == "Validation errors:" and lines[-3] == f"{typo}: invalid" and bad not in lines[2:-2]
-
-
-@pytest.mark.parametrize("argv", [("-a",), ("--arg",), ("-a", "k=v")], ids=["no-value", "no-value-long", "no-script"])
-def test_p6_95_arg_usage_errors_exit_2(m: Markers, argv: tuple):
-    res = _cli("validate", *argv)
-    assert res.returncode == 2 and res.stdout == "" and USAGE.match(res.stderr)
+        assert (res.returncode, res.stdout, res.stderr) == (1, "", quiet), argv
+    assert _cli("validate", a, "--traceback", c).stderr == f"{a}: valid\n{c}: valid\n"
+    # a name that starts with `-` is given after `--`, as for any command
+    dash = m.write("-q.yaml")
+    res = _cli("validate", a, "--", "-q.yaml", cwd=m.root)
+    assert (res.returncode, res.stderr) == (0, f"{a}: valid\n-q.yaml: valid\n") and dash.exists()
+    # `run` still takes its options anywhere and exactly one script
+    assert _cli("run", bad, "-a", "k=v", "--traceback").stderr == _cli("-a", "k=v", bad).stderr
 
 
 # -- several scripts, --quiet ---------------------------------------------------------
@@ -301,7 +356,8 @@ def _mixed(m: Markers) -> tuple[list[Path], str]:
     ok = m.write("ok.autobot.yaml")
     typo = m.write("typo.autobot.yaml", script=[{"cmdd": "true"}])
     missing = m.root / "missing.autobot.yaml"
-    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ env.A }}"})
+    broken = m.write("broken.autobot.yaml", raw="a: [1\n")
+    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ env.A }}"})  # for `run` to find, not `validate`
     ok2 = m.write("ok2.autobot.yaml", prepare=None)
     report = (
         f"{ok}: valid\n"
@@ -311,11 +367,13 @@ def _mixed(m: Markers) -> tuple[list[Path], str]:
         f"{typo}: invalid\n"
         f"Cannot read script {missing}: No such file or directory\n"
         f"{missing}: invalid\n"
-        f"Script error in {cycle}: env cycle: A -> A\n"
-        f"{cycle}: invalid\n"
+        f"YAML error in {broken}, line 2, column 1: expected ',' or ']', but got '<stream end>'\n"
+        "  while parsing a flow sequence (line 1, column 4)\n"
+        f"{broken}: invalid\n"
+        f"{cycle}: valid\n"
         f"{ok2}: valid\n"
     )
-    return [ok, typo, missing, cycle, ok2], report
+    return [ok, typo, missing, broken, cycle, ok2], report
 
 
 def test_p6_96_each_script_is_checked_and_reported_in_order(m: Markers):
@@ -346,11 +404,11 @@ def test_p6_96_quiet_prints_only_the_invalid_scripts(m: Markers, flag: str):
     res = _cli("validate", flag, *paths)
     assert res.returncode == 1 and res.stdout == ""
     assert res.stderr == "".join(line for line in report.splitlines(keepends=True) if not line.endswith(": valid\n"))
-    res = _cli("validate", paths[0], paths[-1], flag)
+    res = _cli("validate", paths[0], paths[-1], paths[-2], flag)
     assert (res.returncode, res.stdout, res.stderr) == (0, "", "")
 
 
-# -- every error of the last stage ------------------------------------------------------
+# -- a prompt's error names the prompt (in `run`) ---------------------------------------
 
 SEVERAL = {
     "env": {"A": "{{ env.B }}", "B": "{{ env.A }}", "C": "{{ 1/0 }}"},
@@ -365,63 +423,72 @@ SEVERAL = {
 }
 
 
-def test_p6_97_env_error_and_each_prompts_error_are_all_reported(m: Markers):
-    """SPEC: within the last stage `validate` goes on where `run` stops. One line for `env` (its first
-    error), then one for each prompt that has an error, in the order of `prompts`; the first is `run`'s."""
-    path = m.write("s", **SEVERAL)
-    val, run = _cli("validate", path), _cli("run", path)
-    head = f"Script error in {path}: "
-    assert val.returncode == 1 and val.stdout == ""
-    assert val.stderr.splitlines() == [
-        head + "env cycle: A -> B -> A",
-        head + "template error: unexpected end of template, expected 'end of print statement'.",
-        head + "prompt 'login': sendEach 'vars.creds': item 0 has no field 'password'",
-        head + "prompt 'pin': sendEach 'vars.pins': 'vars.pins' is a string, not a list",
-        f"{path}: invalid",
-    ]
-    assert (run.returncode, run.stderr) == (1, val.stderr.splitlines(keepends=True)[0])
-    assert m.none()
-
-
-def test_p6_97_prompt_errors_alone_start_with_the_one_run_reports(m: Markers):
-    path = m.write("s", vars=SEVERAL["vars"], prompts=SEVERAL["prompts"])
-    val, run = _cli("validate", path), _cli("run", path)
-    assert len(val.stderr.splitlines()) == 4
-    assert run.stderr == val.stderr.splitlines(keepends=True)[0]
-
-
-def test_p6_97_runner_raises_the_first_error_unless_given_a_list():
-    """The one constructor serves both: it raises the first script error, or collects them all."""
+def test_p6_108_send_syntax_error_names_its_prompt(m: Markers):
+    """`run` reports the first script error, and a prompt's says which prompt it is about: two prompts with
+    the same mistake give different messages, like the error of a `sendEach` and of rendering a `send`."""
     from autobot.models import Config
     from autobot.types import ScriptError
 
-    config = Config.model_validate(make_doc([STEP], **SEVERAL))
-    with pytest.raises(ScriptError, match="env cycle: A -> B -> A"):
-        Runner(config, {})
-    problems: list[ScriptError] = []
-    Runner(config, {}, problems)
-    assert len(problems) == 4 and str(problems[0]) == "env cycle: A -> B -> A"
-    problems = []
-    Runner(Config.model_validate(make_doc([STEP])), {}, problems)
-    assert problems == []
+    end = "template error: unexpected end of template, expected 'end of print statement'."
+    sh = {"name": "sh", "expect": [r"\$ "], "return": True}
+    bad = [
+        {"name": "confirm", "expect": ["sure"], "send": "{{ x "},
+        {"name": "really", "expect": ["really"], "send": "{{ x "},
+        {"name": "if", "expect": ["if"], "send": "{% if %}"},
+    ]
+    messages = []
+    for prompt in bad:
+        with pytest.raises(ScriptError) as ei:
+            Runner(Config.model_validate(make_doc([STEP], prompts=[sh, prompt])), {})
+        messages.append(str(ei.value))
+    assert messages == [
+        f"prompt 'confirm': {end}",
+        f"prompt 'really': {end}",
+        "prompt 'if': template error: Expected an expression, got 'end of statement block'",
+    ]
+    path = m.write("s", prompts=[sh, *bad])
+    run = _cli("run", path)
+    assert (run.returncode, run.stderr) == (1, f"Script error in {path}: prompt 'confirm': {end}\n")
+    assert _cli("validate", path).stderr == f"{path}: valid\n"
+    assert m.none()
+
+
+def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
+    """The prompts of a block are loaded on entering it: the same message, as a failed run."""
+    from conftest import SHELL_PROMPT, run_script
+
+    from autobot.types import ScriptError
+
+    block = {"name": "b", "prompts": [SHELL_PROMPT, {"name": "more", "expect": ["--More--"], "send": "{{ x "}], "script": [STEP]}
+    with pytest.raises(ScriptError) as ei:
+        run_script([{"block": block}])
+    assert str(ei.value) == "prompt 'more': template error: unexpected end of template, expected 'end of print statement'."
+
+
+def test_p6_108_runner_raises_the_first_script_error():
+    """`Runner(config, args)` takes the configuration and the arguments, and raises the first script error:
+    `env` before the prompts, the prompts in their order."""
+    import inspect
+
+    from autobot.models import Config
+    from autobot.types import ScriptError
+
+    assert list(inspect.signature(Runner).parameters) == ["config", "cli_args"]
+    with pytest.raises(ScriptError, match="^env cycle: A -> B -> A$"):
+        Runner(Config.model_validate(make_doc([STEP], **SEVERAL)), {})
+    with pytest.raises(ScriptError, match="^prompt 'confirm': template error: "):
+        Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {}}))), {})
 
 
 # -- --traceback, unexpected errors, interrupts, exit statuses ---------------------------
 
 
-def test_p6_98_traceback_flag_precedes_each_script_error(m: Markers):
-    path = m.write("s", **SEVERAL)
-    res = _cli("validate", path, "--traceback")
-    plain = _cli("validate", path)
-    lines = res.stderr.splitlines()
-    assert res.returncode == 1
-    assert lines[0] == "Traceback (most recent call last):"
-    # the report is the same, with a traceback before each of its errors
-    report = plain.stderr.splitlines()
-    assert [line for line in lines if line in report] == report
-    for at in (i for i, line in enumerate(lines) if line.startswith("Script error in ")):
-        assert lines[at - 1].startswith("autobot.types.") and "Error: " in lines[at - 1]
-    ok = m.write("ok")
+def test_p6_98_traceback_flag_changes_no_report_of_a_script(m: Markers):
+    """The errors of the validation stage come without a traceback, with or without the flag: it is for a
+    `Plugin error` (P6-100)."""
+    ok, bad, missing = m.write("ok"), m.write("bad", script=[{"cmdd": 1}]), m.root / "nope"
+    plain, flagged = _cli("validate", ok, bad, missing), _cli("validate", ok, bad, missing, "--traceback")
+    assert flagged.returncode == 1 and flagged.stderr == plain.stderr and "Traceback" not in flagged.stderr
     assert _cli("validate", ok, "--traceback").stderr == f"{ok}: valid\n"
 
 
@@ -443,8 +510,53 @@ def test_p6_98_unexpected_error_keeps_its_traceback_and_ends_the_command(
     assert (code, out) == (70, "")
     assert lines[0] == f"{first}: valid"
     assert lines[1].startswith("Unexpected error in Autobot: this is a bug, not a problem with the script.")
-    assert lines[2] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
+    assert lines[2] == f"  while checking {boom}"
+    assert lines[3] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
     assert str(boom) + ": " not in err and str(last) not in err
+
+
+VALIDATOR_PLUGIN = '''
+from __future__ import annotations
+
+import pydantic
+
+
+class BoomStep(pydantic.BaseModel):
+    boom: str
+
+    @pydantic.field_validator("boom")
+    @classmethod
+    def check(cls, value):
+        return {}[value]
+
+
+class BoomExecutor:
+    key = "boom"
+    model = BoomStep
+
+    def execute(self, step, ctx, timeout):
+        pass
+'''
+
+
+def test_p6_106_unexpected_error_names_the_script_being_checked(m: Markers, tmp_path: Path):
+    """A bug that ends `validate` is about one of several scripts: the report says which. Here a plugin
+    model's validator raises `KeyError`. `run` has one script, and its report stays as it is."""
+    root = tmp_path / "plugins"
+    root.mkdir()
+    plugin_dist(root, "boom", VALIDATOR_PLUGIN, "BoomExecutor")
+    first, boom, last = m.write("first"), m.write("boom", script=[{"boom": "x"}]), m.write("last")
+    val = _cli("validate", first, boom, last, PYTHONPATH=str(root))
+    lines = val.stderr.splitlines()
+    assert (val.returncode, val.stdout) == (70, "")
+    assert lines[0] == f"{first}: valid"
+    assert lines[1].startswith("Unexpected error in Autobot: this is a bug, not a problem with the script.")
+    assert lines[2] == f"  while checking {boom}"
+    assert lines[3] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
+    assert str(last) not in val.stderr and ": invalid" not in val.stderr
+    run = _cli("run", boom, PYTHONPATH=str(root))
+    assert run.returncode == 70 and "while checking" not in run.stderr
+    assert run.stderr.splitlines()[1] == "Traceback (most recent call last):"
 
 
 def test_p6_98_interrupt_while_validating_is_interrupted(
@@ -588,7 +700,7 @@ def test_p6_100_broken_plugin_is_reported_alone_and_no_script_is_checked(m: Mark
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_p6_101_example_validates_through_the_command(path: Path):
-    """Both examples read their `--arg` values in steps only, so they are valid without any."""
+    """`validate` takes no arguments and needs none: each example is valid as it is."""
     res = _cli("validate", path)
     assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
 
@@ -596,13 +708,13 @@ def test_p6_101_example_validates_through_the_command(path: Path):
 def test_p6_101_examples_validate_together_by_relative_path():
     assert len(EXAMPLES) == 2
     names = [str(p.relative_to(ROOT)) for p in EXAMPLES]
-    res = _cli("validate", *names, "-a", "dut=1", "-a", "hostname=sw1", cwd=ROOT)
+    res = _cli("validate", *names, cwd=ROOT)
     assert (res.returncode, res.stdout, res.stderr) == (0, "", "".join(f"{n}: valid\n" for n in names))
 
 
-# -- validate says what run would do -------------------------------------------------------
+# -- validate says what run's validation stage would do -------------------------------------
 
-# scripts that load, whatever they do once they run
+# scripts that `run` loads, whatever they do once they run
 LOADS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...]]] = {
     "plain": (lambda m: m.write("s"), ()),
     "no-prepare": (lambda m: m.write("s", prepare=None), ()),
@@ -618,28 +730,39 @@ LOADS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...]]] = {
     ),
     "send-each": (lambda m: m.write("s", **(SEVERAL | {"env": {}, "prompts": SEVERAL["prompts"][:1]})), ()),
 }
-CORPUS = {**{k: (*v, True) for k, v in LOADS.items()}, **{k: (v[0], v[1], False) for k, v in LOAD_ERRORS.items()}}
+# name -> (how the file is made, the arguments of `run`, whether it passes the validation stage)
+CORPUS = {
+    **{k: (*v, True) for k, v in LOADS.items()},
+    **{k: (v[0], v[1], True) for k, v in SCRIPT_ERRORS.items()},
+    **{k: (v[0], v[1], False) for k, v in LOAD_ERRORS.items()},
+}
 
 
 @pytest.mark.parametrize("case", CORPUS)
-def test_p6_102_validate_exits_0_exactly_when_run_gets_past_loading(
+def test_p6_102_validate_exits_0_exactly_when_run_gets_past_validation(
     m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], case: str
 ):
-    """`run` is stopped at the point where it would start to run the script, so nothing is spawned: it gets
-    there for the scripts `validate` finds valid, and exits with the load-error status for the others."""
-    make, args, loads = CORPUS[case]
+    """`run` is stopped right after its validation stage, where it would go on to its arguments, `env` and
+    the prompts: it gets there for exactly the scripts `validate` finds valid, and exits with status 1 for
+    the others. `validate` itself never gets there, and builds no `Runner`."""
+    make, args, valid = CORPUS[case]
     path = make(m)
-    reached: list[Runner] = []
+    reached: list[Any] = []
 
-    class Loaded(BaseException):  # not an `Exception`, which `main` would report as a bug
+    class Validated(BaseException):  # not an `Exception`, which `main` would report as a bug
         pass
 
-    def run(self: Runner) -> None:
-        reached.append(self)
-        raise Loaded
+    def after_validation(args: Any, config: Any) -> Runner:
+        reached.append(config)
+        raise Validated
 
-    monkeypatch.setattr(Runner, "run", run)
-    val_code, val_out, val_err = _main(monkeypatch, capsys, "validate", path, *args)
+    def no_runner(self: Runner, *a: Any, **kw: Any) -> None:
+        raise AssertionError("validate built a Runner")
+
+    monkeypatch.setattr(cli, "_runner", after_validation)
+    with monkeypatch.context() as patch:
+        patch.setattr(Runner, "__init__", no_runner)
+        val_code, val_out, val_err = _main(patch, capsys, "validate", path)
     assert reached == [] and val_out == ""
     monkeypatch.setattr(sys, "argv", ["autobot", "run", str(path), *args])
     run_code: Any = None
@@ -647,23 +770,263 @@ def test_p6_102_validate_exits_0_exactly_when_run_gets_past_loading(
         cli.main()
     except SystemExit as e:
         run_code = e.code
-    except Loaded:
+    except Validated:
         pass
-    capsys.readouterr()
-    assert (val_code == 0) == bool(reached) == loads
-    assert (val_code, run_code) == ((0, None) if loads else (1, 1))
-    assert val_err.endswith(f"{path}: {'valid' if loads else 'invalid'}\n")
+    run_err = capsys.readouterr().err
+    assert (val_code == 0) == bool(reached) == valid
+    assert (val_code, run_code) == ((0, None) if valid else (1, 1))
+    assert val_err == (f"{path}: valid\n" if valid else run_err + f"{path}: invalid\n")
     assert m.none()
 
 
 def test_p6_102_a_valid_script_can_still_fail_once_it_runs(m: Markers):
-    """What `validate` can't catch is a failed run (status 3), never a load error (status 1)."""
+    """After the validation stage `run` can stop with a `Script error` (status 1, P6-109) or fail once the
+    script runs (status 3). Neither is a `Validation errors` report."""
     for case in ("step-template-error", "step-reads-a-missing-arg", "spawn-renders-to-nothing", "spawn-not-found"):
         make, args = LOADS[case]
         path = make(m)
-        assert _cli("validate", path, *args).returncode == 0, case
+        assert _cli("validate", path).returncode == 0, case
         run = _cli("run", path, *args)
         assert run.returncode == 3 and f"Run failed in {path}: " in run.stderr, case
+        assert "Validation errors" not in run.stderr
+
+
+# -- the result depends on the file and the installed plugins, and on nothing else ----------
+
+
+def test_p6_111_result_does_not_depend_on_the_environment(m: Markers, monkeypatch: pytest.MonkeyPatch):
+    """A variable of the environment replaces an `env` default in `run`, so `run` loads the script with it
+    and stops without it. `validate` reads neither: its output is the same in both."""
+    path = m.write("s", env={"AB_VALIDATE_URL": "{{ 1/0 }}", "AB_B": "{{ env.AB_VALIDATE_HOST }}"}, prepare=None, spawn="true")
+    bad = m.write("bad", env={"AB_VALIDATE_URL": 5})
+    outputs = set()
+    for extra in ({}, {"AB_VALIDATE_URL": "u"}, {"AB_VALIDATE_URL": "u", "AB_VALIDATE_HOST": "h"}, {"HOME": "/nonexistent", "TERM": "dumb"}):
+        res = _cli("validate", path, bad, **extra)
+        outputs.add((res.returncode, res.stdout, res.stderr))
+    assert len(outputs) == 1
+    code, _, err = outputs.pop()
+    assert code == 1 and err.splitlines()[0] == f"{path}: valid" and err.splitlines()[-1] == f"{bad}: invalid"
+    # `run` does read it: a load error without the variables, a run with them
+    assert _cli("run", path).stderr == f"Script error in {path}: env.AB_B: template error: env has no key 'AB_VALIDATE_HOST'\n"
+    assert _cli("run", path, AB_VALIDATE_HOST="h").stderr == (
+        f"Script error in {path}: env.AB_VALIDATE_URL: template error: ZeroDivisionError: division by zero\n"
+    )
+    assert _cli("run", path, AB_VALIDATE_URL="u", AB_VALIDATE_HOST="h").returncode != 1
+
+
+def test_p6_111_result_does_not_depend_on_the_other_scripts(m: Markers):
+    """Each script's lines are the same alone, first, last, between others and given twice."""
+    scripts = {
+        "ok": m.write("ok"),
+        "typo": m.write("typo", script=[{"cmdd": 1}]),
+        "yaml": m.write("yaml", raw="a: [1\n"),
+        "env": m.write("env", env={"A": "{{ env.A }}{{ nope( }}"}),
+        "missing": m.root / "missing",
+    }
+    alone = {name: _cli("validate", path) for name, path in scripts.items()}
+    assert [alone[n].returncode for n in scripts] == [0, 1, 1, 0, 1]
+    for order in (list(scripts), list(reversed(scripts)), ["typo", "ok", "typo", "env", "yaml", "ok", "missing", "env"]):
+        res = _cli("validate", *(scripts[n] for n in order))
+        assert res.stderr == "".join(alone[n].stderr for n in order), order
+        assert res.returncode == 1
+
+
+# -- nothing runs, whatever the script holds: every audited operation of the interpreter ------
+
+# `cli.main()` under an audit hook, which sees what the interpreter does whichever function asked for it:
+# a process, a socket, a file opened for writing or removed, a change to the environment. Status 99 and
+# an `AUDIT` line for each if there was any; the command's own status otherwise.
+AUDITED = r"""
+import os
+import sys
+
+from autobot import cli
+
+WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+EXACT = {
+    "os.system", "os.putenv", "os.unsetenv", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod",
+    "os.chown", "os.truncate", "os.symlink", "os.link", "os.kill", "os.killpg", "os.utime", "os.chdir",
+    "os.startfile", "os.forkpty", "os.fork", "pty.spawn",
+}
+PREFIX = ("os.exec", "os.spawn", "os.posix_spawn", "subprocess.", "socket.", "shutil.", "tempfile.")
+seen = []
+
+
+def hook(event, args):
+    if event == "open":
+        if isinstance(args[2], int) and args[2] & WRITE:
+            seen.append(f"open for writing {args[0]!r}")
+    elif event in EXACT or event.startswith(PREFIX):
+        seen.append(f"{event} {args!r}")
+
+
+sys.addaudithook(hook)
+sys.argv = ["autobot", *sys.argv[1:]]
+code = 0
+try:
+    cli.main()
+except SystemExit as e:
+    code = e.code
+for line in seen:
+    sys.stderr.write(f"AUDIT {line}\n")
+sys.exit(99 if seen else code)
+"""
+
+# templates that would run code if anything rendered them: `validate` must find each script valid and do nothing
+INJECTIONS = {
+    "os-system": "{{ lipsum.__globals__.os.system('touch PWNED') }}",
+    "open-w": "{{ lipsum.__globals__['__builtins__'].open('PWNED', 'w').close() }}",
+    "environ": "{{ cycler.__init__.__globals__.os.environ.update({'AB_PWNED': '1'}) }}",
+    "posix-spawn": "{{ joiner.__init__.__globals__.os.posix_spawn('/bin/true', ['true'], {}) }}",
+    "remove": "{{ namespace.__init__.__globals__['__builtins__']['__import__']('os').remove('s') }}",
+}
+
+
+def _inject(m: Markers, template: str) -> Path:
+    """The template in every templated field there is."""
+    doc = m.doc(
+        [{"cmd": f"echo {template}", "when": template, "assert": template, "after": template}, {"line": template}],
+        env={"A": template},
+        prompts=[{"name": "sh", "expect": [r"\$ "], "return": True}, {"name": "p", "expect": ["x"], "send": template}],
+    )
+    return m.write("s", doc | {"attach": {"spawn": f"ssh {template}", "prepare": f"#!/bin/sh\necho {template}\n"}})
+
+
+AUDIT_CORPUS = {
+    **CORPUS,
+    **{f"inject-{k}": ((lambda m, t=t: _inject(m, t)), (), True) for k, t in INJECTIONS.items()},
+}
+
+
+def _audited(*argv: Any, cwd: Path) -> subprocess.CompletedProcess[str]:
+    # -B: an import during the command must not write a .pyc, which would be a file opened for writing
+    return subprocess.run(
+        [sys.executable, "-B", "-W", "ignore", "-c", AUDITED, *map(str, argv)],
+        check=False, capture_output=True, text=True, timeout=120, env=_env(), cwd=cwd,
+    )
+
+
+@pytest.mark.parametrize("case", AUDIT_CORPUS)
+def test_p6_104_validate_starts_no_process_and_writes_no_file(m: Markers, case: str):
+    """SPEC "Checking scripts with `validate`": nothing of the script is rendered or run. For every script of
+    the corpus, valid or not, and for scripts whose templates would run code if they were rendered: no exec,
+    fork or spawn, no socket, no file opened for writing or removed, no change to the environment, by
+    whichever function. A script with such a template is valid: its templates are text here."""
+    make, _, valid = AUDIT_CORPUS[case]
+    path = make(m)
+    before = sorted(p.name for p in m.root.iterdir())
+    res = _audited("validate", path, cwd=m.root)
+    assert "AUDIT " not in res.stderr, res.stderr
+    assert (res.returncode, res.stdout) == (0 if valid else 1, "")
+    assert res.stderr.endswith(f"{path}: {'valid' if valid else 'invalid'}\n")
+    assert "Traceback" not in res.stderr
+    assert sorted(p.name for p in m.root.iterdir()) == before and m.none()
+
+
+def test_p6_104_the_audit_sees_what_run_does(m: Markers):
+    """The check itself: the same harness on `run`, which does run `prepare`, reports it."""
+    path = m.write("s")
+    res = _audited("run", path, cwd=m.root)
+    assert res.returncode == 99
+    assert "AUDIT subprocess.Popen" in res.stderr or "AUDIT os.posix_spawn" in res.stderr or "AUDIT os.fork" in res.stderr
+    assert "AUDIT open for writing" in res.stderr or "AUDIT tempfile." in res.stderr
+
+
+# -- a path is printed on one line, whatever the file is called -----------------------------
+
+ODD = {"newline": ("\n", "\\n"), "cr": ("\r", "\\r"), "tab": ("\t", "\\t"), "esc": ("\x1b[31m", "\\x1b[31m")}
+
+
+@pytest.mark.parametrize("char", ODD)
+def test_p6_107_verdict_line_shows_the_path_escaped(m: Markers, char: str):
+    """SPEC: `<path>` is the script as given, with the characters that aren't printable as their escapes."""
+    raw, shown = ODD[char]
+    name = f"a{raw}b.yaml"
+    m.write(name)
+    m.write("bad" + name, script=[{"cmdd": 1}])
+    res = _cli("validate", name, "bad" + name, cwd=m.root)
+    lines = res.stderr.split("\n")
+    assert res.returncode == 1 and res.stdout == ""
+    assert lines[0] == f"a{shown}b.yaml: valid" and lines[-2:] == [f"bada{shown}b.yaml: invalid", ""]
+    assert len(lines) == 5 and not set(res.stderr) & {"\r", "\t", ESC}
+    styled = _cli("validate", name, cwd=m.root, FORCE_COLOR="1")
+    assert styled.stderr == f"a{shown}b.yaml: {ESC}[32mvalid{ESC}[0m\n"
+
+
+def test_p6_107_a_path_cannot_forge_another_scripts_line(m: Markers):
+    """A name with a line break in it stays one line: no line of the output is `ok.yaml: valid`."""
+    m.write("nl\nok.yaml: valid")
+    res = _cli("validate", "nl\nok.yaml: valid", "zz\nok.yaml: valid\nq", cwd=m.root)
+    assert res.returncode == 1
+    assert res.stderr.split("\n") == [
+        "nl\\nok.yaml: valid: valid",
+        "Cannot read script zz\\nok.yaml: valid\\nq: No such file or directory",
+        "zz\\nok.yaml: valid\\nq: invalid",
+        "",
+    ]
+
+
+# how each report that names the script starts, with {path} for the name as it is shown
+NAMED = {
+    "cannot-read": (None, "Cannot read script {path}: No such file or directory", 1),
+    "yaml": ("a: [1\n", "YAML error in {path}, line 2, column 1: ", 1),
+    "yaml-reader": (b"a: \xff\xfe\n", "YAML error in {path}, position 3: ", 1),
+    "yaml-value": ("vars: {d: 2001-99-99}\n", "YAML error in {path}, line 1, column 11: invalid timestamp", 1),
+    "yaml-deep": ("[" * 3000, "YAML error in {path}: the document is nested too deeply", 1),
+    "script-error": ({"env": {"A": "{{ env.A }}"}}, "Script error in {path}: env cycle: A -> A", 1),
+    "run-failed": ({"spawn": "no-such-command-ab", "prepare": None}, "Run failed in {path}: ", 3),
+}
+
+
+@pytest.mark.parametrize("char", ODD)
+@pytest.mark.parametrize("case", NAMED)
+def test_p6_107_every_report_shows_the_path_escaped(m: Markers, case: str, char: str):
+    """`Cannot read script`, `YAML error in`, `Script error in` and `Run failed in` name the script the same
+    way, in `run` and, for the ones it reports, in `validate`."""
+    content, head, status = NAMED[case]
+    raw, shown = ODD[char]
+    name = f"s{raw}x.yaml"
+    if isinstance(content, dict):
+        m.write(name, **content)
+    elif content is not None:
+        m.write(name, raw=content)
+    head = head.replace("{path}", f"s{shown}x.yaml")
+    run = _cli("run", name, cwd=m.root)
+    assert run.returncode == status
+    assert head in run.stderr.split("\n") or any(line.startswith(head) for line in run.stderr.split("\n")), run.stderr
+    assert not set(run.stderr) & {"\r", "\t", ESC} and f"s{raw}x.yaml" not in run.stderr
+    val = _cli("validate", name, cwd=m.root)
+    if status == 1 and not isinstance(content, dict):
+        assert val.stderr == run.stderr + f"s{shown}x.yaml: invalid\n"
+    else:  # what `run` finds after its validation stage
+        assert val.stderr == f"s{shown}x.yaml: valid\n"
+
+
+def test_p6_107_unexpected_error_shows_the_path_escaped(
+    m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def load(path: str) -> object:
+        raise KeyError("x")
+
+    monkeypatch.setattr(cli, "_load", load)
+    code, _, err = _main(monkeypatch, capsys, "validate", "a\nb\x1b[31m.yaml")
+    assert code == 70 and err.splitlines()[1] == "  while checking a\\nb\\x1b[31m.yaml" and ESC not in err
+
+
+def test_p6_107_a_name_that_is_not_utf8_is_shown_escaped(m: Markers):
+    """A byte of the name that isn't UTF-8 is a lone surrogate in the argument: it is written as its escape."""
+    name = b"s\xffx.yaml"
+    Path(os.fsdecode(os.path.join(os.fsencode(m.root), name))).write_text(yaml.safe_dump(m.doc()))
+    res = subprocess.run(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", "validate", name, b"nope\xfe.yaml"],
+        check=False, capture_output=True, text=True, timeout=60, env=_env(), cwd=m.root,
+    )
+    assert res.returncode == 1
+    assert res.stderr.splitlines() == [
+        "s\\udcffx.yaml: valid",
+        "Cannot read script nope\\udcfe.yaml: No such file or directory",
+        "nope\\udcfe.yaml: invalid",
+    ]
 
 
 # -- the command line -----------------------------------------------------------------------
@@ -679,10 +1042,11 @@ def test_p6_103_help_describes_the_command():
         text = " ".join(res.stdout.split())
         assert res.returncode == 0 and res.stderr == ""
         assert USAGE.match(res.stdout)
-        assert "attach.prepare is not run and no session is spawned" in text
+        assert "no template is rendered, attach.prepare is not run and no session is spawned" in text
         assert "Exit with status 1 if any script is invalid" in text
-        for option in ("-a KEY=VALUE, --arg KEY=VALUE", "-q, --quiet", "--traceback"):
+        for option in ("-q, --quiet", "--traceback"):
             assert option in text
+        assert "--arg" not in text
 
 
 def test_p6_103_run_stays_the_default_and_takes_one_script(m: Markers):
