@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
 import re
+import select
 import signal
 import sys
 import time
@@ -16,9 +19,9 @@ from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
 # The window of the spawned pty. A line editor on a terminal that wraps clears the screen and writes the
-# prompt again for a line that doesn't fit on the screen, so the screen is tall: 40,000 characters, more
-# than one write can be relied on to carry. Not taller: a full-screen program draws every row, and a
-# device may take its terminal length from this window and accept only so much.
+# prompt again for a line that doesn't fit on the screen, so the screen is tall: 40,000 characters. Not
+# taller: a full-screen program draws every row, and a device may take its terminal length from this
+# window and accept only so much.
 PTY_ROWS = 500
 PTY_COLS = 80
 
@@ -26,6 +29,23 @@ PTY_COLS = 80
 # the prompt is taken for the prompt once nothing arrives for this long. Readline writes the prompt and the
 # rest of the line in one write; the time is for a slow line between a device and its console server.
 HELD_GRACE = 1.0
+
+
+# What a write to a pty whose other side is gone fails with: the session is closed, as an EOF on a read says.
+CLOSED_ERRNOS = (errno.EIO, errno.EPIPE, errno.ENXIO)
+# A write the pty refuses although it is reported writable is tried again after this long.
+SEND_RETRY = 0.01
+
+_CONTROL_KEYS = {"@": 0, "`": 0, "[": 27, "{": 27, "\\": 28, "|": 28, "]": 29, "}": 29, "^": 30, "~": 30, "_": 31, "?": 127}
+
+
+def control_byte(char: str) -> bytes:
+    """The control character of a key: Ctrl+A to Ctrl+Z in either case, and the punctuation keys. Empty for
+    any other key."""
+    char = char.lower()
+    if len(char) == 1 and "a" <= char <= "z":
+        return bytes([ord(char) - ord("a") + 1])
+    return bytes([_CONTROL_KEYS[char]]) if char in _CONTROL_KEYS else b""
 
 
 def run_environ() -> dict[str, str]:
@@ -472,7 +492,7 @@ class Session:
                         return self._finish(output, sent, errors, capture, held[2])
                     continue  # no Return is pressed at a prompt that is held
                 if not solicited and all(h.is_fresh for h in self._handlers):
-                    self._cld.sendline("")
+                    self._put_line("", deadline - time.monotonic(), timeout)
                     solicited = True
                 continue
             if before:
@@ -492,7 +512,7 @@ class Session:
                             break
                         self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
-                    self._cld.sendline(h.respond(i - h.start))
+                    self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
@@ -546,22 +566,82 @@ class Session:
                 self._held = (read, line, self._ctx["match"])
         return idx
 
-    def sendline(self, line: str = "", *, solicit: bool = False):
-        """Send a line. `solicit` lets the next prompt wait send its solicit newline: for a raw
-        send (`line`, `return`), not for a command whose prompt the wait is for."""
+    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):
+        """Send a line, within `timeout`. `solicit` lets the next prompt wait send its solicit newline: for
+        a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
         self._sent = line
         self._solicit = solicit
         self._held = None
-        self._cld.sendline(line)
+        self._put_line(line, timeout)
+
+    def _put_line(self, line: str, timeout: float, of: float | None = None):
+        """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
+        of, when `timeout` is what is left of it."""
+        cld = self._cld
+        assert cld
+        deadline = time.monotonic() + timeout
+        if cld.delaybeforesend is not None:
+            time.sleep(cld.delaybeforesend)
+        data = (line + cld.linesep).encode(cld.encoding, cld.codec_errors)
+        self._write(data, deadline, timeout if of is None else of, "a line")
+
+    def _put_control(self, char: str, timeout: float):
+        self._write(control_byte(char), time.monotonic() + timeout, timeout, "a control character")
+
+    def _write(self, data: bytes, deadline: float, timeout: float, what: str):
+        """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
+        no more: a child that echoes stops reading once nobody reads its echo.
+
+        What is read is read as a wait reads it, and is the start of what the next wait reads. A write
+        that fails leaves the session at no prompt and after no line: the part that was written is on the
+        child's input line, so the next prompt wait presses no Return, which would enter it.
+        """
+        cld = self._cld
+        assert cld
+        fd = cld.child_fd
+        done, refused = 0, False
+        try:
+            if fd < 0:  # closed here, not by the child
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            try:
+                while done < len(data):
+                    try:
+                        done += os.write(fd, data[done:])
+                        refused = False
+                        continue
+                    except BlockingIOError:
+                        pass
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"timed out after {timeout}s while sending {what} ({done} of {len(data)} bytes sent)"
+                        )
+                    if refused:
+                        time.sleep(min(SEND_RETRY, remaining))
+                    readable, writable, _ = select.select([fd], [fd], [], remaining)
+                    if readable:
+                        # into pexpect's buffer and the operator echo, like the output a wait reads
+                        cld.expect(pexpect.TIMEOUT, timeout=0)
+                    refused = bool(writable) and not readable
+            finally:
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+        except BaseException as e:
+            self._sent = None
+            self._solicit = False
+            if isinstance(e, pexpect.EOF) or (isinstance(e, OSError) and e.errno in CLOSED_ERRNOS):
+                raise EOFError(f"connection closed while sending {what}") from e
+            raise
 
     def check_rc(self, timeout: float = 300) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
 
-        self.sendline("echo __AUTOBOT_RC=$?")
+        self.sendline("echo __AUTOBOT_RC=$?", timeout=timeout)
         try:
             # the lookahead waits for what follows the digits: a code split across two reads is read whole
             self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
@@ -573,13 +653,13 @@ class Session:
         self.get_prompt(timeout=timeout, capture=False)
         return rc
 
-    def sendcontrol(self, char: str):
+    def sendcontrol(self, char: str, timeout: float = 300):
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
         self._solicit = True
         self._held = None
-        self._cld.sendcontrol(char)
+        self._put_control(char, timeout)
 
     def sleep(self, seconds: float):
         if not self._cld:

@@ -55,7 +55,7 @@ class CmdExecutor:
             for i, cmd in enumerate(lines):
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
-                ctx.session.sendline(cmd)
+                ctx.session.sendline(cmd, timeout=timeout)
                 log.say(f"cmd: {cmd}")
             if lines:
                 output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
@@ -122,7 +122,7 @@ class CmdExecutor:
             log.say(f"script: writing to {tmp}", "detail")
             self._upload(ctx, script.encode(), tmp, timeout)
             log.say(f"script: executing {tmp}", "detail")
-            ctx.session.sendline(tmp)
+            ctx.session.sendline(tmp, timeout=timeout)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
             self._check(step, ctx, output, timeout)
         except (CommandError, StepFailure) as e:
@@ -147,12 +147,14 @@ class CmdExecutor:
         b64 = base64.b64encode(script).decode()
         for i in range(0, len(b64), SCRIPT_CHUNK):
             ctx.session.sendline(
-                f"(umask 077; printf %s {b64[i : i + SCRIPT_CHUNK]} | tee -a {tmp}.b64 | wc -c)"
+                f"(umask 077; printf %s {b64[i : i + SCRIPT_CHUNK]} | tee -a {tmp}.b64 | wc -c)",
+                timeout=timeout,
             )
             ctx.session.get_prompt(timeout=timeout)
         ctx.session.sendline(
             f"(umask 077; base64 -d {tmp}.b64 | tee {tmp} | wc -c) && chmod 700 {tmp}"
-            " && echo __AUTOBOT_UPLOAD_OK"
+            " && echo __AUTOBOT_UPLOAD_OK",
+            timeout=timeout,
         )
         out = ctx.session.get_prompt(timeout=timeout)
         if not re.search(rf"(?m)^\s*{len(script)}\s*\n\s*__AUTOBOT_UPLOAD_OK\s*$", out):
@@ -162,10 +164,10 @@ class CmdExecutor:
     def _cleanup(ctx: RunnerContext, tmp: str, timeout: float, interrupt: bool) -> None:
         try:
             if interrupt:
-                ctx.session.sendcontrol("c")
+                ctx.session.sendcontrol("c", timeout=timeout)
                 log.say("script: interrupt sent: ^C", "warn")
             ctx.session.get_prompt(timeout=timeout, capture=False)
-            ctx.session.sendline(f"rm -f {tmp} {tmp}.b64")
+            ctx.session.sendline(f"rm -f {tmp} {tmp}.b64", timeout=timeout)
             ctx.session.get_prompt(timeout=timeout, capture=False)
             log.say(f"script: cleaned up {tmp}", "detail")
         except Exception as e:  # noqa: BLE001 - best-effort, must not mask the step error
@@ -230,7 +232,7 @@ class LineExecutor:
 
     def execute(self, step: LineStep, ctx: RunnerContext, timeout: float) -> None:
         for line in ensure_list(step.line):
-            ctx.session.sendline(ctx.render(line), solicit=True)
+            ctx.session.sendline(ctx.render(line), solicit=True, timeout=timeout)
             log.say("line sent")  # not the text: it may be a password, which the session doesn't echo
 
 
@@ -240,7 +242,7 @@ class ReturnExecutor:
 
     def execute(self, step: ReturnStep, ctx: RunnerContext, timeout: float) -> None:
         for _ in range(step.newline_count):
-            ctx.session.sendline("", solicit=True)
+            ctx.session.sendline("", solicit=True, timeout=timeout)
             log.say("return sent")
 
 
@@ -250,7 +252,7 @@ class ControlExecutor:
 
     def execute(self, step: ControlStep, ctx: RunnerContext, timeout: float) -> None:
         for char in ensure_list(step.control):
-            ctx.session.sendcontrol(char)
+            ctx.session.sendcontrol(char, timeout=timeout)
             log.say(f"control sent: ^{char.upper()}")
 
 

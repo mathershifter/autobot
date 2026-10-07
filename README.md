@@ -329,6 +329,8 @@ Captured output (used by `register`, `assert`, `errors`, and `session.before`) i
 
 **Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead. The same goes for a command that shows nothing until Return is pressed, such as connecting to an idle console (`consutil connect 0`): autobot presses Return for a console that stays silent for 5 seconds, but never while a `cmd` is running, so that `cmd` would time out. Send it with `line`; the next `cmd` waits for the prompt and presses Return if needed.
 
+**Very long lines.** A line is sent as it is, however long. Sending has the step's `timeout`, like every wait: if the far side stops reading, the step fails with `timed out after <timeout>s while sending a line (<sent> of <total> bytes sent)`. The part that was sent stays on the far side's input line, typed and not entered, so a breakout that may follow such a step should start with `control: c`, which drops it. On a terminal that wraps (a `TERM` other than `dumb`), the output of a line is captured as long as the line fits on the screen of the line editor, 40,000 characters with its prompt. See [SPEC.md](SPEC.md#the-length-of-a-sent-line).
+
 #### Multi-line commands
 
 As a list (each entry sent separately):
@@ -466,13 +468,13 @@ All step types except `sleep` support these optional fields:
 | `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
-| `timeout`      | Bounds each wait of this step (default 300s), not the step as a whole |
+| `timeout`      | Bounds each wait and each send of this step (default 300s), not the step as a whole |
 
 `line` and `return` steps do not support `timeout`.
 
 `after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. That wait never presses Return, since a Return could answer a question or reach a running command; if no shell prompt comes within the step's `timeout`, the step fails. An `after` that ends at the shell prompt itself is fine: the command is sent at once. `line`, `return` and `control` send as soon as the pattern matches, so use `line` to answer something that isn't a shell prompt.
 
-For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
+For `cmd`, `timeout` applies separately to each wait and each send: `after`, each prompt wait, the sending of each line, the `$?` check and the embedded-script upload. For `control` it bounds the `after` wait and the sending of each character. For `call` and `block` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 
 To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.
 
@@ -540,7 +542,7 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
   ignore_error: true
 ```
 
-`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for), template errors and prompt-response failures (`responses exhausted`) always abort the script.
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for, or `connection closed while sending a line`), template errors and prompt-response failures (`responses exhausted`) always abort the script.
 
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 
