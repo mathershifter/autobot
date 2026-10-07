@@ -1,10 +1,12 @@
-"""Sending a line to the session: bounded by a timeout, whatever its length (P8-36 to P8-42)."""
+"""Sending a line to the session: bounded by a timeout, whatever its length (P8-36 to P8-42), and
+refused when the terminal it is typed on would cut it (P8-43 to P8-47)."""
 
 from __future__ import annotations
 
 import fcntl
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,7 +18,8 @@ import pytest
 from conftest import BASH, SentLog, make_doc, make_runner, run_cli
 from conftest import run_vars as run
 
-from autobot.session import PromptHandler, Session, SimpleHandler
+import autobot.session as session_mod
+from autobot.session import LineTooLong, PromptHandler, Session, SimpleHandler, canon_limit
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"
 # more than a pty holds for a child that has stopped reading
@@ -445,3 +448,312 @@ def test_p8_42_prompt_wait_after_a_failed_send_presses_no_return(attach, tmp_pat
     s.sendcontrol("c", timeout=5)
     s.get_prompt(timeout=5)
     assert log.read_text().startswith("INTERRUPT=")
+
+
+# -- P8-43: a line the terminal would cut is not sent -------------------------------------------------
+
+NOEDIT = "bash --norc --noprofile --noediting -i"
+CANON = 4095  # the bytes of a line, without its line break, that the Linux terminal takes in canonical mode
+linux = pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
+# shells that leave the line to the terminal
+CANONICAL = [NOEDIT, pytest.param("dash -i", marks=pytest.mark.skipif(not shutil.which("dash"), reason="no dash"))]
+# stands where an ssh or a console server would: its own terminal is raw, and the shell is on another
+RELAY = f"{sys.executable} -c \"import pty; pty.spawn(['bash', '--norc', '--noprofile', '--noediting', '-i'])\""
+
+
+def echo(nbytes: int, lead: str = "") -> str:
+    """An `echo` line of `nbytes` bytes, whose output shows where it was cut."""
+    words = " ".join(f"w{i:04d}" for i in range(nbytes // 5 + 1))
+    return (f"echo {lead}" + words)[:nbytes].rstrip().ljust(nbytes, "x")
+
+
+def too_long(nbytes: int, takes: int = CANON) -> str:
+    return (
+        f"line of {nbytes} bytes not sent: the terminal reads whole lines (canonical mode) and takes "
+        f"{takes} bytes of one, so the last {nbytes - takes} would be dropped without an error"
+    )
+
+
+def warning(nbytes: int) -> str:
+    return (
+        f">> long line: {nbytes} bytes; a far side that reads whole lines, with no line editor, keeps only "
+        "the first 4095 bytes of one (the usual limit on Linux) and drops the rest without an error\n"
+    )
+
+
+@linux
+@pytest.mark.parametrize("spawn", CANONICAL)
+@pytest.mark.parametrize("nbytes", [CANON + 1, 5000, 10000])
+def test_p8_43_line_past_the_limit_is_refused_and_nothing_is_sent(spawn: str, nbytes: int, sent: SentLog, capsys):
+    """SPEC "The length of a sent line": the shell has no line editor, so the terminal would keep 4095
+    bytes of the line and run that. The step fails before anything is sent, `ignore_error` or not, and
+    the breakout finds the session at its prompt."""
+    runner = make_runner(
+        [
+            {"cmd": "echo first", "register": "first"},
+            {"cmd": echo(nbytes), "register": "out", "ignore_error": True},
+            {"cmd": "echo never", "register": "never"},
+        ],
+        spawn=spawn,
+        breakout=[{"cmd": "echo clean", "register": "clean"}],
+    )
+    with pytest.raises(LineTooLong) as ei:
+        runner.run()
+    assert str(ei.value) == too_long(nbytes)
+    assert runner.config.vars == {"first": "first", "clean": "clean"}
+    assert sent.commands() == ["echo first", "echo clean"]
+    err = capsys.readouterr().err
+    assert f">> step failed (LineTooLong): {too_long(nbytes)}\n" in err and "long line" not in err
+
+
+@linux
+@pytest.mark.parametrize("spawn", CANONICAL)
+@pytest.mark.parametrize("nbytes", [CANON - 1, CANON])
+def test_p8_43_line_up_to_the_limit_is_sent_and_runs_whole(spawn: str, nbytes: int, capsys):
+    cmd = echo(nbytes)
+    out = run([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], spawn=spawn)
+    assert out == {"out": cmd[5:], "after": "done"}
+    assert "long line" not in capsys.readouterr().err
+
+
+@linux
+def test_p8_43_line_typed_at_a_running_read_is_refused():
+    """Under readline too, while a command runs: the shell has given the terminal back, and a line typed
+    now waits in it for the `read`."""
+    script = [{"cmd": "true"}, {"line": "IFS= read -r x"}, {"sleep": "300ms"}]
+    out = run([*script, {"line": "v" * CANON}, {"cmd": "printf %s \"$x\" | wc -c", "register": "n"}])
+    assert out == {"n": str(CANON)}
+    runner = make_runner(
+        [*script, {"line": "v" * (CANON + 1)}],
+        breakout=[{"line": "v"}, {"cmd": "printf %s \"$x\" | wc -c", "register": "n"}],
+    )
+    with pytest.raises(LineTooLong) as ei:
+        runner.run()
+    assert str(ei.value) == too_long(CANON + 1)
+    assert runner.config.vars == {"n": "1"}
+
+
+@linux
+def test_p8_43_python_input_is_a_reader_of_whole_lines():
+    script = [{"cmd": "true"}, {"line": "python3 -c 'print(len(input()))'"}, {"sleep": "500ms"}]
+    runner = make_runner([*script, {"line": "v" * (CANON + 1)}], breakout=[{"control": "c"}])
+    with pytest.raises(LineTooLong):
+        runner.run()
+
+
+@linux
+def test_p8_43_answer_to_a_prompt_is_checked_too(attach):
+    answer = SimpleHandler("ask", [r"PROMPT\$ "], "y" * 5000, lambda text: text)
+    s = attach(NOEDIT, [answer], prompt=False)
+    with pytest.raises(LineTooLong) as ei:
+        s.get_prompt(timeout=5)
+    assert str(ei.value) == too_long(5000)
+
+
+@linux
+def test_p8_43_session_is_where_it_was_after_a_refused_line(attach):
+    s = attach(NOEDIT)
+    s.sendline("echo before", timeout=5)
+    s.get_prompt(timeout=5)
+    state = (s._at_prompt, s._sent, s._solicit, s._held)
+    assert state[0] is True
+    with pytest.raises(LineTooLong):
+        s.sendline(echo(5000), timeout=5)
+    assert (s._at_prompt, s._sent, s._solicit, s._held) == state
+    s.sendline("echo ok", timeout=5)
+    assert s.get_prompt(timeout=5) == "ok\n"
+
+
+@linux
+def test_p8_43_only_the_long_line_of_a_multi_line_cmd_is_refused(tmp_path: Path, sent: SentLog):
+    """The lines of a `cmd` are sent one by one: those before the long one have run, and it and those
+    after it are not sent."""
+    a, c = tmp_path / "a", tmp_path / "c"
+    runner = make_runner([{"cmd": f"echo a > {a}\n{echo(5000)}\necho c > {c}", "register": "out"}], spawn=NOEDIT)
+    with pytest.raises(LineTooLong) as ei:
+        runner.run()
+    assert str(ei.value) == too_long(5000)
+    assert a.read_text() == "a\n" and not c.exists()
+    assert sent.commands() == [f"echo a > {a}"]
+
+
+@linux
+def test_p8_43_cli_reports_a_failed_run(tmp_path: Path):
+    res = run_cli(make_doc([{"cmd": echo(5000)}], spawn=NOEDIT), tmp_path)
+    assert res.returncode == 3, res.stderr
+    report = [line for line in res.stderr.splitlines() if not line.startswith(">> ") and "RuntimeWarning" not in line]
+    assert report == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: {too_long(5000)}",
+        f"  at script.0 (cmd: {echo(5000)[:72]}...)",
+    ]
+
+
+# -- P8-44: the bytes of a line -----------------------------------------------------------------------
+
+
+@linux
+def test_p8_44_limit_counts_bytes_not_characters(capsys):
+    """2045 two-byte characters after `echo ` are 4095 bytes: sent, and whole. One byte more is refused,
+    with the bytes in the message."""
+    cmd = "echo " + "é" * 2045
+    assert len(cmd) == 2050 and len(cmd.encode()) == CANON
+    assert run([{"cmd": cmd, "register": "out"}], spawn=f"env LC_ALL=C.UTF-8 {NOEDIT}") == {"out": "é" * 2045}
+    for more, nbytes in (("x", CANON + 1), ("é", CANON + 2)):
+        runner = make_runner([{"cmd": cmd + more}], spawn=NOEDIT)
+        with pytest.raises(LineTooLong) as ei:
+            runner.run()
+        assert str(ei.value) == too_long(nbytes)
+
+
+@linux
+@pytest.mark.parametrize("spawn", CANONICAL)
+def test_p8_44_upload_lines_of_an_embedded_script_are_short(spawn: str, sent: SentLog, capsys):
+    """An embedded script of 30,000 bytes goes up in lines of about 600, on a terminal that would cut a
+    long one: none comes near the limit of any platform (1023 on macOS), and nothing is said."""
+    script = "#!/bin/sh\n" + "# padding padding padding padding\n" * 900 + "echo uploaded\n"
+    assert len(script) > 30000
+    out = run([{"cmd": script, "register": "out", "timeout": "30s"}], spawn=spawn)
+    assert out == {"out": "uploaded"}
+    assert len(sent.lines()) > 70 and max(len(line.encode()) for line in sent.lines()) < 700
+    assert "long line" not in capsys.readouterr().err
+
+
+@linux
+def test_p8_44_each_line_of_a_send_with_line_breaks_counts_alone(attach):
+    """A `line` may hold several lines: the terminal takes each of them as one."""
+    s = attach(NOEDIT)
+    s.sendline("\n".join(["echo " + "a" * 4000, "echo " + "b" * 4000, "echo end"]), timeout=5)
+    s.expect([r"PROMPT\$ end\r\n"], timeout=10)
+    assert s.ctx["before"].count("a") == 4000 * 2 and s.ctx["before"].count("b") == 4000 * 2
+    s.get_prompt(timeout=5)
+    with pytest.raises(LineTooLong) as ei:
+        s.sendline("\n".join(["true", "echo " + "a" * 4091, "true"]), timeout=5)
+    assert str(ei.value) == too_long(4096)
+
+
+# -- P8-45: the mode is that of the terminal when the line is sent ------------------------------------
+
+
+def test_p8_45_line_editor_reads_a_long_line_itself(capsys):
+    """Readline reads the terminal a character at a time: a line of 10,000 characters is sent and runs
+    whole, as on a terminal that wraps (P8-34)."""
+    cmd = echo(10000)
+    out = run([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}])
+    assert out == {"out": cmd[5:], "after": "done"}
+
+
+@linux
+def test_p8_45_terminal_taken_out_of_canonical_mode_by_the_script(capsys):
+    """After `stty -icanon` the terminal hands the shell each byte as it comes and cuts nothing: the same
+    shell that was refused a long line gets it whole. (That terminal echoes the line break as `^J`, so
+    the echo isn't recognized and stays in the capture.)"""
+    cmd = echo(6000)
+    out = run([{"cmd": "stty -icanon"}, {"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], spawn=NOEDIT)
+    assert out == {"out": f"{cmd}^J{cmd[5:]}", "after": "echo done^Jdone"}
+    assert capsys.readouterr().err.count(warning(6000)) == 1
+
+
+@linux
+def test_p8_45_mode_as_the_pty_reports_it(attach):
+    """What the check goes by: `tcgetattr` on the pty reports the mode the child's terminal is in now."""
+    import termios
+
+    def canonical(s: Session) -> bool:
+        assert s._cld is not None
+        return bool(termios.tcgetattr(s._cld.child_fd)[3] & termios.ICANON)
+
+    s = attach(BASH)
+    assert not canonical(s)  # readline, at its prompt
+    for _ in range(20):  # and each time the prompt is back, never the mode of the command before it
+        s.sendline("true", timeout=5)
+        s.get_prompt(timeout=5)
+        assert not canonical(s)
+    s.sendline("sleep 0.5", timeout=5)
+    time.sleep(0.2)
+    assert canonical(s)  # while a command runs
+    s.get_prompt(timeout=5)
+    assert not canonical(s)
+    assert canonical(attach(NOEDIT))
+    relay = attach(RELAY)
+    time.sleep(0.2)
+    assert not canonical(relay)  # raw, whatever the shell behind it has
+
+
+# -- P8-46: a far side Autobot can't see --------------------------------------------------------------
+
+
+@linux
+def test_p8_46_line_cut_behind_a_relay_is_sent_with_one_warning(capsys):
+    """The process Autobot spawned keeps its terminal raw and passes every byte on to a shell on a
+    terminal of its own, as `ssh` does. Autobot sees only the first, so it sends the lines and says once
+    what may happen; here it does happen: the far terminal keeps 4095 bytes, and what is captured is the
+    output of the line cut there."""
+    first, second = echo(5000), echo(6000, "second ")
+    out = run(
+        [{"cmd": first, "register": "first"}, {"cmd": second, "register": "second"}, {"cmd": "echo done", "register": "after"}],
+        spawn=RELAY,
+    )
+    assert out == {"first": first[5:CANON], "second": second[5:CANON], "after": "done"}
+    err = capsys.readouterr().err
+    assert err.count(">> long line: ") == 1 and warning(5000) in err
+
+
+def test_p8_46_warning_is_printed_once_and_not_for_ordinary_lines(capsys):
+    """Also where a line editor reads the line and nothing is cut: Autobot can't tell that from a relay."""
+    run([{"cmd": echo(4095)}, {"cmd": "echo short"}])
+    assert "long line" not in capsys.readouterr().err
+    run([{"cmd": echo(4096)}, {"cmd": echo(9000)}, {"line": "true " + "x" * 5000}, {"cmd": "true"}])
+    err = capsys.readouterr().err
+    assert err.count(">> long line: ") == 1 and warning(4096) in err
+    assert err.index(warning(4096)) < err.index(">> cmd: echo w0000")
+
+
+# -- P8-47: the limit of the platform -----------------------------------------------------------------
+
+
+def test_p8_47_limit_by_platform(monkeypatch: pytest.MonkeyPatch):
+    """Linux: 4096 with the line break, whatever `fpathconf` says (255 for a pty). macOS: what
+    `fpathconf` says, or 1024. Elsewhere it isn't known."""
+    asked: list[tuple] = []
+
+    def fpathconf(fd, name):
+        asked.append((fd, name))
+        return 1024
+
+    def fails(fd, name):
+        raise OSError(25, "Inappropriate ioctl for device")
+
+    monkeypatch.setattr(os, "fpathconf", fpathconf)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert canon_limit(7) == 4096 and asked == []
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert canon_limit(7) == 1024 and asked == [(7, "PC_MAX_CANON")]
+    monkeypatch.setattr(os, "fpathconf", fails)
+    assert canon_limit(7) == 1024
+    for platform in ("freebsd14", "openbsd7", "sunos5"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert canon_limit(7) is None
+
+
+@linux
+def test_p8_47_fpathconf_of_a_linux_pty_is_not_its_limit(attach):
+    s = attach(NOEDIT)
+    assert s._cld is not None and os.fpathconf(s._cld.child_fd, "PC_MAX_CANON") == 255
+
+
+def test_p8_47_session_goes_by_the_limit_of_the_platform(attach, monkeypatch: pytest.MonkeyPatch, capsys):
+    """With the limit of macOS, 1024 with the line break: 1023 bytes are sent and 1024 are not. Where no
+    limit is known, nothing is refused, and a line past the Linux limit gets the warning."""
+    monkeypatch.setattr(session_mod, "canon_limit", lambda fd: 1024)
+    s = attach(NOEDIT)
+    s.sendline(echo(1023), timeout=5)
+    assert s.get_prompt(timeout=5) == echo(1023)[5:] + "\n"
+    with pytest.raises(LineTooLong) as ei:
+        s.sendline(echo(1024), timeout=5)
+    assert str(ei.value) == too_long(1024, 1023)
+    monkeypatch.setattr(session_mod, "canon_limit", lambda fd: None)
+    s.sendline(echo(1024), timeout=5)
+    s.get_prompt(timeout=5)
+    assert "long line" not in capsys.readouterr().err
+    s.sendline(echo(5000), timeout=5)
+    assert warning(5000) in capsys.readouterr().err

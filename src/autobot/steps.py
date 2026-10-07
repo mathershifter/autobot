@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 # base64 chars per upload line; keeps each line (~600 chars) under the
 # smallest common canonical-mode line limit (MAX_CANON 1024 on BSD/macOS,
-# 4095 on Linux) and small enough for slow serial/terminal-server consoles.
+# 4095 on Linux), which the session refuses to send past, and small enough
+# for slow serial/terminal-server consoles.
 SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
 

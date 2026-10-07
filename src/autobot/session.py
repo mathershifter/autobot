@@ -7,6 +7,7 @@ import re
 import select
 import signal
 import sys
+import termios
 import time
 from collections.abc import Callable
 
@@ -36,6 +37,25 @@ CLOSED_ERRNOS = (errno.EIO, errno.EPIPE, errno.ENXIO)
 # A write the pty refuses although it is reported writable is tried again after this long.
 SEND_RETRY = 0.01
 
+# The bytes of a line, its line break included, that the Linux terminal takes in canonical mode
+# (N_TTY_BUF_SIZE). The terminals of most devices a script reaches are Linux ones.
+LINUX_CANON = 4096
+MACOS_CANON = 1024
+
+
+def canon_limit(fd: int) -> int | None:
+    """The bytes of one line, its line break included, that the terminal `fd` takes in canonical mode.
+    None where the platform's limit isn't known."""
+    if sys.platform.startswith("linux"):
+        return LINUX_CANON  # not fpathconf: it reports 255 for a pty, the POSIX constant, which the kernel doesn't go by
+    if sys.platform == "darwin":
+        try:
+            return os.fpathconf(fd, "PC_MAX_CANON")
+        except (OSError, ValueError):
+            return MACOS_CANON
+    return None
+
+
 _CONTROL_KEYS = {"@": 0, "`": 0, "[": 27, "{": 27, "\\": 28, "|": 28, "]": 29, "}": 29, "^": 30, "~": 30, "_": 31, "?": 127}
 
 
@@ -64,6 +84,10 @@ class CommandError(RunError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
+
+
+class LineTooLong(RunError):
+    """A line that the terminal of the spawned process would cut: it is not sent."""
 
 
 # Bounds on the reading of an echo, so that output which is no echo costs little whatever its size:
@@ -319,6 +343,7 @@ class Session:
         self._prompt = ""
         self._sent: str | None = None
         self._solicit = True
+        self._warned = False  # of a long line, once
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
@@ -571,11 +596,17 @@ class Session:
         a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
+        state = (self._at_prompt, self._sent, self._solicit, self._held)
         self._at_prompt = False
         self._sent = line
         self._solicit = solicit
         self._held = None
-        self._put_line(line, timeout)
+        try:
+            self._put_line(line, timeout)
+        except LineTooLong:
+            # nothing was sent: the session is where it was
+            self._at_prompt, self._sent, self._solicit, self._held = state
+            raise
 
     def _put_line(self, line: str, timeout: float, of: float | None = None):
         """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
@@ -586,7 +617,38 @@ class Session:
         if cld.delaybeforesend is not None:
             time.sleep(cld.delaybeforesend)
         data = (line + cld.linesep).encode(cld.encoding, cld.codec_errors)
+        self._check_length(data)
         self._write(data, deadline, timeout if of is None else of, "a line")
+
+    def _check_length(self, data: bytes):
+        """Refuse a line that the child's terminal would cut, and say so once when a terminal further on may.
+
+        A terminal in canonical mode keeps a line for the program until its line break, and only so many
+        bytes of it: it drops the rest without a sign, while it echoes them all. The mode is the one the
+        terminal is in now, when the line is about to be typed on it.
+        """
+        cld = self._cld
+        assert cld
+        try:
+            attrs = termios.tcgetattr(cld.child_fd)
+        except (termios.error, OSError, ValueError):
+            return  # no terminal to ask, e.g. a closed one: the write says so
+        breaks = rb"[\r\n]" if attrs[0] & termios.ICRNL else rb"\n"
+        longest = max(len(part) for part in re.split(breaks, data))
+        limit = canon_limit(cld.child_fd) if attrs[3] & termios.ICANON else None
+        if limit:
+            if longest >= limit:
+                raise LineTooLong(
+                    f"line of {longest} bytes not sent: the terminal reads whole lines (canonical mode) and "
+                    f"takes {limit - 1} bytes of one, so the last {longest - limit + 1} would be dropped without an error"
+                )
+        elif longest >= LINUX_CANON and not self._warned:
+            self._warned = True
+            log.say(
+                f"long line: {longest} bytes; a far side that reads whole lines, with no line editor, keeps only "
+                f"the first {LINUX_CANON - 1} bytes of one (the usual limit on Linux) and drops the rest without an error",
+                "warn",
+            )
 
     def _put_control(self, char: str, timeout: float):
         self._write(control_byte(char), time.monotonic() + timeout, timeout, "a control character")
