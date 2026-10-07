@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 import jinja2
 import jinja2.meta
+import jinja2.sandbox
 import pydantic
 from pydantic_core import PydanticCustomError
 
@@ -18,7 +19,17 @@ DURATION_MAX = sys.float_info.max
 
 
 
-class _Environment(jinja2.Environment):
+GLOBALS = ("range", "dict", "namespace")
+
+
+class _Environment(jinja2.sandbox.ImmutableSandboxedEnvironment):
+    """Templates are the script's, and a script may come from anyone: they reach the values they are given
+    and Jinja2's own filters and tests, not Python's internals, and they change nothing they are given."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(undefined=jinja2.StrictUndefined, **kw)
+        self.globals = {name: self.globals[name] for name in GLOBALS}
+
     def getattr(self, obj: Any, attribute: str) -> Any:
         # `x.name` on a mapping is the key `name` when there is one: `vars.values` is the key, not dict.values
         if isinstance(obj, Mapping) and attribute in obj:
@@ -44,8 +55,8 @@ def _no_boolean(value: Any) -> Any:
 
 
 # text the engine sends or stores, and a condition, whose text is only read as a yes or no
-_jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean)
-_condition_env = _Environment(undefined=jinja2.StrictUndefined)
+_jinja_env = _Environment(finalize=_no_boolean)
+_condition_env = _Environment()
 
 
 class ScriptError(ValueError):
@@ -115,6 +126,8 @@ def render(template: Any, ctx: dict, *, condition: bool = False) -> Any:
         return template
     try:
         return (_condition_env if condition else _jinja_env).from_string(template).render(ctx)
+    except jinja2.sandbox.SecurityError as e:
+        raise ScriptError(f"template error: not allowed in a template: {e}") from e
     except jinja2.TemplateError as e:
         raise ScriptError(f"template error: {e}") from e
     except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error

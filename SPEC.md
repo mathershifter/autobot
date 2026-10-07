@@ -716,7 +716,21 @@ Available context:
 
 `env`, `vars`, `args` and `session` are mappings. On a mapping, `x.name` and `x['name']` both read the key `name`, and with `x.name` a key always wins over a mapping method of the same name: with `register: values`, `{{ vars.values }}` is the registered output, not the `values` method (plain Jinja2 would render `<built-in method values of dict object ...>`). The same goes for `items`, `keys`, `get`, `copy` and the rest, and for mappings nested in `vars` (`vars.site.values`). A method is reachable as `x.name` only while there is no key of that name, so `vars.items()`, `vars.get('k', 'default')` and `env.get('KEY')` work as long as no key is named `items` or `get`. Filters don't depend on key names: `vars | items`, `vars | length`, `vars | tojson`.
 
-Built-in global: `range`. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
+Built-in globals: `range` (of at most 100000 items), `dict` and `namespace`. Jinja2's other globals (`lipsum`, `cycler`, `joiner`) are not defined. Use Jinja2 filters for other operations (e.g. `{{ items | length }}`).
+
+### Templates are sandboxed
+
+Every template is rendered in Jinja2's sandbox (`jinja2.sandbox.ImmutableSandboxedEnvironment`): by `run` and by `validate`, as text and as a condition, and when a plugin renders one with `ctx.render(...)`. A template reads the values it is given and uses Jinja2's own statements, filters and tests (`{% set %}`, `{% for %}`, `{% if %}`, macros, `namespace`, the methods of strings such as `'a,b'.split(',')`). It can't reach Python's internals, and it can't change what it is given:
+
+- An attribute whose name starts with an underscore is not reachable, on any value: `''.__class__`, `x.__init__`, `x.__globals__`, `x._private`. The same goes for `x['__class__']`, `x | attr('__class__')`, `| map(attribute='__class__')` and a format string (`'{0.__class__}'.format(x)`), and for the internals of functions, methods, classes and generators, whatever their names (`mro`, `gi_frame`). A key of a mapping is not an attribute: `vars._tmp` and `vars['__x']` read the keys `_tmp` and `__x`.
+- A mapping, a list or a set can't be modified: `vars.update(...)`, `vars.clear()`, `env.pop(...)`, `args.setdefault(...)`, `vars.ports.append(...)`, also on a list the template made itself (`{% set _ = found.append(x) %}`). To collect values in a loop, assign to a `namespace`: `{% set ns = namespace(found=[]) %}{% for p in vars.ports %}{% set ns.found = ns.found + [p] %}{% endfor %}`. `vars` changes only through `register`.
+- A `range` of more than 100000 items is refused (`template error: OverflowError: Range too big. ...`).
+
+A template that uses one of these fails with `template error: not allowed in a template: <what>`, e.g. `template error: not allowed in a template: access to attribute '__class__' of 'str' object is unsafe.` It is a template error like any other (a `ScriptError`), chained from Jinja2's `SecurityError`. Where a template only asks whether the attribute is there, it is undefined: `''.__class__ is defined` is false, and `''.__class__ | default('x')` is `x`.
+
+A function or an object that a plugin passes to `ctx.render(template, {...})` is used as in any Jinja2 template: the function can be called, and the object's public attributes and methods can be read and called. The rules above apply to them as well, so an attribute of theirs that starts with an underscore is not reachable.
+
+The sandbox keeps a template from running code or changing the process it is rendered in, so a script can be loaded and checked without being trusted (see [Checking scripts with `validate`](#checking-scripts-with-validate)). It is not a security boundary against a determined attacker: a way out of Jinja2's sandbox would be a way out of this one. And it doesn't limit what a template costs: `{{ 'a' * 10**9 }}` or deeply nested loops can use all the memory or time there is.
 
 ### The environment in templates
 
@@ -887,8 +901,8 @@ Line and column numbers start at 1; `position` is a 0-based offset into the file
 
 `autobot validate <script>...` says whether each script would load, without running any of them. It is the command for an editor hook or a CI job. It loads a script with the code `run` loads it with, so the two can't disagree, and stops where `run` would start to run it:
 
-- **Nothing runs.** `attach.prepare` isn't run, no process is spawned, nothing is sent anywhere and no file is created, a temp file included. Nothing is written to stdout, so a closed stdout is not an error here.
-- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, so whatever a plugin does when it is imported happens under `validate` too. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
+- **Nothing of the script runs.** `attach.prepare` isn't run, no process is spawned, nothing is sent anywhere and no file is created, a temp file included. Nothing is written to stdout, so a closed stdout is not an error here. What `validate` does with a script is read it, validate it, render its `env` defaults and check the syntax of its top-level prompts' `send` templates. The templates are rendered and checked in the sandbox (see [Templates are sandboxed](#templates-are-sandboxed)): a template can't run code, write a file, or change the environment that the next script is checked in. So a script can be checked without being trusted, such as one from a pull request, within the limits of the sandbox given there: a template can still use a lot of memory or time.
+- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, so whatever a plugin does when it is imported happens under `validate` too, and so does whatever the validators of a plugin's model do with a step of that plugin. A plugin's code is not sandboxed: validate only with plugins you trust. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
 
 Each script is then checked in the order given, with the sequence of `run`: the file is read and parsed, then validated, then the `--arg` values are checked, then `env` and `prompts`. Everything is written to stderr, as plain or styled text by the rules of [Output](#output):
 

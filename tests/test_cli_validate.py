@@ -666,6 +666,94 @@ def test_p6_102_a_valid_script_can_still_fail_once_it_runs(m: Markers):
         assert run.returncode == 3 and f"Run failed in {path}: " in run.stderr, case
 
 
+# -- nothing runs, whatever the script holds: every audited operation of the interpreter ------
+
+# `cli.main()` under an audit hook, which sees what the interpreter does whichever function asked for it:
+# a process, a socket, a file opened for writing or removed, a change to the environment. Status 99 and
+# an `AUDIT` line for each if there was any; the command's own status otherwise.
+AUDITED = r"""
+import os
+import sys
+
+from autobot import cli
+
+WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+EXACT = {
+    "os.system", "os.putenv", "os.unsetenv", "os.remove", "os.rename", "os.mkdir", "os.rmdir", "os.chmod",
+    "os.chown", "os.truncate", "os.symlink", "os.link", "os.kill", "os.killpg", "os.utime", "os.chdir",
+    "os.startfile", "os.forkpty", "os.fork", "pty.spawn",
+}
+PREFIX = ("os.exec", "os.spawn", "os.posix_spawn", "subprocess.", "socket.", "shutil.", "tempfile.")
+seen = []
+
+
+def hook(event, args):
+    if event == "open":
+        if isinstance(args[2], int) and args[2] & WRITE:
+            seen.append(f"open for writing {args[0]!r}")
+    elif event in EXACT or event.startswith(PREFIX):
+        seen.append(f"{event} {args!r}")
+
+
+sys.addaudithook(hook)
+sys.argv = ["autobot", *sys.argv[1:]]
+code = 0
+try:
+    cli.main()
+except SystemExit as e:
+    code = e.code
+for line in seen:
+    sys.stderr.write(f"AUDIT {line}\n")
+sys.exit(99 if seen else code)
+"""
+
+INJECTIONS = {
+    "os-system": "{{ lipsum.__globals__.os.system('touch PWNED') }}",
+    "open-w": "{{ lipsum.__globals__['__builtins__'].open('PWNED', 'w').close() }}",
+    "environ": "{{ cycler.__init__.__globals__.os.environ.update({'AB_PWNED': '1'}) }}",
+    "posix-spawn": "{{ joiner.__init__.__globals__.os.posix_spawn('/bin/true', ['true'], {}) }}",
+    "popen": "{{ ''.__class__.__mro__[1].__subclasses__() | selectattr('__name__', 'eq', 'Popen') | list }}",
+    "remove": "{{ namespace.__init__.__globals__['__builtins__']['__import__']('os').remove('s') }}",
+}
+AUDIT_CORPUS = {
+    **CORPUS,
+    **{f"inject-{k}": ((lambda m, t=t: m.write("s", env={"A": t})), (), False) for k, t in INJECTIONS.items()},
+}
+
+
+def _audited(*argv: Any, cwd: Path) -> subprocess.CompletedProcess[str]:
+    # -B: an import during the command must not write a .pyc, which would be a file opened for writing
+    return subprocess.run(
+        [sys.executable, "-B", "-W", "ignore", "-c", AUDITED, *map(str, argv)],
+        check=False, capture_output=True, text=True, timeout=120, env=_env(), cwd=cwd,
+    )
+
+
+@pytest.mark.parametrize("case", AUDIT_CORPUS)
+def test_p6_104_validate_starts_no_process_and_writes_no_file(m: Markers, case: str):
+    """SPEC "Checking scripts with `validate`": nothing of the script runs. For every script of the corpus,
+    valid or not, and for an `env` default that tries to run code: no exec, fork or spawn, no socket, no file
+    opened for writing or removed, no change to the environment, by whichever function."""
+    make, args, loads = AUDIT_CORPUS[case]
+    path = make(m)
+    before = sorted(p.name for p in m.root.iterdir())
+    res = _audited("validate", path, *args, cwd=m.root)
+    assert "AUDIT " not in res.stderr, res.stderr
+    assert (res.returncode, res.stdout) == (0 if loads else 1, "")
+    assert res.stderr.endswith(f"{path}: {'valid' if loads else 'invalid'}\n")
+    assert "Traceback" not in res.stderr
+    assert sorted(p.name for p in m.root.iterdir()) == before and m.none()
+
+
+def test_p6_104_the_audit_sees_what_run_does(m: Markers):
+    """The check itself: the same harness on `run`, which does run `prepare`, reports it."""
+    path = m.write("s")
+    res = _audited("run", path, cwd=m.root)
+    assert res.returncode == 99
+    assert "AUDIT subprocess.Popen" in res.stderr or "AUDIT os.posix_spawn" in res.stderr or "AUDIT os.fork" in res.stderr
+    assert "AUDIT open for writing" in res.stderr or "AUDIT tempfile." in res.stderr
+
+
 # -- the command line -----------------------------------------------------------------------
 
 
