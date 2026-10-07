@@ -28,6 +28,32 @@ SHELL = [PromptHandler("sh", [r"PROMPT\$ "], [], True)]
 READLINE = f"env INPUTRC=/dev/null TERM=vt100 LC_ALL=C {BASH}"
 
 
+# A send that blocks would hang the suite, not fail it: every test here ends after this many seconds
+HANG = float(os.environ.get("AUTOBOT_TEST_HANG", "120"))
+
+
+class Hung(BaseException):
+    """Raised in a test that is still running after `HANG` seconds. Not an `Exception`: a breakout must
+    not take it for an error of its own."""
+
+
+@pytest.fixture(autouse=True)
+def _bounded():
+    """An alarm ends a test that hangs: the signal interrupts a write that blocks, and its handler raises.
+    It goes off again every 5 seconds, should something catch it."""
+
+    def alarm(*_):
+        raise Hung(f"still running after {HANG:g}s: a send that blocks?")
+
+    before = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, HANG, 5)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, before)
+
+
 def typed(*opts: object) -> str:
     """F8: a child that reads its terminal itself and echoes what it reads."""
     return " ".join([sys.executable, str(TYPED), *map(str, opts)])
@@ -182,7 +208,8 @@ def test_p8_37_prompt_wait_after_a_long_send_captures_the_output(attach):
 
 def _long_sends(length: int, runs: int, timeout: float = 20) -> tuple[int, int, float]:
     """Send a line of `length` characters to readline `runs` times, each to a new shell: how many were
-    sent, how many timed out, and the longest send."""
+    sent, how many timed out, and the longest send. (None timed out in 400 runs on an idle machine, the
+    longest send took 0.2 s, and the timeout is 20 s: a send that times out here is a failure.)"""
     env = {"TERM": "vt100", "LC_ALL": "C", "INPUTRC": "/dev/null", "PS1": "PROMPT$ ", "PATH": os.environ["PATH"]}
     whole = timed_out = 0
     longest = 0.0
@@ -207,16 +234,16 @@ def _long_sends(length: int, runs: int, timeout: float = 20) -> tuple[int, int, 
 @pytest.mark.parametrize("length", [60000, 100000])
 def test_p8_38_long_line_to_readline_does_not_block(length: int, capsys):
     """SPEC "The length of a sent line": readline echoes while it reads, and one blocking write of a line
-    this long sometimes never returned. Each send ends, sent or timed out, within its timeout."""
+    this long sometimes never returned. Each line is sent whole, well within its timeout."""
     whole, timed_out, longest = _long_sends(length, 3)
-    assert whole + timed_out == 3 and longest < 22
+    assert (whole, timed_out) == (3, 0) and longest < 20
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("length", "runs"), [(60000, 40), (100000, 25), (38000, 25)])
 def test_p8_38_long_line_to_readline_does_not_block_in_many_runs(length: int, runs: int, capsys):
     whole, timed_out, longest = _long_sends(length, runs)
-    assert whole + timed_out == runs and longest < 22
+    assert (whole, timed_out) == (runs, 0) and longest < 20
 
 
 @pytest.mark.parametrize("length", [30000, 36000, 39000])
@@ -376,16 +403,26 @@ def test_p8_41_interrupt_during_a_send_ends_it_and_the_breakout_runs(capsys):
         spawn=typed("--stop", 1000),
         breakout=[{"control": "c", "timeout": "1s"}],
     )
-    # no thread: the spawn forks
-    alarm = signal.signal(signal.SIGALRM, lambda *_: signal.raise_signal(signal.SIGINT))
+    if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
+        pytest.skip("SIGINT is ignored or handled otherwise here (nohup, a wrapper): it would interrupt nothing")
+    fired: list[float] = []
+
+    def alarm(*_):
+        # no thread: the spawn forks. The second time, the interrupt didn't end the send
+        fired.append(time.monotonic())
+        if len(fired) > 1:
+            raise Hung("SIGINT did not end the send")
+        signal.raise_signal(signal.SIGINT)
+
+    before = signal.signal(signal.SIGALRM, alarm)
     started = time.monotonic()
-    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    signal.setitimer(signal.ITIMER_REAL, 1.0, 10)
     try:
         with pytest.raises(KeyboardInterrupt):
             runner.run()
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, alarm)
+        signal.signal(signal.SIGALRM, before)
     assert 1 <= time.monotonic() - started < 4
     err = capsys.readouterr().err
     assert ">> step interrupted\n" in err
@@ -752,6 +789,35 @@ def test_p8_44_each_line_of_a_send_with_line_breaks_counts_alone(attach):
     assert str(ei.value) == too_long(4096)
 
 
+@linux
+def test_p8_44_carriage_return_ends_a_line_where_the_terminal_reads_it_as_one(attach):
+    """The terminal turns a `\\r` into a line break (`ICRNL`, its default): what is before and after
+    one are two lines, each counted alone. After `stty -icrnl` the `\\r` is a byte of the line."""
+    s = attach(NOEDIT)
+    two = "echo " + "a" * 4000 + "\r" + "echo " + "b" * 4000
+    s.sendline(two, timeout=5)
+    s.expect([r"b{4000}\r\n"], timeout=10)
+    s.get_prompt(timeout=5)
+    with pytest.raises(LineTooLong) as ei:
+        s.sendline("true\r" + "x" * 4096, timeout=5)
+    assert str(ei.value) == too_long(4096)
+    s.sendline("stty -icrnl", timeout=5)
+    s.get_prompt(timeout=5)
+    with pytest.raises(LineTooLong) as ei:
+        s.sendline(two, timeout=5)
+    assert str(ei.value) == too_long(len(two))
+
+
+def test_p8_44_upload_lines_get_no_warning_where_a_line_editor_reads(sent: SentLog, capsys):
+    """On a terminal that is not in canonical mode, where a long line gets the warning: the lines of an
+    upload are not long ones."""
+    script = "#!/bin/sh\n" + "# padding padding padding padding\n" * 900 + "echo uploaded\n"
+    out = run([{"cmd": script, "register": "out", "timeout": "30s"}])
+    assert out == {"out": "uploaded"}
+    assert len(sent.lines()) > 70 and max(len(line.encode()) for line in sent.lines()) < 700
+    assert "long line" not in capsys.readouterr().err
+
+
 # -- P8-45: the mode is that of the terminal when the line is sent ------------------------------------
 
 
@@ -954,3 +1020,61 @@ def test_p8_50_long_line_to_a_child_that_runs_is_still_refused(attach):
     s = attach(NOEDIT)
     with pytest.raises(LineTooLong):
         s.sendline("x" * 30000, timeout=5)
+
+
+# -- P8-51: the timeout of each send ------------------------------------------------------------------
+
+
+def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
+    """SPEC "The length of a sent line": a `cmd` line, the `$?` check, the upload and run lines of an
+    embedded script and its cleanup, a `control`, and the runner's default for a `line` and a `return`
+    (300 s; 77 here, to tell it from the session's own default)."""
+    seen: list[tuple[str, str, float]] = []
+    put_line, put_control = Session._put_line, Session._put_control
+
+    def line(self, text, timeout, of=None):
+        if of is None:  # not a send of a prompt wait
+            seen.append(("line", text, timeout))
+        return put_line(self, text, timeout, of)
+
+    def control(self, char, timeout):
+        seen.append(("ctrl", char, timeout))
+        return put_control(self, char, timeout)
+
+    monkeypatch.setattr(Session, "_put_line", line)
+    monkeypatch.setattr(Session, "_put_control", control)
+
+    def kinds() -> dict[str, set[float]]:
+        found: dict[str, set[float]] = {}
+        for kind, text, timeout in seen:
+            if kind == "ctrl":
+                name = f"^{text}"
+            elif text.startswith("(umask"):
+                name = "upload"
+            elif text.startswith("rm -f /tmp/_autobot_"):
+                name = "rm"
+            elif text.startswith("/tmp/_autobot_"):
+                name = "run"
+            else:
+                name = {"echo __AUTOBOT_RC=$?": "rc", "": "return"}.get(text, text)
+            found.setdefault(name, set()).add(timeout)
+        return found
+
+    runner = make_runner([
+        {"cmd": "echo a", "timeout": "12s"},
+        {"control": "u", "timeout": "9s"},
+        {"cmd": "#!/bin/sh\necho s\n", "timeout": "13s"},
+        {"line": "true"},
+        {"return": 1},
+    ])  # fmt: skip
+    assert runner._default_timeout == 300
+    runner._default_timeout = 77
+    runner.run()
+    assert kinds() == {
+        "echo a": {12.0}, "^u": {9.0}, "upload": {13.0}, "run": {13.0}, "rc": {12.0, 13.0}, "rm": {10.0},
+        "true": {77}, "return": {77},
+    }  # fmt: skip
+    seen.clear()
+    with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
+        run([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}])
+    assert kinds() == {"upload": {2.0}, "run": {2.0}, "^c": {2.0}, "rm": {2.0}}
