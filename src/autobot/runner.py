@@ -254,7 +254,10 @@ class Runner:
             return PromptHandler(prompt.name, expect, [], True)
         if isinstance(send, str):
             # a literal send is a template, rendered each time it is sent
-            check_template(send)
+            try:
+                check_template(send)
+            except ScriptError as e:  # named like the error of rendering it, and of a sendEach
+                raise ScriptError(f"prompt '{prompt.name}': {e}") from e
             return SimpleHandler(prompt.name, expect, send, self.render)
         patterns: list[str] = []
         slots: list[int | None] = []

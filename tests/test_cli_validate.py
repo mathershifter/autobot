@@ -208,7 +208,7 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     ),
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
-        "Script error in {path}: template error: unexpected end of template",
+        "Script error in {path}: prompt 'p': template error: unexpected end of template",
     ),
     "send-each-unresolved": (
         lambda m: m.write("s", vars={"creds": [{"username": "a"}]}, prompts=[{"name": "login", "send": EACH}]), (),
@@ -420,7 +420,7 @@ def test_p6_97_env_error_and_each_prompts_error_are_all_reported(m: Markers):
     assert val.returncode == 1 and val.stdout == ""
     assert val.stderr.splitlines() == [
         head + "env cycle: A -> B -> A",
-        head + "template error: unexpected end of template, expected 'end of print statement'.",
+        head + "prompt 'confirm': template error: unexpected end of template, expected 'end of print statement'.",
         head + "prompt 'login': sendEach 'vars.creds': item 0 has no field 'password'",
         head + "prompt 'pin': sendEach 'vars.pins': 'vars.pins' is a string, not a list",
         f"{path}: invalid",
@@ -434,6 +434,40 @@ def test_p6_97_prompt_errors_alone_start_with_the_one_run_reports(m: Markers):
     val, run = _cli("validate", path), _cli("run", path)
     assert len(val.stderr.splitlines()) == 4
     assert run.stderr == val.stderr.splitlines(keepends=True)[0]
+
+
+def test_p6_108_send_syntax_error_names_its_prompt(m: Markers):
+    """Two prompts with the same mistake give two lines that say which prompt each is about, like the error
+    of a `sendEach` and the error of rendering a `send`."""
+    prompts = [
+        {"name": "sh", "expect": [r"\$ "], "return": True},
+        {"name": "confirm", "expect": ["sure"], "send": "{{ x "},
+        {"name": "really", "expect": ["really"], "send": "{{ x "},
+        {"name": "if", "expect": ["if"], "send": "{% if %}"},
+    ]
+    path = m.write("s", prompts=prompts)
+    val, run = _cli("validate", path), _cli("run", path)
+    head = f"Script error in {path}: prompt "
+    end = "template error: unexpected end of template, expected 'end of print statement'."
+    assert val.stderr.splitlines() == [
+        f"{head}'confirm': {end}",
+        f"{head}'really': {end}",
+        f"{head}'if': template error: Expected an expression, got 'end of statement block'",
+        f"{path}: invalid",
+    ]
+    assert (run.returncode, run.stderr) == (1, f"{head}'confirm': {end}\n")
+    assert m.none()
+
+
+def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
+    """The prompts of a block are loaded on entering it: the same message, as a failed run."""
+    from autobot.types import ScriptError
+    from conftest import SHELL_PROMPT, run_script
+
+    block = {"name": "b", "prompts": [SHELL_PROMPT, {"name": "more", "expect": ["--More--"], "send": "{{ x "}], "script": [STEP]}
+    with pytest.raises(ScriptError) as ei:
+        run_script([{"block": block}])
+    assert str(ei.value) == "prompt 'more': template error: unexpected end of template, expected 'end of print statement'."
 
 
 def test_p6_97_runner_raises_the_first_error_unless_given_a_list():
