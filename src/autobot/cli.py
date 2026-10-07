@@ -48,6 +48,14 @@ EXPECTED = (
 # traceback is, and from a plugin's own code they are the plugin's bug. A timeout isn't one of them.
 BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
+
+
+class LoadError(SystemExit):
+    """A load error, raised once it is reported: the script can't be loaded, and the CLI exits with status 1."""
+
+    def __init__(self) -> None:
+        super().__init__(EXIT_LOAD)
+
 PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
@@ -102,7 +110,7 @@ def _load(path: str) -> object:
         log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
         log.error(f"YAML error in {path}", str(e))
-    sys.exit(EXIT_LOAD)
+    raise LoadError
 
 
 GOT_MAX = 60
@@ -276,20 +284,16 @@ def _discover(args: argparse.Namespace | None = None) -> None:
     except PluginError as e:
         _traceback(args, e)
         log.error("Plugin error", str(e))
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
 
 
-def _cmd_run(args):
-    if sys.stdout is None:
-        # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
-        # session's pty for one, would become fd 1
-        log.error(
-            "Cannot write the session's output",
-            "stdout is closed (redirect it to /dev/null to discard the output)",
-        )
-        sys.exit(EXIT_LOAD)
-    _discover(args)
-    config_dict = _load(args.script)
+def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Runner:
+    """The runner of `script`, ready to run: the file read, parsed and validated, the `--arg` values checked,
+    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`.
+
+    The sequence stops at its first error. With `every`, the last stage reports all it has: the error of
+    `env` and of each prompt, which don't depend on each other."""
+    config_dict = _load(script)
 
     try:
         config = Config.model_validate(config_dict)
@@ -300,22 +304,40 @@ def _cmd_run(args):
             what = err["msg"].removeprefix("Value error, ")
             # the message is the model's, or a plugin model's, and may show a value of the script as it is
             log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
 
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
             log.error("--arg requires KEY=VALUE format, got", item)
-            sys.exit(EXIT_LOAD)
+            raise LoadError
         key, value = item.split("=", 1)
         cli_args[key] = value
 
+    problems: list[ScriptError] = []
     try:
-        runner = Runner(config, cli_args)
+        runner = Runner(config, cli_args, problems if every else None)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        problems = [e]
+    for e in problems:
         _traceback(args, e)
-        log.error(f"Script error in {args.script}", str(e))
-        sys.exit(EXIT_LOAD)
+        log.error(f"Script error in {script}", str(e))
+    if problems:
+        raise LoadError
+    return runner
+
+
+def _cmd_run(args):
+    if sys.stdout is None:
+        # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
+        # session's pty for one, would become fd 1
+        log.error(
+            "Cannot write the session's output",
+            "stdout is closed (redirect it to /dev/null to discard the output)",
+        )
+        raise LoadError
+    _discover(args)
+    runner = _runner(args, args.script)
     try:
         runner.run()
     except EXPECTED as e:
@@ -331,6 +353,23 @@ def _cmd_run(args):
             log.hint("(run with --traceback for details)")
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
+
+
+def _cmd_validate(args: argparse.Namespace) -> None:
+    """Load each script as `run` does, and run none. Nothing is written to stdout, so a closed one is no error."""
+    _discover(args)
+    failed = False
+    for script in args.script:
+        try:
+            _runner(args, script, every=True)
+        except LoadError:
+            failed = True
+            log.verdict(script, "invalid", log.ERROR)
+        else:
+            if not args.quiet:
+                log.verdict(script, "valid", log.OK)
+    if failed:
+        raise LoadError
 
 
 SCHEMA_NAME = "autobot.2026-10.json"
@@ -365,7 +404,7 @@ def _cmd_schema(args: argparse.Namespace | None = None):
         schema = load_schema()
     except SchemaError as e:
         log.error("Cannot read the schema", str(e))
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 
@@ -404,24 +443,37 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="Execute an autobot script")
     run_parser.add_argument("script", help="Path to the YAML script file")
-    run_parser.add_argument(
-        "-a",
-        "--arg",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Check autobot scripts without running them",
+        description="Check each script as `run` does before it runs anything, and run nothing: attach.prepare "
+        "is not run and no session is spawned. For each script, print `<script>: valid`, or the load error "
+        "`run` would report and `<script>: invalid`, on stderr. Exit with status 1 if any script is invalid.",
     )
+    validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
+    for sub, purpose in (
+        (run_parser, "Pass arguments to the script"),
+        (validate_parser, "Check the scripts with the arguments they would be run with"),
+    ):
+        sub.add_argument(
+            "-a",
+            "--arg",
+            action="append",
+            default=[],
+            metavar="KEY=VALUE",
+            help=f"{purpose} (e.g. --arg console_host=10.0.0.1)",
+        )
+    validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 
     schema_parser = subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
-    for sub in (run_parser, schema_parser):
+    for sub in (run_parser, validate_parser, schema_parser):
         sub.add_argument(
             "--traceback",
             action="store_true",
             help="Also print the Python traceback of an error that is reported without one",
         )
 
-    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "schema", "-h", "--help"):
+    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "validate", "schema", "-h", "--help"):
         sys.argv.insert(1, "run")
 
     args = parser.parse_args()
@@ -431,6 +483,8 @@ def main():
             _cmd_schema(args)
         elif args.command == "run":
             _cmd_run(args)
+        elif args.command == "validate":
+            _cmd_validate(args)
         else:
             parser.print_help()
             sys.exit(EXIT_LOAD)
