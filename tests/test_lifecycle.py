@@ -1353,7 +1353,7 @@ def test_p5_82_session_attach_defaults_to_the_run_environment(spawned, monkeypat
 def test_p5_83_spawned_shell_has_the_window_of_the_constants():
     """SPEC "The window of the spawned process": the shell's terminal has `PTY_ROWS` rows of `PTY_COLS`
     columns, whatever the terminal Autobot runs in, and a program that asks for the size gets it."""
-    assert (PTY_ROWS, PTY_COLS) == (1000, 80)
+    assert (PTY_ROWS, PTY_COLS) == (500, 80)
     out = run_script(
         [
             {"cmd": "stty size", "register": "stty"},
@@ -1361,7 +1361,7 @@ def test_p5_83_spawned_shell_has_the_window_of_the_constants():
             {"cmd": "tput lines; tput cols", "register": "tput"},
         ]
     ).config.vars
-    assert out == {"stty": "1000 80", "bash": "1000 80", "tput": "1000\n80"}
+    assert out == {"stty": "500 80", "bash": "500 80", "tput": "500\n80"}
 
 
 @pytest.mark.parametrize("rows", [24, 50])

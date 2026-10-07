@@ -486,6 +486,18 @@ def test_p8_34_line_of_many_rows_on_a_narrow_terminal(length: int, lc_all: str):
     assert out["after"] == "done"
 
 
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+def test_p8_34_longest_line_the_window_shows_at_40_columns(lc_all: str):
+    """SPEC "The echo of a sent line": with its prompt, the line is one cell short of the window's
+    `PTY_ROWS` rows of 40 columns. (One more is usually answered by clearing the screen, not always, and
+    at 80 columns a line this close to the window is past what one write is sure to carry.)"""
+    cmd = command(PTY_ROWS * NARROW - len("PROMPT$ ") - 1)
+    assert len(cmd) == 19991
+    out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], lc_all, cols=NARROW)
+    assert out["out"] == cmd[5:]
+    assert out["after"] == "done"
+
+
 def test_p8_34_long_lines_of_a_list_with_errors_and_assert():
     """Each long line of a list loses its own echo, `assert` and `errors` read the output, and the
     command after them gets its own."""
