@@ -695,7 +695,7 @@ def test_p6_87_traceback_flag_for_a_script_error_and_a_plugin_error(tmp_path: Pa
     assert res.returncode == 1
     assert lines[0] == "Traceback (most recent call last):" and "ZeroDivisionError: division by zero" in lines
     assert lines[-1] == (
-        f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ZeroDivisionError: division by zero"
+        f"Script error in {tmp_path / 'script.autobot.yaml'}: env.A: template error: ZeroDivisionError: division by zero"
     )
 
     root = tmp_path / "broken"
