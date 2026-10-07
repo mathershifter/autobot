@@ -241,7 +241,7 @@ def test_p5_68_script_that_changes_nothing_prints_no_count(prepared, capfd):
     [
         ({"prepare": "export AB_A=S3CRET\n", "spawn": "{{ env.AB_A }}{{ env.AB_NOPE }}"}, "template error: env has no key 'AB_NOPE'"),
         ({"prepare": "export AB_A=S3CRET\nexit 4\n"}, "prepare script failed with exit code 4"),
-        ({"prepare": "export AB_A=S3CRET\n", "env": {"AB_B": "{{ env.AB_A }}{{ env.AB_NOPE }}"}}, "template error: env has no key 'AB_NOPE'"),
+        ({"prepare": "export AB_A=S3CRET\n", "env": {"AB_B": "{{ env.AB_A }}{{ env.AB_NOPE }}"}}, "env.AB_B: template error: env has no key 'AB_NOPE'"),
     ],
     ids=["spawn-undefined", "failed", "default-undefined"],
 )
@@ -580,7 +580,7 @@ def test_p5_74_default_that_prepare_does_not_satisfy_stops_before_spawn(timeline
     """SPEC "attach" lifecycle: the defaults are rendered after `prepare`; an error then stops the run."""
     marker = tmp_path / "prepared"
     r = make_runner([], prepare=f"touch {marker}\n", env={"AB_URL": "{{ env.AB_HOST }}"})
-    with pytest.raises(ValueError, match="^template error: env has no key 'AB_HOST'$"):
+    with pytest.raises(ValueError, match="^env.AB_URL: template error: env has no key 'AB_HOST'$"):
         r.run()
     assert marker.exists()
     assert "attach" not in timeline.names()
@@ -590,11 +590,11 @@ def test_p5_74_default_that_prepare_does_not_satisfy_stops_before_spawn(timeline
 @pytest.mark.parametrize(
     ("env", "prepare_", "status", "line"),
     [
-        ({"AB_URL": "{{ env.AB_HOST }}"}, None, 1, "Script error in {path}: template error: env has no key 'AB_HOST'"),
-        ({"AB_URL": "{{ env.AB_HOST }}"}, "touch {marker}\n", 3, "Run failed in {path}: template error: env has no key 'AB_HOST'"),
-        ({"AB_URL": "{{ 1/0 }}{{ env.AB_HOST }}"}, "touch {marker}\n", 1, "Script error in {path}: template error: ZeroDivisionError: division by zero"),
-        ({"AB_URL": "{{ 1/0 }}"}, "touch {marker}\n", 1, "Script error in {path}: template error: ZeroDivisionError: division by zero"),
-        ({"AB_URL": "{{ vars.nope }}"}, "touch {marker}\n", 1, "Script error in {path}: template error: 'dict object' has no attribute 'nope'"),
+        ({"AB_URL": "{{ env.AB_HOST }}"}, None, 1, "Script error in {path}: env.AB_URL: template error: env has no key 'AB_HOST'"),
+        ({"AB_URL": "{{ env.AB_HOST }}"}, "touch {marker}\n", 3, "Run failed in {path}: env.AB_URL: template error: env has no key 'AB_HOST'"),
+        ({"AB_URL": "{{ 1/0 }}{{ env.AB_HOST }}"}, "touch {marker}\n", 1, "Script error in {path}: env.AB_URL: template error: ZeroDivisionError: division by zero"),
+        ({"AB_URL": "{{ 1/0 }}"}, "touch {marker}\n", 1, "Script error in {path}: env.AB_URL: template error: ZeroDivisionError: division by zero"),
+        ({"AB_URL": "{{ vars.nope }}"}, "touch {marker}\n", 1, "Script error in {path}: env.AB_URL: template error: 'dict object' has no attribute 'nope'"),
         ({"AB_URL": "{{ env.AB_HOST"}, "touch {marker}\n", 1, None),
         ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "export AB_A=1\ntouch {marker}\n", 1, "Script error in {path}: env cycle: AB_A -> AB_B -> AB_A"),
     ],
@@ -610,7 +610,7 @@ def test_p5_74_cli_env_errors_with_and_without_prepare(tmp_path: Path, env, prep
     if line:
         assert last == line.format(path=tmp_path / "script.autobot.yaml")
     else:
-        assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: template error: ")
+        assert last.startswith(f"Script error in {tmp_path / 'script.autobot.yaml'}: env.AB_URL: template error: ")
     assert marker.exists() == (status == 3)
 
 # -- P5-80: the wrapper stays out of the script's way ----------------------------
@@ -665,7 +665,7 @@ def test_p5_80_lost_variable_error_points_at_the_unread_environment(timeline: Ti
     )
     with pytest.raises(ValueError) as ei:
         r.run()
-    assert str(ei.value) == message
+    assert str(ei.value) == ("env.AB_URL: " if "env" in kw else "") + message
     assert "attach" not in timeline.names()
     with pytest.raises(ValueError) as ei:
         r.render("{{ env.AB_NOPE }}")

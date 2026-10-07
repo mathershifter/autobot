@@ -419,7 +419,8 @@ def test_p3_22_boolean_in_every_templated_text_is_refused(sent: SentLog, monkeyp
     """Every templated value that becomes text follows the rule, and what it would have sent is never sent."""
     monkeypatch.delenv("AB_FLAG", raising=False)
     kw = TEXT_FIELDS[field]("{{ vars.debug }}")
-    with pytest.raises(ValueError, match=r"^template error: an expression gave a boolean \(true\), "):
+    named = "env.AB_FLAG: " if field == "env" else ""  # an error in a default names the default
+    with pytest.raises(ValueError, match=rf"^{named}template error: an expression gave a boolean \(true\), "):
         run_script(kw.pop("script"), vars={"debug": True}, **kw)
     assert not any("True" in line or "true" in line for line in sent.lines())
 
@@ -482,3 +483,72 @@ def test_p3_19_register_under_a_dict_method_name(name: str):
     out = run_vars([{"cmd": "echo out", "register": name}, {"cmd": f"echo got-{{{{ vars.{name} }}}}", "register": "r"}])
     assert out["r"] == "got-out"
     assert type(out) is dict
+
+
+# -- P3-26: a missing --arg, and an error in an `env` default ------------------------------
+
+NO_HOST = "template error: args has no key 'host'; pass it with --arg host=VALUE"
+
+
+@pytest.mark.parametrize("template", ["{{ args.host }}", "{{ args['host'] }}", "ssh {{ args.host.name }}", "{{ args.host | upper }}"])
+def test_p3_26_missing_arg_says_how_to_pass_it(template: str):
+    """SPEC "Jinja2 Templating": an argument that wasn't given is undefined, and the error names `args`, the
+    key and the option."""
+    r = make_runner([], args={"other": "1"})
+    for condition in (False, True):
+        with pytest.raises(ValueError) as ei:
+            r.render(template, condition=condition)
+        assert str(ei.value) == NO_HOST
+
+
+def test_p3_26_missing_arg_is_undefined_like_any_other():
+    """`default`, `is defined`, `in` and `args.get(...)` deal with it as on any mapping, and `args` is a
+    mapping of the arguments and nothing else."""
+    r = make_runner([], args={"k": "v", "get": "G"})
+    assert r.render("{{ args.host | default('d') }} {{ args.get }} {{ args.k }} {{ args['k'] }}") == "d G v v"
+    assert r.render("{{ 'y' if args.host is defined else 'n' }}{{ 'y' if 'host' in args else 'n' }}") == "nn"
+    assert r.render("{{ 'y' if args.k is defined else 'n' }}{{ 'y' if 'k' in args else 'n' }}") == "yy"
+    assert r.render("{{ args }} {{ args | tojson }} {{ args | length }}") == "{'k': 'v', 'get': 'G'} {\"get\": \"G\", \"k\": \"v\"} 2"
+    assert r.render("{% for k, v in args.items() %}{{ k }}={{ v }};{% endfor %}{{ args | items | list | length }}") == "k=v;get=G;2"
+    plain = make_runner([], args={"k": "v"})
+    assert plain.render("{{ args.get('host', 'd') }} {{ args.get('k') }} {{ args.keys() | list }}") == "d v ['k']"
+    with pytest.raises(ValueError, match="^template error: args has no key 1$"):
+        plain.render("{{ args[1] }}")
+
+
+def test_p3_26_missing_arg_at_load_time_and_at_run_time(sent: SentLog):
+    """In an `env` default the error comes when the script is loaded, and names the default; in a step, when
+    the step runs. With the argument both render."""
+    with pytest.raises(ValueError) as ei:
+        make_runner([], env={"AB_H": "{{ args.host }}"})
+    assert str(ei.value) == f"env.AB_H: {NO_HOST}"
+    with pytest.raises(ValueError) as ei:
+        run_script([{"line": "echo {{ args.host }}"}])
+    assert str(ei.value) == NO_HOST and sent.lines() == []
+    r = run_script([{"line": "echo {{ args.host }}-{{ env.AB_H }}"}], env={"AB_H": "{{ args.host }}"}, args={"host": "sw1"})
+    assert "echo sw1-sw1" in sent.lines()
+    assert type(r.config.vars) is dict
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"AB_A": "{{ 1/0 }}"}, "env.AB_A: template error: ZeroDivisionError: division by zero"),
+        ({"AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
+        ({"AB_A": "{{ vars.nope }}"}, "env.AB_A: template error: 'dict object' has no attribute 'nope'"),
+        ({"AB_A": "{{ env.AB_NOPE }}"}, "env.AB_A: template error: env has no key 'AB_NOPE'"),
+        ({"AB_A": "{{ ''.__class__ }}"}, "env.AB_A: template error: not allowed in a template: access to attribute '__class__' of 'str' object is unsafe."),
+        # the default that has the error is named, once, not the ones that read it
+        ({"AB_A": "x{{ env.AB_B }}", "AB_B": "{{ env.AB_C }}", "AB_C": "{{ 1/0 }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
+        ({"AB_C": "{{ 'a' | search('(') }}", "AB_A": "{{ env.AB_C }}"}, "env.AB_C: template error: search: invalid regex '(': missing ), unterminated subpattern at position 0"),
+        # a cycle and a chain that is too deep name their keys themselves
+        ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "env cycle: AB_A -> AB_B -> AB_A"),
+    ],
+)
+def test_p3_26_error_in_an_env_default_names_the_default(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str):
+    """SPEC "Top-level fields": `env.<KEY>: ` before the error of the default that has it."""
+    for key in ("AB_A", "AB_B", "AB_C", "AB_NOPE"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(ValueError) as ei:
+        make_runner([], env=env)
+    assert str(ei.value) == message

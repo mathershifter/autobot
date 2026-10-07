@@ -26,7 +26,7 @@ autobot schema [--traceback]
 
 | Flag                              | Description                                                 |
 |-----------------------------------|-------------------------------------------------------------|
-| `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument accessible as `{{ args.KEY }}` in templates. Repeat the flag for more arguments; the value is everything after the first `=`, and the last value given for a key wins |
+| `-a KEY=VALUE`, `--arg KEY=VALUE` | Pass an argument accessible as `{{ args.KEY }}` in templates. Repeat the flag for more arguments; the value is everything after the first `=`, and the last value given for a key wins. A template that reads an argument that wasn't given fails with `template error: args has no key 'KEY'; pass it with --arg KEY=VALUE` |
 | `--traceback`                     | Also print the Python traceback of an error that is reported without one (see [Errors and exit status](#errors-and-exit-status)) |
 | `-h`, `--help`                    | Show help (`autobot -h` lists the subcommands, `autobot run -h` the options) |
 

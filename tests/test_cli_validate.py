@@ -188,11 +188,11 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
         lambda m: m.write("s", script=[{"cmdd": "true"}]), ("-a", "bogus"), "Validation errors:\n  script.0: "
     ),
     "env-template-syntax": (
-        lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: template error: unexpected '}'"
+        lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: env.A: template error: unexpected '}'"
     ),
     "env-zero-division": (
         lambda m: m.write("s", env={"A": "{{ 1/0 }}"}), (),
-        "Script error in {path}: template error: ZeroDivisionError: division by zero\n",
+        "Script error in {path}: env.A: template error: ZeroDivisionError: division by zero\n",
     ),
     "env-cycle": (
         lambda m: m.write("s", env={"A": "{{ env.B }}", "B": "{{ env.A }}"}), (),
@@ -200,11 +200,11 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     ),
     "env-unset-without-prepare": (
         lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}, prepare=None), (),
-        "Script error in {path}: template error: ",
+        "Script error in {path}: env.A: template error: env has no key 'AB_VALIDATE_NOT_SET'\n",
     ),
     "env-missing-arg": (
         lambda m: m.write("s", env={"H": "{{ args.host }}"}), ("-a", "other=1"),
-        "Script error in {path}: template error: 'dict object' has no attribute 'host'\n",
+        "Script error in {path}: env.H: template error: args has no key 'host'; pass it with --arg host=VALUE\n",
     ),
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
@@ -297,7 +297,8 @@ def test_p6_95_arg_is_used_by_load_time_templates(m: Markers):
     missing = _cli("validate", path)
     assert missing.returncode == 1
     assert missing.stderr == (
-        f"Script error in {path}: template error: 'dict object' has no attribute 'host'\n{path}: invalid\n"
+        f"Script error in {path}: env.H: template error: args has no key 'host'; pass it with --arg host=VALUE\n"
+        f"{path}: invalid\n"
     )
     assert missing.stderr == _cli("run", path).stderr + f"{path}: invalid\n"
     assert m.none()

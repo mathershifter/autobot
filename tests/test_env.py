@@ -93,7 +93,7 @@ def test_p5_29_env_value_rendered_once():
 
 def test_p5_30_env_undefined_key_and_depth_limit():
     """SPEC.md:25: a reference to a missing key names it; nesting deeper than 50 levels is an error, not a crash."""
-    with pytest.raises(ValueError, match="^template error: env has no key 'AB_NOPE'$"):
+    with pytest.raises(ValueError, match="^env.AB_A: template error: env has no key 'AB_NOPE'$"):
         make_runner([], env={"AB_A": "{{ env.AB_NOPE }}"})
 
     def chain(n: int) -> dict[str, str]:
@@ -165,7 +165,7 @@ def test_p5_63_variable_set_nowhere_is_undefined(environ: dict[str, str], templa
     with pytest.raises(ValueError, match="^template error: env has no key 'AB_NOPE'$"):
         r.render(template)
     assert r.render("{{ env.AB_NOPE | default('d') }}") == "d"
-    with pytest.raises(ValueError, match="^template error: env has no key 'AB_NOPE'$"):
+    with pytest.raises(ValueError, match="^env.AB_Y: template error: env has no key 'AB_NOPE'$"):
         make_runner([], env={"AB_Y": template})
 
 
