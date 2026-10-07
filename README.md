@@ -303,7 +303,7 @@ Set `register` to store the command's captured output into `vars.<name>`, making
 
 Captured output (used by `register`, `assert`, `errors`, and `session.before`) is what the command printed:
 
-- The terminal echo of the sent command is removed. If the echo doesn't match the sent line (e.g. echo disabled with `stty -echo`), the output is left as is.
+- The terminal echo of the sent line is removed, also when the device's line editor wrapped a long line at the margin of its terminal (a line break, `\r`, a blank and a backspace, NUL padding): the echo is recognized by what a terminal shows of it. If the output doesn't start with the echo of the sent line (e.g. echo disabled with `stty -echo`), it is left as is. See [The echo of a sent line](SPEC.md#the-echo-of-a-sent-line).
 - Line breaks are preserved as `\n`.
 - ANSI escape sequences (colors, cursor movement) are removed, so `assert`, `errors` and `register` see plain text. `after` and prompt `expect` regexes, on the other hand, match the raw output, escape sequences included; see [ANSI escape sequences](SPEC.md#ansi-escape-sequences).
 - The prompt line is excluded. Because of that, any text printed without a trailing newline (it shares a line with the next prompt) is not captured — e.g. `printf 'x\ny'` captures `x`.

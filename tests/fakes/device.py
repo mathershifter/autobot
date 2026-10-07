@@ -3,7 +3,8 @@
 
 Spawned as ``attach.spawn`` (or from a shell with ``line``). It prints a
 banner, then login/password prompts in a configurable order, and finally
-drops into a shell (or a bare ``PROMPT$ `` loop). Each ``--ask TEXT`` asks
+drops into a shell (or a bare ``PROMPT$ `` loop, or a line editor that
+echoes each line itself, wrapped at its right margin). Each ``--ask TEXT`` asks
 ``TEXT `` once, before the login prompts. Every line it reads is
 appended to ``--log`` as ``<KIND>=<value>`` so tests can assert on what
 Autobot actually sent, instead of parsing pty output.
@@ -87,9 +88,33 @@ class Device:
         if self.args.then == "shell":
             env = {"PS1": SHELL_PROMPT, "TERM": "dumb", "PATH": os.environ.get("PATH", "")}
             os.execvpe("bash", ["bash", "--norc", "--noprofile", "-i"], env)
+        if self.args.then == "editor":
+            self.editor()
         while True:
             self.write(SHELL_PROMPT)
             self.log("LINE", self.readline())
+
+    def editor(self) -> None:
+        a = self.args
+        wrap = bytes.fromhex(a.wrap).decode()
+        attrs = termios.tcgetattr(0)
+        attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(0, termios.TCSANOW, attrs)
+        while True:
+            self.write(a.prompt)
+            line = self.readline()
+            self.log("LINE", line)
+            echo, col = "", len(a.prompt)
+            for ch in line:
+                echo += ch
+                col += 1
+                if col == a.cols:
+                    echo, col = echo + wrap, 0
+            self.write(echo + "\n")
+            if line.startswith("echo "):
+                self.write(line[5:] + "\n")
+            elif line:
+                self.write("% Invalid input\n")
 
     def run(self) -> None:
         a = self.args
@@ -141,7 +166,10 @@ def main() -> None:
     p.add_argument("--exit-after-banner", action="store_true")
     p.add_argument("--rawdump", type=int, default=0)
     p.add_argument("--ask", action="append", default=[])
-    p.add_argument("--then", choices=["shell", "prompt"], default="shell")
+    p.add_argument("--then", choices=["shell", "prompt", "editor"], default="shell")
+    p.add_argument("--prompt", default=SHELL_PROMPT)
+    p.add_argument("--cols", type=int, default=80)
+    p.add_argument("--wrap", default="")
     Device(p.parse_args()).run()
 
 

@@ -22,12 +22,13 @@ from conftest import (
     FakeDevice,
     SentLog,
     make_runner,
+    run_script,
     run_vars,
 )
 
 from autobot.models import SendEach
 from autobot.runner import Runner, send_each_sets
-from autobot.session import PromptHandler, Session
+from autobot.session import HELD_GRACE, PromptHandler, Session, _mid_echo
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
 UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
@@ -818,13 +819,14 @@ def test_p4_42_stray_cr_in_a_read_of_its_own(raw_device: Callable[..., Session],
 @pytest.mark.parametrize("regex", [ANCHORED, UNANCHORED], ids=["anchored", "unanchored"])
 @pytest.mark.parametrize(
     "line",
-    ["10%\r50%\r100%", "ab\x00cd\x07ef", "a\r", "x\x00", "\x00", "\x07\x00", "tab\there"],
+    ["10%\r50%\r100%", "ab\x00cd\x07ef", "a\r", "y\x00", "\x00", "\x07\x00", "tab\there"],
     ids=["progress", "nul-bel-inside", "cr-at-end", "nul-at-end", "only-nul", "only-bel-nul", "tab"],
 )
 def test_p4_42_control_characters_inside_a_line_are_captured(raw_device: Callable[..., Session], line: str, regex: str):
     """Only the start of the unread output is affected: a line that rewrites itself is captured as before.
 
     A run of them that makes up the whole line is kept as well, since a line break follows it.
+    (No line reads as `x`, the line the device was sent: with no echo, that one would be taken for it.)
     (A `\\r` right before the line break was always dropped, as part of the break.)
     """
     s = raw_device(f"{line}\r\nPROMPT$ ", regex=regex)
@@ -891,3 +893,251 @@ def test_p4_42_prompt_regex_wins_a_tie_with_the_stray_characters():
     s = Session([PromptHandler("login", [r"\rlogin: $"], [["x"]], False), PromptHandler("sh", [r"^\$ $"], [], True)])
     assert s._is_shell_prompt("\rlogin: ") is False  # the login prompt, not a shell prompt
     assert s._is_shell_prompt("\r$ ") is True
+
+
+# -- P4-44: a prompt written again inside the echo of the line that was sent (the device is sent `x`) --
+
+
+@pytest.mark.parametrize("regex", [r"^PROMPT\$ ", r"PROMPT\$ "], ids=["anchored", "unanchored"])
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        # readline, single-byte locale, a line that ends at the margin: blank, return, cursor-up, padding
+        ("x \r\x1b[A\x00\x00PROMPT$ \x1b[K\x00x\r\nout\r\nPROMPT$ ",),
+        ("x \r\x1b[APROMPT$ ", "x\r\nout\r\nPROMPT$ "),
+        ("x \r\x1b[APROMPT$ ", "\rPROMPT$ ", "x\r\nout\r\nPROMPT$ "),
+    ],
+    ids=["one-read", "two-reads", "written-twice"],
+)
+def test_p4_44_prompt_inside_the_echo_does_not_end_the_wait(raw_device: Callable[..., Session], chunks, regex: str):
+    """The wait goes on to the prompt after the output, and the echo is removed from what it captured."""
+    s = raw_device(*chunks, regex=regex)
+    assert s.get_prompt(timeout=3) == "out\n"
+    assert s.ctx == {"before": "out\n", "match": "PROMPT$ "}
+
+
+def test_p4_44_prompt_after_the_line_break_of_the_echo_ends_the_wait(raw_device: Callable[..., Session]):
+    """The echo is complete at its line break: the prompt after it is the prompt, at once."""
+    s = raw_device("x", "\r\nPROMPT$ ", "x\r\nout\r\nPROMPT$ ")
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20) == ""
+    assert time.monotonic() - started < 2
+
+
+QUICK = 0.6  # a wait that isn't held ends well within this
+GRACE = (HELD_GRACE - 0.2, HELD_GRACE + 1.0)  # one that is held and accepted ends one poll late
+
+
+@pytest.mark.parametrize(
+    ("chunks", "regex"),
+    [
+        (("xPROMPT$ ",), r"PROMPT\$ $"),
+        # what the regex leaves unmatched stays unread: a blank, the tail of a longer prompt
+        (("xPROMPT$ ",), r"PROMPT\$"),
+        (("xPROMPT$ > ",), r"PROMPT\$ "),
+        # a stray character that is dropped only when something follows it, and the start of a sequence
+        (("xPROMPT$ \r",), r"PROMPT\$ "),
+        (("xPROMPT$ \x00",), r"PROMPT\$ "),
+        (("xPROMPT$ \x07",), r"PROMPT\$ "),
+        (("xPROMPT$ \x1b[",), r"PROMPT\$ "),
+        # a sequence after it is consumed: the hold goes on, and ends one poll after it
+        (("xPROMPT$ \x1b[K",), r"PROMPT\$ "),
+    ],
+    ids=["all-matched", "blank", "tail", "cr", "nul", "bel", "partial-escape", "escape"],
+)
+def test_p4_44_held_prompt_is_the_prompt_when_nothing_comes(
+    raw_device: Callable[..., Session], sent: SentLog, chunks: tuple[str, ...], regex: str
+):
+    """A device that echoes the line and prints its prompt on the same line: the prompt is held for one
+    written again, and taken for the prompt after one poll in which nothing arrives. No Return is pressed
+    for it, also by a wait that may solicit, and what is unread stays unread."""
+    s = raw_device(*chunks, regex=regex)
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20) == ""
+    assert GRACE[0] < time.monotonic() - started < GRACE[1]
+    assert s.ctx["match"].startswith("PROMPT$")
+    assert s._at_prompt
+    # a wait that follows no command, as after a `line`
+    s.sendline("x", solicit=True)
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20) == ""
+    # what the first wait left unread comes first now; where it shows something, this is no echo of `x`
+    held = not "".join(chunks).endswith(("> ", "\x1b["))
+    assert (GRACE[0] if held else 0) < time.monotonic() - started < (GRACE[1] if held else QUICK)
+    assert sent.lines() == ["x", "x"]
+
+
+def test_p4_44_held_prompt_is_taken_at_a_timeout_shorter_than_the_poll(raw_device: Callable[..., Session]):
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    started = time.monotonic()
+    assert s.get_prompt(timeout=0.4) == ""
+    assert 0.3 < time.monotonic() - started < 0.4 + QUICK
+
+
+def test_p4_44_what_arrives_in_pieces_keeps_the_prompt_held(raw_device: Callable[..., Session]):
+    """The rest of the echo comes in two pieces, the second 1.5 s after the first: the poll in which the
+    first arrived was not a quiet one, so the prompt is still held when the second comes."""
+    s = raw_device("x \r\x1b[APROMPT$ ", "x", "", "", "", "", "\r\nout\r\nPROMPT$ ", regex=r"^PROMPT\$ ")
+    assert s.get_prompt(timeout=20) == "out\n"
+
+
+def test_p4_44_blank_that_arrives_later_is_waited_out(raw_device: Callable[..., Session], sent: SentLog):
+    """The unmatched blank comes 0.3 s after the prompt: that poll isn't quiet, the next one is. No Return
+    is pressed after the poll that wasn't quiet either, by a wait that may solicit."""
+    s = raw_device("xPROMPT$", " ", regex=r"PROMPT\$")
+    for solicit in (False, True):
+        if solicit:
+            s.sendline("x", solicit=True)
+        started = time.monotonic()
+        assert s.get_prompt(timeout=20) == ""
+        assert 2 * HELD_GRACE - 0.2 < time.monotonic() - started < 2 * HELD_GRACE + 1.0
+    assert sent.lines() == ["x", "x"]
+
+
+def test_p4_44_hold_ends_when_the_echo_goes_on(raw_device: Callable[..., Session]):
+    """After the echo's line break the prompt is no longer held: a command that then prints nothing for
+    longer than the grace period is waited for, to its prompt."""
+    s = raw_device("x \r\x1b[APROMPT$ ", "x\r\nout\r\n", "", "", "", "", "", "", "PROMPT$ ", regex=r"^PROMPT\$ ")
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20) == "out\n"
+    assert time.monotonic() - started > 2.0
+    assert s._cld is not None and not s._cld.buffer
+
+
+def test_p4_44_redraw_without_a_return_of_the_devices(raw_device: Callable[..., Session]):
+    """The prompt and the line again with no `\\r` before them: the held prompt counts as the return,
+    so the line after it is read as written again and the echo is removed."""
+    s = raw_device("xPROMPT$ x\r\nout\r\nPROMPT$ ", regex=r"PROMPT\$ ")
+    assert s.get_prompt(timeout=3) == "out\n"
+    assert s.ctx["before"] == "out\n"
+
+
+def test_p4_44_accepted_prompt_is_not_held_again(raw_device: Callable[..., Session], sent: SentLog):
+    """The line is judged once: a wait after a Return, which shows nothing, ends at the prompt at once."""
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    assert s.get_prompt(timeout=20) == ""
+    s.sendline("", solicit=True)
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20) == ""
+    assert time.monotonic() - started < QUICK
+    assert sent.lines() == ["x", ""]
+
+
+# -- an `after` wait that reads a prompt the prompt wait would hold
+
+
+def test_p4_44_after_that_ends_at_a_held_prompt_hands_it_to_the_prompt_wait(raw_device: Callable[..., Session]):
+    """The same-line device: the `after` wait doesn't put the session at a prompt, and the prompt wait
+    that follows takes the prompt after one quiet poll, without reading or sending anything."""
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    assert not s._at_prompt
+    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ")
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
+    assert GRACE[0] < time.monotonic() - started < GRACE[1]
+    assert s._at_prompt and s._held is None
+
+
+def test_p4_44_after_that_ends_at_a_redrawn_prompt_reads_on(raw_device: Callable[..., Session]):
+    s = raw_device("x \r\x1b[APROMPT$ ", "x\r\nout\r\nPROMPT$ ", regex=r"^PROMPT\$ $")
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    assert not s._at_prompt and s._held is not None
+    assert s.get_prompt(timeout=3) == "out\n"
+
+
+@pytest.mark.parametrize("send", ["line", "control"])
+def test_p4_44_prompt_handed_on_by_after_is_dropped_by_a_send(raw_device: Callable[..., Session], send: str):
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    assert s._held is not None
+    s.sendline("y") if send == "line" else s.sendcontrol("a")
+    assert s._held is None
+
+
+def raw_spawn(tmp_path: Path, *chunks: str) -> str:
+    import sys
+
+    path = tmp_path / "raw_device.py"
+    path.write_text(RAW_DEVICE)
+    return f"{sys.executable} {path} {','.join(c.encode().hex() for c in chunks)}"
+
+
+def test_p4_44_cmd_with_after_on_a_device_that_prompts_on_the_echo_line(tmp_path: Path, sent: SentLog):
+    """`line: x`, then a `cmd` with `after` that matches the prompt: the command is sent one poll later,
+    with no Return pressed and no timeout."""
+    started = time.monotonic()
+    run_script(
+        [{"cmd": "true"}, {"line": "x"}, {"cmd": "echo hi", "after": r"xPROMPT\$ $", "register": "out"}],
+        spawn=raw_spawn(tmp_path, "xPROMPT$ "),
+        prompts=[{"name": "sh", "expect": [r"PROMPT\$ $"], "return": True}],
+        errors=["NOPE"],
+    )
+    assert sent.lines() == ["true", "x", "echo hi"]
+    assert GRACE[0] < time.monotonic() - started < GRACE[1] + 1
+
+
+def test_p4_44_cmd_with_after_at_a_redrawn_prompt_waits_for_the_real_one(tmp_path: Path, sent: SentLog):
+    """The device writes the prompt again inside every echo: an `after` that matches there is followed by
+    a prompt wait that reads the rest of the echo and the output, and only then is the command sent."""
+    out = run_script(
+        [
+            {"cmd": "x", "register": "first"},
+            {"line": "x"},
+            {"cmd": "x", "after": r"PROMPT\$ $", "register": "second"},
+        ],
+        spawn=raw_spawn(tmp_path, "x \r\x1b[APROMPT$ ", "x\r\nout\r\nPROMPT$ "),
+        prompts=[{"name": "sh", "expect": [r"^PROMPT\$ $"], "return": True}],
+        errors=["NOPE"],
+    ).config.vars
+    assert out == {"first": "out", "second": "out"}
+    assert sent.lines() == ["x", "x", "x"]
+
+
+def test_p4_44_output_without_an_echo_is_not_held(raw_device: Callable[..., Session]):
+    """No echo, and output that is not the start of the line: the prompt ends the wait at once."""
+    started = time.monotonic()
+    assert raw_device("yPROMPT$ ", regex=UNANCHORED).get_prompt(timeout=20) == ""
+    assert raw_device("x^CPROMPT$ ", regex=UNANCHORED).get_prompt(timeout=20) == ""
+    assert raw_device("\x1b[K\rPROMPT$ ").get_prompt(timeout=20) == ""
+    assert raw_device("PROMPT$ ").get_prompt(timeout=20) == ""
+    assert time.monotonic() - started < 3
+
+
+def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    assert s._is_shell_prompt("x \rPROMPT$ ", whole=True)
+    assert not s._is_shell_prompt("x \rPROMPT$ ", whole=True, sent="x")
+    assert not s._is_shell_prompt("ec\rPROMPT$ ", whole=True, sent="echo hi")
+    assert s._is_shell_prompt("x \rPROMPT$ x\r\nPROMPT$ ", whole=True, sent="x")
+    assert s._is_shell_prompt("y\rPROMPT$ ", whole=True, sent="x")
+    assert s._is_shell_prompt("PROMPT$ ", whole=True, sent="x")
+    assert s._is_shell_prompt("x\r\nPROMPT$ ", whole=True, sent="x")
+
+
+@pytest.mark.parametrize(
+    ("read", "sent", "expected"),
+    [
+        ("echo hi", "echo hi", True),
+        ("echo hi \r", "echo hi", True),
+        ("ec", "echo hi", True),
+        ("echo h\rho h", "echo hi", True),
+        (" \x00e\x07", "echo hi", True),
+        # nothing of the line yet, or something else
+        ("", "echo hi", False),
+        (" \r\x00", "echo hi", False),
+        ("cho", "echo hi", False),
+        ("echo hi!", "echo hi", False),
+        ("echo ho", "echo hi", False),
+        # a line break came: the echo is over
+        ("echo hi\n", "echo hi", False),
+        ("\nec", "echo hi", False),
+        # nothing was sent that shows
+        ("x", "", False),
+        ("x", None, False),
+        ("", " \x07", False),
+    ],
+)
+def test_p4_44_mid_echo(read: str, sent: str | None, expected: bool):
+    """A prompt is held only while what was read since the send shows the start of the sent line."""
+    assert _mid_echo(read, sent) is expected
