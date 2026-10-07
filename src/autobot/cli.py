@@ -287,9 +287,12 @@ def _discover(args: argparse.Namespace | None = None) -> None:
         raise LoadError from None
 
 
-def _runner(args: argparse.Namespace, script: str) -> Runner:
+def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Runner:
     """The runner of `script`, ready to run: the file read, parsed and validated, the `--arg` values checked,
-    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`."""
+    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`.
+
+    The sequence stops at its first error. With `every`, the last stage reports all it has: the error of
+    `env` and of each prompt, which don't depend on each other."""
     config_dict = _load(script)
 
     try:
@@ -311,12 +314,17 @@ def _runner(args: argparse.Namespace, script: str) -> Runner:
         key, value = item.split("=", 1)
         cli_args[key] = value
 
+    problems: list[ScriptError] = []
     try:
-        return Runner(config, cli_args)
+        runner = Runner(config, cli_args, problems if every else None)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        problems = [e]
+    for e in problems:
         _traceback(args, e)
         log.error(f"Script error in {script}", str(e))
-        raise LoadError from None
+    if problems:
+        raise LoadError
+    return runner
 
 
 def _cmd_run(args):
@@ -345,6 +353,23 @@ def _cmd_run(args):
             log.hint("(run with --traceback for details)")
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
+
+
+def _cmd_validate(args: argparse.Namespace) -> None:
+    """Load each script as `run` does, and run none. Nothing is written to stdout, so a closed one is no error."""
+    _discover(args)
+    failed = False
+    for script in args.script:
+        try:
+            _runner(args, script, every=True)
+        except LoadError:
+            failed = True
+            log.verdict(script, "invalid", log.ERROR)
+        else:
+            if not args.quiet:
+                log.verdict(script, "valid", log.OK)
+    if failed:
+        raise LoadError
 
 
 SCHEMA_NAME = "autobot.2026-10.json"
@@ -418,24 +443,37 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="Execute an autobot script")
     run_parser.add_argument("script", help="Path to the YAML script file")
-    run_parser.add_argument(
-        "-a",
-        "--arg",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Check autobot scripts without running them",
+        description="Check each script as `run` does before it runs anything, and run nothing: attach.prepare "
+        "is not run and no session is spawned. For each script, print `<script>: valid`, or the load error "
+        "`run` would report and `<script>: invalid`, on stderr. Exit with status 1 if any script is invalid.",
     )
+    validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
+    for sub, purpose in (
+        (run_parser, "Pass arguments to the script"),
+        (validate_parser, "Check the scripts with the arguments they would be run with"),
+    ):
+        sub.add_argument(
+            "-a",
+            "--arg",
+            action="append",
+            default=[],
+            metavar="KEY=VALUE",
+            help=f"{purpose} (e.g. --arg console_host=10.0.0.1)",
+        )
+    validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 
     schema_parser = subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
-    for sub in (run_parser, schema_parser):
+    for sub in (run_parser, validate_parser, schema_parser):
         sub.add_argument(
             "--traceback",
             action="store_true",
             help="Also print the Python traceback of an error that is reported without one",
         )
 
-    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "schema", "-h", "--help"):
+    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "validate", "schema", "-h", "--help"):
         sys.argv.insert(1, "run")
 
     args = parser.parse_args()
@@ -445,6 +483,8 @@ def main():
             _cmd_schema(args)
         elif args.command == "run":
             _cmd_run(args)
+        elif args.command == "validate":
+            _cmd_validate(args)
         else:
             parser.print_help()
             sys.exit(EXIT_LOAD)

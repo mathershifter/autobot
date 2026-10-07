@@ -192,7 +192,12 @@ class _EnvRefs(Mapping[str, Any]):
 
 
 class Runner:
-    def __init__(self, config: Config, cli_args: dict[str, str]):
+    def __init__(self, config: Config, cli_args: dict[str, str], problems: list[ScriptError] | None = None):
+        """Load the script: resolve `env` and build the prompt handlers. Nothing runs before `run`.
+
+        The first script error is raised. With `problems`, the error of `env` and the first error of each
+        prompt are added to it instead, so one pass finds them all; a runner that left any is not to be run.
+        """
         registry.discover()
         self._config = config
         self._cli_args = cli_args
@@ -201,10 +206,22 @@ class Runner:
         self._environ = run_environ()
         self._later: dict[str, str] = {}  # the defaults that wait for `prepare`, and why
         self._unread = ""  # why the environment `prepare` left wasn't read, if it wasn't
-        # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
-        self._env = self._resolve_env(later=bool(config.attach.prepare))
+        self._env = _env({}, self._why_unset)
         self._session = Session([])
-        handlers = [self.build_handler(p) for p in config.prompts]
+        handlers: list[PromptHandler] = []
+
+        def resolve_env() -> None:
+            # a default may read a variable that only `prepare` sets: it is rendered once `prepare` has run
+            self._env = self._resolve_env(later=bool(config.attach.prepare))
+
+        # `env` and each prompt are checked on their own: none reads what another resolves
+        for load in (resolve_env, *(lambda p=p: handlers.append(self.build_handler(p)) for p in config.prompts)):
+            try:
+                load()
+            except ScriptError as e:
+                if problems is None:
+                    raise
+                problems.append(e)
         self._session.restore_handlers(handlers)
         self._stack: list[StepRef] = []
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list

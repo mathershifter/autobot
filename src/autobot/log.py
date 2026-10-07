@@ -25,6 +25,7 @@ KINDS = {
     "fail": ("bold red", "red", ""),  # the failure that ends a step
 }
 ERROR = "bold red"
+OK = "green"
 WARN = "bold yellow"
 INDENT = "  "
 MAX_INDENT = 8  # levels: deeper steps stay at this one, so a deep recursion doesn't run off the screen
@@ -94,6 +95,11 @@ def say(text: str, kind: str = "step") -> None:
 def error(head: str, detail: str | None = None, style: str = ERROR) -> None:
     """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
     _print(Text.assemble((head, style), "" if detail is None else f": {detail}"))
+
+
+def verdict(subject: str, word: str, style: str) -> None:
+    """Print what the CLI found about one of several subjects, e.g. `a.yaml: valid`: `word` stands out."""
+    _print(Text.assemble(f"{subject}: ", (word, style)))
 
 
 def note(label: str, text: str) -> None:
