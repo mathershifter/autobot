@@ -9,7 +9,7 @@ import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.session import CommandError, strip_echo
+from autobot.session import HELD_GRACE, CommandError, strip_echo
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
 EOS_PROMPTS = [{"name": "eos", "expect": [r"^cmp474\(s1\)\(vrf:MGMT\)#"], "return": True}]
@@ -536,3 +536,15 @@ def test_p4_44_waits_that_have_no_echo_to_finish_are_as_before(lc_all: str):
         "silent": cmd[5:],
         "last": "last",
     }
+
+
+def test_p4_44_output_that_starts_like_the_command_is_one_poll_late():
+    """With the echo off, `printf pr` prints `pr` and no line break, then the prompt: it reads as the start
+    of the echo of `printf pr`, so the prompt is held for one poll."""
+    started = time.monotonic()
+    out = run(
+        [{"cmd": "stty -echo"}, {"cmd": "printf pr", "register": "out"}, {"cmd": "printf zz", "register": "zz"}],
+        spawn="bash --norc --noprofile --noediting -i",
+    )
+    assert out == {"out": "", "zz": ""}
+    assert HELD_GRACE - 0.2 < time.monotonic() - started < HELD_GRACE + 2
