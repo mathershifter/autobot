@@ -593,6 +593,9 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
+- `ctx.session.sendcontrol(char)` sends a control character, like a `control` step.
+
+Each send takes a `timeout` in seconds, by keyword: `ctx.session.sendline(text, timeout=timeout)`, `ctx.session.sendcontrol("c", timeout=timeout)`. It is 300 by default; pass on the `timeout` that `execute` was given, as the built-in steps do. A send that isn't complete in that time, because the far side has stopped reading, raises `TimeoutError` (`timed out after <timeout>s while sending a line ...`); see [SPEC.md](SPEC.md#the-length-of-a-sent-line).
 
 A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these as a failed run with the step's path, and likewise a `TimeoutError`, an `EOFError` or a pexpect error, whether the session raises it or the plugin does. Any other exception that the plugin's own code raises is reported as a bug in the plugin, with its traceback. That includes an `OSError`, `UnicodeError` or `RecursionError` of the plugin's own; the same error from Autobot's session underneath, e.g. a write to a pty that is gone, is a failed run (see [Errors and exit status](#errors-and-exit-status)).
 

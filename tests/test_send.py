@@ -1323,3 +1323,13 @@ def test_p8_53_pty_reported_readable_with_nothing_to_read(attach, monkeypatch: p
         monkeypatch.undo()
     assert len(calls) == 4 and len(reads) == 3
     assert s.get_prompt(timeout=5) == "ok\n"
+
+
+def test_p8_51_timeout_of_a_send_is_given_by_keyword(attach):
+    """As for `sendline`, whose second argument by position would be read as something else."""
+    s = attach(BASH)
+    with pytest.raises(TypeError):
+        s.sendcontrol("c", 5)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        s.sendline("true", False, 5)  # type: ignore[misc]
+    s.sendcontrol("c", timeout=5)

@@ -758,7 +758,7 @@ class Session:
         self.get_prompt(timeout=timeout, capture=False)
         return rc
 
-    def sendcontrol(self, char: str, timeout: float = 300):
+    def sendcontrol(self, char: str, *, timeout: float = 300):
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
