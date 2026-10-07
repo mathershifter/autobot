@@ -845,6 +845,101 @@ def test_p6_104_the_audit_sees_what_run_does(m: Markers):
     assert "AUDIT open for writing" in res.stderr or "AUDIT tempfile." in res.stderr
 
 
+# -- a path is printed on one line, whatever the file is called -----------------------------
+
+ODD = {"newline": ("\n", "\\n"), "cr": ("\r", "\\r"), "tab": ("\t", "\\t"), "esc": ("\x1b[31m", "\\x1b[31m")}
+
+
+@pytest.mark.parametrize("char", ODD)
+def test_p6_107_verdict_line_shows_the_path_escaped(m: Markers, char: str):
+    """SPEC: `<path>` is the script as given, with the characters that aren't printable as their escapes."""
+    raw, shown = ODD[char]
+    name = f"a{raw}b.yaml"
+    m.write(name)
+    m.write("bad" + name, script=[{"cmdd": 1}])
+    res = _cli("validate", name, "bad" + name, cwd=m.root)
+    lines = res.stderr.split("\n")
+    assert res.returncode == 1 and res.stdout == ""
+    assert lines[0] == f"a{shown}b.yaml: valid" and lines[-2:] == [f"bada{shown}b.yaml: invalid", ""]
+    assert len(lines) == 5 and not set(res.stderr) & {"\r", "\t", ESC}
+    styled = _cli("validate", name, cwd=m.root, FORCE_COLOR="1")
+    assert styled.stderr == f"a{shown}b.yaml: {ESC}[32mvalid{ESC}[0m\n"
+
+
+def test_p6_107_a_path_cannot_forge_another_scripts_line(m: Markers):
+    """A name with a line break in it stays one line: no line of the output is `ok.yaml: valid`."""
+    m.write("nl\nok.yaml: valid")
+    res = _cli("validate", "nl\nok.yaml: valid", "zz\nok.yaml: valid\nq", cwd=m.root)
+    assert res.returncode == 1
+    assert res.stderr.split("\n") == [
+        "nl\\nok.yaml: valid: valid",
+        "Cannot read script zz\\nok.yaml: valid\\nq: No such file or directory",
+        "zz\\nok.yaml: valid\\nq: invalid",
+        "",
+    ]
+
+
+# how each report that names the script starts, with {path} for the name as it is shown
+NAMED = {
+    "cannot-read": (None, "Cannot read script {path}: No such file or directory", 1),
+    "yaml": ("a: [1\n", "YAML error in {path}, line 2, column 1: ", 1),
+    "yaml-reader": (b"a: \xff\xfe\n", "YAML error in {path}, position 3: ", 1),
+    "yaml-value": ("vars: {d: 2001-99-99}\n", "YAML error in {path}, line 1, column 11: invalid timestamp", 1),
+    "yaml-deep": ("[" * 3000, "YAML error in {path}: the document is nested too deeply", 1),
+    "script-error": ({"env": {"A": "{{ env.A }}"}}, "Script error in {path}: env cycle: A -> A", 1),
+    "run-failed": ({"spawn": "no-such-command-ab", "prepare": None}, "Run failed in {path}: ", 3),
+}
+
+
+@pytest.mark.parametrize("char", ODD)
+@pytest.mark.parametrize("case", NAMED)
+def test_p6_107_every_report_shows_the_path_escaped(m: Markers, case: str, char: str):
+    """`Cannot read script`, `YAML error in`, `Script error in` and `Run failed in` name the script the same
+    way, in `run` and in `validate`."""
+    content, head, status = NAMED[case]
+    raw, shown = ODD[char]
+    name = f"s{raw}x.yaml"
+    if isinstance(content, dict):
+        m.write(name, **content)
+    elif content is not None:
+        m.write(name, raw=content)
+    head = head.replace("{path}", f"s{shown}x.yaml")
+    run = _cli("run", name, cwd=m.root)
+    assert run.returncode == status
+    assert head in run.stderr.split("\n") or any(line.startswith(head) for line in run.stderr.split("\n")), run.stderr
+    assert not set(run.stderr) & {"\r", "\t", ESC} and f"s{raw}x.yaml" not in run.stderr
+    if status == 1:
+        val = _cli("validate", name, cwd=m.root)
+        assert val.stderr == run.stderr + f"s{shown}x.yaml: invalid\n"
+
+
+def test_p6_107_unexpected_error_shows_the_path_escaped(
+    m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def load(path: str) -> object:
+        raise KeyError("x")
+
+    monkeypatch.setattr(cli, "_load", load)
+    code, _, err = _main(monkeypatch, capsys, "validate", "a\nb\x1b[31m.yaml")
+    assert code == 70 and err.splitlines()[1] == "  while checking a\\nb\\x1b[31m.yaml" and ESC not in err
+
+
+def test_p6_107_a_name_that_is_not_utf8_is_shown_escaped(m: Markers):
+    """A byte of the name that isn't UTF-8 is a lone surrogate in the argument: it is written as its escape."""
+    name = b"s\xffx.yaml"
+    Path(os.fsdecode(os.path.join(os.fsencode(m.root), name))).write_text(yaml.safe_dump(m.doc()))
+    res = subprocess.run(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", "validate", name, b"nope\xfe.yaml"],
+        check=False, capture_output=True, text=True, timeout=60, env=_env(), cwd=m.root,
+    )
+    assert res.returncode == 1
+    assert res.stderr.splitlines() == [
+        "s\\udcffx.yaml: valid",
+        "Cannot read script nope\\udcfe.yaml: No such file or directory",
+        "nope\\udcfe.yaml: invalid",
+    ]
+
+
 # -- the command line -----------------------------------------------------------------------
 
 

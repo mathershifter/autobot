@@ -103,29 +103,30 @@ class UniqueKeyLoader(yaml.SafeLoader):
 
 
 def _load(path: str) -> object:
+    name = _visible(path)
     try:
         with open(path, "rb") as f:
             return yaml.load(f, Loader=UniqueKeyLoader)
     except OSError as e:
-        log.error(f"Cannot read script {path}", str(e.strerror or e))
+        log.error(f"Cannot read script {name}", str(e.strerror or e))
     except yaml.MarkedYAMLError as e:
         mark = e.problem_mark
         at = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        log.error(f"YAML error in {path}{at}", str(e.problem))
+        log.error(f"YAML error in {name}{at}", str(e.problem))
         if e.context:
             mark = e.context_mark
             at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
             log.more(f"  {e.context}{at}")
     except ReaderError as e:
         what = "character" if e.encoding == "unicode" else f"{e.encoding} byte"
-        log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
+        log.error(f"YAML error in {name}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
-        log.error(f"YAML error in {path}", str(e))
+        log.error(f"YAML error in {name}", str(e))
     except RecursionError:
         # the parser follows the nesting of the document with its own: hundreds of levels are too many
-        log.error(f"YAML error in {path}", "the document is nested too deeply")
+        log.error(f"YAML error in {name}", "the document is nested too deeply")
     except ValueError as e:  # from anywhere else in the loader: what the document holds, not a bug
-        log.error(f"YAML error in {path}", str(e) or type(e).__name__)
+        log.error(f"YAML error in {name}", str(e) or type(e).__name__)
     raise LoadError
 
 
@@ -217,7 +218,8 @@ def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
 
 def _visible(text: str) -> str:
     """`text` on one line and safe for a terminal: every character that isn't printable (a line break, a tab,
-    ESC and the other control characters) as its escape, e.g. `\\n`, `\\x1b`."""
+    ESC and the other control characters) as its escape, e.g. `\\n`, `\\x1b`. A script's path is printed
+    this way wherever a report names it: a file name can hold any of them."""
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
 
 
@@ -279,7 +281,7 @@ def _unexpected(e: Exception) -> None:
     _where(e)
     script = getattr(e, "autobot_script", None)
     if script is not None:  # `validate` checks several: say which one it was
-        log.note("while checking", script)
+        log.note("while checking", _visible(script))
     log.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
@@ -340,7 +342,7 @@ def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Ru
         problems = [e]
     for e in problems:
         _traceback(args, e)
-        log.error(f"Script error in {script}", str(e))
+        log.error(f"Script error in {_visible(script)}", str(e))
     if problems:
         raise LoadError
     return runner
@@ -366,7 +368,7 @@ def _cmd_run(args):
         reason = str(e) or type(e).__name__
         if isinstance(e, RecursionError) and any(ref.key == "call" for ref in trail(e)):
             reason = f"functions call each other too deeply ({reason})"
-        log.error(f"Run failed in {args.script}", reason)
+        log.error(f"Run failed in {_visible(args.script)}", reason)
         _where(e)
         if _broad(e) and not args.traceback:
             log.hint("(run with --traceback for details)")
@@ -383,13 +385,13 @@ def _cmd_validate(args: argparse.Namespace) -> None:
             _runner(args, script, every=True)
         except LoadError:
             failed = True
-            log.verdict(script, "invalid", log.ERROR)
+            log.verdict(_visible(script), "invalid", log.ERROR)
         except Exception as e:
             e.autobot_script = script  # type: ignore[attr-defined]
             raise
         else:
             if not args.quiet:
-                log.verdict(script, "valid", log.OK)
+                log.verdict(_visible(script), "valid", log.OK)
     if failed:
         raise LoadError
 

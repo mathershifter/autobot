@@ -897,6 +897,8 @@ A line is two spaces, then `<location>: <message>`, then ` (got <value>)` where 
 
 Each error is one line, whatever its message, location or value holds: the report is never wrapped, and a character in them that isn't printable (a line break, a tab, ESC or another control character, which a message may show as part of a value of the script) is written as its escape, e.g. `\n`, `\t`, `\x1b`. So a value can't break a line of the report or send an escape sequence to the terminal. That holds for the messages of a plugin's model as well. On a terminal the location is bold and the type dim (see [Output](#output)).
 
+**The script's path in a report.** Wherever a report names the script (`Cannot read script <path>`, `YAML error in <path>`, `Script error in <path>`, `Run failed in <path>`, the `<path>: valid` and `<path>: invalid` lines and the `while checking <path>` line of `autobot validate`), `<path>` is the script as given on the command line, with each character that isn't printable written as its escape, as in a validation report: a line break as `\n`, a carriage return as `\r`, a tab as `\t`, ESC as `\x1b`, and a byte of the name that isn't UTF-8 as the escape of the lone surrogate it is read as (`\udcff`). A file name may hold any of these, and so the path is always on one line: it can't end a line of the report and start one that reads like another script's, and it can't send an escape sequence to the terminal.
+
 Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported (`autobot validate` reports more where it can, see [Checking scripts with `validate`](#checking-scripts-with-validate)). A closed stdout is checked before anything else. The installed plugins are loaded next, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
 ### Checking scripts with `validate`
@@ -911,7 +913,7 @@ Each script is then checked in the order given, with the sequence of `run`: the 
 - A script that loads gets one line, `<path>: valid`.
 - A script that doesn't gets the report `run` prints for the same error, character for character (`Cannot read script ...`, `YAML error in ...`, `Validation errors:` and its lines, `--arg requires ...`, `Script error in ...`), and then the line `<path>: invalid`. The report masks what a validation report masks.
 
-`<path>` is the script as given on the command line. The `invalid` line is what ties a report to its file, since `Validation errors:` and `--arg requires ...` don't name one. The scripts are given together, with the options before or after them: an option between two scripts is a malformed command line. A script given twice is checked twice.
+`<path>` is the script as given on the command line, with each character that isn't printable written as its escape (see below). The `invalid` line is what ties a report to its file, since `Validation errors:` and `--arg requires ...` don't name one. The scripts are given together, with the options before or after them: an option between two scripts is a malformed command line. A script given twice is checked twice.
 
 ```
 $ autobot validate upgrade.autobot.yaml login.autobot.yaml lab.autobot.yaml
@@ -1042,7 +1044,7 @@ Run failed in <path>: <reason>
   (run with --traceback for details)
 ```
 
-`<path>` is the script file as given on the command line, and `<reason>` is the error's message. The step that failed has said so already, where it failed in the log (`>> step failed (<type>): <message>`, see [Output](#output)); the report comes last, after the breakouts. These are the failed runs:
+`<path>` is the script file as given on the command line, shown as in every report (see [The script's path in a report](#cli)), and `<reason>` is the error's message. The step that failed has said so already, where it failed in the log (`>> step failed (<type>): <message>`, see [Output](#output)); the report comes last, after the breakouts. These are the failed runs:
 
 | Failure | Exception | `<reason>`, e.g. |
 |---------|-----------|------------------|
