@@ -90,6 +90,17 @@ class UniqueKeyLoader(yaml.SafeLoader):
                     raise ConstructorError("first defined", first.start_mark, f"found duplicate key {name!r}", k.start_mark)
         super().flatten_mapping(node)
 
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        try:
+            return super().construct_object(node, deep)
+        except ValueError as e:
+            # a scalar that reads as one of YAML's types and that Python's type can't hold: the date
+            # 2001-99-99, an integer of 5000 digits. It is the document's error, at this node
+            kind = node.tag.rpartition(":")[2]
+            raise ConstructorError(
+                None, None, f"invalid {kind} ({e}); quote the value if it is meant as text", node.start_mark
+            ) from e
+
 
 def _load(path: str) -> object:
     try:
@@ -110,6 +121,11 @@ def _load(path: str) -> object:
         log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
         log.error(f"YAML error in {path}", str(e))
+    except RecursionError:
+        # the parser follows the nesting of the document with its own: hundreds of levels are too many
+        log.error(f"YAML error in {path}", "the document is nested too deeply")
+    except ValueError as e:  # from anywhere else in the loader: what the document holds, not a bug
+        log.error(f"YAML error in {path}", str(e) or type(e).__name__)
     raise LoadError
 
 
@@ -261,6 +277,9 @@ def _unexpected(e: Exception) -> None:
             "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
     _where(e)
+    script = getattr(e, "autobot_script", None)
+    if script is not None:  # `validate` checks several: say which one it was
+        log.note("while checking", script)
     log.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
@@ -365,6 +384,9 @@ def _cmd_validate(args: argparse.Namespace) -> None:
         except LoadError:
             failed = True
             log.verdict(script, "invalid", log.ERROR)
+        except Exception as e:
+            e.autobot_script = script  # type: ignore[attr-defined]
+            raise
         else:
             if not args.quiet:
                 log.verdict(script, "valid", log.OK)

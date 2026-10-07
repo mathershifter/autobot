@@ -150,6 +150,18 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
         lambda m: m.write("s", raw=yaml.safe_dump(m.doc()) + "script: []\n"), (), "YAML error in {path}, line "
     ),
     "yaml-two-documents": (lambda m: m.write("s", raw="a: 1\n---\nb: 2\n"), (), "YAML error in {path}, line 2, "),
+    "yaml-bad-date": (
+        lambda m: m.write("s", raw="vars: {d: 2001-99-99}\n"), (),
+        "YAML error in {path}, line 1, column 11: invalid timestamp (month must be in 1..12); "
+        "quote the value if it is meant as text\n",
+    ),
+    "yaml-huge-int": (
+        lambda m: m.write("s", raw="vars:\n  n: " + "9" * 5000 + "\n"), (),
+        "YAML error in {path}, line 2, column 6: invalid int (Exceeds the limit (4300 digits) ",
+    ),
+    "yaml-too-deep": (
+        lambda m: m.write("s", raw="[" * 3000), (), "YAML error in {path}: the document is nested too deeply\n"
+    ),
     "undecodable": (lambda m: m.write("s", raw=b"a: \xff\xfe\n"), (), "YAML error in {path}, position 3: "),
     "empty-file": (lambda m: m.write("s", raw=""), (), "Validation errors:\n  (document): "),
     "list-document": (lambda m: m.write("s", raw="- a\n- b\n"), (), "Validation errors:\n  (document): "),
@@ -237,6 +249,40 @@ def test_p6_94_each_error_is_one_line_with_its_control_characters_escaped(m: Mar
     lines = val.stderr.splitlines()
     assert lines[0] == "Validation errors:" and lines[-1] == f"{path}: invalid" and len(lines) == 3
     assert ESC not in val.stderr and "\\x1b[31m\\n" in lines[1]
+
+
+def test_p6_105_what_yaml_types_cannot_hold_is_a_yaml_error(m: Markers):
+    """SPEC load errors: a date that isn't one, an integer too long to read and a document nested too deeply
+    are errors of the document, reported like any YAML error, and the scripts after them are checked."""
+    ok, ok2 = m.write("ok"), m.write("ok2", prepare=None)
+    bad = {
+        "date": ("vars: {d: 2001-99-99}\n", ", line 1, column 11: invalid timestamp (month must be in 1..12); quote"),
+        "key": ("vars:\n  2001-13-01: 1\n", ", line 2, column 3: invalid timestamp (month must be in 1..12); quote"),
+        "zone": ("vars:\n  - 2001-01-01 00:00:00 +99:99\n", ", line 2, column 5: invalid timestamp (offset must be"),
+        "digits": ("vars:\n  n: " + "9" * 5000 + "\n", ", line 2, column 6: invalid int (Exceeds the limit (4300 digits)"),
+        "hex": ("vars: {n: 0x_}\n", ", line 1, column 11: invalid int (invalid literal for int() with base 16: ''); quote"),
+        "flow": ("[" * 3000, ": the document is nested too deeply"),
+        "block": ("\n".join(" " * i + "a:" for i in range(3000)), ": the document is nested too deeply"),
+    }
+    for name, (raw, problem) in bad.items():
+        path = m.write(name, raw=raw)
+        val, run = _cli("validate", ok, path, ok2), _cli("run", path)
+        head = f"YAML error in {path}{problem}"
+        assert (val.returncode, run.returncode) == (1, 1), name
+        lines = val.stderr.splitlines()
+        assert len(lines) == 4 and lines[0] == f"{ok}: valid" and lines[2:] == [f"{path}: invalid", f"{ok2}: valid"], name
+        assert lines[1].startswith(head) and run.stderr == lines[1] + "\n", name
+        assert "Unexpected error" not in val.stderr + run.stderr and "Traceback" not in val.stderr + run.stderr
+    assert m.none()
+
+
+def test_p6_105_quoted_values_and_ordinary_nesting_still_load(m: Markers):
+    """The same text as a string, a real date and a document nested a hundred levels deep are valid."""
+    doc = yaml.safe_dump(m.doc())
+    path = m.write("s", raw=doc + "vars:\n  d: '2001-99-99'\n  real: 2001-12-31\n  n: '" + "9" * 5000 + "'\n  deep: "
+                   + "[" * 100 + "]" * 100 + "\n")
+    res = _cli("validate", path)
+    assert (res.returncode, res.stderr) == (0, f"{path}: valid\n")
 
 
 # -- --arg ------------------------------------------------------------------------------
@@ -443,8 +489,53 @@ def test_p6_98_unexpected_error_keeps_its_traceback_and_ends_the_command(
     assert (code, out) == (70, "")
     assert lines[0] == f"{first}: valid"
     assert lines[1].startswith("Unexpected error in Autobot: this is a bug, not a problem with the script.")
-    assert lines[2] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
+    assert lines[2] == f"  while checking {boom}"
+    assert lines[3] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
     assert str(boom) + ": " not in err and str(last) not in err
+
+
+VALIDATOR_PLUGIN = '''
+from __future__ import annotations
+
+import pydantic
+
+
+class BoomStep(pydantic.BaseModel):
+    boom: str
+
+    @pydantic.field_validator("boom")
+    @classmethod
+    def check(cls, value):
+        return {}[value]
+
+
+class BoomExecutor:
+    key = "boom"
+    model = BoomStep
+
+    def execute(self, step, ctx, timeout):
+        pass
+'''
+
+
+def test_p6_106_unexpected_error_names_the_script_being_checked(m: Markers, tmp_path: Path):
+    """A bug that ends `validate` is about one of several scripts: the report says which. Here a plugin
+    model's validator raises `KeyError`. `run` has one script, and its report stays as it is."""
+    root = tmp_path / "plugins"
+    root.mkdir()
+    plugin_dist(root, "boom", VALIDATOR_PLUGIN, "BoomExecutor")
+    first, boom, last = m.write("first"), m.write("boom", script=[{"boom": "x"}]), m.write("last")
+    val = _cli("validate", first, boom, last, PYTHONPATH=str(root))
+    lines = val.stderr.splitlines()
+    assert (val.returncode, val.stdout) == (70, "")
+    assert lines[0] == f"{first}: valid"
+    assert lines[1].startswith("Unexpected error in Autobot: this is a bug, not a problem with the script.")
+    assert lines[2] == f"  while checking {boom}"
+    assert lines[3] == "Traceback (most recent call last):" and lines[-1] == "KeyError: 'x'"
+    assert str(last) not in val.stderr and ": invalid" not in val.stderr
+    run = _cli("run", boom, PYTHONPATH=str(root))
+    assert run.returncode == 70 and "while checking" not in run.stderr
+    assert run.stderr.splitlines()[1] == "Traceback (most recent call last):"
 
 
 def test_p6_98_interrupt_while_validating_is_interrupted(
