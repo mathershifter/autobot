@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pexpect
 import pytest
-from conftest import BASH, SentLog, make_doc, make_runner, run_cli
+from conftest import BASH, FakeDevice, SentLog, make_doc, make_runner, run_cli
 from conftest import run_vars as run
 
 import autobot.session as session_mod
@@ -668,7 +668,7 @@ def test_p8_43_answer_to_a_prompt_is_checked_too(attach):
     s = attach(NOEDIT, [answer], prompt=False)
     with pytest.raises(LineTooLong) as ei:
         s.get_prompt(timeout=5)
-    assert str(ei.value) == too_long(5000)
+    assert str(ei.value) == f"prompt 'ask': {too_long(5000)}"
 
 
 @linux
@@ -878,3 +878,53 @@ def test_p8_47_session_goes_by_the_limit_of_the_platform(attach, monkeypatch: py
     assert "long line" not in capsys.readouterr().err
     s.sendline(echo(5000), timeout=5)
     assert warning(5000) in capsys.readouterr().err
+
+
+# -- P8-49: a prompt whose answer was refused ---------------------------------------------------------
+
+PASSWORD = [
+    {"name": "sh", "expect": [r"PROMPT\$ "], "return": True},
+    {"name": "pw", "expect": ["Password: $"], "send": "p" * 5000},
+]
+
+
+@linux
+@pytest.mark.slow
+def test_p8_49_no_return_is_pressed_at_a_prompt_whose_answer_was_refused(fake_device: FakeDevice, sent: SentLog, capsys):
+    """SPEC "The length of a sent line": the device asks for a password on a terminal that would cut the
+    answer, so the answer is not sent. The breakout's prompt wait goes through its idle
+    poll without the Return that would submit an empty password."""
+    spawn, log = fake_device("--order", "password", "--accept", ":secret")
+    runner = make_runner(
+        [{"cmd": "echo in"}],
+        spawn=spawn,
+        prompts=PASSWORD,
+        breakout=[{"cmd": "echo bye", "timeout": "6s"}],
+    )
+    with pytest.raises(LineTooLong) as ei:
+        runner.run()
+    assert str(ei.value) == f"prompt 'pw': {too_long(5000)}"
+    assert sent == [] and fake_device.read(log) == []
+    assert "breakout error (TimeoutError): timed out after 6.0s waiting for a shell prompt ('sh')" in capsys.readouterr().err
+
+
+@linux
+@pytest.mark.slow
+def test_p8_49_send_of_the_scripts_own_ends_it(fake_device: FakeDevice, attach, sent: SentLog):
+    """However many waits follow, none presses Return. What the script sends next is the answer the
+    prompt gets, and the session is as after any send."""
+    spawn, log = fake_device("--order", "password", "--accept", ":secret")
+    s = attach(spawn, [PromptHandler("sh", [r"PROMPT\$ "], [], True), SimpleHandler("pw", ["Password: $"], "p" * 5000, str)], prompt=False)
+    with pytest.raises(LineTooLong):
+        s.get_prompt(timeout=5)
+    assert s._unanswered is True
+    for _ in range(2):
+        with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
+            s.get_prompt(timeout=6)
+    assert sent == [] and fake_device.read(log) == [] and s._unanswered is True
+    s.sendline("secret", solicit=True, timeout=5)
+    assert s._unanswered is False
+    s.get_prompt(timeout=5)
+    assert fake_device.read(log) == ["PASSWORD=secret"]
+    s.detach()
+    assert s._unanswered is False

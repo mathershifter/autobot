@@ -351,6 +351,9 @@ class Session:
         # part of a line is typed at the far side, after a send that failed: no line is sent, since its
         # Return would enter that part, until a control character has been sent
         self._partial = False
+        # a prompt's answer was refused: the prompt is still waiting for one, and a solicit newline would
+        # be an empty answer, until something is sent
+        self._unanswered = False
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
@@ -416,6 +419,7 @@ class Session:
         self._solicit = True
         self._held = None
         self._partial = False
+        self._unanswered = False
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
@@ -524,7 +528,7 @@ class Session:
                         self._prompt = held[1]
                         return self._finish(output, sent, errors, capture, held[2])
                     continue  # no Return is pressed at a prompt that is held
-                if not solicited and not self._partial and all(h.is_fresh for h in self._handlers):
+                if not (solicited or self._partial or self._unanswered) and all(h.is_fresh for h in self._handlers):
                     self._put_line("", deadline - time.monotonic(), timeout)
                     solicited = True
                 continue
@@ -547,8 +551,9 @@ class Session:
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
                     try:
                         self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
-                    except PartialLine as e:
-                        raise PartialLine(f"prompt '{h.name}': {e}") from None
+                    except (LineTooLong, PartialLine) as e:
+                        self._unanswered = True
+                        raise type(e)(f"prompt '{h.name}': {e}") from None
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
@@ -618,6 +623,7 @@ class Session:
             # nothing was sent: the session is where it was
             self._at_prompt, self._sent, self._solicit, self._held = state
             raise
+        self._unanswered = False
 
     def _put_line(self, line: str, timeout: float, of: float | None = None):
         """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
@@ -741,6 +747,7 @@ class Session:
         self._solicit = True
         self._held = None
         self._put_control(char, timeout)
+        self._unanswered = False
 
     def sleep(self, seconds: float):
         if not self._cld:
