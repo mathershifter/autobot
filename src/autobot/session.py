@@ -660,6 +660,9 @@ class Session:
         limit = canon_limit(cld.child_fd) if attrs[3] & termios.ICANON else None
         if limit:
             if longest >= limit:
+                # the terminal of a child that has exited still reports its mode: there is nobody to cut the line for
+                if cld.flag_eof or not cld.isalive():
+                    raise EOFError("connection closed while sending a line")
                 raise LineTooLong(
                     f"line of {longest} bytes not sent: the terminal reads whole lines (canonical mode) and "
                     f"takes {limit - 1} bytes of one, so the last {longest - limit + 1} would be dropped without an error"

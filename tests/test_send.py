@@ -928,3 +928,29 @@ def test_p8_49_send_of_the_scripts_own_ends_it(fake_device: FakeDevice, attach, 
     assert fake_device.read(log) == ["PASSWORD=secret"]
     s.detach()
     assert s._unanswered is False
+
+
+# -- P8-50: a long line after the child has exited ----------------------------------------------------
+
+
+@linux
+@pytest.mark.parametrize("read_eof", [True, False], ids=["eof-read", "eof-unread"])
+def test_p8_50_long_line_to_a_child_that_has_exited_is_a_closed_connection(attach, read_eof: bool):
+    """The pty of a shell that has exited still reports canonical mode. A line longer than it takes is
+    not reported as one the terminal would cut: the connection is closed, and that is the error."""
+    s = attach(NOEDIT)
+    assert s._cld is not None
+    s.sendline("exit", solicit=True, timeout=5)
+    if read_eof:
+        s._cld.expect(pexpect.EOF, timeout=5)
+    else:
+        time.sleep(0.5)
+    with pytest.raises(EOFError, match=r"^connection closed while sending a line$"):
+        s.sendline("x" * 30000, timeout=5)
+
+
+@linux
+def test_p8_50_long_line_to_a_child_that_runs_is_still_refused(attach):
+    s = attach(NOEDIT)
+    with pytest.raises(LineTooLong):
+        s.sendline("x" * 30000, timeout=5)
