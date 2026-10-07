@@ -237,7 +237,11 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> SentLog:
 
     def put_control(self, char, *args, **kwargs):
         log.append(("ctrl", char))
-        return orig_ctrl(self, char, *args, **kwargs)
+        try:
+            return orig_ctrl(self, char, *args, **kwargs)
+        except PartialLine:
+            log.pop()
+            raise
 
     monkeypatch.setattr(Session, "_put_line", put_line)
     monkeypatch.setattr(Session, "_put_control", put_control)

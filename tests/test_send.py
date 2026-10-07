@@ -564,6 +564,19 @@ def test_p8_48_control_character_ends_it(attach, tmp_path: Path):
     assert lines[0].startswith("INTERRUPT=") and lines[1:] == ["LINE=exit"]
 
 
+@pytest.mark.parametrize("key", ["m", "j", "M"])
+def test_p8_48_control_character_that_is_a_return_is_refused(attach, tmp_path: Path, sent: SentLog, key: str):
+    """`control: m` and `control: j` are the Return key: they would enter the cut line, and they drop
+    nothing."""
+    s, log = _partial(attach, tmp_path)
+    sent.clear()
+    with pytest.raises(PartialLine) as ei:
+        s.sendcontrol(key, timeout=5)
+    assert str(ei.value) == PARTIAL.replace("line not sent", "control character not sent", 1)
+    time.sleep(1.2)
+    assert s._partial is True and not log.exists()
+
+
 def test_p8_48_control_character_that_is_not_sent_does_not_end_it(attach, tmp_path: Path):
     s, _ = _partial(attach, tmp_path, "--pause", 100)
     with pytest.raises(TimeoutError, match="while sending a control character"):

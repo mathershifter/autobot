@@ -99,6 +99,12 @@ class PartialLine(RunError):
     """A line that would be added to the part of an earlier one that is typed at the far side: it is not sent."""
 
 
+PARTIAL = (
+    "part of a line that could not be sent whole is typed at the far side, and a Return would enter it; "
+    "send a control character that drops it first (control: c)"
+)
+
+
 # Bounds on the reading of an echo, so that output which is no echo costs little whatever its size:
 # the readings of a line kept at a time (there is more than one only where the sent line repeats itself),
 # and, per character of the sent line, the characters of a part between two `\r` and the parts of a line.
@@ -636,10 +642,7 @@ class Session:
         cld = self._cld
         assert cld
         if self._partial:
-            raise PartialLine(
-                "line not sent: part of a line that could not be sent whole is typed at the far side, and a "
-                "Return would enter it; send a control character that drops it first (control: c)"
-            )
+            raise PartialLine(f"line not sent: {PARTIAL}")
         deadline = time.monotonic() + timeout
         if cld.delaybeforesend is not None:
             time.sleep(cld.delaybeforesend)
@@ -682,7 +685,10 @@ class Session:
             )
 
     def _put_control(self, char: str, timeout: float):
-        self._write(control_byte(char), time.monotonic() + timeout, timeout, "a control character")
+        data = control_byte(char)
+        if self._partial and data in (b"\r", b"\n"):  # Ctrl+M and Ctrl+J are the Return key
+            raise PartialLine(f"control character not sent: {PARTIAL}")
+        self._write(data, time.monotonic() + timeout, timeout, "a control character")
         self._partial = False  # the far side has been told to drop what was typed
 
     def _write(self, data: bytes, deadline: float, timeout: float, what: str):
