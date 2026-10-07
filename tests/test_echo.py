@@ -1,9 +1,10 @@
-"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-34, P4-44)."""
+"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-35, P4-44)."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 
 import pexpect
@@ -558,6 +559,26 @@ def test_p8_34_lines_that_fit_24_rows_are_written_the_same(term: str, lc_all: st
     """A guard: for a short command, a wrapped one, one that ends at the margin and one of 13 rows, and for
     output of more than 24 lines, the shell writes byte for byte what it writes on a screen of 24 rows."""
     assert raw_session(PTY_ROWS, term, lc_all) == raw_session(24, term, lc_all)
+
+
+# -- P8-35: the input line of a terminal without a line editor ----------------------------------------
+
+CANON = 4095  # the bytes of a line that the Linux terminal keeps for a program that reads whole lines
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
+@pytest.mark.parametrize("over", [-1, 0, 1, 905, 5905], ids=["under", "at", "over", "5000", "10000"])
+def test_p8_35_line_past_the_input_limit_of_the_terminal_is_cut(over: int):
+    """SPEC "The length of a sent line": bash without readline leaves the line to the terminal, which
+    keeps 4095 bytes of it. The command runs cut off there, without an error."""
+    cmd = command(CANON + over)
+    out = run(
+        [{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}],
+        spawn="bash --norc --noprofile --noediting -i",
+    )
+    assert out["out"] == " ".join(cmd[:CANON].split()[1:])
+    assert (out["out"] == cmd[5:]) == (over <= 0)
+    assert out["after"] == "done"
 
 
 # -- P4-44: a prompt that the line editor writes again while it echoes --------------------------------

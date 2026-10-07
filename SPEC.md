@@ -403,12 +403,13 @@ A line editor may write the prompt again while it echoes the line: readline does
 
 #### The length of a sent line
 
-A command line is sent as it is, in one write, however long it is. Two things limit the length that works:
+A command line is sent as it is, in one write, however long it is. Three things limit the length that works:
 
 - **The screen of the line editor.** On a terminal that wraps, a line that with its prompt doesn't fit on the screen is echoed in a form that is not recognized, and its output is not captured (see [The echo of a sent line](#the-echo-of-a-sent-line)). On [the window of the spawned process](#the-window-of-the-spawned-process) that is a line of 80,000 characters with its prompt; on a device with a screen of its own, what that screen holds.
 - **The write.** Autobot writes the whole line before it reads any of the echo. A line editor echoes while it reads, and a pty holds only so much that nobody has read: on Linux about 16,000 bytes of echo and 20,000 of input. An editor that can't write its echo stops reading, and if the rest of the line doesn't fit in the input either, the write never returns: the step doesn't end, not at its `timeout` either. A line shorter than the two together can't get there. A longer one may, depending on timing: with readline on a terminal that wraps, lines of up to 30,000 characters were always sent, and lines of 40,000 to 100,000 blocked in about one run in ten. With `TERM=dumb`, where readline echoes only the end of a long line, lines of 70,000 characters did not block.
+- **The input line of a terminal without a line editor.** Where no line editor reads the line (a shell without one, such as `bash --noediting`, or a program that reads a line), the line waits in the input queue of the terminal it is typed on until its Return, and on Linux that queue holds a line of 4095 bytes. What is sent past them is dropped without an error, and the Return still ends the line: the command runs cut off after its first 4095 bytes, and what is captured is the output of that command. A line editor such as readline reads the terminal a character at a time, and no such limit applies to it.
 
-So a line of up to 30,000 characters is sent and recognized on the window of the spawned process, on a terminal that wraps or not. What a shell or a device accepts as one command is a limit of its own.
+So a line of up to 30,000 characters is sent and recognized on the window of the spawned process, on a terminal that wraps or not, where a line editor reads it. What a shell or a device accepts as one command is a limit of its own.
 
 #### ANSI escape sequences
 
