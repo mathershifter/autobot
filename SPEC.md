@@ -823,14 +823,14 @@ The solicit newline is for a console that is idle, not for a command that is sti
 
 ```
 autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
-autobot validate <script.yaml> [<script.yaml> ...] [-a KEY=VALUE ...] [-q] [--traceback]
+autobot validate <script.yaml> [<script.yaml> ...] [-q] [--traceback]
 autobot schema [--traceback]
 autobot -h | --help
 ```
 
 Subcommands:
 - `run <script>`: load, validate and execute the script. `script` is the path to the YAML script file.
-- `validate <script>...`: load and validate each script as `run` does, and run nothing (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
+- `validate <script>...`: read and validate each script as `run` does, and do nothing else: no template is rendered and nothing runs (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
 - `schema`: print the JSON schema to stdout (see below). It takes no arguments, and one option, `--traceback`.
 
 `run` is the default. If the first argument isn't `run`, `validate`, `schema`, `-h` or `--help`, the CLI treats the command line as `autobot run ...`, so `autobot <script>` is the same as `autobot run <script>`, and options may come before the script (`autobot -a k=v <script>`). A script file named `run`, `validate` or `schema` must be given with the subcommand (`autobot run schema`) or as a path (`autobot ./schema`).
@@ -843,7 +843,7 @@ Options of `run`:
 | `--traceback` | Also print the Python traceback of an error that is reported without one (see [Errors while the script runs](#errors-while-the-script-runs)). |
 | `-h`, `--help` | Print the `run` usage and exit with status 0. |
 
-`validate` takes the same three options, and `-q` (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
+`validate` takes `--traceback` and `-h`, and `-q`, but no `--arg` (see [Checking scripts with `validate`](#checking-scripts-with-validate)).
 
 `autobot -h` prints the list of subcommands and exits with status 0. `autobot` with no arguments prints the same help to stdout and exits with status 1.
 
@@ -885,23 +885,30 @@ A line is two spaces, then `<location>: <message>`, then ` (got <value>)` where 
 
 Each error is one line, whatever its message, location or value holds: the report is never wrapped, and a character in them that isn't printable (a line break, a tab, ESC or another control character, which a message may show as part of a value of the script) is written as its escape, e.g. `\n`, `\t`, `\x1b`. So a value can't break a line of the report or send an escape sequence to the terminal. That holds for the messages of a plugin's model as well. On a terminal the location is bold and the type dim (see [Output](#output)).
 
-**The script's path in a report.** Wherever a report names the script (`Cannot read script <path>`, `YAML error in <path>`, `Script error in <path>`, `Run failed in <path>`, the `<path>: valid` and `<path>: invalid` lines and the `while checking <path>` line of `autobot validate`), `<path>` is the script as given on the command line, with each character that isn't printable written as its escape, as in a validation report: a line break as `\n`, a carriage return as `\r`, a tab as `\t`, ESC as `\x1b`, and a byte of the name that isn't UTF-8 as the escape of the lone surrogate it is read as (`\udcff`). A file name may hold any of these, and so the path is always on one line: it can't end a line of the report and start one that reads like another script's, and it can't send an escape sequence to the terminal.
+**The script's path in a report.** Wherever a report names the script (`Cannot read script <path>`, `YAML error in <path>`, `Script error in <path>`, `Run failed in <path>`, and, in `autobot validate`, the `<path>: valid` and `<path>: invalid` lines and the `while checking <path>` line), `<path>` is the script as given on the command line, with each character that isn't printable written as its escape, as in a validation report: a line break as `\n`, a carriage return as `\r`, a tab as `\t`, ESC as `\x1b`, and a byte of the name that isn't UTF-8 as the escape of the lone surrogate it is read as (`\udcff`). A file name may hold any of these, and so the path is always on one line: it can't end a line of the report and start one that reads like another script's, and it can't send an escape sequence to the terminal.
 
-Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported (`autobot validate` reports more where it can, see [Checking scripts with `validate`](#checking-scripts-with-validate)). A closed stdout is checked before anything else. The installed plugins are loaded next, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated, then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
+Line and column numbers start at 1; `position` is a 0-based offset into the file. With `--traceback`, a `Plugin error` and a `Script error` are preceded by the Python traceback of the exception they report. For each of these errors the CLI exits with status 1, and nothing runs: `attach.prepare` isn't run and no session is spawned. Only the first error is reported. A closed stdout is checked before anything else. The installed plugins are loaded next, because validation depends on them, so a broken plugin is reported even when the script itself has an error. Then the file is read and parsed, then validated: these two are the validation stage, which is all that `autobot validate` does (see [Checking scripts with `validate`](#checking-scripts-with-validate)). Then `--arg` values are checked, then `env` and `prompts` (after `--arg`, because `env` may use `{{ args.KEY }}`). Command-line syntax errors caught by the argument parser, such as `--arg` with no value, `run` without a script, an unknown option, or an argument to `schema`, print usage and exit with status 2.
 
 ### Checking scripts with `validate`
 
-`autobot validate <script>...` says whether each script would load, without running any of them. It is the command for an editor hook or a CI job. It loads a script with the code `run` loads it with, so the two can't disagree, and stops where `run` would start to run it:
+`autobot validate <script>...` says whether each script is a valid Autobot script, without running any of them. It is the command for an editor hook or a CI job. It is the validation stage of `run`, done with the code `run` does it with, so the two can't disagree, and nothing after it. For each script it does exactly this:
 
+1. reads the file and parses it as YAML (the `Cannot read script` and `YAML error` rows of the load errors above);
+2. validates the document against the models (the `Validation errors:` report): everything the JSON schema states, and what only the models can check, on the text as written: that a regex compiles (`errors`, `expect`, a `fields` entry's `match`, and an `assert` or `after` that isn't a template), that every `call` target is defined, that `spawn` names a command, that a plugin step's fields fit the plugin's model.
+
+It does none of what `run` does next: it doesn't check `--arg` values, resolve the top-level `env`, check a prompt's `send` template or resolve a `sendEach` collection, and it builds no session. So:
+
+- **No template is rendered.** A templated value is text to `validate`: it is not rendered, evaluated or even parsed as a template. A script whose `env` default is `{{ 1/0 }}`, has a template syntax error, or would call into Python if it were rendered is valid, and nothing of it has run.
 - **Nothing runs.** `attach.prepare` isn't run, no process is spawned, nothing is sent anywhere and no file is created, a temp file included. Nothing is written to stdout, so a closed stdout is not an error here.
-- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, so whatever a plugin does when it is imported happens under `validate` too. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
+- **Plugins are loaded**, because validation depends on them. That imports each installed plugin's module and creates its executor, and the model of a plugin validates that plugin's steps, so whatever a plugin does when it is imported, and whatever the validators of its model do, happens under `validate` too. Validate with plugins you trust. They are loaded once, before the first script is read. A plugin that can't be loaded is reported as by `run` (`Plugin error: ...`); the command then exits with status 1 and checks no script.
+- **The result depends on the file and the installed plugins, and on nothing else**: not on the environment of the process, not on arguments (the command takes none for the script), and not on the other scripts given or their order.
 
-Each script is then checked in the order given, with the sequence of `run`: the file is read and parsed, then validated, then the `--arg` values are checked, then `env` and `prompts`. Everything is written to stderr, as plain or styled text by the rules of [Output](#output):
+The scripts are checked in the order given. Everything is written to stderr, as plain or styled text by the rules of [Output](#output):
 
-- A script that loads gets one line, `<path>: valid`.
-- A script that doesn't gets the report `run` prints for the same error, character for character (`Cannot read script ...`, `YAML error in ...`, `Validation errors:` and its lines, `--arg requires ...`, `Script error in ...`), and then the line `<path>: invalid`. The report masks what a validation report masks.
+- A valid script gets one line, `<path>: valid`.
+- An invalid one gets the report `run` prints for the same error, character for character (`Cannot read script ...`, `YAML error in ...`, or `Validation errors:` and its lines), and then the line `<path>: invalid`. The report masks what a validation report masks.
 
-`<path>` is the script as given on the command line, with each character that isn't printable written as its escape (see below). The `invalid` line is what ties a report to its file, since `Validation errors:` and `--arg requires ...` don't name one. The scripts are given together, with the options before or after them: an option between two scripts is a malformed command line. A script given twice is checked twice.
+`<path>` is the script as given on the command line, with each character that isn't printable written as its escape (see [The script's path in a report](#cli)). The `invalid` line is what ties a report to its file, since `Validation errors:` doesn't name one. A script given twice is checked twice.
 
 ```
 $ autobot validate upgrade.autobot.yaml login.autobot.yaml lab.autobot.yaml
@@ -909,29 +916,33 @@ upgrade.autobot.yaml: valid
 Validation errors:
   script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]
 login.autobot.yaml: invalid
-Script error in lab.autobot.yaml: env cycle: A -> B -> A
-Script error in lab.autobot.yaml: prompt 'login': sendEach 'vars.creds': item 1 has no field 'password'
+YAML error in lab.autobot.yaml, line 4, column 3: found duplicate key 'spawn'
+  first defined (line 3, column 3)
 lab.autobot.yaml: invalid
 ```
-
-**Which errors a script gets.** The sequence stops at the first stage that fails, as in `run`, because each stage needs what the one before it gives: an unreadable file has nothing to parse, and a script that fails validation has no `env` to resolve. Within the last stage `validate` goes on where `run` stops: it reports the error of `env`, and then the first error of each top-level prompt in the order of `prompts`, each as a `Script error in <path>: ...` line of its own. A prompt's line names the prompt (`prompt '<name>': ...`), so two prompts with the same mistake give two different lines. These don't depend on each other, so none is a consequence of another. The first of the lines is the one `run` reports. `env` has at most one line, the first error found: another default that reads the failed one would fail for the same reason.
 
 Options of `validate`:
 
 | Flag | Description |
 |------|-------------|
-| `-a KEY=VALUE`, `--arg KEY=VALUE` | As for `run`. The arguments are used for every script given. Give the arguments the script is run with: a script whose `env` reads `{{ args.KEY }}` is invalid without `--arg KEY=...`, with the `Script error` that `run` reports for it (`env.<DEFAULT>: template error: args has no key 'KEY'; pass it with --arg KEY=VALUE`). An `--arg` without `=` is reported, as by `run`, for each script that gets as far as that check. |
 | `-q`, `--quiet` | Print nothing for a valid script. An invalid one keeps its report and its `invalid` line. |
-| `--traceback` | As for `run`: the Python traceback of a `Plugin error` or a `Script error` is printed before it. |
+| `--traceback` | The Python traceback of a `Plugin error` is printed before it. The reports about a script have none. |
 | `-h`, `--help` | Print the `validate` usage and exit with status 0. |
 
-`validate` exits with status 0 when every script is valid, and with status 1 when any is invalid, after all of them have been checked. A command line without a script, or with an unknown option, prints usage and exits with status 2. An unexpected error (see [Errors while the script runs](#errors-while-the-script-runs)) ends the command where it happens, with the traceback and status 70, and the scripts after it aren't checked. Its report names the script that was being checked, in a line `  while checking <path>` before the traceback, since no `invalid` line follows. An interrupt prints `Interrupted`.
+The options may come before, between or after the scripts; a script whose name starts with `-` is given after `--`. There is no `--arg`: it is an unknown option here.
 
-**What a valid script may still do.** With the same arguments, plugins and environment, `validate` finds a script valid exactly when `run` gets past loading it: a valid script doesn't end `run` with one of the load errors and status 1 (a closed stdout aside, which is about the command line and not the script), and an invalid one does. The environment is part of that, because a variable of the process's environment replaces the `env` default of the same name, which is then never rendered. A valid script can still fail once it runs, with status 3 (see [Errors while the script runs](#errors-while-the-script-runs)). `validate` doesn't catch:
-- a template that is rendered during the run: `attach.prepare`, `attach.spawn`, and every templated field of a step, a block or a block's prompts. That includes an `{{ args.KEY }}` that only they read, so such a script is valid without the argument and fails in `run` without it (`Run failed in <path>: template error: args has no key 'KEY'; pass it with --arg KEY=VALUE`);
-- a `spawn` that renders to no command. `run` renders a `spawn` that doesn't read `env` before `prepare`, but reports it as a failed run, not as a load error;
-- an `env` default that waits for `attach.prepare` (see [The environment in templates](#the-environment-in-templates)) and can't be rendered after it;
-- a block's `sendEach` collection, an `assert` or `after` that renders to an invalid regex;
+`validate` exits with status 0 when every script is valid, and with status 1 when any is invalid, after all of them have been checked. A command line without a script, or with an unknown option, prints the `validate` usage and exits with status 2. An unexpected error (see [Errors while the script runs](#errors-while-the-script-runs)) ends the command where it happens, with the traceback and status 70, and the scripts after it aren't checked. Its report names the script that was being checked, in a line `  while checking <path>` before the traceback, since no `invalid` line follows. An interrupt prints `Interrupted`.
+
+**What a valid script may still do.** With the same plugins installed, `validate` finds a script valid exactly when `run` gets past its validation stage: for a valid script `run` doesn't report `Cannot read script`, a `YAML error` or `Validation errors`, and for an invalid one it reports what `validate` reported. After that stage `run` can still stop before anything is spawned, with status 1:
+- an `--arg` without `=` (`--arg requires KEY=VALUE format, got: ...`);
+- a top-level `env` default that can't be resolved: a template error, an `{{ args.KEY }}` whose argument isn't given, a variable set nowhere in a script without `attach.prepare`, a reference cycle (`Script error in <path>: env.<KEY>: ...`, `Script error in <path>: env cycle: ...`);
+- a top-level prompt whose `send` has a template syntax error, or whose `sendEach` collection can't be resolved (`Script error in <path>: prompt '<name>': ...`).
+
+And it can fail once the script runs, with status 3 (see [Errors while the script runs](#errors-while-the-script-runs)):
+- a template that is rendered during the run fails: `attach.prepare`, `attach.spawn`, and every templated field of a step, a block or a block's prompts, an `{{ args.KEY }}` among them;
+- a `spawn` renders to no command;
+- an `env` default that waits for `attach.prepare` (see [The environment in templates](#the-environment-in-templates)) can't be rendered after it;
+- a block's `sendEach` collection can't be resolved, or an `assert` or `after` renders to an invalid regex;
 - anything the device does: a prompt that never comes, a failed command, a rejected login.
 
 ### Output
@@ -1077,14 +1088,14 @@ KeyError: 'x'
 
 When a plugin step was running, the first line names the plugin instead, whether the step that failed is the plugin step itself or a step the plugin runs with `ctx.run_steps(...)` (the nearest plugin step, if one runs another). A step that a plugin builds can fail in ways no step of a script can, e.g. a `call` to a function that isn't defined: `Unexpected error in plugin '<key>': this is a bug in the plugin, not in the script. Please report it to the plugin's author with the traceback below.` An exception outside a run, while the script is loaded or in `autobot schema`, is reported the same way, without the `at` line; in `autobot validate`, with the line `  while checking <path>` in its place (see [Checking scripts with `validate`](#checking-scripts-with-validate)). An exception that a validator of a plugin's model raises while a script is validated, other than the `ValueError` and `AssertionError` that make a validation error, is one of these. `SystemExit` is not caught.
 
-With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report; in `autobot validate`, before each `Script error` line. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
+With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
 
 ### Exit status
 
 | Status | Meaning |
 |--------|---------|
 | 0 | The run completed; `autobot validate` found every script valid; `autobot schema` printed the schema; `-h` printed the help |
-| 1 | The script couldn't be loaded (the load errors above), and nothing ran; `autobot validate` found a script invalid, or a `Plugin error`. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
+| 1 | The script couldn't be loaded (the load errors above), and nothing ran; `autobot validate` found a script invalid (unreadable, not YAML, or with validation errors), or a `Plugin error`. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
 | 2 | A malformed command line |
 | 3 | The run failed. `attach.prepare` or the session may have run, and the breakouts have run if the session got past the spawn wait |
 | 70 | An unexpected error: a bug in Autobot or in a plugin |

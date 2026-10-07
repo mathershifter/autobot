@@ -308,16 +308,13 @@ def _discover(args: argparse.Namespace | None = None) -> None:
         raise LoadError from None
 
 
-def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Runner:
-    """The runner of `script`, ready to run: the file read, parsed and validated, the `--arg` values checked,
-    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`.
-
-    The sequence stops at its first error. With `every`, the last stage reports all it has: the error of
-    `env` and of each prompt, which don't depend on each other."""
+def _config(script: str) -> Config:
+    """The validation stage, which `run` and `validate` share: the file read and parsed, and the document
+    validated against the models. Nothing of the script is rendered or run. A load error is reported, and
+    raised as `LoadError`."""
     config_dict = _load(script)
-
     try:
-        config = Config.model_validate(config_dict)
+        return Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
         log.error("Validation errors:")
         for err in _one_per_value(e.errors()):
@@ -327,6 +324,11 @@ def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Ru
             log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
         raise LoadError from None
 
+
+def _runner(args: argparse.Namespace, config: Config) -> Runner:
+    """What `run` adds to the validation stage before it runs anything: the `--arg` values checked, `env`
+    and `prompts` resolved. This renders the script's templates. An error is reported, and raised as
+    `LoadError`."""
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
@@ -335,17 +337,12 @@ def _runner(args: argparse.Namespace, script: str, *, every: bool = False) -> Ru
         key, value = item.split("=", 1)
         cli_args[key] = value
 
-    problems: list[ScriptError] = []
     try:
-        runner = Runner(config, cli_args, problems if every else None)
+        return Runner(config, cli_args)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
-        problems = [e]
-    for e in problems:
         _traceback(args, e)
-        log.error(f"Script error in {_visible(script)}", str(e))
-    if problems:
-        raise LoadError
-    return runner
+        log.error(f"Script error in {_visible(args.script)}", str(e))
+        raise LoadError from None
 
 
 def _cmd_run(args):
@@ -358,7 +355,7 @@ def _cmd_run(args):
         )
         raise LoadError
     _discover(args)
-    runner = _runner(args, args.script)
+    runner = _runner(args, _config(args.script))
     try:
         runner.run()
     except EXPECTED as e:
@@ -377,12 +374,13 @@ def _cmd_run(args):
 
 
 def _cmd_validate(args: argparse.Namespace) -> None:
-    """Load each script as `run` does, and run none. Nothing is written to stdout, so a closed one is no error."""
+    """`run`'s validation stage for each script, and nothing after it: no template is rendered and nothing
+    runs. Nothing is written to stdout, so a closed one is no error."""
     _discover(args)
     failed = False
     for script in args.script:
         try:
-            _runner(args, script, every=True)
+            _config(script)
         except LoadError:
             failed = True
             log.verdict(_visible(script), "invalid", log.ERROR)
@@ -470,23 +468,20 @@ def main():
     validate_parser = subparsers.add_parser(
         "validate",
         help="Check autobot scripts without running them",
-        description="Check each script as `run` does before it runs anything, and run nothing: attach.prepare "
-        "is not run and no session is spawned. For each script, print `<script>: valid`, or the load error "
-        "`run` would report and `<script>: invalid`, on stderr. Exit with status 1 if any script is invalid.",
+        description="Validate each script as `run` does before anything else, and stop there: no template "
+        "is rendered, attach.prepare is not run and no session is spawned. For each script, print "
+        "`<script>: valid`, or the error `run` would report and `<script>: invalid`, on stderr. Exit with "
+        "status 1 if any script is invalid.",
     )
     validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
-    for sub, purpose in (
-        (run_parser, "Pass arguments to the script"),
-        (validate_parser, "Check the scripts with the arguments they would be run with"),
-    ):
-        sub.add_argument(
-            "-a",
-            "--arg",
-            action="append",
-            default=[],
-            metavar="KEY=VALUE",
-            help=f"{purpose} (e.g. --arg console_host=10.0.0.1)",
-        )
+    run_parser.add_argument(
+        "-a",
+        "--arg",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+    )
     validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 
     schema_parser = subparsers.add_parser("schema", help="Print augmented JSON schema to stdout")
@@ -500,7 +495,12 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] not in ("run", "validate", "schema", "-h", "--help"):
         sys.argv.insert(1, "run")
 
-    args = parser.parse_args()
+    if sys.argv[1:2] == ["validate"]:
+        # its options may come between the scripts, which the parser of the subcommands doesn't allow
+        args = validate_parser.parse_intermixed_args(sys.argv[2:])
+        args.command = "validate"
+    else:
+        args = parser.parse_args()
 
     try:
         if args.command == "schema":
