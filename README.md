@@ -44,7 +44,7 @@ Validation errors:
 login.autobot.yaml: invalid
 ```
 
-A script that loads gets one line, `<path>: valid`. One that doesn't gets the error `run` would report before it runs anything, in the same words, and then `<path>: invalid`. All of it goes to stderr; nothing is written to stdout. The exit status is 0 when every script is valid and 1 when any isn't. `-a KEY=VALUE` gives the arguments the scripts are checked with, for a script whose `env` reads `{{ args.KEY }}`; `-q` prints nothing for a valid script; `--traceback` works as for `run`. Installed plugins are loaded, since their steps are part of what is valid: their import code and their models' validators run, so validate only with plugins you trust. The script's own templates are [sandboxed](#templating) and can't run code.
+A script that loads gets one line, `<path>: valid`. One that doesn't gets the error `run` would report before it runs anything, in the same words, and then `<path>: invalid`. All of it goes to stderr; nothing is written to stdout. The exit status is 0 when every script is valid and 1 when any isn't. `-a KEY=VALUE` gives the arguments the scripts are checked with, for a script whose `env` reads `{{ args.KEY }}`; `-q` prints nothing for a valid script; `--traceback` works as for `run`. Installed plugins are loaded, since their steps are part of what is valid.
 
 A valid script can still fail once it runs: a template in a step or in `spawn` is rendered during the run, so `validate` doesn't notice a missing `--arg` that only a step reads, and the device has its own say. See [SPEC.md](SPEC.md#checking-scripts-with-validate) for the exact guarantee.
 
@@ -501,8 +501,6 @@ script:
   - cmd: wget -P /tmp {{ env.IMAGE }}
   - cmd: echo {{ args.message }}
 ```
-
-Templates are rendered in Jinja2's sandbox. They read `env`, `vars`, `args` and `session` and use Jinja2's statements, filters and tests, with the globals `range`, `dict` and `namespace`. They can't reach Python's internals (no attribute that starts with an underscore, such as `''.__class__`), and they can't modify a mapping or a list (`vars.update(...)`, `x.append(...)`); either is a `template error: not allowed in a template: ...`. See [SPEC.md](SPEC.md#templates-are-sandboxed) for the rules and their limits.
 
 Since these values are templates, `{{`, `{%` and `{#` always start Jinja2 syntax, even in shell code: bash's `${#arr[@]}` fails to render because `{#` opens a Jinja2 comment. Wrap such text in `{% raw %}...{% endraw %}` (or write `{{ '{#' }}`):
 

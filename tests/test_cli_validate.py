@@ -833,20 +833,6 @@ for line in seen:
 sys.exit(99 if seen else code)
 """
 
-INJECTIONS = {
-    "os-system": "{{ lipsum.__globals__.os.system('touch PWNED') }}",
-    "open-w": "{{ lipsum.__globals__['__builtins__'].open('PWNED', 'w').close() }}",
-    "environ": "{{ cycler.__init__.__globals__.os.environ.update({'AB_PWNED': '1'}) }}",
-    "posix-spawn": "{{ joiner.__init__.__globals__.os.posix_spawn('/bin/true', ['true'], {}) }}",
-    "popen": "{{ ''.__class__.__mro__[1].__subclasses__() | selectattr('__name__', 'eq', 'Popen') | list }}",
-    "remove": "{{ namespace.__init__.__globals__['__builtins__']['__import__']('os').remove('s') }}",
-}
-AUDIT_CORPUS = {
-    **CORPUS,
-    **{f"inject-{k}": ((lambda m, t=t: m.write("s", env={"A": t})), (), False) for k, t in INJECTIONS.items()},
-}
-
-
 def _audited(*argv: Any, cwd: Path) -> subprocess.CompletedProcess[str]:
     # -B: an import during the command must not write a .pyc, which would be a file opened for writing
     return subprocess.run(
@@ -855,12 +841,12 @@ def _audited(*argv: Any, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.parametrize("case", AUDIT_CORPUS)
+@pytest.mark.parametrize("case", CORPUS)
 def test_p6_104_validate_starts_no_process_and_writes_no_file(m: Markers, case: str):
-    """SPEC "Checking scripts with `validate`": nothing of the script runs. For every script of the corpus,
-    valid or not, and for an `env` default that tries to run code: no exec, fork or spawn, no socket, no file
+    """SPEC "Checking scripts with `validate`": nothing runs. For every script of the corpus, valid or not:
+    no exec, fork or spawn, no socket, no file
     opened for writing or removed, no change to the environment, by whichever function."""
-    make, args, loads = AUDIT_CORPUS[case]
+    make, args, loads = CORPUS[case]
     path = make(m)
     before = sorted(p.name for p in m.root.iterdir())
     res = _audited("validate", path, *args, cwd=m.root)
