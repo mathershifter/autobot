@@ -15,6 +15,12 @@ from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
+# The window of the spawned pty. A line editor on a terminal that wraps clears the screen and writes the
+# prompt again for a line that doesn't fit on the screen, so the screen is tall: 80,000 characters. Not
+# taller: curses programs allocate by the screen (and ncurses doesn't start above 32,767 rows).
+PTY_ROWS = 1000
+PTY_COLS = 80
+
 # How long a prompt wait holds a shell prompt that may be one the line editor wrote again inside its echo:
 # the prompt is taken for the prompt once nothing arrives for this long. Readline writes the prompt and the
 # rest of the line in one write; the time is for a slow line between a device and its console server.
@@ -367,6 +373,7 @@ class Session:
             encoding="utf-8",
             codec_errors="replace",
             env=run_environ() if env is None else env,
+            dimensions=(PTY_ROWS, PTY_COLS),
         )
         self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
         cld = self._cld
