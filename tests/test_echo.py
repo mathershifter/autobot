@@ -1,15 +1,18 @@
-"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-32)."""
+"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-35, P4-44)."""
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 
+import pexpect
 import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.session import HELD_GRACE, CommandError, strip_echo
+from autobot.session import HELD_GRACE, PTY_COLS, PTY_ROWS, CommandError, strip_echo
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
 EOS_PROMPTS = [{"name": "eos", "expect": [r"^cmp474\(s1\)\(vrf:MGMT\)#"], "return": True}]
@@ -438,6 +441,156 @@ def test_p8_32_readline_wrapped_list_and_script():
     )
     assert out["out"] == f"{a[5:]}\n{b[5:]}"
     assert out["script"] == "\n".join(f"line{i}" for i in range(40))
+
+
+# -- P8-34: a line of more rows than a screen of 24 ---------------------------------------------------
+
+# with `PROMPT$ `, 1912 characters fill 24 rows of 80 columns, and 952 fill 24 rows of 40
+TALL = [1912, 2000, 4000, 10000]
+TALL_NARROW = [952, 2000, 10000]
+
+
+def tall(script: list[dict], lc_all: str, term: str = "vt100", cols: int = COLS) -> dict:
+    """`readline`, on a terminal type of the test's choice."""
+    resize = [{"cmd": f"stty cols {cols}"}] if cols != COLS else []
+    return run([*resize, *script], spawn=f"env INPUTRC=/dev/null TERM={term} LC_ALL={lc_all} {BASH}")
+
+
+@pytest.mark.parametrize("term", ["vt100", "xterm"])
+@pytest.mark.parametrize("length", TALL)
+def test_p8_34_line_of_many_rows_registers_its_output(length: int, term: str):
+    """SPEC "The window of the spawned process": the screen is tall enough for the line, so readline
+    writes it once. On a screen of 24 rows it clears the screen and writes the prompt first."""
+    cmd = command(length)
+    out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], "C", term)
+    assert out["out"] == cmd[5:]
+    assert out["after"] == "done"
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+@pytest.mark.parametrize("term", ["vt100", "xterm"])
+@pytest.mark.parametrize("length", TALL)
+def test_p8_34_line_of_many_rows_registers_its_output_in_a_multibyte_locale(length: int, term: str):
+    cmd = command(length)
+    out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], str(UTF8), term)
+    assert out["out"] == cmd[5:]
+    assert out["after"] == "done"
+
+
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+@pytest.mark.parametrize("length", TALL_NARROW)
+def test_p8_34_line_of_many_rows_on_a_narrow_terminal(length: int, lc_all: str):
+    cmd = command(length)
+    out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], lc_all, cols=NARROW)
+    assert out["out"] == cmd[5:]
+    assert out["after"] == "done"
+
+
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+def test_p8_34_longest_line_the_window_shows_at_40_columns(lc_all: str):
+    """SPEC "The echo of a sent line": with its prompt, the line is one cell short of the window's
+    `PTY_ROWS` rows of 40 columns. (One more is usually answered by clearing the screen, not always, and
+    at 80 columns a line this close to the window is past what one write is sure to carry.)"""
+    cmd = command(PTY_ROWS * NARROW - len("PROMPT$ ") - 1)
+    assert len(cmd) == 19991
+    out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], lc_all, cols=NARROW)
+    assert out["out"] == cmd[5:]
+    assert out["after"] == "done"
+
+
+def test_p8_34_long_lines_of_a_list_with_errors_and_assert():
+    """Each long line of a list loses its own echo, `assert` and `errors` read the output, and the
+    command after them gets its own."""
+    a, b = command(2500), command(4000, "second ")
+    script = [
+        {"cmd": [a, "echo two", b], "register": "out"},
+        {"cmd": a, "assert": "w498x$","register": "asserted"},
+        {"cmd": "echo next", "register": "n"},
+    ]
+    out = run(script, spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
+    assert out == {"out": f"{a[5:]}\ntwo\n{b[5:]}", "asserted": a[5:], "n": "next"}
+    fatal = command(3000, "FATAL ")
+    runner = make_runner([{"cmd": fatal, "register": "f"}], spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
+    with pytest.raises(CommandError, match="command error: FATAL"):
+        runner.run()
+
+
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+def test_p8_34_screen_the_shell_is_told_of_is_the_one_that_counts(lc_all: str):
+    """SPEC "The echo of a sent line": the limit is the screen the line editor works with. Told that it
+    has 24 rows, as a device behind a console server may be, readline shows a line that fills them by
+    clearing the screen, and the output is not captured; told that it has 100, it shows a longer one."""
+    fits, fills, longer = command(1911), command(1912), command(4000)
+    script = [
+        {"cmd": "stty rows 24"},
+        {"cmd": fits, "register": "fits"},
+        {"cmd": fills, "register": "fills"},
+        {"cmd": "echo next", "register": "next"},
+        {"cmd": "stty rows 100"},
+        {"cmd": longer, "register": "longer"},
+    ]
+    assert tall(script, lc_all) == {"fits": fits[5:], "fills": "", "next": "next", "longer": longer[5:]}
+
+
+@pytest.mark.parametrize("length", [2000, 10000])
+def test_p8_34_long_line_on_a_plain_terminal(length: int):
+    """A guard: with `TERM=dumb` readline scrolls the line sideways whatever the screen's height."""
+    cmd = command(length)
+    out = run([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}])
+    assert (out["out"], out["after"]) == (cmd[5:], "done")
+
+
+SCREENFUL = [
+    "echo hi", "true", "", "seq 30", "printf 'a\\nb\\n'", "ls /nonexistent-autobot", "echo $?",
+    command(full(COLS) - 1), command(full(COLS)), command(full(COLS) + 1), command(200), command(1000),
+]  # fmt: skip
+
+
+def raw_session(rows: int, term: str, lc_all: str) -> list[str]:
+    """What bash writes for each line of `SCREENFUL` on a pty of `rows` rows: every byte, up to the prompt
+    that follows a line break."""
+    env = {**os.environ, "TERM": term, "NO_COLOR": "1", "LC_ALL": lc_all, "INPUTRC": "/dev/null"}
+    cld = pexpect.spawn(BASH, env=env, encoding="utf-8", dimensions=(rows, PTY_COLS), timeout=10)
+    try:
+        # between the two, readline's bracketed-paste switches and a `\r` (a command without output)
+        at_prompt = r"(?:\A|\n)(?:\x1b\[\?2004[hl]|\r)*PROMPT\$ $"
+        cld.expect(at_prompt)
+        out = []
+        for line in SCREENFUL:
+            cld.sendline(line)
+            cld.expect(at_prompt)
+            out.append(str(cld.before) + str(cld.after))
+        return out
+    finally:
+        cld.close(force=True)
+
+
+@pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
+@pytest.mark.parametrize("term", ["dumb", "vt100", "xterm"])
+def test_p8_34_lines_that_fit_24_rows_are_written_the_same(term: str, lc_all: str):
+    """A guard: for a short command, a wrapped one, one that ends at the margin and one of 13 rows, and for
+    output of more than 24 lines, the shell writes byte for byte what it writes on a screen of 24 rows."""
+    assert raw_session(PTY_ROWS, term, lc_all) == raw_session(24, term, lc_all)
+
+
+# -- P8-35: the input line of a terminal without a line editor ----------------------------------------
+
+CANON = 4095  # the bytes of a line that the Linux terminal keeps for a program that reads whole lines
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
+@pytest.mark.parametrize("over", [-1, 0, 1, 905, 5905], ids=["under", "at", "over", "5000", "10000"])
+def test_p8_35_line_past_the_input_limit_of_the_terminal_is_cut(over: int):
+    """SPEC "The length of a sent line": bash without readline leaves the line to the terminal, which
+    keeps 4095 bytes of it. The command runs cut off there, without an error."""
+    cmd = command(CANON + over)
+    out = run(
+        [{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}],
+        spawn="bash --norc --noprofile --noediting -i",
+    )
+    assert out["out"] == " ".join(cmd[:CANON].split()[1:])
+    assert (out["out"] == cmd[5:]) == (over <= 0)
+    assert out["after"] == "done"
 
 
 # -- P4-44: a prompt that the line editor writes again while it echoes --------------------------------

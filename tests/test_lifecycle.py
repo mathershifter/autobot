@@ -34,7 +34,7 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import PromptHandler, Session
+from autobot.session import PTY_COLS, PTY_ROWS, PromptHandler, Session
 
 TOP_PROMPTS = [{"name": "top", "expect": [r"PROMPT\$ "], "return": True}]
 BLOCK_PROMPTS = [{"name": "blk", "expect": [r"PROMPT\$ "], "return": True}]
@@ -1348,3 +1348,37 @@ def test_p5_82_session_attach_defaults_to_the_run_environment(spawned, monkeypat
         with pytest.raises(SpawnRecorded):
             Session([]).attach("true", **({} if env is None else {"env": env}))
         assert spawned[-1][1]["env"] == expected
+
+
+def test_p5_83_spawned_shell_has_the_window_of_the_constants():
+    """SPEC "The window of the spawned process": the shell's terminal has `PTY_ROWS` rows of `PTY_COLS`
+    columns, whatever the terminal Autobot runs in, and a program that asks for the size gets it."""
+    assert (PTY_ROWS, PTY_COLS) == (500, 80)
+    out = run_script(
+        [
+            {"cmd": "stty size", "register": "stty"},
+            {"cmd": "echo $LINES $COLUMNS", "register": "bash"},
+            {"cmd": "tput lines; tput cols", "register": "tput"},
+        ]
+    ).config.vars
+    assert out == {"stty": "500 80", "bash": "500 80", "tput": "500\n80"}
+
+
+@pytest.mark.parametrize("rows", [24, 50])
+def test_p5_83_spawn_line_that_sets_the_rows_gives_the_program_that_height(rows: int):
+    """SPEC "The window of the spawned process": a `spawn` through `sh -c 'stty rows N && exec ...'` sets
+    another height before the program starts, so the program (here bash; an `ssh` the same) has it."""
+    out = run_script(
+        [{"cmd": "stty size", "register": "stty"}, {"cmd": "echo $LINES $COLUMNS", "register": "bash"}],
+        spawn=f"sh -c 'stty rows {rows} && exec {BASH}'",
+    ).config.vars
+    assert out == {"stty": f"{rows} 80", "bash": f"{rows} 80"}
+
+
+def test_p5_83_session_attach_spawns_with_the_window(spawned, shell_session: Session):
+    """A `Session.attach` of its own (a plugin's) gets the same window as a run's."""
+    assert shell_session._cld is not None and shell_session._cld.getwinsize() == (PTY_ROWS, PTY_COLS)
+    spawned.stop = True
+    with pytest.raises(SpawnRecorded):
+        Session([]).attach("true")
+    assert spawned[-1][1]["dimensions"] == (PTY_ROWS, PTY_COLS)
