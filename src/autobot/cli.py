@@ -48,6 +48,14 @@ EXPECTED = (
 # traceback is, and from a plugin's own code they are the plugin's bug. A timeout isn't one of them.
 BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
+
+
+class LoadError(SystemExit):
+    """A load error, raised once it is reported: the script can't be loaded, and the CLI exits with status 1."""
+
+    def __init__(self) -> None:
+        super().__init__(EXIT_LOAD)
+
 PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
@@ -102,7 +110,7 @@ def _load(path: str) -> object:
         log.error(f"YAML error in {path}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
         log.error(f"YAML error in {path}", str(e))
-    sys.exit(EXIT_LOAD)
+    raise LoadError
 
 
 GOT_MAX = 60
@@ -276,20 +284,13 @@ def _discover(args: argparse.Namespace | None = None) -> None:
     except PluginError as e:
         _traceback(args, e)
         log.error("Plugin error", str(e))
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
 
 
-def _cmd_run(args):
-    if sys.stdout is None:
-        # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
-        # session's pty for one, would become fd 1
-        log.error(
-            "Cannot write the session's output",
-            "stdout is closed (redirect it to /dev/null to discard the output)",
-        )
-        sys.exit(EXIT_LOAD)
-    _discover(args)
-    config_dict = _load(args.script)
+def _runner(args: argparse.Namespace, script: str) -> Runner:
+    """The runner of `script`, ready to run: the file read, parsed and validated, the `--arg` values checked,
+    `env` and `prompts` resolved. Nothing has run. A load error is reported, and raised as `LoadError`."""
+    config_dict = _load(script)
 
     try:
         config = Config.model_validate(config_dict)
@@ -300,22 +301,35 @@ def _cmd_run(args):
             what = err["msg"].removeprefix("Value error, ")
             # the message is the model's, or a plugin model's, and may show a value of the script as it is
             log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
 
     cli_args = {}
     for item in args.arg:
         if "=" not in item:
             log.error("--arg requires KEY=VALUE format, got", item)
-            sys.exit(EXIT_LOAD)
+            raise LoadError
         key, value = item.split("=", 1)
         cli_args[key] = value
 
     try:
-        runner = Runner(config, cli_args)
+        return Runner(config, cli_args)
     except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
         _traceback(args, e)
-        log.error(f"Script error in {args.script}", str(e))
-        sys.exit(EXIT_LOAD)
+        log.error(f"Script error in {script}", str(e))
+        raise LoadError from None
+
+
+def _cmd_run(args):
+    if sys.stdout is None:
+        # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
+        # session's pty for one, would become fd 1
+        log.error(
+            "Cannot write the session's output",
+            "stdout is closed (redirect it to /dev/null to discard the output)",
+        )
+        raise LoadError
+    _discover(args)
+    runner = _runner(args, args.script)
     try:
         runner.run()
     except EXPECTED as e:
@@ -365,7 +379,7 @@ def _cmd_schema(args: argparse.Namespace | None = None):
         schema = load_schema()
     except SchemaError as e:
         log.error("Cannot read the schema", str(e))
-        sys.exit(EXIT_LOAD)
+        raise LoadError from None
     print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
 
 
