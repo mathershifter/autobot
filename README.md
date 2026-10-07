@@ -18,10 +18,11 @@ pipx install git+https://github.com/mathershifter/autobot.git
 
 ```
 autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
+autobot validate <script.yaml> [<script.yaml> ...] [-a KEY=VALUE ...] [-q] [--traceback]
 autobot schema [--traceback]
 ```
 
-`autobot <script.yaml>` is short for `autobot run <script.yaml>`: anything other than `run`, `schema`, `-h` or `--help` as the first argument runs a script. To run a script file named `run` or `schema`, use `autobot run schema` or `autobot ./schema`.
+`autobot <script.yaml>` is short for `autobot run <script.yaml>`: anything other than `run`, `validate`, `schema`, `-h` or `--help` as the first argument runs a script. To run a script file named `run`, `validate` or `schema`, use `autobot run schema` or `autobot ./schema`.
 
 | Flag                              | Description                                                 |
 |-----------------------------------|-------------------------------------------------------------|
@@ -30,6 +31,22 @@ autobot schema [--traceback]
 | `-h`, `--help`                    | Show help (`autobot -h` lists the subcommands, `autobot run -h` the options) |
 
 `autobot schema` prints the JSON schema to stdout, extended with the step types of installed plugins (see [Schema](#schema)).
+
+### Checking a script without running it
+
+`autobot validate` loads each script as `run` does and stops there: `attach.prepare` isn't run, nothing is spawned and nothing is sent. Use it in an editor hook or in CI:
+
+```
+$ autobot validate upgrade.autobot.yaml login.autobot.yaml
+upgrade.autobot.yaml: valid
+Validation errors:
+  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]
+login.autobot.yaml: invalid
+```
+
+A script that loads gets one line, `<path>: valid`. One that doesn't gets the error `run` would report before it runs anything, in the same words, and then `<path>: invalid`. All of it goes to stderr; nothing is written to stdout. The exit status is 0 when every script is valid and 1 when any isn't. `-a KEY=VALUE` gives the arguments the scripts are checked with, for a script whose `env` reads `{{ args.KEY }}`; `-q` prints nothing for a valid script; `--traceback` works as for `run`. Installed plugins are loaded, since their steps are part of what is valid.
+
+A valid script can still fail once it runs: a template in a step or in `spawn` is rendered during the run, so `validate` doesn't notice a missing `--arg` that only a step reads, and the device has its own say. See [SPEC.md](SPEC.md#checking-scripts-with-validate) for the exact guarantee.
 
 A run that completes prints `>> run completed` and exits with status 0. If the script can't be loaded, the CLI prints one error on stderr and exits with status 1 before anything runs. That covers an installed plugin that can't be loaded (`Plugin error: ...`: it fails to import, its executor lacks a usable `key`, `model` or `execute` or raises while one of them is read, it uses a reserved key or common-name field, it reuses another plugin's key, or its model is the model of a built-in step; `autobot schema` reports it the same way), a missing or unreadable file, invalid YAML (reported with its line and column), a key repeated in the same mapping (YAML keys must be unique, so a second `script:` is an error, not an override), a validation failure (`Validation errors:`, then one line for each error: `  <location>: <message> [<type>]`, with the offending value where that helps, but never the value of a prompt's `send`, a `line` or an `env` entry), an `--arg` without `=`, a closed stdout (`>&-`; use `> /dev/null` to discard the session's output), a template error or reference cycle in the top-level `env`, a template syntax error in a top-level prompt's `send`, and a top-level `sendEach` collection that can't be resolved. A malformed command line (e.g. `-a` with no value) prints usage and exits with status 2. An error while the script runs is reported after any breakouts have run; see [Errors and exit status](#errors-and-exit-status).
 
@@ -72,8 +89,8 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 
 | Status | Meaning |
 |--------|---------|
-| 0      | The run completed |
-| 1      | The script couldn't be loaded; nothing ran |
+| 0      | The run completed; `autobot validate` found every script valid |
+| 1      | The script couldn't be loaded; nothing ran. `autobot validate` found a script invalid |
 | 2      | Malformed command line |
 | 3      | The run failed |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
