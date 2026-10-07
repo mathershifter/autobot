@@ -19,7 +19,7 @@ from conftest import BASH, SentLog, make_doc, make_runner, run_cli
 from conftest import run_vars as run
 
 import autobot.session as session_mod
-from autobot.session import LineTooLong, PromptHandler, Session, SimpleHandler, canon_limit
+from autobot.session import LineTooLong, PartialLine, PromptHandler, Session, SimpleHandler, canon_limit
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"
 # more than a pty holds for a child that has stopped reading
@@ -418,10 +418,25 @@ def test_p8_42_breakout_that_starts_with_an_interrupt_drops_the_cut_line(tmp_pat
     assert log == [f"INTERRUPT={done}", "LINE=exit"]
 
 
-def test_p8_42_line_sent_after_the_cut_line_is_added_to_it(tmp_path: Path):
-    """Without the interrupt, the breakout's line goes after what was sent, as one line."""
-    done, log = _timed_out_run(tmp_path, [{"line": "exit"}, {"sleep": "300ms"}])
-    assert log == [f"LINE={done + 4} bytes ending xxxxexit"]
+PARTIAL = (
+    "line not sent: part of a line that could not be sent whole is typed at the far side, and a Return "
+    "would enter it; send a control character that drops it first (control: c)"
+)
+
+
+def test_p8_42_line_sent_after_the_cut_line_is_refused(tmp_path: Path, capsys):
+    """Without the interrupt, the breakout's line would go after what was sent and enter the two as one
+    line: it is not sent, and the child, reading again, gets no line at all."""
+    log = tmp_path / "typed.log"
+    runner = make_runner(
+        [{"cmd": "echo " + "x" * LONG, "timeout": "1s"}],
+        spawn=typed("--stop", 1000, "--pause", 2, "--log", log),
+        breakout=[{"line": "exit"}, {"sleep": "2500ms"}],
+    )
+    with pytest.raises(TimeoutError, match="while sending a line"):
+        runner.run()
+    assert not log.exists()
+    assert f">> breakout error (PartialLine): {PARTIAL}\n" in capsys.readouterr().err
 
 
 def test_p8_42_session_after_a_failed_send(attach):
@@ -429,7 +444,113 @@ def test_p8_42_session_after_a_failed_send(attach):
     s = attach(typed("--stop", 1000))
     with pytest.raises(TimeoutError):
         s.sendline("x" * LONG, timeout=0.5)
-    assert (s._at_prompt, s._sent, s._solicit) == (False, None, False)
+    assert (s._at_prompt, s._sent, s._solicit, s._partial) == (False, None, False, True)
+
+
+def test_p8_42_send_that_wrote_nothing_leaves_no_partial_line(attach):
+    """A control character that the pty didn't take is not part of a line."""
+    s = attach(typed("--stop", 0))
+    assert s._partial is False
+    s.sendline("ls", timeout=5)
+    assert s._partial is False
+
+
+# -- P8-48: while part of a line is typed at the far side ---------------------------------------------
+
+
+def _partial(attach, tmp_path: Path, *opts: object, handlers=None) -> tuple[Session, Path]:
+    """A session whose long line timed out on a child that reads again after 1 s (or what `opts` say)."""
+    log = tmp_path / "typed.log"
+    s = attach(typed("--stop", 1000, *(opts or ("--pause", 1)), "--log", log), handlers)
+    with pytest.raises(TimeoutError, match="while sending a line"):
+        s.sendline("rm -rf /important/" + "x" * LONG, timeout=0.5)
+    return s, log
+
+
+@pytest.mark.slow
+def test_p8_48_no_prompt_wait_presses_return_however_many_follow(attach, tmp_path: Path, sent: SentLog):
+    """SPEC "The length of a sent line": the first wait after the failed send, and the second and the
+    third, each go through their idle poll and send nothing: a Return would run the cut command."""
+    s, log = _partial(attach, tmp_path)
+    sent.clear()
+    for _ in range(3):
+        with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
+            s.get_prompt(timeout=6)
+        assert s._partial is True
+    assert sent == [] and not log.exists()
+
+
+@pytest.mark.slow
+def test_p8_48_breakouts_that_start_with_a_cmd_enter_nothing(tmp_path: Path, capsys):
+    """The run of the report: the failed `cmd` is in a block whose breakout starts with a `cmd`, and so
+    does `attach.breakout`. Neither wait presses Return, and the child never gets a line."""
+    log = tmp_path / "typed.log"
+    block = {
+        "name": "b",
+        "script": [{"cmd": "rm -rf /important/" + "x" * LONG, "timeout": "1s"}],
+        "breakout": [{"cmd": "echo block", "timeout": "6s"}],
+    }
+    runner = make_runner(
+        [{"block": block}],
+        spawn=typed("--stop", 1000, "--pause", 4, "--log", log),
+        breakout=[{"cmd": "echo attach", "timeout": "6s"}],
+    )
+    with pytest.raises(TimeoutError, match="while sending a line"):
+        runner.run()
+    assert not log.exists()
+    err = capsys.readouterr().err
+    assert err.count("breakout error (TimeoutError): timed out after 6.0s waiting for a shell prompt ('sh')") == 2
+
+
+def test_p8_48_every_line_is_refused_until_a_control_character(attach, tmp_path: Path, sent: SentLog):
+    """A line, an empty one (`return`) and the `$?` check would each end with the Return that enters the
+    cut line. They are refused, and the session stays as it is."""
+    s, log = _partial(attach, tmp_path)
+    sent.clear()
+    for send in (lambda: s.sendline("exit", timeout=5), lambda: s.sendline("", solicit=True, timeout=5), lambda: s.check_rc(timeout=5)):
+        with pytest.raises(PartialLine) as ei:
+            send()
+        assert str(ei.value) == PARTIAL
+        assert (s._at_prompt, s._sent, s._solicit, s._partial) == (False, None, False, True)
+    time.sleep(1.2)  # the child reads again
+    assert sent == [] and not log.exists()
+
+
+def test_p8_48_control_character_ends_it(attach, tmp_path: Path):
+    """After a `control: c` the cut line is the far side's to drop, and lines are sent again."""
+    s, log = _partial(attach, tmp_path)
+    s.sendcontrol("c", timeout=5)
+    assert s._partial is False
+    s.sendline("exit", timeout=5)
+    s.get_prompt(timeout=5)
+    lines = log.read_text().splitlines()
+    assert lines[0].startswith("INTERRUPT=") and lines[1:] == ["LINE=exit"]
+
+
+def test_p8_48_control_character_that_is_not_sent_does_not_end_it(attach, tmp_path: Path):
+    s, _ = _partial(attach, tmp_path, "--pause", 100)
+    with pytest.raises(TimeoutError, match="while sending a control character"):
+        s.sendcontrol("c", timeout=0.3)
+    assert s._partial is True
+
+
+def test_p8_48_answer_to_a_prompt_is_not_sent(attach, tmp_path: Path, sent: SentLog):
+    """A prompt that shows while the cut line is there (here the echo of the cut line matches one) is not answered:
+    the answer would be added to the line. The wait fails and names the prompt."""
+    ask = SimpleHandler("ask", [r"x"], "yes", lambda text: text)
+    s, log = _partial(attach, tmp_path, handlers=[*SHELL, ask])
+    sent.clear()
+    with pytest.raises(PartialLine) as ei:
+        s.get_prompt(timeout=5)
+    assert str(ei.value) == f"prompt 'ask': {PARTIAL}"
+    time.sleep(1.2)
+    assert sent == [] and not log.exists() and s._partial is True
+
+
+def test_p8_48_new_child_has_no_partial_line(attach, tmp_path: Path):
+    s, _ = _partial(attach, tmp_path)
+    s.detach(failing=True)
+    assert s._partial is False
 
 
 @pytest.mark.slow

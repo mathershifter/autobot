@@ -90,6 +90,10 @@ class LineTooLong(RunError):
     """A line that the terminal of the spawned process would cut: it is not sent."""
 
 
+class PartialLine(RunError):
+    """A line that would be added to the part of an earlier one that is typed at the far side: it is not sent."""
+
+
 # Bounds on the reading of an echo, so that output which is no echo costs little whatever its size:
 # the readings of a line kept at a time (there is more than one only where the sent line repeats itself),
 # and, per character of the sent line, the characters of a part between two `\r` and the parts of a line.
@@ -344,6 +348,9 @@ class Session:
         self._sent: str | None = None
         self._solicit = True
         self._warned = False  # of a long line, once
+        # part of a line is typed at the far side, after a send that failed: no line is sent, since its
+        # Return would enter that part, until a control character has been sent
+        self._partial = False
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
@@ -408,6 +415,7 @@ class Session:
         self._sent = None
         self._solicit = True
         self._held = None
+        self._partial = False
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
@@ -516,7 +524,7 @@ class Session:
                         self._prompt = held[1]
                         return self._finish(output, sent, errors, capture, held[2])
                     continue  # no Return is pressed at a prompt that is held
-                if not solicited and all(h.is_fresh for h in self._handlers):
+                if not solicited and not self._partial and all(h.is_fresh for h in self._handlers):
                     self._put_line("", deadline - time.monotonic(), timeout)
                     solicited = True
                 continue
@@ -537,7 +545,10 @@ class Session:
                             break
                         self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
-                    self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
+                    try:
+                        self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
+                    except PartialLine as e:
+                        raise PartialLine(f"prompt '{h.name}': {e}") from None
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
@@ -603,7 +614,7 @@ class Session:
         self._held = None
         try:
             self._put_line(line, timeout)
-        except LineTooLong:
+        except (LineTooLong, PartialLine):
             # nothing was sent: the session is where it was
             self._at_prompt, self._sent, self._solicit, self._held = state
             raise
@@ -613,6 +624,11 @@ class Session:
         of, when `timeout` is what is left of it."""
         cld = self._cld
         assert cld
+        if self._partial:
+            raise PartialLine(
+                "line not sent: part of a line that could not be sent whole is typed at the far side, and a "
+                "Return would enter it; send a control character that drops it first (control: c)"
+            )
         deadline = time.monotonic() + timeout
         if cld.delaybeforesend is not None:
             time.sleep(cld.delaybeforesend)
@@ -652,14 +668,16 @@ class Session:
 
     def _put_control(self, char: str, timeout: float):
         self._write(control_byte(char), time.monotonic() + timeout, timeout, "a control character")
+        self._partial = False  # the far side has been told to drop what was typed
 
     def _write(self, data: bytes, deadline: float, timeout: float, what: str):
         """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
         no more: a child that echoes stops reading once nobody reads its echo.
 
         What is read is read as a wait reads it, and is the start of what the next wait reads. A write
-        that fails leaves the session at no prompt and after no line: the part that was written is on the
-        child's input line, so the next prompt wait presses no Return, which would enter it.
+        that fails leaves the session at no prompt and after no line. The part that was written is on the
+        child's input line: until a control character is sent, no prompt wait presses Return and no line
+        is sent, which would enter it.
         """
         cld = self._cld
         assert cld
@@ -695,6 +713,7 @@ class Session:
         except BaseException as e:
             self._sent = None
             self._solicit = False
+            self._partial = self._partial or done > 0
             if isinstance(e, pexpect.EOF) or (isinstance(e, OSError) and e.errno in CLOSED_ERRNOS):
                 raise EOFError(f"connection closed while sending {what}") from e
             raise

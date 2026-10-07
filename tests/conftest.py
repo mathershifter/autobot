@@ -27,7 +27,7 @@ from autobot.cli import load_schema
 from autobot.models import Config
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
-from autobot.session import LineTooLong, PromptHandler, Session
+from autobot.session import LineTooLong, PartialLine, PromptHandler, Session
 from autobot.steps import register_builtins
 
 
@@ -231,7 +231,7 @@ def sent(monkeypatch: pytest.MonkeyPatch) -> SentLog:
         log.append(("line", line))
         try:
             return orig_line(self, line, *args, **kwargs)
-        except LineTooLong:
+        except (LineTooLong, PartialLine):
             log.pop()  # refused: nothing of it was sent
             raise
 
