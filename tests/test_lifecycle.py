@@ -1364,6 +1364,17 @@ def test_p5_83_spawned_shell_has_the_window_of_the_constants():
     assert out == {"stty": "1000 80", "bash": "1000 80", "tput": "1000\n80"}
 
 
+@pytest.mark.parametrize("rows", [24, 50])
+def test_p5_83_spawn_line_that_sets_the_rows_gives_the_program_that_height(rows: int):
+    """SPEC "The window of the spawned process": a `spawn` through `sh -c 'stty rows N && exec ...'` sets
+    another height before the program starts, so the program (here bash; an `ssh` the same) has it."""
+    out = run_script(
+        [{"cmd": "stty size", "register": "stty"}, {"cmd": "echo $LINES $COLUMNS", "register": "bash"}],
+        spawn=f"sh -c 'stty rows {rows} && exec {BASH}'",
+    ).config.vars
+    assert out == {"stty": f"{rows} 80", "bash": f"{rows} 80"}
+
+
 def test_p5_83_session_attach_spawns_with_the_window(spawned, shell_session: Session):
     """A `Session.attach` of its own (a plugin's) gets the same window as a run's."""
     assert shell_session._cld is not None and shell_session._cld.getwinsize() == (PTY_ROWS, PTY_COLS)
