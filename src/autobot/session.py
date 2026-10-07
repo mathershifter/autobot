@@ -34,25 +34,30 @@ HELD_GRACE = 1.0
 
 # What a write to a pty whose other side is gone fails with: the session is closed, as an EOF on a read says.
 CLOSED_ERRNOS = (errno.EIO, errno.EPIPE, errno.ENXIO)
-# A write the pty refuses although it is reported writable is tried again after this long.
+# A write of which the pty takes nothing, although it is reported writable, is tried again after this long.
 SEND_RETRY = 0.01
 
 # The bytes of a line, its line break included, that the Linux terminal takes in canonical mode
 # (N_TTY_BUF_SIZE). The terminals of most devices a script reaches are Linux ones.
 LINUX_CANON = 4096
-MACOS_CANON = 1024
+# What a system may answer for its own limit and be believed: no less than POSIX lets a system have
+# (_POSIX_MAX_CANON), and no more than any terminal's line buffer. `fpathconf` answers -1 for "no limit"
+# and for "can't say"; a wrong limit would refuse lines that the terminal takes.
+CANON_RANGE = range(255, 65536 + 1)
 
 
 def canon_limit(fd: int) -> int | None:
     """The bytes of one line, its line break included, that the terminal `fd` takes in canonical mode.
-    None where the platform's limit isn't known."""
+    None where the limit isn't known: nothing is refused there."""
     if sys.platform.startswith("linux"):
         return LINUX_CANON  # not fpathconf: it reports 255 for a pty, the POSIX constant, which the kernel doesn't go by
     if sys.platform == "darwin":
         try:
-            return os.fpathconf(fd, "PC_MAX_CANON")
-        except (OSError, ValueError):
-            return MACOS_CANON
+            limit = os.fpathconf(fd, "PC_MAX_CANON")
+        except Exception:  # noqa: BLE001 - whatever it is, the limit isn't known
+            return None
+        if isinstance(limit, int) and limit in CANON_RANGE:
+            return limit
     return None
 
 
@@ -653,11 +658,12 @@ class Session:
         assert cld
         try:
             attrs = termios.tcgetattr(cld.child_fd)
-        except (termios.error, OSError, ValueError):
-            return  # no terminal to ask, e.g. a closed one: the write says so
-        breaks = rb"[\r\n]" if attrs[0] & termios.ICRNL else rb"\n"
+            icrnl, canonical = bool(attrs[0] & termios.ICRNL), bool(attrs[3] & termios.ICANON)
+        except Exception:  # noqa: BLE001 - no terminal to ask (a closed one: the write says so) or no answer to go by
+            return
+        breaks = rb"[\r\n]" if icrnl else rb"\n"
         longest = max(len(part) for part in re.split(breaks, data))
-        limit = canon_limit(cld.child_fd) if attrs[3] & termios.ICANON else None
+        limit = canon_limit(cld.child_fd) if canonical else None
         if limit:
             if longest >= limit:
                 # the terminal of a child that has exited still reports its mode: there is nobody to cut the line for
@@ -691,7 +697,7 @@ class Session:
         cld = self._cld
         assert cld
         fd = cld.child_fd
-        done, refused = 0, False
+        done, idle = 0, False
         try:
             if fd < 0:  # closed here, not by the child
                 raise OSError(errno.EBADF, os.strerror(errno.EBADF))
@@ -700,23 +706,32 @@ class Session:
             try:
                 while done < len(data):
                     try:
-                        done += os.write(fd, data[done:])
-                        refused = False
-                        continue
+                        wrote = os.write(fd, data[done:])
                     except BlockingIOError:
-                        pass
+                        wrote = 0
+                    if wrote > 0:
+                        done += wrote
+                        idle = False
+                        continue
+                    # the pty took nothing: every pass from here on checks the deadline
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(
                             f"timed out after {timeout}s while sending {what} ({done} of {len(data)} bytes sent)"
                         )
-                    if refused:
+                    if idle:
                         time.sleep(min(SEND_RETRY, remaining))
                     readable, writable, _ = select.select([fd], [fd], [], remaining)
+                    read = False
                     if readable:
-                        # into pexpect's buffer and the operator echo, like the output a wait reads
-                        cld.expect(pexpect.TIMEOUT, timeout=0)
-                    refused = bool(writable) and not readable
+                        try:
+                            # into pexpect's buffer and the operator echo, like the output a wait reads
+                            cld.expect(pexpect.TIMEOUT, timeout=0)
+                            read = True
+                        except BlockingIOError:
+                            pass  # reported readable, and nothing to read
+                    # reported writable though it took nothing, or readable with nothing to read: poll
+                    idle = bool(writable) or not read
             finally:
                 fcntl.fcntl(fd, fcntl.F_SETFL, flags)
         except BaseException as e:

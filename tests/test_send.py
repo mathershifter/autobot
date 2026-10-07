@@ -612,7 +612,10 @@ def test_p8_42_prompt_wait_after_a_failed_send_presses_no_return(attach, tmp_pat
 
 NOEDIT = "bash --norc --noprofile --noediting -i"
 CANON = 4095  # the bytes of a line, without its line break, that the Linux terminal takes in canonical mode
-linux = pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
+# what these tests pin is what the Linux terminal does with a line in canonical mode: it takes 4095 bytes
+# and the line break, drops the rest and still ends the line. Another system's terminal has another limit
+# and may not end the line at all, so the test would wait for a prompt that never comes
+linux = pytest.mark.skipif(sys.platform != "linux", reason="pins the Linux terminal: 4095 bytes of a line, the rest cut")
 # shells that leave the line to the terminal
 CANONICAL = [NOEDIT, pytest.param("dash -i", marks=pytest.mark.skipif(not shutil.which("dash"), reason="no dash"))]
 # stands where an ssh or a console server would: its own terminal is raw, and the shell is on another
@@ -900,26 +903,66 @@ def test_p8_46_warning_is_printed_once_and_not_for_ordinary_lines(capsys):
 
 def test_p8_47_limit_by_platform(monkeypatch: pytest.MonkeyPatch):
     """Linux: 4096 with the line break, whatever `fpathconf` says (255 for a pty). macOS: what
-    `fpathconf` says, or 1024. Elsewhere it isn't known."""
+    `fpathconf` says. Elsewhere it isn't known."""
     asked: list[tuple] = []
 
     def fpathconf(fd, name):
         asked.append((fd, name))
         return 1024
 
-    def fails(fd, name):
-        raise OSError(25, "Inappropriate ioctl for device")
-
     monkeypatch.setattr(os, "fpathconf", fpathconf)
     monkeypatch.setattr(sys, "platform", "linux")
     assert canon_limit(7) == 4096 and asked == []
     monkeypatch.setattr(sys, "platform", "darwin")
     assert canon_limit(7) == 1024 and asked == [(7, "PC_MAX_CANON")]
-    monkeypatch.setattr(os, "fpathconf", fails)
-    assert canon_limit(7) == 1024
     for platform in ("freebsd14", "openbsd7", "sunos5"):
         monkeypatch.setattr(sys, "platform", platform)
         assert canon_limit(7) is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "limit"),
+    [(-1, None), (0, None), (1, None), (254, None), (255, 255), (1024, 1024), (65536, 65536), (65537, None),
+     (None, None), (1024.0, None), (OSError(25, "Inappropriate ioctl for device"), None), (ValueError("x"), None),
+     (RuntimeError("x"), None)],
+)  # fmt: skip
+def test_p8_47_only_a_plausible_answer_of_the_system_is_a_limit(monkeypatch: pytest.MonkeyPatch, answer, limit):
+    """`fpathconf` answers -1, without an error, where there is no limit or it can't say. Taken for a
+    limit, that would refuse every line on a terminal in canonical mode, the answer to a password prompt
+    included. A limit is a number from 255, the least POSIX allows, to 65536; anything else, and any
+    error, means it isn't known, and then nothing is refused."""
+
+    def fpathconf(fd, name):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(os, "fpathconf", fpathconf)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert canon_limit(7) == limit
+
+
+@pytest.mark.parametrize("answer", [-1, 0, 1])
+def test_p8_47_short_line_is_sent_whatever_the_system_answers(attach, monkeypatch: pytest.MonkeyPatch, answer: int):
+    """Through the session, as on macOS: a line of ordinary length goes to a terminal in canonical mode."""
+    monkeypatch.setattr(os, "fpathconf", lambda fd, name: answer)
+    s = attach(NOEDIT)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    s.sendline("echo ok", timeout=5)
+    assert s.get_prompt(timeout=5) == "ok\n"
+
+
+def test_p8_47_terminal_that_cannot_be_asked_refuses_nothing(attach, monkeypatch: pytest.MonkeyPatch):
+    import termios
+
+    def tcgetattr(fd):
+        raise RuntimeError("no answer")
+
+    s = attach(BASH)
+    monkeypatch.setattr(termios, "tcgetattr", tcgetattr)
+    line = echo(5000)
+    s.sendline(line, timeout=5)
+    assert s.get_prompt(timeout=5) == line[5:] + "\n"
 
 
 @linux
@@ -928,6 +971,7 @@ def test_p8_47_fpathconf_of_a_linux_pty_is_not_its_limit(attach):
     assert s._cld is not None and os.fpathconf(s._cld.child_fd, "PC_MAX_CANON") == 255
 
 
+@linux
 def test_p8_47_session_goes_by_the_limit_of_the_platform(attach, monkeypatch: pytest.MonkeyPatch, capsys):
     """With the limit of macOS, 1024 with the line break: 1023 bytes are sent and 1024 are not. Where no
     limit is known, nothing is refused, and a line past the Linux limit gets the warning."""
@@ -1078,3 +1122,204 @@ def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
         run([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}])
     assert kinds() == {"upload": {2.0}, "run": {2.0}, "^c": {2.0}, "rm": {2.0}}
+
+
+# -- P8-52: a pty that takes little at a time ---------------------------------------------------------
+
+
+def _small_pty(monkeypatch: pytest.MonkeyPatch, take: int, refuse_every: int) -> dict[str, list]:
+    """Make the session's pty take at most `take` bytes per write and nothing at every `refuse_every`th,
+    as a pty with a small buffer does (macOS: about 1 kB, where Linux has about 10 kB). What was written
+    and read during sends is recorded."""
+    seen: dict[str, list] = {"writes": [], "reads": []}
+    write, put_line = os.write, Session._put_line
+    fds: set[int] = set()
+
+    def os_write(fd, data):
+        if fd not in fds:
+            return write(fd, data)
+        seen["writes"].append(None)
+        if len(seen["writes"]) % refuse_every == 0:
+            raise BlockingIOError(11, "Resource temporarily unavailable")
+        n = write(fd, bytes(data)[:take])
+        seen["writes"][-1] = bytes(data)[:n]
+        return n
+
+    def put(self, line, *args, **kwargs):
+        cld = self._cld
+        fds.add(cld.child_fd)
+        expect = cld.expect
+
+        def counted(pattern, *a, **kw):
+            before = len(cld.buffer)
+            try:
+                return expect(pattern, *a, **kw)
+            finally:
+                if pattern is pexpect.TIMEOUT and kw.get("timeout") == 0:
+                    seen["reads"].append(len(cld.buffer) - before)
+
+        cld.expect = counted
+        try:
+            return put_line(self, line, *args, **kwargs)
+        finally:
+            del cld.expect
+            fds.discard(cld.child_fd)
+
+    monkeypatch.setattr(os, "write", os_write)
+    monkeypatch.setattr(Session, "_put_line", put)
+    return seen
+
+
+def _utf8() -> str | None:
+    try:
+        names = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=False).stdout.split()
+    except OSError:
+        return None
+    have = {n.lower().replace("-", "") for n in names}
+    return next((n for n in ("C.UTF-8", "en_US.UTF-8") if n.lower().replace("-", "") in have), None)
+
+
+UTF8 = _utf8()
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+@pytest.mark.parametrize("take", [1, 7, 13, 64])
+@pytest.mark.parametrize("editor", [True, False], ids=["readline", "no-editor"])
+def test_p8_52_line_written_in_small_pieces_arrives_whole(monkeypatch: pytest.MonkeyPatch, take: int, editor: bool):
+    """A line with two-byte and three-byte characters, written `take` bytes at a time, with every third
+    write taking nothing: the pieces end inside characters, the line arrives as it is, its echo is still
+    recognized, and the capture is the output alone. To readline, 2 kB; to a shell without an editor,
+    where the terminal echoes each piece at once and the echo is read between the pieces, under 1 kB,
+    which the terminal of any platform takes."""
+    seen = _small_pty(monkeypatch, take, 3)
+    words = " ".join(f"é{i:03d}€" for i in range(260 if editor else 90))
+    line = f"echo {words}"
+    data = line.encode() + b"\n"
+    assert 2000 < len(data) < 3000 if editor else 800 < len(data) < 1000
+    env = {"TERM": "dumb", "LC_ALL": str(UTF8), "PS1": "PROMPT$ ", "PATH": os.environ["PATH"], "INPUTRC": "/dev/null"}
+    s = Session(SHELL)
+    s.attach(BASH if editor else NOEDIT, env=env, timeout=5)
+    try:
+        s.get_prompt(timeout=5)
+        s.sendline(line, timeout=60)
+        out = s.get_prompt(timeout=10)
+    finally:
+        s.detach(failing=True)
+    wrote = [w for w in seen["writes"] if w is not None]
+    assert b"".join(wrote) == data and max(map(len, wrote)) <= take
+    assert seen["writes"].count(None) >= len(wrote) // 2
+    if take < 3:
+        assert any(w[:1] in (b"\xa9", b"\x82", b"\xac") for w in wrote)  # a piece that starts inside a character
+    if not editor:
+        assert sum(seen["reads"]) > 0, "nothing was read while the line was sent"
+    assert out == words + "\n"
+
+
+@pytest.mark.parametrize("gain", [1, 3])
+def test_p8_52_output_read_between_small_pieces_is_read_once_and_in_order(attach, monkeypatch: pytest.MonkeyPatch, capsys, gain: int):
+    """P8-37 on a pty that takes 11 bytes at a time: a line of 3 kB, and every byte of its echo."""
+    seen = _small_pty(monkeypatch, 11, 4)
+    s = attach(typed("--gain", gain))
+    line = "".join(f"{i:04d}," for i in range(600))
+    capsys.readouterr()
+    s.sendline(line, timeout=60)
+    assert sum(seen["reads"]) > 0
+    s.expect([r"\r\nDONE (\d+)\r\n"], timeout=30)
+    assert s.ctx["before"] == "".join("\x1b[1m" + ch * gain for ch in line)
+    s.detach()
+    assert capsys.readouterr().out == "".join(ch * gain for ch in line) + "\r\nDONE 3000\r\nPROMPT$ "
+
+
+@linux
+def test_p8_52_line_written_in_small_pieces_to_a_terminal_in_canonical_mode(monkeypatch: pytest.MonkeyPatch):
+    """The same where the terminal keeps the line: 4095 bytes, 9 at a time, run whole."""
+    _small_pty(monkeypatch, 9, 5)
+    cmd = echo(CANON)
+    assert run([{"cmd": cmd, "register": "out", "timeout": "60s"}], spawn=NOEDIT) == {"out": cmd[5:]}
+
+
+# -- P8-53: a pty that takes nothing ------------------------------------------------------------------
+
+
+def _calls(monkeypatch: pytest.MonkeyPatch, s: Session, write) -> list[float]:
+    """Replace the write to the session's pty; the times of its calls."""
+    assert s._cld is not None
+    fd, real, calls = s._cld.child_fd, os.write, []
+
+    def os_write(target, data):
+        if target != fd:
+            return real(target, data)
+        calls.append(time.monotonic())
+        return write(len(calls), target, data, real)
+
+    monkeypatch.setattr(os, "write", os_write)
+    return calls
+
+
+def test_p8_53_write_that_takes_nothing_ends_at_the_timeout(attach, monkeypatch: pytest.MonkeyPatch):
+    """A write that returns 0 is a write that would block: the send waits, tries again every 10 ms at
+    the most, and ends at its timeout. It is no loop without a deadline."""
+    s = attach(BASH)
+    calls = _calls(monkeypatch, s, lambda n, fd, data, real: 0)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"^timed out after 0\.5s while sending a line \(0 of 5 bytes sent\)$"):
+        s.sendline("true", timeout=0.5)
+    assert 0.5 <= time.monotonic() - started < 2
+    assert 2 <= len(calls) <= 80
+
+
+def test_p8_53_pty_reported_writable_that_takes_nothing_is_polled(attach, monkeypatch: pytest.MonkeyPatch):
+    """`select` says the pty can be written, and every write says it would block: the send polls, 10 ms
+    apart, and ends at its timeout."""
+    s = attach(BASH)
+    assert s._cld is not None
+    fd = s._cld.child_fd
+
+    def refuse(n, target, data, real):
+        raise BlockingIOError(11, "Resource temporarily unavailable")
+
+    calls = _calls(monkeypatch, s, refuse)
+    selects: list[tuple] = []
+
+    def select(r, w, x, timeout=None):
+        selects.append((r, w, timeout))
+        return [], [fd], []
+
+    monkeypatch.setattr(session_mod.select, "select", select)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"^timed out after 0\.5s while sending a line \(0 of 5 bytes sent\)$"):
+        s.sendline("true", timeout=0.5)
+    assert 0.5 <= time.monotonic() - started < 2
+    assert 2 <= len(calls) <= 80 and len(selects) <= 80
+    gaps = [b - a for a, b in zip(calls[1:], calls[2:])]
+    assert min(gaps[:-1]) >= 0.009  # the last wait is what was left of the timeout
+
+
+def test_p8_53_pty_reported_readable_with_nothing_to_read(attach, monkeypatch: pytest.MonkeyPatch):
+    """A read that would block, on a pty reported readable, is nothing to read: it is no error of the
+    send, which goes on, polling, and writes the line when the pty takes it."""
+    s = attach(BASH)
+    assert s._cld is not None
+    fd = s._cld.child_fd
+
+    def refuse_three(n, target, data, real):
+        if n <= 3:
+            raise BlockingIOError(11, "Resource temporarily unavailable")
+        return real(target, data)
+
+    calls = _calls(monkeypatch, s, refuse_three)
+    reads: list[int] = []
+
+    def expect(pattern, **kw):
+        reads.append(1)
+        raise BlockingIOError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(session_mod.select, "select", lambda r, w, x, timeout=None: ([fd], [], []))
+    s._cld.expect = expect
+    try:
+        s.sendline("echo ok", timeout=5)
+    finally:
+        del s._cld.expect
+        monkeypatch.undo()
+    assert len(calls) == 4 and len(reads) == 3
+    assert s.get_prompt(timeout=5) == "ok\n"
