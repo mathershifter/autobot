@@ -107,7 +107,8 @@ class Device:
         env = {"PS1": SHELL_PROMPT, "TERM": "dumb", "PATH": os.environ.get("PATH", "")}
         while True:
             if self.args.then == "shell":
-                subprocess.call(["bash", "--norc", "--noprofile", "-i", "-l"], env=env)
+                if subprocess.call(["bash", "--norc", "--noprofile", "-i", "-l"], env=env) < 0:
+                    sys.exit(0)  # the shell was ended by a signal, as when the session is closed: no logout
             else:
                 line = ""
                 while line != "logout":
