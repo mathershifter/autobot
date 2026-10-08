@@ -22,6 +22,7 @@ import yaml
 from conftest import SHELL_PROMPT, FakeDevice, make_doc
 
 from autobot import log, signals
+from autobot.session import Session
 
 CLI = [sys.executable, "-W", "ignore", "-m", "autobot.cli"]
 LOGIN = {
@@ -275,3 +276,31 @@ def test_p6_119_runner_used_as_a_library_raises_reader_gone_after_the_cleanup(fa
 def test_p6_119_reader_gone_is_a_terminated_for_sigpipe():
     e = signals.ReaderGone("stdout")
     assert (e.signum, e.name, e.stream, str(e)) == (signal.SIGPIPE, "SIGPIPE", "stdout", "SIGPIPE")
+
+
+def test_p6_119_stop_raised_while_a_piece_is_echoed_does_not_cost_the_session_the_piece(shell_session: Session):
+    """The stop for a reader that is gone is raised where the echo is written, which is before pexpect
+    keeps what it has read. The piece is put back: the prompt that came with it is there for the next
+    wait, as a breakout that starts with a `cmd` needs."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    assert s._echo is not None
+    write, raised = s._echo.write, []
+
+    def stop(data: str) -> None:
+        if not raised and "kept" in data and "echo" not in data:
+            raised.append(data)
+            raise signals.ReaderGone("stdout")
+        write(data)
+
+    s._echo.write = stop  # type: ignore[method-assign]
+    s.sendline("stty -echo", timeout=5)
+    s.get_prompt(timeout=5)
+    s.sendline("echo kept", timeout=5)
+    with pytest.raises(signals.ReaderGone):
+        s.get_prompt(timeout=5)
+    assert len(raised) == 1
+    started = time.monotonic()
+    s._solicit = False  # as after the command: the wait must find the prompt, not ask for a new one
+    assert s.get_prompt(timeout=4) == "kept\n"
+    assert time.monotonic() - started < 2
