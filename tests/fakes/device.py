@@ -13,7 +13,9 @@ With ``--logout`` it is a console that can be logged out of: the shell is a logi
 waits for, and in the bare prompt loop the line ``logout`` ends the loop. It then logs ``LOGOUT=``, and
 asks for the login again. Ctrl-C at a login prompt does nothing, as at a getty. With ``--capital`` the
 login prompt is ``Login: ``, and with ``--last-login`` the device prints a ``Last login: ...`` line once
-the login is accepted, ``--banner-delay`` seconds after it and before ``--post-auth-delay``. With ``--escape`` a
+the login is accepted, ``--banner-delay`` seconds after it and before ``--post-auth-delay``; with
+``--split-banner SECS`` it writes ``Last login: ``, waits, and writes the rest, as a slow line delivers
+it. With ``--lower-password`` the password prompt is ``password: ``. With ``--escape`` a
 Ctrl-] typed at any of the device's own prompts ends the device, as it leaves the client of a console
 server: it logs ``DETACH=``.
 """
@@ -74,7 +76,8 @@ class Device:
             got: dict[str, str] = {}
             for k, p in enumerate(self.order):
                 if not (first_prompt_written and k == 0):
-                    self.write("Login: " if p == "login" and self.args.capital else PROMPTS[p])
+                    text = "Login: " if p == "login" and self.args.capital else PROMPTS[p]
+                    self.write(text.lower() if p == "password" and self.args.lower_password else text)
                 first_prompt_written = False
                 got[p] = self.readline()
                 self.log(p.upper(), got[p])
@@ -118,7 +121,12 @@ class Device:
     def then(self) -> None:
         if self.args.last_login:
             time.sleep(self.args.banner_delay)
-            self.write("Last login: Tue Oct  7 09:00:00 2026 from 10.0.0.1\n")
+            if self.args.split_banner:
+                self.write("Last login: ")
+                time.sleep(self.args.split_banner)
+                self.write("Tue Oct  7 09:00:00 2026 from 10.0.0.1\n")
+            else:  # in one write, as a program that prints a line does
+                self.write("Last login: Tue Oct  7 09:00:00 2026 from 10.0.0.1\n")
         if self.args.post_auth_delay:
             time.sleep(self.args.post_auth_delay)
         if self.args.logout:
@@ -224,6 +232,8 @@ def main() -> None:
     p.add_argument("--capital", action="store_true")
     p.add_argument("--last-login", action="store_true")
     p.add_argument("--banner-delay", type=float, default=0)
+    p.add_argument("--split-banner", type=float, default=0)
+    p.add_argument("--lower-password", action="store_true")
     Device(p.parse_args()).run()
 
 

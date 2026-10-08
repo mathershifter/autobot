@@ -1,4 +1,4 @@
-"""P6-19/20, P6-74, P6-76, P6-115: every example validates against the models and the schema, its shell prompt regexes read
+"""P6-19/20, P6-74, P6-76, P6-115, P6-123: every example validates against the models and the schema, its shell prompt regexes read
 whole prompts and nothing else, and its breakout logs out and makes sure of it."""
 
 from __future__ import annotations
@@ -452,3 +452,71 @@ def test_p6_115_example_breakout_is_not_met_by_text_with_the_word_in_it(fake_dev
     with pytest.raises(BreakoutError):
         Runner(Config.model_validate(doc), {}).run()
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
+
+
+# -- P6-123: the examples' login prompt answers a login prompt, and nothing else --------------------------
+
+TWO = {"creds": [{"username": "admin", "password": "secret"}, {"username": "root", "password": "other"}]}
+
+
+def login_of(path: Path) -> dict[str, Any]:
+    return next(p for p in load(path)["prompts"] if p["name"] == "login")
+
+
+def logged_in(fake_device: FakeDevice, path: Path, *opts: str) -> tuple[dict[str, Any], Path]:
+    """A script with the example's own `login` prompt and two credential sets, against the fake console."""
+    device, log = fake_device("--accept", "admin:secret", *opts)
+    return make_doc([{"cmd": "echo in", "register": "out"}], spawn=device, prompts=[SHELL_PROMPT, login_of(path)], vars=TWO), log
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_123_example_login_prompt_is_one_at_the_end_of_the_output(path: Path):
+    assert login_of(path)["send"]["fields"] == [
+        {"match": "[Ll]ogin: ?$", "field": "username"},
+        {"match": "[Pp]assword: ?$", "field": "password"},
+    ]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "opts",
+    [(), ("--last-login",), ("--capital",), ("--lower-password",), ("--capital", "--lower-password", "--last-login"), ("--same-chunk", "--last-login")],
+    ids=["plain", "last-login-banner", "Login", "password", "all-three", "banner-and-prompt-in-one-write"],
+)
+def test_p6_123_example_login_prompt_answers_the_prompts_and_not_the_banner(fake_device: FakeDevice, sent: SentLog, path: Path, opts: tuple[str, ...]):
+    """SPEC "sendEach": `Login:` and `login:`, `Password:` and `password:` are answered, once each, and
+    the `Last login: ...` line that follows is not: the second credential set is never sent, and the
+    command runs at the shell."""
+    doc, log = logged_in(fake_device, path, *opts)
+    runner = Runner(Config.model_validate(doc), {})
+    runner.run()
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
+    assert sent.lines()[:3] == ["admin", "secret", "echo in"] and "root" not in sent.lines()
+    assert runner.config.vars["out"] == "in"
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_123_banner_that_arrives_in_pieces_is_the_documented_limit(fake_device: FakeDevice, sent: SentLog, path: Path):
+    """The limit SPEC names: the device writes `Last login: `, and the rest two seconds later. While the
+    first piece is the last thing that has arrived, it is a login prompt for the regex, and the second
+    user name is sent, to the shell. (With the host name in the regex it would not be.)"""
+    doc, _ = logged_in(fake_device, path, "--last-login", "--split-banner", "2")
+    try:
+        Runner(Config.model_validate(doc), {}).run()
+    except (RuntimeError, TimeoutError):
+        pass  # what the shell makes of a user name is not the point
+    assert sent.lines()[:3] == ["admin", "secret", "root"]
+
+
+@pytest.mark.parametrize("pattern", ["(?:L|l)ogin:", "login:"])
+def test_p6_123_login_regex_without_the_end_answers_the_banner(fake_device: FakeDevice, sent: SentLog, pattern: str):
+    """What the `$` is for: a regex that finds the word anywhere takes `Last login: ...` for a second login
+    prompt and types the next user name at the shell."""
+    device, log = fake_device("--accept", "admin:secret", "--last-login")
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": [{"match": pattern, "field": "username"}, {"match": "(?:P|p)assword:", "field": "password"}]}}
+    doc = make_doc([{"cmd": "echo in", "timeout": "3s"}], spawn=device, prompts=[SHELL_PROMPT, login], vars=TWO)
+    try:
+        Runner(Config.model_validate(doc), {}).run()
+    except (RuntimeError, TimeoutError):
+        pass
+    assert sent.lines()[:3] == ["admin", "secret", "root"]

@@ -27,12 +27,17 @@ prompts:
     return: true
 
   - name: login
+    # Each regex ends with $: the prompt is the last thing the switch has written. Without it,
+    # the 'Last login: ...' line that follows a login is taken for a second login prompt and
+    # answered, with the next user name. On a slow console that line can arrive in pieces, with
+    # a pause right after 'Last login:'; if it does, put the host name in the first regex
+    # ('switch1 login: ?$').
     send:
       each: vars.creds
       fields:
-        - match: '(?:L|l)ogin:'
+        - match: '[Ll]ogin: ?$'
           field: username
-        - match: '(?:P|p)assword:'
+        - match: '[Pp]assword: ?$'
           field: password
 
 attach:
