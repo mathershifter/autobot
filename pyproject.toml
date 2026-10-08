@@ -4,8 +4,7 @@ version = "0.4.0"
 requires-python = ">=3.12"
 dependencies = [
     "jinja2>=3.1.6",
-    # capped: session.py puts a piece of output back the way pexpect keeps one, in two private attributes
-    "pexpect>=4.9.0,<4.10",
+    "pexpect>=4.9.0",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",

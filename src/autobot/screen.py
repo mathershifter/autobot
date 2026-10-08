@@ -156,17 +156,13 @@ class CleanWriter:
             log.echoed(data)
 
     def _out(self, data: str = ""):
-        """Write `data` and flush. A stream that nobody reads any more is no error of the session's:
-        `log.lost` points it elsewhere and tells the run."""
-        if log.stalled(self._stream):
-            return
+        """Write `data` and flush. A stream that can't be written ends the run (`log.failed`)."""
         try:
             if data:
                 self._write(data)
             self._stream.flush()
         except (OSError, ValueError) as e:
-            if not log.lost(self._stream, e):
-                raise
+            log.failed(self._stream, e)
 
     def _write(self, data: str):
         try:

@@ -11,9 +11,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 
-from . import log, signals
+from . import log
 from .types import RunError
 
 # Stripped before looking for a shebang: whitespace and line breaks, a BOM,
@@ -188,6 +189,38 @@ def _changes(data: bytes, failed: bool = False) -> Changes:
     )
 
 
+class _Terminated(BaseException):
+    """SIGTERM arrived while the script ran."""
+
+
+@contextlib.contextmanager
+def _terminable() -> Iterator[None]:
+    """While `prepare` runs, SIGTERM unwinds like an interrupt, so the script's shell is killed and its
+    temp file removed; then autobot ends by the signal, as it would have without this.
+
+    Only where SIGTERM has its default action and a handler can be set: in the main thread.
+    """
+
+    def unwind(signum: int, frame: object) -> None:
+        raise _Terminated
+
+    try:
+        default = signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+        if default:
+            signal.signal(signal.SIGTERM, unwind)
+    except ValueError:  # not the main thread
+        default = False
+    try:
+        yield
+    except _Terminated:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+        raise
+    finally:
+        if default:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def _remove(path: str) -> None:
     with contextlib.suppress(FileNotFoundError):  # the script may remove itself
         os.unlink(path)
@@ -220,9 +253,8 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
     changes = Changes({}, frozenset())
     if shell is not None and not sys.executable:  # the dump is written by this Python
         shell, changes = None, Changes({}, frozenset(), NO_PYTHON)
-    # the temp file is removed, whatever fails: also when a signal ends the run (in a run, the runner's
-    # block catches it; here for a `prepare` that is run by itself)
-    with signals.terminable(), contextlib.ExitStack() as files:
+    # the temp file is removed, whatever fails
+    with _terminable(), contextlib.ExitStack() as files:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         tmp = f.name
         files.callback(_remove, tmp)
@@ -242,9 +274,6 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             result = subprocess.run(argv, check=False, env=environ, pass_fds=fds)
         except OSError as e:
             raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
-        if result.returncode == -signal.SIGPIPE:
-            # the script wrote to the output it shares with the run, and nobody reads that any more
-            raise signals.ReaderGone("the output of prepare")
         if result.returncode != 0:
             raise RunError(f"prepare script failed with exit code {result.returncode}")
         if shell is not None:

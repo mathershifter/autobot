@@ -215,7 +215,7 @@ class BlockExecutor:
                     ctx.run_steps(step.block.enter)
                 ctx.run_steps(step.block.script)
             finally:
-                if step.block.breakout:
+                if step.block.breakout and not log.lost:
                     log.say(f"block breakout: {step.block.name}", "group")
                     ctx.run_breakout(step.block.breakout, "block breakout")
                     ctx.session.logins_covered(mark)  # what the block logged in to is the breakout's to leave

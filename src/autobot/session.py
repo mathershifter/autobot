@@ -58,37 +58,6 @@ def _exit_note(cld: pexpect.spawn) -> str:
     return ""
 
 
-class _Echo:
-    """What pexpect hands the operator echo: each piece it has read, before it keeps the piece for the
-    waits. A stop raised while the piece is echoed (nobody reads the echo any more, an interrupt) would
-    cost the session that piece, and with it a prompt the breakout is about to wait for: it is put back."""
-
-    def __init__(self, cld: pexpect.spawn, writer: CleanWriter):
-        self._cld, self._writer, self._piece = cld, writer, ""
-
-    def write(self, data: str):
-        self._piece = data
-        self._guarded(self._writer.write, data)
-
-    def flush(self):
-        self._guarded(self._writer.flush)
-        self._piece = ""  # pexpect keeps it from here on
-
-    def _guarded(self, call: Callable, *args: str):
-        try:
-            call(*args)
-        except BaseException:
-            piece, self._piece = self._piece, ""
-            # as pexpect itself keeps a piece it has read (`Expecter.new_data`): in what is unread, and
-            # in what the text before the next match is taken from. pexpect has no public way to do
-            # this (its `buffer` setter leaves `before` without the piece), so the version is capped in
-            # pyproject.toml and a test fails if these two are gone. One window is left, as it always
-            # was: a signal that raises between pexpect's read and this write loses the piece
-            self._cld._before.write(piece)
-            self._cld._buffer.write(piece)
-            raise
-
-
 class PromptHandler:
     # its responses are credentials (a `sendEach`): a run that sent one has logged in, or tried to
     credentials = True
@@ -293,8 +262,7 @@ class Session:
             env=run_environ() if env is None else env,
             dimensions=(PTY_ROWS, PTY_COLS),
         )
-        self._echo = CleanWriter(sys.stdout)
-        self._cld.logfile_read = _Echo(self._cld, self._echo)
+        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
         cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt

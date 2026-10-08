@@ -250,11 +250,11 @@ def _left(args: argparse.Namespace | None, e: BaseException, script: str) -> Non
         return
     head = f"Breakout failed in {_visible(script)}"
     for error in state.breakouts:
-        if error is e:  # the interrupt or signal that ended the breakout is what ended the run: reported
+        if error is e:  # the interrupt that ended the breakout is what ended the run: reported
             continue
-        if isinstance(error, (KeyboardInterrupt, signals.Terminated)):
+        if isinstance(error, KeyboardInterrupt):
             _traceback(args, error)
-            log.error(head, f"interrupted ({error.name})" if isinstance(error, signals.Terminated) else "interrupted")
+            log.error(head, "interrupted")
             _where(error)
         elif isinstance(error, EXPECTED) and not (_broad(error) and _plugins_own(error)):
             _traceback(args, error)
@@ -328,33 +328,14 @@ def _unexpected(e: Exception) -> None:
 def _interrupted() -> NoReturn:
     """End as a process that SIGINT killed: a shell reports status 130, and a loop around autobot stops,
     which it wouldn't for a process that exits with a status of its own."""
-    signals.end(signal.SIGINT)
-    sys.exit(EXIT_INTERRUPTED)  # the signal didn't arrive
-
-
-def _signalled(args: argparse.Namespace | None, e: BaseException) -> NoReturn:
-    """Report the interrupt or the signal that ended the command, and end the process from it. From
-    here on one more signal never raises: it is dropped while it can be the same request again, and
-    after that it ends the process at once, in the middle of the report if need be."""
-    while True:
+    for stream in (sys.stdout, sys.stderr):
         try:
-            signals.last(e)
-            break
-        except (KeyboardInterrupt, signals.Terminated) as again:  # it arrived just before: the last one counts
-            e = again
-    log.renew()  # an interrupt outside a run may have been raised in the middle of a message
-    _traceback(args, e)
-    if isinstance(e, signals.ReaderGone):
-        log.error(f"Terminated ({e.name})", f"nobody reads {e.stream} any more", style=log.WARN)
-    else:
-        log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
-    _where(e)
-    script = getattr(args, "script", "")
-    _left(args, e, script if isinstance(script, str) else "")
-    if isinstance(e, signals.Terminated):
-        signals.end(e.signum)
-        sys.exit(128 + e.signum)  # the signal didn't arrive
-    _interrupted()
+            stream.flush()
+        except (AttributeError, OSError, ValueError):  # no stream, or a closed one
+            pass
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGINT)
+    sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:
@@ -415,10 +396,15 @@ def _cmd_run(args):
         raise LoadError
     _discover(args)
     runner = _runner(args, _config(args.script))
+    watched: list[int] = []
     try:
-        # caught here, so the run's own block leaves the end of the process to `main`, after its report
-        with signals.caught(held=True):
-            runner.run()
+        _watch(runner, watched)
+        runner.run()
+    except log.OutputLost as e:
+        # stdout or stderr can't be written: the run ended there, and nothing more was sent
+        log.error(f"Run failed in {_visible(args.script)}", f"{e}; {signals.UNKNOWN}")
+        _where(e)
+        sys.exit(EXIT_RUN)
     except BreakoutError as e:
         _left(args, e, args.script)
         sys.exit(EXIT_BREAKOUT)
@@ -435,7 +421,33 @@ def _cmd_run(args):
             log.hint("(run with --traceback for details)")
         _left(args, e, args.script)
         sys.exit(EXIT_RUN)
+    finally:
+        signals.restore(watched)
     log.say("run completed", "ok")
+
+
+def _watch(runner: Runner, watched: list[int]) -> None:
+    """From the spawn on, SIGTERM and SIGHUP end the process with a message and no cleanup (`signals`).
+    Not while `attach.prepare` runs: that has its own handling of SIGTERM, which removes its temp file."""
+    def step() -> str:
+        stack = runner._stack
+        return f"  at {stack[-1].path} ({stack[-1].what})\n" if stack else ""
+
+    def watch() -> None:
+        signals.where = step
+        watched.extend(signals.install())
+
+    if not runner.config.attach.prepare:
+        watch()
+        return
+    prepare = runner._run_prepare
+
+    def prepared(*args: Any, **kwargs: Any) -> Any:
+        changes = prepare(*args, **kwargs)
+        watch()
+        return changes
+
+    runner._run_prepare = prepared  # type: ignore[method-assign]
 
 
 def _cmd_validate(args: argparse.Namespace) -> None:
@@ -525,14 +537,6 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 
 def main():
-    parsed: list[argparse.Namespace] = []
-    try:
-        _main(parsed)
-    except (KeyboardInterrupt, signals.Terminated) as e:  # wherever it was raised, in a report too
-        _signalled(parsed[0] if parsed else None, e)
-
-
-def _main(parsed: list[argparse.Namespace]) -> None:
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -574,7 +578,6 @@ def _main(parsed: list[argparse.Namespace]) -> None:
         args.command = "validate"
     else:
         args = parser.parse_args()
-    parsed.append(args)
 
     try:
         if args.command == "schema":
@@ -586,6 +589,13 @@ def _main(parsed: list[argparse.Namespace]) -> None:
         else:
             parser.print_help()
             sys.exit(EXIT_LOAD)
+    except KeyboardInterrupt as e:
+        _traceback(args, e)
+        log.error("Interrupted", style=log.WARN)
+        _where(e)
+        script = getattr(args, "script", "")
+        _left(args, e, script if isinstance(script, str) else "")
+        _interrupted()
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
         _left(args, e, getattr(args, "script", ""))
