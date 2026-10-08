@@ -8,9 +8,8 @@ import pytest
 from conftest import BASH, make_doc, run_cli
 from conftest import run_vars as run
 
-from autobot import session as session_mod
-from autobot.session import CleanWriter, strip_echo
-from autobot.types import ANSI_ESCAPE_RE
+from autobot import screen as screen_mod
+from autobot.screen import ANSI_ESCAPE_RE, CleanWriter, strip_echo
 
 
 def test_newlines_preserved():
@@ -179,7 +178,7 @@ def test_p8_16_log_lines_are_not_wrapped(tmp_path: Path):
     assert f">> cmd: {cmd}" in res.stderr.splitlines()
 
 
-# -- P8-21: the operator echo (session.CleanWriter) ---------------------------
+# -- P8-21: the operator echo (screen.CleanWriter) ---------------------------
 
 ESC = "\x1b"
 COLORED = f"ab{ESC}[31mcd{ESC}[0m ef{ESC}[?2004h{ESC}M gh{ESC}[1;32;4mij\r\n"
@@ -260,7 +259,7 @@ def test_p8_21_echo_keeps_what_the_stripping_regex_keeps(chunks: tuple[str, ...]
 
 def test_p8_21_echo_held_start_is_bounded():
     """Garbage after an ESC can't grow the held text without limit: past the bound it is written out."""
-    ESCAPE_HOLD = session_mod.ESCAPE_HOLD
+    ESCAPE_HOLD = screen_mod.ESCAPE_HOLD
     assert 16 <= ESCAPE_HOLD <= 256
     out = io.StringIO()
     w = CleanWriter(out)

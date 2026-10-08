@@ -19,7 +19,7 @@ from autobot import cli, log
 from autobot.models import Config
 from autobot.runner import Runner
 from autobot.steps import CmdExecutor, StepFailure
-from autobot.types import ANSI_ESCAPE_RE
+from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
 # one of each kind of line: a step, a group, an ignored failure, a registered value, a completed block, a failed run

@@ -11,7 +11,6 @@ import jinja2.meta
 import pydantic
 from pydantic_core import PydanticCustomError
 
-ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
 DURATION_MAX = sys.float_info.max

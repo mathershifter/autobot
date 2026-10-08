@@ -12,7 +12,9 @@ import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.session import HELD_GRACE, PTY_COLS, PTY_ROWS, CommandError, LineTooLong, strip_echo
+from autobot.screen import strip_echo
+from autobot.session import HELD_GRACE, CommandError, LineTooLong
+from autobot.terminal import PTY_COLS, PTY_ROWS
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
 EOS_PROMPTS = [{"name": "eos", "expect": [r"^cmp474\(s1\)\(vrf:MGMT\)#"], "return": True}]

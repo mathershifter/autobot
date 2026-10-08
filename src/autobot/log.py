@@ -1,6 +1,6 @@
 """Autobot's own messages: one console on stderr, a small palette and the `>> ` marker.
 
-The session's output never comes through here: `session.CleanWriter` writes it to stdout as the device sent it.
+The session's output never comes through here: `screen.CleanWriter` writes it to stdout as the device sent it.
 """
 
 from __future__ import annotations

@@ -28,7 +28,8 @@ from conftest import (
 
 from autobot.models import SendEach
 from autobot.runner import Runner, send_each_sets
-from autobot.session import HELD_GRACE, PromptHandler, Session, _mid_echo
+from autobot.screen import _mid_echo
+from autobot.session import HELD_GRACE, PromptHandler, Session
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
 UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]

@@ -10,8 +10,9 @@ from jinja2 import StrictUndefined, UndefinedError
 from . import log, prepare
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
-from .session import PromptHandler, Session, SimpleHandler, run_environ
+from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
+from .terminal import run_environ
 from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
 
