@@ -12,7 +12,7 @@ import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.session import HELD_GRACE, PTY_COLS, PTY_ROWS, CommandError, strip_echo
+from autobot.session import HELD_GRACE, PTY_COLS, PTY_ROWS, CommandError, LineTooLong, strip_echo
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
 EOS_PROMPTS = [{"name": "eos", "expect": [r"^cmp474\(s1\)\(vrf:MGMT\)#"], "return": True}]
@@ -489,8 +489,7 @@ def test_p8_34_line_of_many_rows_on_a_narrow_terminal(length: int, lc_all: str):
 @pytest.mark.parametrize("lc_all", ["C", UTF8 or "C"])
 def test_p8_34_longest_line_the_window_shows_at_40_columns(lc_all: str):
     """SPEC "The echo of a sent line": with its prompt, the line is one cell short of the window's
-    `PTY_ROWS` rows of 40 columns. (One more is usually answered by clearing the screen, not always, and
-    at 80 columns a line this close to the window is past what one write is sure to carry.)"""
+    `PTY_ROWS` rows of 40 columns. (One more is usually answered by clearing the screen, not always.)"""
     cmd = command(PTY_ROWS * NARROW - len("PROMPT$ ") - 1)
     assert len(cmd) == 19991
     out = tall([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], lc_all, cols=NARROW)
@@ -576,21 +575,32 @@ def test_p8_34_lines_that_fit_24_rows_are_written_the_same(term: str, lc_all: st
 # -- P8-35: the input line of a terminal without a line editor ----------------------------------------
 
 CANON = 4095  # the bytes of a line that the Linux terminal keeps for a program that reads whole lines
+NOEDIT = "bash --norc --noprofile --noediting -i"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
-@pytest.mark.parametrize("over", [-1, 0, 1, 905, 5905], ids=["under", "at", "over", "5000", "10000"])
-def test_p8_35_line_past_the_input_limit_of_the_terminal_is_cut(over: int):
+@pytest.mark.parametrize("over", [-1, 0], ids=["under", "at"])
+def test_p8_35_line_up_to_the_input_limit_of_the_terminal_is_sent_whole(over: int):
     """SPEC "The length of a sent line": bash without readline leaves the line to the terminal, which
-    keeps 4095 bytes of it. The command runs cut off there, without an error."""
+    keeps 4095 bytes of it and the line break."""
     cmd = command(CANON + over)
-    out = run(
-        [{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}],
-        spawn="bash --norc --noprofile --noediting -i",
+    out = run([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], spawn=NOEDIT)
+    assert out == {"out": cmd[5:], "after": "done"}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the limit is the Linux terminal's")
+@pytest.mark.parametrize("over", [1, 905, 5905], ids=["over", "5000", "10000"])
+def test_p8_35_line_past_the_input_limit_of_the_terminal_is_not_sent(over: int):
+    """The terminal would run the command cut off after 4095 bytes, without an error: the line is refused."""
+    cmd = command(CANON + over)
+    runner = make_runner([{"cmd": cmd, "register": "out"}, {"cmd": "echo done", "register": "after"}], spawn=NOEDIT)
+    with pytest.raises(LineTooLong) as ei:
+        runner.run()
+    assert str(ei.value) == (
+        f"line of {CANON + over} bytes not sent: the terminal reads whole lines (canonical mode) and takes "
+        f"4095 bytes of one, so the last {over} would be dropped without an error"
     )
-    assert out["out"] == " ".join(cmd[:CANON].split()[1:])
-    assert (out["out"] == cmd[5:]) == (over <= 0)
-    assert out["after"] == "done"
+    assert runner.config.vars == {}
 
 
 # -- P4-44: a prompt that the line editor writes again while it echoes --------------------------------

@@ -329,6 +329,8 @@ Captured output (used by `register`, `assert`, `errors`, and `session.before`) i
 
 **Important:** `cmd` blocks until a prompt appears after the command. For commands that won't return a prompt (e.g. `reboot`, `exit`), use `line` instead. The same goes for a command that shows nothing until Return is pressed, such as connecting to an idle console (`consutil connect 0`): autobot presses Return for a console that stays silent for 5 seconds, but never while a `cmd` is running, so that `cmd` would time out. Send it with `line`; the next `cmd` waits for the prompt and presses Return if needed.
 
+**Very long lines.** A line is sent as it is, however long. Sending has the step's `timeout`, like every wait: if the far side stops reading, the step fails with `timed out after <timeout>s while sending a line (<sent> of <total> bytes sent)`. The part that was sent stays on the far side's input line, typed and not entered. Until a control character has been sent, Autobot presses no Return and sends no line there, since either would enter the cut line (`line not sent: part of a line ...`). So a breakout that may follow such a step should start with `control: c`, which drops the line at a shell and at most CLIs; one that starts with a `line` or a `cmd` fails at that step, and the session is closed. On a terminal that wraps (a `TERM` other than `dumb`), the output of a line is captured as long as the line fits on the screen of the line editor, 40,000 characters with its prompt. A shell without a line editor (`dash`, `bash --noediting`, a `read`) leaves the line to its terminal, which keeps only so much of it. On Linux that is the first 4095 bytes: the rest is dropped without an error, and the command runs cut off. On macOS, by its documentation (nothing was run there), it is 1023 bytes, and the rest is dropped together with the line break, so the command never runs and the step times out. Where that terminal is the one Autobot spawned the process on, such a line is not sent, and the step fails with `line of <N> bytes not sent: the terminal reads whole lines (canonical mode) and takes 4095 bytes of one, so the last <M> would be dropped without an error` (the limit is the one of the platform Autobot runs on; where it isn't known, nothing is refused). Behind `ssh`, `telnet` or a console server Autobot can't see the terminal that counts: it sends the line and warns once per run (`>> long line: ...`). All of this was measured on Linux only. See [SPEC.md](SPEC.md#the-length-of-a-sent-line).
+
 #### Multi-line commands
 
 As a list (each entry sent separately):
@@ -466,13 +468,13 @@ All step types except `sleep` support these optional fields:
 | `when`         | Jinja2 conditional — step is skipped if the rendered result, stripped and lowercased, is `""`, `false`, `0` or `none` (so `False`, `None` and `" FALSE "` also skip) |
 | `delay_before` | Duration to wait before the step                               |
 | `delay_after`  | Duration to wait after the step                                |
-| `timeout`      | Bounds each wait of this step (default 300s), not the step as a whole |
+| `timeout`      | Bounds each wait and each send of this step (default 300s), not the step as a whole |
 
 `line` and `return` steps do not support `timeout`.
 
 `after` doesn't replace a `cmd`'s wait for a prompt: the step waits for the pattern, then for a prompt, and sends the command there, so an `after` that matches while something is still running doesn't send the command into it. That wait never presses Return, since a Return could answer a question or reach a running command; if no shell prompt comes within the step's `timeout`, the step fails. An `after` that ends at the shell prompt itself is fine: the command is sent at once. `line`, `return` and `control` send as soon as the pattern matches, so use `line` to answer something that isn't a shell prompt.
 
-For `cmd`, `timeout` applies separately to each wait: `after`, each prompt wait, the `$?` check and the embedded-script upload. For `call`, `block` and `control` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
+For `cmd`, `timeout` applies separately to each wait and each send: `after`, each prompt wait, the sending of each line, the `$?` check and the embedded-script upload. For `control` it bounds the `after` wait and the sending of each character. For `call` and `block` it bounds only the `after` wait: the steps inside a function or block keep their own `timeout` (default 300s) and don't inherit it.
 
 To leave an optional field at its default, omit the key. An empty value such as `after:` or `timeout: ~` is `null`, which is a validation error for every optional field.
 
@@ -540,7 +542,7 @@ By default, `cmd` steps check the return code via `echo $?` and raise on non-zer
   ignore_error: true
 ```
 
-`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for), template errors and prompt-response failures (`responses exhausted`) always abort the script.
+`ignore_error` covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match, and an embedded-script upload mismatch. Timeouts, a closed connection (`connection closed while waiting for ...`, naming the prompts, `after` pattern or `$?` check it was waiting for, or `connection closed while sending a line`), template errors and prompt-response failures (`responses exhausted`) always abort the script.
 
 **Global error patterns:** Define top-level `errors` to detect errors by output pattern instead of exit code. This is useful for CLIs that don't use standard exit codes (e.g. Arista EOS):
 
@@ -591,6 +593,9 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 
 - `ctx.session.sendline(text)` sends a command. The following `ctx.session.get_prompt(...)` waits for the command's prompt and never presses Return while it waits, however long the command is silent.
 - `ctx.session.sendline(text, solicit=True)` is a raw send, like a `line` step: the next prompt wait presses Return once if nothing shows within 5 seconds. Use it for text that leaves the session at an idle console, such as a connect command.
+- `ctx.session.sendcontrol(char)` sends a control character, like a `control` step.
+
+Each send takes a `timeout` in seconds, by keyword: `ctx.session.sendline(text, timeout=timeout)`, `ctx.session.sendcontrol("c", timeout=timeout)`. It is 300 by default; pass on the `timeout` that `execute` was given, as the built-in steps do. A send that isn't complete in that time, because the far side has stopped reading, raises `TimeoutError` (`timed out after <timeout>s while sending a line ...`); see [SPEC.md](SPEC.md#the-length-of-a-sent-line).
 
 A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these as a failed run with the step's path, and likewise a `TimeoutError`, an `EOFError` or a pexpect error, whether the session raises it or the plugin does. Any other exception that the plugin's own code raises is reported as a bug in the plugin, with its traceback. That includes an `OSError`, `UnicodeError` or `RecursionError` of the plugin's own; the same error from Autobot's session underneath, e.g. a write to a pty that is gone, is a failed run (see [Errors and exit status](#errors-and-exit-status)).
 

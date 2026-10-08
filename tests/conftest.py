@@ -27,7 +27,7 @@ from autobot.cli import load_schema
 from autobot.models import Config
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
-from autobot.session import PromptHandler, Session
+from autobot.session import LineTooLong, PartialLine, PromptHandler, Session
 from autobot.steps import register_builtins
 
 
@@ -224,19 +224,27 @@ class SentLog(list):
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> SentLog:
     log = SentLog()
-    orig_line = pexpect.spawn.sendline
-    orig_ctrl = pexpect.spawn.sendcontrol
+    orig_line = Session._put_line
+    orig_ctrl = Session._put_control
 
-    def sendline(self, s=""):
-        log.append(("line", s))
-        return orig_line(self, s)
+    def put_line(self, line, *args, **kwargs):
+        log.append(("line", line))
+        try:
+            return orig_line(self, line, *args, **kwargs)
+        except (LineTooLong, PartialLine):
+            log.pop()  # refused: nothing of it was sent
+            raise
 
-    def sendcontrol(self, char):
+    def put_control(self, char, *args, **kwargs):
         log.append(("ctrl", char))
-        return orig_ctrl(self, char)
+        try:
+            return orig_ctrl(self, char, *args, **kwargs)
+        except PartialLine:
+            log.pop()
+            raise
 
-    monkeypatch.setattr(pexpect.spawn, "sendline", sendline)
-    monkeypatch.setattr(pexpect.spawn, "sendcontrol", sendcontrol)
+    monkeypatch.setattr(Session, "_put_line", put_line)
+    monkeypatch.setattr(Session, "_put_control", put_control)
     return log
 
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
 import re
+import select
 import signal
 import sys
+import termios
 import time
 from collections.abc import Callable
 
@@ -16,9 +20,9 @@ from .types import ANSI_ESCAPE_RE, RunError, ScriptError
 DEFAULT_ENV = {"TERM": "dumb", "NO_COLOR": "1"}
 
 # The window of the spawned pty. A line editor on a terminal that wraps clears the screen and writes the
-# prompt again for a line that doesn't fit on the screen, so the screen is tall: 40,000 characters, more
-# than one write can be relied on to carry. Not taller: a full-screen program draws every row, and a
-# device may take its terminal length from this window and accept only so much.
+# prompt again for a line that doesn't fit on the screen, so the screen is tall: 40,000 characters. Not
+# taller: a full-screen program draws every row, and a device may take its terminal length from this
+# window and accept only so much.
 PTY_ROWS = 500
 PTY_COLS = 80
 
@@ -26,6 +30,47 @@ PTY_COLS = 80
 # the prompt is taken for the prompt once nothing arrives for this long. Readline writes the prompt and the
 # rest of the line in one write; the time is for a slow line between a device and its console server.
 HELD_GRACE = 1.0
+
+
+# What a write to a pty whose other side is gone fails with: the session is closed, as an EOF on a read says.
+CLOSED_ERRNOS = (errno.EIO, errno.EPIPE, errno.ENXIO)
+# A write of which the pty takes nothing, although it is reported writable, is tried again after this long.
+SEND_RETRY = 0.01
+
+# The bytes of a line, its line break included, that the Linux terminal takes in canonical mode
+# (N_TTY_BUF_SIZE). The terminals of most devices a script reaches are Linux ones.
+LINUX_CANON = 4096
+# What a system may answer for its own limit and be believed: no less than POSIX lets a system have
+# (_POSIX_MAX_CANON), and no more than any terminal's line buffer. `fpathconf` answers -1 for "no limit"
+# and for "can't say"; a wrong limit would refuse lines that the terminal takes.
+CANON_RANGE = range(255, 65536 + 1)
+
+
+def canon_limit(fd: int) -> int | None:
+    """The bytes of one line, its line break included, that the terminal `fd` takes in canonical mode.
+    None where the limit isn't known: nothing is refused there."""
+    if sys.platform.startswith("linux"):
+        return LINUX_CANON  # not fpathconf: it reports 255 for a pty, the POSIX constant, which the kernel doesn't go by
+    if sys.platform == "darwin":
+        try:
+            limit = os.fpathconf(fd, "PC_MAX_CANON")
+        except Exception:  # noqa: BLE001 - whatever it is, the limit isn't known
+            return None
+        if isinstance(limit, int) and limit in CANON_RANGE:
+            return limit
+    return None
+
+
+_CONTROL_KEYS = {"@": 0, "`": 0, "[": 27, "{": 27, "\\": 28, "|": 28, "]": 29, "}": 29, "^": 30, "~": 30, "_": 31, "?": 127}
+
+
+def control_byte(char: str) -> bytes:
+    """The control character of a key: Ctrl+A to Ctrl+Z in either case, and the punctuation keys. Empty for
+    any other key."""
+    char = char.lower()
+    if len(char) == 1 and "a" <= char <= "z":
+        return bytes([ord(char) - ord("a") + 1])
+    return bytes([_CONTROL_KEYS[char]]) if char in _CONTROL_KEYS else b""
 
 
 def run_environ() -> dict[str, str]:
@@ -44,6 +89,20 @@ class CommandError(RunError):
     def __init__(self, message: str, output: str = ""):
         super().__init__(message)
         self.output = output
+
+
+class LineTooLong(RunError):
+    """A line that the terminal of the spawned process would cut: it is not sent."""
+
+
+class PartialLine(RunError):
+    """A line that would be added to the part of an earlier one that is typed at the far side: it is not sent."""
+
+
+PARTIAL = (
+    "part of a line that could not be sent whole is typed at the far side, and a Return would enter it; "
+    "send a control character that drops it first (control: c)"
+)
 
 
 # Bounds on the reading of an echo, so that output which is no echo costs little whatever its size:
@@ -299,6 +358,13 @@ class Session:
         self._prompt = ""
         self._sent: str | None = None
         self._solicit = True
+        self._warned = False  # of a long line, once
+        # part of a line is typed at the far side, after a send that failed: no line is sent, since its
+        # Return would enter that part, until a control character has been sent
+        self._partial = False
+        # a prompt's answer was refused: the prompt is still waiting for one, and a solicit newline would
+        # be an empty answer, until something is sent
+        self._unanswered = False
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
@@ -363,6 +429,8 @@ class Session:
         self._sent = None
         self._solicit = True
         self._held = None
+        self._partial = False
+        self._unanswered = False
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
@@ -471,8 +539,8 @@ class Session:
                         self._prompt = held[1]
                         return self._finish(output, sent, errors, capture, held[2])
                     continue  # no Return is pressed at a prompt that is held
-                if not solicited and all(h.is_fresh for h in self._handlers):
-                    self._cld.sendline("")
+                if not (solicited or self._partial or self._unanswered) and all(h.is_fresh for h in self._handlers):
+                    self._put_line("", deadline - time.monotonic(), timeout)
                     solicited = True
                 continue
             if before:
@@ -492,7 +560,11 @@ class Session:
                             break
                         self._prompt = before + str(self._cld.after)
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
-                    self._cld.sendline(h.respond(i - h.start))
+                    try:
+                        self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
+                    except (LineTooLong, PartialLine) as e:
+                        self._unanswered = True
+                        raise type(e)(f"prompt '{h.name}': {e}") from None
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
 
@@ -546,22 +618,141 @@ class Session:
                 self._held = (read, line, self._ctx["match"])
         return idx
 
-    def sendline(self, line: str = "", *, solicit: bool = False):
-        """Send a line. `solicit` lets the next prompt wait send its solicit newline: for a raw
-        send (`line`, `return`), not for a command whose prompt the wait is for."""
+    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):
+        """Send a line, within `timeout`. `solicit` lets the next prompt wait send its solicit newline: for
+        a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
+        state = (self._at_prompt, self._sent, self._solicit, self._held)
         self._at_prompt = False
         self._sent = line
         self._solicit = solicit
         self._held = None
-        self._cld.sendline(line)
+        try:
+            self._put_line(line, timeout)
+        except (LineTooLong, PartialLine):
+            # nothing was sent: the session is where it was
+            self._at_prompt, self._sent, self._solicit, self._held = state
+            raise
+        self._unanswered = False
+
+    def _put_line(self, line: str, timeout: float, of: float | None = None):
+        """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
+        of, when `timeout` is what is left of it."""
+        cld = self._cld
+        assert cld
+        if self._partial:
+            raise PartialLine(f"line not sent: {PARTIAL}")
+        deadline = time.monotonic() + timeout
+        if cld.delaybeforesend is not None:
+            time.sleep(cld.delaybeforesend)
+        data = (line + cld.linesep).encode(cld.encoding, cld.codec_errors)
+        self._check_length(data)
+        self._write(data, deadline, timeout if of is None else of, "a line")
+
+    def _check_length(self, data: bytes):
+        """Refuse a line that the child's terminal would cut, and say so once when a terminal further on may.
+
+        A terminal in canonical mode keeps a line for the program until its line break, and only so many
+        bytes of it: it drops the rest without a sign, while it echoes them all. The mode is the one the
+        terminal is in now, when the line is about to be typed on it.
+        """
+        cld = self._cld
+        assert cld
+        try:
+            attrs = termios.tcgetattr(cld.child_fd)
+            icrnl, canonical = bool(attrs[0] & termios.ICRNL), bool(attrs[3] & termios.ICANON)
+        except Exception:  # noqa: BLE001 - no terminal to ask (a closed one: the write says so) or no answer to go by
+            return
+        breaks = rb"[\r\n]" if icrnl else rb"\n"
+        longest = max(len(part) for part in re.split(breaks, data))
+        limit = canon_limit(cld.child_fd) if canonical else None
+        if limit:
+            if longest >= limit:
+                # the terminal of a child that has exited still reports its mode: there is nobody to cut the line for
+                if cld.flag_eof or not cld.isalive():
+                    raise EOFError("connection closed while sending a line")
+                raise LineTooLong(
+                    f"line of {longest} bytes not sent: the terminal reads whole lines (canonical mode) and "
+                    f"takes {limit - 1} bytes of one, so the last {longest - limit + 1} would be dropped without an error"
+                )
+        elif longest >= LINUX_CANON and not self._warned:
+            self._warned = True
+            log.say(
+                f"long line: {longest} bytes; a far side that reads whole lines, with no line editor, keeps only "
+                f"the first {LINUX_CANON - 1} bytes of one (the usual limit on Linux) and drops the rest without an error",
+                "warn",
+            )
+
+    def _put_control(self, char: str, timeout: float):
+        data = control_byte(char)
+        if self._partial and data in (b"\r", b"\n"):  # Ctrl+M and Ctrl+J are the Return key
+            raise PartialLine(f"control character not sent: {PARTIAL}")
+        self._write(data, time.monotonic() + timeout, timeout, "a control character")
+        self._partial = False  # the far side has been told to drop what was typed
+
+    def _write(self, data: bytes, deadline: float, timeout: float, what: str):
+        """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
+        no more: a child that echoes stops reading once nobody reads its echo.
+
+        What is read is read as a wait reads it, and is the start of what the next wait reads. A write
+        that fails leaves the session at no prompt and after no line. The part that was written is on the
+        child's input line: until a control character is sent, no prompt wait presses Return and no line
+        is sent, which would enter it.
+        """
+        cld = self._cld
+        assert cld
+        fd = cld.child_fd
+        done, idle = 0, False
+        try:
+            if fd < 0:  # closed here, not by the child
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            try:
+                while done < len(data):
+                    try:
+                        wrote = os.write(fd, data[done:])
+                    except BlockingIOError:
+                        wrote = 0
+                    if wrote > 0:
+                        done += wrote
+                        idle = False
+                        continue
+                    # the pty took nothing: every pass from here on checks the deadline
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"timed out after {timeout}s while sending {what} ({done} of {len(data)} bytes sent)"
+                        )
+                    if idle:
+                        time.sleep(min(SEND_RETRY, remaining))
+                    readable, writable, _ = select.select([fd], [fd], [], remaining)
+                    read = False
+                    if readable:
+                        try:
+                            # into pexpect's buffer and the operator echo, like the output a wait reads
+                            cld.expect(pexpect.TIMEOUT, timeout=0)
+                            read = True
+                        except BlockingIOError:
+                            pass  # reported readable, and nothing to read
+                    # reported writable though it took nothing, or readable with nothing to read: poll
+                    idle = bool(writable) or not read
+            finally:
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+        except BaseException as e:
+            self._sent = None
+            self._solicit = False
+            self._partial = self._partial or done > 0
+            if isinstance(e, pexpect.EOF) or (isinstance(e, OSError) and e.errno in CLOSED_ERRNOS):
+                raise EOFError(f"connection closed while sending {what}") from e
+            raise
 
     def check_rc(self, timeout: float = 300) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
 
-        self.sendline("echo __AUTOBOT_RC=$?")
+        self.sendline("echo __AUTOBOT_RC=$?", timeout=timeout)
         try:
             # the lookahead waits for what follows the digits: a code split across two reads is read whole
             self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
@@ -573,13 +764,14 @@ class Session:
         self.get_prompt(timeout=timeout, capture=False)
         return rc
 
-    def sendcontrol(self, char: str):
+    def sendcontrol(self, char: str, *, timeout: float = 300):
         if not self._cld:
             raise RuntimeError("not attached")
         self._at_prompt = False
         self._solicit = True
         self._held = None
-        self._cld.sendcontrol(char)
+        self._put_control(char, timeout)
+        self._unanswered = False
 
     def sleep(self, seconds: float):
         if not self._cld:

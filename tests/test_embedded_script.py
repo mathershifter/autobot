@@ -125,10 +125,10 @@ def test_cleanup_failure_does_not_mask_error(
 ):
     orig = Session.sendline
 
-    def sendline(self: Session, line: str = "") -> None:
+    def sendline(self: Session, line: str = "", **kw) -> None:
         if line.startswith("rm -f"):
             raise OSError("boom")
-        orig(self, line)
+        orig(self, line, **kw)
 
     monkeypatch.setattr(Session, "sendline", sendline)
     with pytest.raises(RuntimeError, match="exit code 4"):
@@ -142,10 +142,10 @@ def test_cleanup_failure_does_not_fail_step(
 ):
     orig = Session.sendline
 
-    def sendline(self: Session, line: str = "") -> None:
+    def sendline(self: Session, line: str = "", **kw) -> None:
         if line.startswith("rm -f"):
             raise OSError("boom")
-        orig(self, line)
+        orig(self, line, **kw)
 
     monkeypatch.setattr(Session, "sendline", sendline)
     out = run([{"cmd": "#!/bin/sh\necho ok\n", "register": "out"}])
@@ -348,7 +348,7 @@ def test_p2_19_interrupt_failure_does_not_mask_timeout(
     tmp_path_hex: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     """A failing interrupt is logged; the step's TimeoutError still propagates."""
-    def sendcontrol(self: Session, char: str) -> None:
+    def sendcontrol(self: Session, char: str, **kw) -> None:
         raise OSError("boom")
 
     monkeypatch.setattr(Session, "sendcontrol", sendcontrol)
