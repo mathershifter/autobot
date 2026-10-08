@@ -314,7 +314,32 @@ def _interrupted() -> NoReturn:
     """End as a process that SIGINT killed: a shell reports status 130, and a loop around autobot stops,
     which it wouldn't for a process that exits with a status of its own."""
     signals.end(signal.SIGINT)
-    sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
+    sys.exit(EXIT_INTERRUPTED)  # the signal didn't arrive
+
+
+def _signalled(args: argparse.Namespace | None, e: BaseException) -> NoReturn:
+    """Report the interrupt or the signal that ended the command, and end the process from it. The
+    signals are held back first: one more of them, here or later, would raise in the middle of the
+    report or of the interpreter's own end, and the process would exit with a status that means
+    something else."""
+    while True:
+        try:
+            signals.hold()
+            break
+        except (KeyboardInterrupt, signals.Terminated) as again:  # it arrived just before: the last one counts
+            e = again
+    try:
+        _traceback(args, e)
+        log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
+        _where(e)
+        script = getattr(args, "script", "")
+        _left(args, e, script if isinstance(script, str) else "")
+        if isinstance(e, signals.Terminated):
+            signals.end(e.signum)
+            sys.exit(128 + e.signum)  # the signal didn't arrive
+        _interrupted()
+    finally:
+        signals.release()
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:
@@ -377,7 +402,7 @@ def _cmd_run(args):
     runner = _runner(args, _config(args.script))
     try:
         # caught here, so the run's own block leaves the end of the process to `main`, after its report
-        with signals.caught():
+        with signals.caught(held=True):
             runner.run()
     except BreakoutError as e:
         _left(args, e, args.script)
@@ -485,6 +510,14 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 
 def main():
+    parsed: list[argparse.Namespace] = []
+    try:
+        _main(parsed)
+    except (KeyboardInterrupt, signals.Terminated) as e:  # wherever it was raised, in a report too
+        _signalled(parsed[0] if parsed else None, e)
+
+
+def _main(parsed: list[argparse.Namespace]) -> None:
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -526,6 +559,7 @@ def main():
         args.command = "validate"
     else:
         args = parser.parse_args()
+    parsed.append(args)
 
     try:
         if args.command == "schema":
@@ -537,19 +571,6 @@ def main():
         else:
             parser.print_help()
             sys.exit(EXIT_LOAD)
-    except KeyboardInterrupt as e:
-        _traceback(args, e)
-        log.error("Interrupted", style=log.WARN)
-        _where(e)
-        _left(args, e, getattr(args, "script", ""))
-        _interrupted()
-    except signals.Terminated as e:
-        _traceback(args, e)
-        log.error(f"Terminated ({e.name})", style=log.WARN)
-        _where(e)
-        _left(args, e, getattr(args, "script", ""))
-        signals.end(e.signum)
-        sys.exit(128 + e.signum)  # the signal is blocked or didn't arrive
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
         _left(args, e, getattr(args, "script", ""))

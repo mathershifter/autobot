@@ -30,7 +30,9 @@ LEFT = "Session may be left logged in: a breakout did not finish"
 
 
 def _default() -> None:
-    for sig in SIGS:
+    """For a child: the default actions, whatever the suite was started with (`nohup`, an ignored SIGINT).
+    Python then sets its own handler for SIGINT."""
+    for sig in (*SIGS, signal.SIGINT):
         signal.signal(sig, signal.SIG_DFL)
 
 
@@ -344,3 +346,95 @@ def test_p6_114_only_a_terminal_that_has_hung_up_is_left(tmp_path: Path):
     finally:
         os.close(master)
         os.close(slave)
+
+
+# -- P6-116: many signals at once ---------------------------------------------------------------------
+
+NOISE = ("Traceback", "Exception ignored", "lost sys.stderr", "Fatal Python error")
+# between two signals of a storm, run by run: at once, and spread over the time the run takes to unwind
+GAPS = (0, 0.001, 0.005, 0.02)
+HEADS = {signal.SIGINT: "Interrupted", signal.SIGTERM: "Terminated (SIGTERM)", signal.SIGHUP: "Terminated (SIGHUP)"}
+
+
+def _storm(tmp_path: Path, sigs: list[int], runs: int) -> None:
+    """Send the CLI all of `sigs`, `GAPS` apart, while a `cmd` waits, `runs` times. Each time the process
+    ends from one of them, its report starts with the line for that signal, and nothing of the
+    interpreter's shows."""
+    doc = make_doc([{"cmd": "sleep 30", "timeout": "20s"}], breakout=[{"control": "c"}])
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    echo, messages = tmp_path / "stdout", tmp_path / "stderr"
+    for run in range(runs):
+        with open(echo, "w") as out, open(messages, "w") as err:
+            proc = subprocess.Popen([*CLI, str(path)], stdout=out, stderr=err, preexec_fn=_default)
+            try:
+                _wait(lambda: "\nsleep " in echo.read_text().replace("PROMPT$ ", "\n"), proc, "the script never got to `sleep`")
+                for sig in sigs:
+                    proc.send_signal(sig)
+                    time.sleep(GAPS[run % len(GAPS)])
+                proc.wait(timeout=60)
+            finally:
+                proc.kill()
+        said = messages.read_text()
+        assert -proc.returncode in set(sigs), (run, proc.returncode, said)
+        assert not any(noise in said for noise in NOISE), (run, said)
+        report = [line for line in said.splitlines() if not line.startswith(">> ")]
+        assert report[:1] == [HEADS[-proc.returncode]], (run, proc.returncode, said)
+
+
+@pytest.mark.slow
+def test_p6_116_storm_of_one_signal_always_ends_from_it_with_its_report(tmp_path: Path):
+    """SPEC "Errors while the script runs": twelve SIGTERMs back to back, 200 times. However they fall on
+    the unwinding, the report and the end of the interpreter, the process ends from SIGTERM and says so."""
+    _storm(tmp_path, [signal.SIGTERM] * 12, 200)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "sigs",
+    [[signal.SIGINT] * 12, [signal.SIGHUP] * 12, [signal.SIGTERM, signal.SIGHUP, signal.SIGINT] * 4, [signal.SIGINT, signal.SIGTERM] * 6],
+    ids=["int", "hup", "term-hup-int", "int-term"],
+)
+def test_p6_116_mixed_storms(tmp_path: Path, sigs: list[signal.Signals]):
+    """The same with Ctrl-C, SIGHUP and the three mixed, 50 times each: the process ends from one of the
+    signals it was sent, and its first line is that signal's."""
+    _storm(tmp_path, sigs, 50)
+
+
+@pytest.mark.parametrize(
+    "sigs", [[signal.SIGTERM] * 12, [signal.SIGINT] * 12, [signal.SIGTERM, signal.SIGHUP, signal.SIGINT] * 4], ids=["term", "int", "mixed"]
+)
+def test_p6_116_storm_a_few_times(tmp_path: Path, sigs: list[signal.Signals]):
+    """Five runs of each storm, for the selection without the slow tests."""
+    _storm(tmp_path, sigs, 5)
+
+
+def test_p6_116_block_that_a_signal_ends_leaves_the_signals_held():
+    """`signals.caught(held=True)`: a signal or an interrupt that ends the block leaves the three signals
+    blocked, for the caller's report; any other way out leaves the mask as it was, and so does a block
+    that isn't `held`."""
+    before = {sig: signal.getsignal(sig) for sig in SIGS}
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    try:
+        for sig in SIGS:
+            signal.signal(sig, signal.SIG_DFL)
+        with signals.caught(held=True):
+            pass
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+        with pytest.raises(RuntimeError), signals.caught(held=True):
+            raise RuntimeError
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+        for error in (signals.Terminated(signal.SIGTERM), KeyboardInterrupt()):
+            with pytest.raises(type(error)), signals.caught(held=True):
+                raise error
+            assert set(signals.HELD) <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
+            assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+            signals.release()
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+        with pytest.raises(signals.Terminated), signals.caught():
+            raise signals.Terminated(signal.SIGTERM)
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        for sig, handler in before.items():
+            signal.signal(sig, handler)

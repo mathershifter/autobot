@@ -13,6 +13,8 @@ import termios
 from collections.abc import Iterator
 
 SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+# What is held back while a process that one of them is ending says so and ends: SIGINT is Python's own
+HELD = (signal.SIGINT, *SIGNALS)
 
 
 class Terminated(BaseException):
@@ -49,13 +51,27 @@ def _leave_terminal() -> None:
             pass
 
 
+def hold() -> None:
+    """Block the signals that end a run, for this thread: none of them raises anything from here on. For
+    the last lines of a process that one of them is ending; one that arrives stays pending."""
+    signal.pthread_sigmask(signal.SIG_BLOCK, HELD)
+
+
+def release() -> None:
+    """Undo `hold`."""
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, HELD)
+
+
 @contextlib.contextmanager
-def caught() -> Iterator[list[int]]:
+def caught(held: bool = False) -> Iterator[list[int]]:
     """While the block runs, a signal of `SIGNALS` raises `Terminated` in the main thread.
 
     Only a signal that has its default action is caught, and only where a handler can be set: in the main
     thread. So one that is ignored (`nohup`) stays ignored, a handler of the program's own stays, and a
     block inside another catches nothing more. Gives the signals this block catches.
+
+    `held`: when a signal or an interrupt ends the block, the block leaves with `hold` in effect, so
+    that however many more arrive, the caller gets to report the one and to `end` from it.
     """
     mine: list[int] = []
     try:
@@ -68,13 +84,22 @@ def caught() -> Iterator[list[int]]:
     try:
         yield mine
     finally:
-        for signum in mine:
-            signal.signal(signum, signal.SIG_DFL)
+        # one that arrives while the default actions are put back waits for the end of that, and for
+        # the end of the process when one of them is what ends the block
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, HELD if held else mine)
+        ending = held and isinstance(sys.exception(), (Terminated, KeyboardInterrupt))
+        try:
+            for signum in mine:
+                signal.signal(signum, signal.SIG_DFL)
+        finally:
+            if not ending:
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 def end(signum: int) -> None:
-    """End the process from the signal itself: its default action. Returns only if the signal is blocked
-    or didn't arrive."""
+    """End the process from the signal itself: its default action. Returns only if the signal didn't
+    arrive. Whatever else arrives meanwhile is held back, so that this signal is the one that ends it."""
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, HELD)
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
@@ -82,6 +107,8 @@ def end(signum: int) -> None:
             pass
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, [signum])
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask - {signum})  # still here: as it was, less the signal
 
 
 @contextlib.contextmanager
