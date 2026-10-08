@@ -30,11 +30,15 @@ LOGIN = {
     "send": {"each": "vars.creds", "fields": [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]},
 }
 CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
-LOGOUT = [{"control": "c"}, {"line": "logout"}, {"block": {"name": "logged out"}, "after": "[Ll]ogin: ?$", "timeout": "5s"}]
+# the documented breakout: its Ctrl-C waits, so that a command the shell has only just been sent is running
+LOGOUT = [{"control": "c", "delay_before": "2s"}, {"line": "logout"}, {"block": {"name": "logged out"}, "after": "[Ll]ogin: ?$", "timeout": "5s"}]
 LOGGED_OUT = ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
 # exits at the first line that has the word in it, and reads nothing more
 UNTIL = "import sys\nfor line in sys.stdin:\n    if sys.argv[1] in line:\n        break\n"
 SIGS = [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
+# prints `ready` and is silent from then on. The word is in the session's output only: the command as it
+# is sent, and as the `>> cmd:` line shows it, has it in two pieces
+SILENT = """sh -c "echo rea''dy; exec sleep 30\""""
 HEADS = {signal.SIGINT: "Interrupted", signal.SIGTERM: "Terminated (SIGTERM)", signal.SIGHUP: "Terminated (SIGHUP)"}
 
 
@@ -175,14 +179,14 @@ def test_p6_118_signal_with_the_reader_gone_still_logs_out_and_ends_from_the_sig
     fake_device: FakeDevice, tmp_path: Path, sig: signal.Signals, both: bool
 ):
     """SPEC "Errors while the script runs": `autobot script | tee log` and Ctrl-C, which ends `tee` as
-    well. The reader is gone while the run waits in a silent command, so nothing has failed yet when
-    the signal arrives. The breakout's own writes then fail, and it runs all the same: the device is
+    well. The reader exits at the command's one line of output, and the run waits in a command that is
+    silent from then on, so nothing has failed yet when the signal arrives. The breakout's own writes then fail, and it runs all the same: the device is
     logged out, and the process ends from the signal, not from the broken pipe."""
-    run = piped(fake_device, tmp_path, [{"cmd": "sleep 30", "timeout": "20s"}], until("sleep 30"), both=both, sig=sig)
+    run = piped(fake_device, tmp_path, [{"cmd": SILENT, "timeout": "20s"}], until("ready"), both=both, sig=sig)
     assert run.returncode == -sig, run.err
     assert run.device == LOGGED_OUT
     if not both:
-        assert run.report == [HEADS[sig], "  at script.0 (cmd: sleep 30)"]
+        assert run.report == [HEADS[sig], f"  at script.0 (cmd: {SILENT})"]
         assert "Broken pipe" not in run.err and "Traceback" not in run.err
 
 

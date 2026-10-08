@@ -459,6 +459,7 @@ def test_p6_116_one_signal_is_taken_and_the_next_waits_for_a_release():
     """The handler that takes a signal blocks the three; one that arrives then is pending, and is taken
     at `release`. A block that is not `held` leaves them unblocked."""
     before = {sig: signal.getsignal(sig) for sig in SIGS}
+    interrupt = signal.getsignal(signal.SIGINT)
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
     try:
         for sig in SIGS:
@@ -475,7 +476,7 @@ def test_p6_116_one_signal_is_taken_and_the_next_waits_for_a_release():
                 pass  # the pending one arrives in `release`, or right after it
             assert second.value.signum == signal.SIGHUP and signals.holding()
         assert not signals.holding() and signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+        assert signal.getsignal(signal.SIGINT) is interrupt  # as it was: Python's handler, or ignored by the suite's parent
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         for sig, handler in before.items():
