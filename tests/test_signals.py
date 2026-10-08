@@ -320,7 +320,8 @@ def _on_a_terminal(tmp_path: Path, doc: dict[str, Any], stderr_too: bool) -> tup
 def test_p6_114_terminal_that_hangs_up_does_not_stop_the_breakouts(tmp_path: Path, stderr_too: bool):
     """SPEC "Errors while the script runs": when the terminal goes away (an ssh session that drops, a
     closed window), the process gets SIGHUP and every write to the terminal fails. The breakouts still
-    run, although they write the session's output and their progress, and the process ends from SIGHUP."""
+    run, although they write the session's output and their progress, and the process ends from SIGHUP:
+    a stream nobody reads is pointed to /dev/null at its first failed write (P6-117 to P6-119)."""
     doc, log, spawn = _doc(tmp_path)
     rc, err = _on_a_terminal(tmp_path, doc, stderr_too)
     assert rc == -signal.SIGHUP, err
@@ -328,24 +329,6 @@ def test_p6_114_terminal_that_hangs_up_does_not_stop_the_breakouts(tmp_path: Pat
     assert _pids(spawn) == []
     if not stderr_too:  # the messages went to a file, which is still there
         assert err.splitlines()[-2:] == ["Terminated (SIGHUP)", "  at script.0.block.script.0 (cmd: sleep 30)"]
-
-
-def test_p6_114_only_a_terminal_that_has_hung_up_is_left(tmp_path: Path):
-    """`signals._leave_terminal` leaves a file, a pipe, /dev/null and a terminal that is still there as
-    they are."""
-    code = (
-        "import os, sys\nfrom autobot import signals\n"
-        "before = [os.fstat(fd)[:2] for fd in (1, 2)]\nsignals._leave_terminal()\n"
-        "sys.exit(0 if before == [os.fstat(fd)[:2] for fd in (1, 2)] else 9)\n"
-    )
-    master, slave = os.openpty()
-    try:
-        with open(tmp_path / "out", "w") as f, open(os.devnull, "w") as null:
-            for out, err in ((f, subprocess.PIPE), (null, f), (slave, slave)):
-                assert subprocess.run([sys.executable, "-c", code], stdout=out, stderr=err, check=False).returncode == 0
-    finally:
-        os.close(master)
-        os.close(slave)
 
 
 # -- P6-116: many signals at once ---------------------------------------------------------------------

@@ -152,9 +152,19 @@ class CleanWriter:
         if m and len(data) - m.start() <= ESCAPE_HOLD:
             data, self._held = data[: m.start()], data[m.start() :]
         if data:
-            self._write(data)
-            self._stream.flush()
+            self._out(data)
             log.echoed(data)
+
+    def _out(self, data: str = ""):
+        """Write `data` and flush. A stream that nobody reads any more is no error of the session's:
+        `log.lost` points it elsewhere and tells the run."""
+        try:
+            if data:
+                self._write(data)
+            self._stream.flush()
+        except (OSError, ValueError) as e:
+            if not log.lost(self._stream, e):
+                raise
 
     def _write(self, data: str):
         try:
@@ -167,12 +177,11 @@ class CleanWriter:
 
     def flush(self):
         # pexpect flushes after every read, so this must not release what is held
-        self._stream.flush()
+        self._out()
 
     def close(self):
         """Write out what is still held: nothing more will come to complete it. The stream stays open."""
         held, self._held = self._held, ""
+        self._out(held)
         if held:
-            self._write(held)
             log.echoed(held)
-        self._stream.flush()

@@ -330,7 +330,10 @@ def _signalled(args: argparse.Namespace | None, e: BaseException) -> NoReturn:
             e = again
     try:
         _traceback(args, e)
-        log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
+        if isinstance(e, signals.ReaderGone):
+            log.error(f"Terminated ({e.name})", f"nobody reads {e.stream} any more", style=log.WARN)
+        else:
+            log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
         _where(e)
         script = getattr(args, "script", "")
         _left(args, e, script if isinstance(script, str) else "")

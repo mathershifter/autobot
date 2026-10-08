@@ -4,12 +4,9 @@ the process then ends from the signal, as it would have without this."""
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import signal
-import stat
 import sys
-import termios
 from collections.abc import Iterator
 
 SIGNALS = (signal.SIGTERM, signal.SIGHUP)
@@ -26,29 +23,17 @@ class Terminated(BaseException):
         super().__init__(self.name)
 
 
+class ReaderGone(Terminated):
+    """Nobody reads the run's output any more (`stream` is `stdout` or `stderr`): the run stops as for a
+    signal, and a process that ends from it ends from SIGPIPE, as one does whose reader has gone."""
+
+    def __init__(self, stream: str):
+        super().__init__(signal.SIGPIPE)
+        self.stream = stream
+
+
 def _unwind(signum: int, frame: object) -> None:
-    if signum == signal.SIGHUP:
-        _leave_terminal()
     raise Terminated(signum)
-
-
-def _leave_terminal() -> None:
-    """Point stdout and stderr to /dev/null where they are a terminal that has hung up: every write to
-    one fails, and the cleanup that runs from here on writes the session's output and its own messages."""
-    for fd in (1, 2):
-        try:
-            if not stat.S_ISCHR(os.fstat(fd).st_mode):
-                continue
-            termios.tcgetattr(fd)
-        except termios.error as e:
-            if e.args[0] != errno.EIO:  # not a terminal: a device such as /dev/null
-                continue
-            with contextlib.suppress(OSError):
-                null = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(null, fd)
-                os.close(null)
-        except OSError:  # no such descriptor
-            pass
 
 
 def hold() -> None:

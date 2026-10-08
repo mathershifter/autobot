@@ -5,8 +5,10 @@ The session's output never comes through here: `screen.CleanWriter` writes it to
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
+from collections.abc import Callable
 
 from rich.console import Console
 from rich.text import Text
@@ -46,16 +48,51 @@ def _styled() -> bool:
     return terminal and os.environ.get("TERM", "").lower() not in ("dumb", "unknown")
 
 
+class _Console(Console):
+    def on_broken_pipe(self) -> None:
+        raise  # the BrokenPipeError itself, for `_print`: rich would end the process, in the middle of a run
+
+
 def _console() -> Console:
     # Every message is printed as a `Text`, never as a string: that is what keeps rich from reading markup
     # or emoji codes in it and from highlighting numbers and quotes. soft_wrap: a log line is one line,
     # whatever the terminal's width
     styled = _styled()
-    return Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
+    return _Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
 
 
 console = _console()
 _open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
+
+# What a write fails with when nobody reads the stream any more: a pipe whose reader has exited, a terminal
+# that has hung up
+GONE = (errno.EPIPE, errno.EIO)
+gone = ""  # the first stream found that way, `stdout` or `stderr`
+on_gone: Callable[[str], None] | None = None  # the run's: told when a stream is found that way
+
+
+def lost(stream: object, error: BaseException) -> bool:
+    """Whether `error`, raised by a write to `stream`, says that nobody reads the stream any more. Then
+    its file descriptor is pointed to /dev/null, so that no later write to it fails, and the run is told
+    (`on_gone`), which may raise. A closed stream counts too; there is nothing to point elsewhere."""
+    global gone
+    if isinstance(error, OSError) and error.errno in GONE:
+        try:
+            fd = stream.fileno()  # type: ignore[attr-defined]
+            null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null, fd)
+            os.close(null)
+        except (AttributeError, OSError, ValueError):  # no descriptor to point elsewhere
+            fd = -1
+    elif isinstance(error, ValueError) and getattr(stream, "closed", False):
+        fd = -1
+    else:
+        return False
+    name = "stdout" if stream is sys.stdout or fd == 1 else "stderr" if stream is sys.stderr or fd == 2 else "output"
+    gone = gone or name
+    if on_gone:
+        on_gone(name)
+    return True
 
 
 def echoed(data: str) -> None:
@@ -76,12 +113,16 @@ def _shared() -> bool:
 
 def _print(text: Text) -> None:
     global _open_line
-    if _open_line and _shared():
-        # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
-        # so stdout stays what the session sent
-        console.file.write("\n")
-        _open_line = False
-    console.print(text)
+    try:
+        if _open_line and _shared():
+            # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
+            # so stdout stays what the session sent
+            console.file.write("\n")
+            _open_line = False
+        console.print(text)
+    except (OSError, ValueError) as e:
+        if not lost(console.file, e):
+            raise
 
 
 def say(text: str, kind: str = "step") -> None:

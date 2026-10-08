@@ -97,6 +97,8 @@ Session may be left logged in: the script completed, but a breakout did not fini
 
 When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [Logging out](#logging-out)). After a failed script the status stays 3.
 
+The run also stops, with the same cleanup, when nobody reads its output any more: `autobot script | head -1`, a log collector that exits, a terminal that hangs up. Autobot notices at the first write that fails, points that stream to `/dev/null`, runs the breakouts with their output discarded, and ends from `SIGPIPE` as any Unix program does (a shell reports 141). It does not go on with the script unseen. When a signal is what ends the run and the reader is gone as well (`autobot script | tee log` and Ctrl-C), the breakouts still run and the signal decides how the process ends.
+
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
 | Status | Meaning |
@@ -109,6 +111,7 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
 | 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
 | 143, 129 | Ended by `SIGTERM` or `SIGHUP` after the cleanup: the process ends from the signal, which a shell reports as 143 or 129 |
+| 141    | Stopped because nobody read the output any more, after the cleanup: the process ends from `SIGPIPE`, which a shell reports as 141 |
 
 `--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 
