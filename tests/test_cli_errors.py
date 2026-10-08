@@ -150,12 +150,20 @@ def test_p6_83_cli_expected_run_failure_has_no_traceback(case: str, tmp_path: Pa
     and the step it happened in, with status 3 and no traceback."""
     script, kw, reason, at = RUN_FAILURES[case]
     log = tmp_path / "broke-out"
-    doc = make_doc(script, breakout=[{"control": "c"}, {"cmd": f"touch {log}", "timeout": "3s"}], **kw)
+    touch = f"touch {log}"
+    doc = make_doc(script, breakout=[{"control": "c"}, {"cmd": touch, "timeout": "3s"}], **kw)
     res = run_cli(doc, tmp_path)
     path = tmp_path / "script.autobot.yaml"
     assert res.returncode == 3, res.stderr
     assert "Traceback" not in res.stderr
-    assert _lines(res) == [f"Run failed in {path}: {reason}", *([f"  at {at}"] if at else [])]
+    report = [f"Run failed in {path}: {reason}", *([f"  at {at}"] if at else [])]
+    if case == "connection-closed":  # the breakout has nobody to talk to: its failure is reported as well (P6-115)
+        report += [
+            f"Breakout failed in {path}: connection closed while waiting for a shell prompt ('sh')",
+            f"  at attach.breakout.1 (cmd: {touch if len(touch) <= 72 else touch[:72] + '...'})",
+            "Session may be left logged in: a breakout did not finish",
+        ]
+    assert _lines(res) == report
     assert "Run failed" not in res.stdout
     # a failure after the spawn wait still breaks out; one before it has nothing to break out of
     assert (">> breakout: detaching" in res.stderr.splitlines()) == (at is not None)
@@ -356,6 +364,9 @@ def test_p6_85_failure_names_the_step_and_the_calls_that_led_to_it(tmp_path: Pat
         "  at fn.deep.script.0 (cmd: true (+1 more))",
         "  called from fn.check.script.1 (call: deep)",
         "  called from script.1.block.script.1.block.script.0 (call: check)",
+        f"Breakout failed in {tmp_path / 'script.autobot.yaml'}: command returned exit code 1",
+        "  at script.1.block.script.1.block.breakout.0 (cmd: false)",
+        "Session may be left logged in: a breakout did not finish",
     ]
     assert ">>   block breakout error (StepFailure): command returned exit code 1" in res.stderr.splitlines()
 

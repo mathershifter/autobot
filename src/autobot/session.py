@@ -53,6 +53,9 @@ def _exit_note(cld: pexpect.spawn) -> str:
 
 
 class PromptHandler:
+    # its responses are credentials (a `sendEach`): a run that sent one has logged in, or tried to
+    credentials = True
+
     def __init__(
         self,
         name: str,
@@ -110,6 +113,8 @@ class PromptHandler:
 class SimpleHandler(PromptHandler):
     """A prompt with one `send` template, rendered and sent on any match of its patterns, each time."""
 
+    credentials = False  # an answer to a question: a confirmation, a pager
+
     def __init__(self, name: str, patterns: list[str], send: str, render: Callable[[str], str]):
         super().__init__(name, patterns, [[send]], False)
         self._send = send
@@ -142,11 +147,18 @@ class Session:
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
+        self._logins: list[str] = []
         self._set_handlers(handlers)
 
     @property
     def ctx(self) -> dict[str, str]:
         return self._ctx
+
+    @property
+    def logins(self) -> tuple[str, ...]:
+        """The prompts that were answered with credentials since the process was spawned, by name. They
+        are still known once the session is closed."""
+        return tuple(self._logins)
 
     def _set_handlers(self, handlers: list[PromptHandler]):
         self._handlers = handlers
@@ -210,6 +222,7 @@ class Session:
         # nothing of an earlier child applies to this one
         self._forget()
         self._ctx["before"] = self._ctx["match"] = ""
+        self._logins = []
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -343,6 +356,8 @@ class Session:
                         self._unanswered = True  # no response left, or one that could not be rendered or sent
                         raise
                     log.say(f"prompt answered: {h.name}")  # never the response
+                    if h.credentials and h.name not in self._logins:
+                        self._logins.append(h.name)
                     break
 
     def _prompt_what(self) -> str:

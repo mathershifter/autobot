@@ -419,6 +419,9 @@ def test_p8_29_failed_step_says_so_before_the_breakouts(tmp_path: Path):
         ">> block breakout error (StepFailure): command returned exit code 1",
         f"Run failed in {path}: assertion failed: expected ['nope']",
         "  at script.1.block.script.0 (cmd: echo hi)",
+        f"Breakout failed in {path}: command returned exit code 1",
+        "  at script.1.block.breakout.0 (cmd: false)",
+        "Session may be left logged in: a breakout did not finish",
     ]
 
 

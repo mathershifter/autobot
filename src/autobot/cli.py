@@ -21,7 +21,7 @@ from yaml.reader import ReaderError
 from . import log, signals
 from .models import Config
 from .registry import PluginError, registry
-from .runner import Runner, _kind, trail
+from .runner import BreakoutError, Runner, _kind, left, trail
 from .types import RunError, ScriptError, text
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 EXIT_LOAD = 1  # the script can't be loaded: nothing ran
 EXIT_RUN = 3  # the run failed
+EXIT_BREAKOUT = 4  # the script completed, and a breakout did not finish
 EXIT_UNEXPECTED = 70  # a bug in autobot or a plugin (EX_SOFTWARE)
 EXIT_INTERRUPTED = 130  # Ctrl-C, where the process can't end from the signal itself
 
@@ -242,6 +243,30 @@ def _where(e: BaseException) -> None:
         log.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
+def _left(args: argparse.Namespace | None, e: BaseException, script: str) -> None:
+    """After the report of how the run ended: each breakout that did not finish, and what that may mean."""
+    state = left(e)
+    if state is None:
+        return
+    for error in state.breakouts:
+        if error is e:  # the interrupt or signal that ended the breakout is what ended the run: reported
+            continue
+        _traceback(args, error)
+        if isinstance(error, KeyboardInterrupt):
+            reason = "interrupted"
+        elif isinstance(error, signals.Terminated):
+            reason = f"interrupted ({error.name})"
+        else:
+            reason = str(error) or type(error).__name__
+        log.error(f"Breakout failed in {_visible(script)}", reason)
+        _where(error)
+    why = "the script completed, but a breakout did not finish" if isinstance(e, BreakoutError) else "a breakout did not finish"
+    if state.logins:
+        names = ", ".join(repr(name) for name in state.logins)
+        why += f"; the run sent credentials (prompt{'s' if len(state.logins) != 1 else ''} {names})"
+    log.error("Session may be left logged in", why)
+
+
 def _broad(e: BaseException) -> bool:
     return isinstance(e, BROAD) and not isinstance(e, TimeoutError)
 
@@ -354,6 +379,9 @@ def _cmd_run(args):
         # caught here, so the run's own block leaves the end of the process to `main`, after its report
         with signals.caught():
             runner.run()
+    except BreakoutError as e:
+        _left(args, e, args.script)
+        sys.exit(EXIT_BREAKOUT)
     except EXPECTED as e:
         if _broad(e) and _plugins_own(e):
             raise  # a bug in the plugin, like any other exception of its own
@@ -365,6 +393,7 @@ def _cmd_run(args):
         _where(e)
         if _broad(e) and not args.traceback:
             log.hint("(run with --traceback for details)")
+        _left(args, e, args.script)
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
 
@@ -512,15 +541,18 @@ def main():
         _traceback(args, e)
         log.error("Interrupted", style=log.WARN)
         _where(e)
+        _left(args, e, getattr(args, "script", ""))
         _interrupted()
     except signals.Terminated as e:
         _traceback(args, e)
         log.error(f"Terminated ({e.name})", style=log.WARN)
         _where(e)
+        _left(args, e, getattr(args, "script", ""))
         signals.end(e.signum)
         sys.exit(128 + e.signum)  # the signal is blocked or didn't arrive
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
+        _left(args, e, getattr(args, "script", ""))
         sys.exit(EXIT_UNEXPECTED)
 
 

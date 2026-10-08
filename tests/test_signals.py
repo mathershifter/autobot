@@ -25,6 +25,8 @@ from autobot import signals
 
 SIGS = [signal.SIGTERM, signal.SIGHUP]
 CLI = [sys.executable, "-W", "ignore", "-m", "autobot.cli"]
+# a breakout that a signal ends did not finish: the last line of the report says what that may mean
+LEFT = "Session may be left logged in: a breakout did not finish"
 
 
 def _default() -> None:
@@ -150,7 +152,7 @@ def test_p6_112_signal_during_a_step_of_the_breakout_of_a_run_that_completed(tmp
     doc["script"] = [{"cmd": "true"}]
     res = _signalled(tmp_path, doc, [sig])
     assert res.returncode == -sig, res.stderr
-    assert _lines(res) == [f"Terminated ({sig.name})", "  at attach.breakout.0 (cmd: sleep 30)"]
+    assert _lines(res) == [f"Terminated ({sig.name})", "  at attach.breakout.0 (cmd: sleep 30)", LEFT]
     assert not log.exists() and _pids(spawn) == []
 
 
@@ -169,7 +171,7 @@ def test_p6_113_second_signal_ends_the_breakout(tmp_path: Path, sigs: list[signa
     assert time.monotonic() - started < 20
     assert res.returncode == -sigs[1], res.stderr
     head = "Interrupted" if sigs[1] == signal.SIGINT else f"Terminated ({sigs[1].name})"
-    assert _lines(res) == [head, "  at attach.breakout.1 (cmd: sleep 40)"]
+    assert _lines(res) == [head, "  at attach.breakout.1 (cmd: sleep 40)", LEFT]
     assert log.read_text().split() == ["block"] and not never.exists()
     assert _pids(spawn) == []
 
