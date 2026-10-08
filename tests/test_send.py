@@ -1347,3 +1347,51 @@ def test_p8_51_timeout_of_a_send_is_given_by_keyword(attach):
     with pytest.raises(TypeError):
         s.sendline("true", False, 5)  # type: ignore[misc]
     s.sendcontrol("c", timeout=5)
+
+
+# -- P8-54: a line after a control character ---------------------------------------------------------------
+
+
+def test_p8_54_line_after_a_control_character_waits_for_the_far_side(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "control": a shell drops the line it is reading when it gets to an interrupt, and what it has
+    read of the next line by then goes with it. So a line is sent `session.CONTROL_SETTLE` after a
+    control character at the earliest; a line that follows later, another control character, and a line
+    that follows a line wait for nothing."""
+    from autobot import session as session_mod
+
+    s = shell_session
+    s.get_prompt(timeout=5)
+    assert s._cld is not None
+    fd, write, times = s._cld.child_fd, os.write, []
+
+    def os_write(target, data):
+        if target == fd:
+            times.append((time.monotonic(), bytes(data)))
+        return write(target, data)
+
+    monkeypatch.setattr(os, "write", os_write)
+    s.sendcontrol("c", timeout=5)
+    s.sendcontrol("u", timeout=5)
+    s.sendline("echo one", timeout=5)
+    s.sendline("echo two", solicit=True, timeout=5)
+    time.sleep(session_mod.CONTROL_SETTLE + 0.1)
+    s.sendcontrol("u", timeout=5)
+    time.sleep(session_mod.CONTROL_SETTLE + 0.1)
+    s.sendline("echo three", timeout=5)
+    (c, _), (u, _), (one, _), (two, _), (u2, _), (three, _) = times
+    assert u - c < 0.05  # a control character follows one at once
+    assert session_mod.CONTROL_SETTLE <= one - u < session_mod.CONTROL_SETTLE + 0.3  # the line waits out the rest
+    assert two - one < 0.2  # only the pause before every send
+    assert three - u2 < session_mod.CONTROL_SETTLE + 0.3  # the time had passed: no more is added
+    assert [data for _, data in times] == [b"\x03", b"\x15", b"echo one\n", b"echo two\n", b"\x15", b"echo three\n"]
+    assert session_mod.CONTROL_SETTLE == 0.5
+
+
+def test_p8_54_new_child_waits_for_no_control_character(shell_session: Session):
+    """What is known of a control character sent to one process doesn't apply to the next."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendcontrol("u", timeout=5)
+    assert s._control_at > 0
+    s.detach()
+    assert s._control_at == 0.0
