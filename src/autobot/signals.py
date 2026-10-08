@@ -48,14 +48,46 @@ def _take() -> bool:
     return True
 
 
+# Statements that a signal must not raise in the middle of are running (`uninterrupted`), and the one
+# that arrived meanwhile
+_busy = 0
+_deferred: BaseException | None = None
+
+
+def _raise(error: BaseException) -> None:
+    global _deferred
+    if _busy:
+        _deferred = error
+    else:
+        raise error
+
+
 def _unwind(signum: int, frame: object) -> None:
     if _take():
-        raise Terminated(signum)
+        _raise(Terminated(signum))
 
 
 def _interrupt(signum: int, frame: object) -> None:
     if _take():
-        raise KeyboardInterrupt
+        _raise(KeyboardInterrupt())
+
+
+class uninterrupted:
+    """A few statements that leave something broken if a signal raises in the middle of them: the
+    printing of a message, which rich buffers. A signal that this module catches and that arrives
+    meanwhile is taken when they are done, and raises there."""
+
+    def __enter__(self) -> None:
+        global _busy
+        _busy += 1
+
+    def __exit__(self, kind: object, error: BaseException | None, traceback: object) -> None:
+        global _busy, _deferred
+        _busy -= 1
+        if not _busy and _deferred is not None:
+            waiting, _deferred = _deferred, None
+            if error is None:
+                raise waiting
 
 
 def holding() -> bool:

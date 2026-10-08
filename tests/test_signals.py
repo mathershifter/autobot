@@ -421,3 +421,62 @@ def test_p6_116_block_that_a_signal_ends_leaves_the_signals_held():
         signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         for sig, handler in before.items():
             signal.signal(sig, handler)
+
+
+def test_p6_116_signal_that_arrives_while_a_message_is_printed_is_taken_after_it(monkeypatch: pytest.MonkeyPatch, capsys):
+    """rich buffers what it prints, and a signal that raised in the middle of a message left the console
+    holding that message and every later one: a run could end from its signal with no report at all. The
+    signal is taken when the message is out, and the next message is printed as ever."""
+    from autobot import log
+
+    before = {sig: signal.getsignal(sig) for sig in SIGS}
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    printing = log.console.print
+
+    def interrupted(text: object) -> None:
+        signal.raise_signal(signal.SIGTERM)  # the handler runs here, in the middle of the message
+        printing(text)
+
+    try:
+        for sig in SIGS:
+            signal.signal(sig, signal.SIG_DFL)
+        with signals.caught():
+            monkeypatch.setattr(log.console, "print", interrupted)
+            with pytest.raises(signals.Terminated):
+                log.say("cmd: one")
+            assert signals.holding()
+            monkeypatch.setattr(log.console, "print", printing)
+            log.say("cmd: two")
+        assert not signals.holding() and signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+        assert capsys.readouterr().err == ">> cmd: one\n>> cmd: two\n"
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
+
+
+def test_p6_116_one_signal_is_taken_and_the_next_waits_for_a_release():
+    """The handler that takes a signal blocks the three; one that arrives then is pending, and is taken
+    at `release`. A block that is not `held` leaves them unblocked."""
+    before = {sig: signal.getsignal(sig) for sig in SIGS}
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    try:
+        for sig in SIGS:
+            signal.signal(sig, signal.SIG_DFL)
+        with signals.caught():
+            with pytest.raises(signals.Terminated) as first:
+                signal.raise_signal(signal.SIGTERM)
+            assert first.value.signum == signal.SIGTERM and signals.holding()
+            assert set(signals.HELD) <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
+            signal.raise_signal(signal.SIGHUP)  # held back: nothing is raised
+            assert signal.SIGHUP in signal.sigpending()
+            with pytest.raises(signals.Terminated) as second:
+                signals.release()
+                pass  # the pending one arrives in `release`, or right after it
+            assert second.value.signum == signal.SIGHUP and signals.holding()
+        assert not signals.holding() and signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        for sig, handler in before.items():
+            signal.signal(sig, handler)

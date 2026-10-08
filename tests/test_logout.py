@@ -651,14 +651,13 @@ def test_p5_92_dollar_is_the_end_of_what_has_arrived(shell_session: Session):
     s.get_prompt(timeout=5)
     s.sendline("stty -echo", timeout=5)  # the echo of the lines below has the word in it, and comes in pieces
     s.get_prompt(timeout=5)
-    s.sendline("printf 'Last login: Tue Oct 7\\n'; sleep 1; printf 'hostname login: '; sleep 30", solicit=True, timeout=5)
+    s.sendline("printf 'Last login: Tue Oct 7\\n'; sleep 1; printf 'hostname login: '; sleep 2; echo", timeout=5)
     started = time.monotonic()
     s.expect([PATTERN], timeout=10)
     assert time.monotonic() - started > 0.8 and s.ctx["before"].endswith("hostname ")  # the banner was passed over
-    s.sendcontrol("c", timeout=5)
     s.get_prompt(timeout=10)
     # a banner that arrives in two pieces, with a pause after `Last login: `: met at the pause
-    s.sendline("printf 'Last login: '; sleep 2; printf 'Tue Oct 7\\n'", solicit=True, timeout=5)
+    s.sendline("printf 'Last login: '; sleep 2; printf 'Tue Oct 7\\n'", timeout=5)
     started = time.monotonic()
     s.expect([PATTERN], timeout=10)
     assert time.monotonic() - started < 1.5 and s.ctx["before"].endswith("Last ")

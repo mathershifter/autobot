@@ -344,6 +344,7 @@ def _signalled(args: argparse.Namespace | None, e: BaseException) -> NoReturn:
         except (KeyboardInterrupt, signals.Terminated) as again:  # it arrived just before: the last one counts
             e = again
     try:
+        log.renew()  # an interrupt outside a run may have been raised in the middle of a message
         _traceback(args, e)
         if isinstance(e, signals.ReaderGone):
             log.error(f"Terminated ({e.name})", f"nobody reads {e.stream} any more", style=log.WARN)

@@ -13,6 +13,8 @@ from collections.abc import Callable
 from rich.console import Console
 from rich.text import Text
 
+from . import signals
+
 MARK = ">>"
 
 # What a `>> ` line means -> the style of the marker, of the label (up to the first ": ") and of the rest.
@@ -57,7 +59,10 @@ def _console() -> Console:
     # Every message is printed as a `Text`, never as a string: that is what keeps rich from reading markup
     # or emoji codes in it and from highlighting numbers and quotes. soft_wrap: a log line is one line,
     # whatever the terminal's width
-    styled = _styled()
+    return _make(_styled())
+
+
+def _make(styled: bool) -> Console:
     return _Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
 
 
@@ -114,15 +119,25 @@ def _shared() -> bool:
 def _print(text: Text) -> None:
     global _open_line
     try:
-        if _open_line and _shared():
-            # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
-            # so stdout stays what the session sent
-            console.file.write("\n")
-            _open_line = False
-        console.print(text)
+        # rich buffers what it prints: a signal that raised in the middle of it would leave the console
+        # holding this message and every later one
+        with signals.uninterrupted():
+            if _open_line and _shared():
+                # the message would continue the session's line, e.g. its prompt: start a new one. On
+                # stderr, so stdout stays what the session sent
+                console.file.write("\n")
+                _open_line = False
+            console.print(text)
     except (OSError, ValueError) as e:
         if not lost(console.file, e):
             raise
+
+
+def renew() -> None:
+    """A console of its own for what is printed from here on: the one in use may have been left in the
+    middle of a message by an interrupt that this module's caller could not defer."""
+    global console
+    console = _make(console.color_system is not None)  # styled as the one it replaces
 
 
 def say(text: str, kind: str = "step") -> None:
