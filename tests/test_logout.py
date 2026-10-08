@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 import yaml
-from conftest import DEVICE, SHELL_PROMPT, FakeDevice, make_doc, make_runner, run_cli
+from conftest import DEVICE, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, run_cli
 
 from autobot import cli, signals
 from autobot.runner import BreakoutError, Left, left, trail
@@ -58,10 +58,7 @@ def report(res: subprocess.CompletedProcess[str]) -> list[str]:
     return [line for line in res.stderr.splitlines() if not line.startswith(">> ") and "RuntimeWarning" not in line]
 
 
-def defaults() -> None:
-    """For a child: the default actions, whatever the suite was started with (`nohup`, an ignored SIGINT)."""
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, signal.SIG_DFL)
+defaults = default_signals
 
 
 def wait_for(what: Any, proc: subprocess.Popen, seconds: float = 30) -> None:
@@ -69,6 +66,23 @@ def wait_for(what: Any, proc: subprocess.Popen, seconds: float = 30) -> None:
     while not what():
         assert proc.poll() is None and time.monotonic() < deadline
         time.sleep(0.05)
+
+
+def signalled(doc: dict[str, Any], tmp_path: Path, sig: int, running: str) -> tuple[int, str]:
+    """Run the CLI on `doc` and send it `sig` once the shell has echoed the command `running`: from then
+    on that command is what runs. Its return code and its messages."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    echo, messages = tmp_path / "stdout", tmp_path / "stderr"
+    with open(echo, "w") as out, open(messages, "w") as err:
+        proc = subprocess.Popen([sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)], stdout=out, stderr=err, preexec_fn=defaults)
+        try:
+            wait_for(lambda: f"\n{running}\n" in echo.read_text().replace("PROMPT$ ", "\n"), proc)
+            proc.send_signal(sig)
+            proc.wait(timeout=60)
+        finally:
+            proc.kill()
+    return proc.returncode, messages.read_text()
 
 
 def run(doc: dict[str, Any]):
@@ -411,23 +425,8 @@ def test_p5_90_interrupt_during_a_breakout_is_a_breakout_that_did_not_finish(fak
     the signal names the breakout step, and the last line says what may be left."""
     began = tmp_path / "began"
     doc, log = console(fake_device, [{"cmd": "true"}], [{"cmd": f"touch {began}"}, {"cmd": "sleep 30", "timeout": "20s"}, *LOGOUT])
-    path = tmp_path / "script.autobot.yaml"
-    path.write_text(yaml.safe_dump(doc))
-    proc = subprocess.Popen(
-        [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_DFL),
-    )
-    try:
-        deadline = time.monotonic() + 30
-        while not began.exists():
-            assert proc.poll() is None and time.monotonic() < deadline
-            time.sleep(0.05)
-        time.sleep(1)
-        proc.send_signal(signal.SIGTERM)
-        err = proc.communicate(timeout=30)[1]
-    finally:
-        proc.kill()
-    assert proc.returncode == -signal.SIGTERM, err
+    returncode, err = signalled(doc, tmp_path, signal.SIGTERM, "sleep 30")
+    assert began.exists() and returncode == -signal.SIGTERM, err
     assert [line for line in err.splitlines() if not line.startswith(">> ")] == [
         "Terminated (SIGTERM)",
         "  at attach.breakout.1 (cmd: sleep 30)",
@@ -506,29 +505,8 @@ def test_p5_91_recommended_breakout_logs_out_from_every_state(fake_device: FakeD
 def test_p5_91_recommended_breakout_logs_out_after_an_interrupt_or_a_signal(fake_device: FakeDevice, tmp_path: Path, sig: signal.Signals):
     """The same after Ctrl-C, SIGTERM and SIGHUP in the middle of a command, through the CLI."""
     doc, log = console(fake_device, [{"cmd": "sleep 30", "timeout": "20s"}], SHAPE)
-    path = tmp_path / "script.autobot.yaml"
-    path.write_text(yaml.safe_dump(doc))
-
-    def setup() -> None:
-        for s in (signal.SIGTERM, signal.SIGHUP):
-            signal.signal(s, signal.SIG_DFL)
-        signal.signal(signal.SIGINT, signal.default_int_handler)
-
-    proc = subprocess.Popen(
-        [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, preexec_fn=setup,
-    )
-    try:
-        deadline = time.monotonic() + 30
-        while "PASSWORD=secret" not in FakeDevice.read(log):
-            assert proc.poll() is None and time.monotonic() < deadline
-            time.sleep(0.05)
-        time.sleep(1.5)  # the `sleep 30` is running
-        proc.send_signal(sig)
-        err = proc.communicate(timeout=30)[1]
-    finally:
-        proc.kill()
-    assert proc.returncode == -sig, err
+    returncode, err = signalled(doc, tmp_path, sig, "sleep 30")
+    assert returncode == -sig, err
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
     assert "Breakout failed" not in err and "logged in" not in err
 
@@ -594,6 +572,7 @@ def test_p5_91_logout_right_after_the_control_character_is_not_lost(fake_device:
 # -- P5-92: what confirms a logout ----------------------------------------------------------------------
 
 WORD = {"block": {"name": "logged out"}, "after": "login:", "timeout": "4s"}  # the word, wherever it is
+READY = {"block": {"name": "the program runs"}, "timeout": "10s"}  # carries the wait for a program's first output
 
 
 def confirmed_by(confirm: dict[str, Any]) -> list[dict[str, Any]]:
@@ -652,7 +631,8 @@ def test_p5_92_unread_output_with_the_word_in_it_is_no_login_prompt(fake_device:
     """Output from before the logout that nothing has read, with `login:` in it, and a program that
     takes the `logout` line. The pattern for the end of the output is not met and the breakout fails,
     as it should; the bare word is met by the old text, and the run completes with the device logged in."""
-    script = [IN, {"cmd": "trap '' INT"}, {"line": "echo 3 failed login: attempts; cat"}]
+    # the wait for the first line of output tells that the shell has read the line; the second stays unread
+    script = [IN, {"cmd": "trap '' INT"}, {"line": "echo rea''dy; echo 3 failed login: attempts; cat"}, {**READY, "after": "ready\r\n"}]
     doc, log = console(fake_device, script, confirmed_by(confirm))
     if confirm is CONFIRM:
         with pytest.raises(BreakoutError, match="waiting for the after pattern"):

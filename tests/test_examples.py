@@ -344,6 +344,9 @@ LOGIN = {
 }
 CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
 CONSOLE = ("--accept", "admin:secret", "--logout", "--escape")
+# after a `line` that starts with `echo rea''dy`: the wait for that output, so the shell has read the line
+# before the breakout's Ctrl-C, which would discard a line that is still unread
+RUNS = {"block": {"name": "the program runs"}, "after": "ready\r\n", "timeout": "10s"}
 
 
 def breakout_of(path: Path) -> list[dict[str, Any]]:
@@ -404,17 +407,18 @@ def console_server(
 def test_p6_115_example_breakout_logs_out_and_leaves_the_console_server(
     fake_device: FakeDevice, sent: SentLog, path: Path, script: list[dict[str, Any]]
 ):
-    """Each example's breakout, as it is written, against the stand-in: the device logs the logout, then
-    the Ctrl-] that leaves the console server, and for the EOS example the last thing sent is the jump
-    host's `logout`. After a script that completed, one that failed, one whose command is still running
-    and one that left a line typed."""
+    """Each example's breakout, as it is written, against the stand-in: the device logs the logout, which
+    the breakout waits for, and then the Ctrl-] is sent, and for the EOS example the jump host's `logout`.
+    Nothing waits for those two to be read before the session is closed, so nothing is asserted of what
+    they do. After a script that completed, one that failed, one whose command is still running and one
+    that left a line typed."""
     doc, log = console_server(fake_device, path, script)
     runner = Runner(Config.model_validate(doc), {})
     try:
         runner.run()
     except (RuntimeError, TimeoutError) as e:
         assert left(e) is None, e
-    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT=", "DETACH="]
+    assert FakeDevice.read(log)[:3] == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
     breakout = [("ctrl", "c"), ("line", "logout"), ("ctrl", "]"), *([("line", "logout")] if path.name.startswith("eos") else [])]
     assert sent[-len(breakout):] == breakout
 
@@ -423,7 +427,7 @@ def test_p6_115_example_breakout_logs_out_and_leaves_the_console_server(
 def test_p6_115_example_breakout_fails_when_the_logout_does_not_happen(fake_device: FakeDevice, sent: SentLog, path: Path):
     """A program that ignores Ctrl-C takes the `logout` line: no login prompt comes, the breakout fails at
     the step that waits, and the steps after it (the Ctrl-], the jump host's logout) are not sent."""
-    doc, log = console_server(fake_device, path, [{"cmd": "trap '' INT"}, {"line": "cat"}], wait="3s")
+    doc, log = console_server(fake_device, path, [{"cmd": "trap '' INT"}, {"line": "echo rea''dy; cat"}, RUNS], wait="3s")
     with pytest.raises(BreakoutError, match=r"^a breakout did not finish \(TimeoutError\): timed out after 3.0s waiting for the after pattern ") as ei:
         Runner(Config.model_validate(doc), {}).run()
     assert [ref.path for ref in trail(ei.value)] == ["attach.breakout.2"]
@@ -443,7 +447,7 @@ def test_p6_115_example_breakout_takes_login_with_a_capital_for_the_prompt(fake_
 def test_p6_115_example_breakout_is_not_met_by_text_with_the_word_in_it(fake_device: FakeDevice, path: Path):
     """Unread output with `login:` in it, and a program that takes the `logout` line: the example's wait
     is for a prompt at the end of the output, so the breakout fails, and the device's log has no logout."""
-    script = [{"cmd": "trap '' INT"}, {"line": "echo Last login: Tue Oct 7; cat"}]
+    script = [{"cmd": "trap '' INT"}, {"line": "echo rea''dy; echo Last login: Tue Oct 7; cat"}, RUNS]
     doc, log = console_server(fake_device, path, script, wait="3s")
     with pytest.raises(BreakoutError):
         Runner(Config.model_validate(doc), {}).run()

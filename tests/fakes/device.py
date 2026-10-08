@@ -199,6 +199,10 @@ class Device:
 
 
 def main() -> None:
+    # the default actions, whatever the suite was started with (`nohup`, an ignored SIGINT): the device and
+    # the shell it starts must end when the session is closed, and stop at Ctrl-C
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
     p = argparse.ArgumentParser()
     p.add_argument("--log", required=True)
     p.add_argument("--wait-enter", action="store_true")
