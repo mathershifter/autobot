@@ -11,7 +11,8 @@ Autobot actually sent, instead of parsing pty output.
 
 With ``--logout`` it is a console that can be logged out of: the shell is a login shell that the device
 waits for, and in the bare prompt loop the line ``logout`` ends the loop. It then logs ``LOGOUT=``, and
-asks for the login again. Ctrl-C at a login prompt does nothing, as at a getty. With ``--capital`` the
+asks for the login again. A shell that ended because the session was closed is no logout: a terminal that
+has hung up tells the two apart. Ctrl-C at a login prompt does nothing, as at a getty. With ``--capital`` the
 login prompt is ``Login: ``, and with ``--last-login`` the device prints a ``Last login: ...`` line once
 the login is accepted, ``--banner-delay`` seconds after it and before ``--post-auth-delay``; with
 ``--split-banner SECS`` it writes ``Last login: ``, waits, and writes the rest, as a slow line delivers
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -107,8 +109,13 @@ class Device:
         env = {"PS1": SHELL_PROMPT, "TERM": "dumb", "PATH": os.environ.get("PATH", "")}
         while True:
             if self.args.then == "shell":
-                if subprocess.call(["bash", "--norc", "--noprofile", "-i", "-l"], env=env) < 0:
-                    sys.exit(0)  # the shell was ended by a signal, as when the session is closed: no logout
+                ended = subprocess.call(["bash", "--norc", "--noprofile", "-i", "-l"], env=env)
+                # the shell ended because the session was closed, not because it was logged out of: a
+                # signal ended it, or it exited by itself (with status 0, at times) when the terminal hung up
+                hangup = select.poll()
+                hangup.register(0, 0)
+                if ended < 0 or hangup.poll(0):
+                    sys.exit(0)
             else:
                 line = ""
                 while line != "logout":
