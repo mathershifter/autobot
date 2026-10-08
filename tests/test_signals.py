@@ -44,6 +44,17 @@ def _ignore(sig: int) -> Callable[[], None]:
     return setup
 
 
+# A command that prints `ready` and then is `sleep`, in the same process: once the word is in the session's
+# output the command is running for certain, and a Ctrl-C stops it. The word is in the output only: the
+# command as it is sent has it in two pieces. A plain `sleep` is only on its way when the shell echoes it,
+# and a Ctrl-C sent then may find the shell between two things, where it takes no interrupt.
+RUNNING = """sh -c "echo rea''dy; exec sleep %d\""""
+
+
+def _ready(echo: Path) -> bool:
+    return "\nready\n" in echo.read_text()
+
+
 def _doc(tmp_path: Path, breakout: list[dict[str, Any]] | None = None, sleep: int = 30) -> tuple[dict[str, Any], Path, str]:
     """A script that blocks in `sleep` inside a block; the block's breakout and `attach.breakout` each
     append a word to the log."""
@@ -54,7 +65,7 @@ def _doc(tmp_path: Path, breakout: list[dict[str, Any]] | None = None, sleep: in
             {
                 "block": {
                     "name": "long",
-                    "script": [{"cmd": f"sleep {sleep}", "timeout": "20s"}, {"cmd": f"echo after >> {log}"}],
+                    "script": [{"cmd": RUNNING % sleep, "timeout": "20s"}, {"cmd": f"echo after >> {log}"}],
                     "breakout": [{"control": "c"}, {"cmd": f"echo block >> {log}", "timeout": "5s"}],
                 }
             },
@@ -65,10 +76,10 @@ def _doc(tmp_path: Path, breakout: list[dict[str, Any]] | None = None, sleep: in
     return doc, log, spawn
 
 
-def _wait(what: Callable[[], bool], proc: subprocess.Popen, why: str) -> None:
+def _wait(what: Callable[[], bool], proc: subprocess.Popen, why: Callable[[], str]) -> None:
     deadline = time.monotonic() + 30
     while not what():
-        assert proc.poll() is None and time.monotonic() < deadline, why
+        assert proc.poll() is None and time.monotonic() < deadline, why()
         time.sleep(0.05)
 
 
@@ -81,7 +92,7 @@ def _signalled(
     then: Callable[[], bool] | None = None,
     argv: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the CLI on `doc`, send it `sigs[0]` once the session echoes the `sleep`, and each further signal
+    """Run the CLI on `doc`, send it `sigs[0]` once the command has printed `ready`, and each further signal
     once `then` holds. Its return code, the session's output and its messages."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
@@ -89,12 +100,11 @@ def _signalled(
     with open(echo, "w") as out, open(messages, "w") as err:
         proc = subprocess.Popen(argv or [*CLI, str(path)], stdout=out, stderr=err, preexec_fn=setup)
         try:
-            # the session echoes the command once the shell has it: from then on `sleep` is what runs
-            _wait(lambda: "\nsleep " in echo.read_text().replace("PROMPT$ ", "\n"), proc, "the script never got to `sleep`")
+            _wait(lambda: _ready(echo), proc, messages.read_text)
             proc.send_signal(sigs[0])
             for sig in sigs[1:]:
                 assert then is not None
-                _wait(then, proc, messages.read_text())
+                _wait(then, proc, messages.read_text)
                 proc.send_signal(sig)
             proc.wait(timeout=60)
         finally:
@@ -126,7 +136,7 @@ def test_p6_112_signal_runs_the_breakouts_and_ends_the_process_from_the_signal(t
     res = _signalled(tmp_path, doc, [sig])
     assert res.returncode == -sig, res.stderr
     assert "Traceback" not in res.stderr
-    assert _lines(res) == [f"Terminated ({sig.name})", "  at script.0.block.script.0 (cmd: sleep 30)"]
+    assert _lines(res) == [f"Terminated ({sig.name})", f"  at script.0.block.script.0 (cmd: {RUNNING % 30})"]
     assert log.read_text().split() == ["block", "attach"]
     progress = _progress(res)
     assert progress.index(f">>   step interrupted ({sig.name})") < progress.index(">> block breakout: long")
@@ -141,7 +151,7 @@ def test_p6_112_traceback_flag(tmp_path: Path):
     lines = _lines(res)
     assert res.returncode == -signal.SIGTERM, res.stderr
     assert lines[0] == "Traceback (most recent call last):" and "autobot.signals.Terminated: SIGTERM" in lines
-    assert lines[-2:] == ["Terminated (SIGTERM)", "  at script.0.block.script.0 (cmd: sleep 30)"]
+    assert lines[-2:] == ["Terminated (SIGTERM)", f"  at script.0.block.script.0 (cmd: {RUNNING % 30})"]
     assert log.read_text().split() == ["block", "attach"]
 
 
@@ -150,11 +160,11 @@ def test_p6_112_signal_during_a_step_of_the_breakout_of_a_run_that_completed(tmp
     """A signal while `attach.breakout` runs after the script ends that breakout, as an interrupt does;
     the session is still closed."""
     log = tmp_path / "log"
-    doc, _, spawn = _doc(tmp_path, breakout=[{"cmd": "sleep 30", "timeout": "20s"}, {"cmd": f"echo never >> {log}"}], sleep=0)
+    doc, _, spawn = _doc(tmp_path, breakout=[{"cmd": RUNNING % 30, "timeout": "20s"}, {"cmd": f"echo never >> {log}"}], sleep=0)
     doc["script"] = [{"cmd": "true"}]
     res = _signalled(tmp_path, doc, [sig])
     assert res.returncode == -sig, res.stderr
-    assert _lines(res) == [f"Terminated ({sig.name})", "  at attach.breakout.0 (cmd: sleep 30)", LEFT]
+    assert _lines(res) == [f"Terminated ({sig.name})", f"  at attach.breakout.0 (cmd: {RUNNING % 30})", LEFT]
     assert not log.exists() and _pids(spawn) == []
 
 
@@ -272,7 +282,7 @@ def test_p6_113_signal_while_prepare_runs_goes_the_same_way(tmp_path: Path, sig:
         text=True, preexec_fn=_default,
     )
     try:
-        _wait(started.exists, proc, "prepare never started")
+        _wait(started.exists, proc, lambda: "prepare never started")
         proc.send_signal(sig)
         err = proc.communicate(timeout=20)[1]
     finally:
@@ -287,7 +297,7 @@ def test_p6_113_signal_while_prepare_runs_goes_the_same_way(tmp_path: Path, sig:
 
 def _on_a_terminal(tmp_path: Path, doc: dict[str, Any], stderr_too: bool) -> tuple[int, str]:
     """Run the CLI with a pseudo-terminal as its controlling terminal and its stdout (and stderr), and
-    close the other side once the session echoes the `sleep`: the terminal hangs up."""
+    close the other side once the command has printed `ready`: the terminal hangs up."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
     messages = tmp_path / "stderr"
@@ -305,7 +315,7 @@ def _on_a_terminal(tmp_path: Path, doc: dict[str, Any], stderr_too: bool) -> tup
         os.close(slave)
         try:
             seen, deadline = b"", time.monotonic() + 30
-            while b"\nsleep " not in seen.replace(b"PROMPT$ ", b"\n"):
+            while b"\nready" not in seen:
                 assert time.monotonic() < deadline, seen
                 seen += os.read(master, 4096)
             time.sleep(0.5)
@@ -328,7 +338,7 @@ def test_p6_114_terminal_that_hangs_up_does_not_stop_the_breakouts(tmp_path: Pat
     assert log.read_text().split() == ["block", "attach"]
     assert _pids(spawn) == []
     if not stderr_too:  # the messages went to a file, which is still there
-        assert err.splitlines()[-2:] == ["Terminated (SIGHUP)", "  at script.0.block.script.0 (cmd: sleep 30)"]
+        assert err.splitlines()[-2:] == ["Terminated (SIGHUP)", f"  at script.0.block.script.0 (cmd: {RUNNING % 30})"]
 
 
 # -- P6-116: many signals at once ---------------------------------------------------------------------
@@ -343,7 +353,7 @@ def _storm(tmp_path: Path, sigs: list[int], runs: int) -> None:
     """Send the CLI all of `sigs`, `GAPS` apart, while a `cmd` waits, `runs` times. Each time the process
     ends from one of them, its report starts with the line for that signal, and nothing of the
     interpreter's shows."""
-    doc = make_doc([{"cmd": "sleep 30", "timeout": "20s"}], breakout=[{"control": "c"}])
+    doc = make_doc([{"cmd": RUNNING % 30, "timeout": "20s"}], breakout=[{"control": "c"}])
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
     echo, messages = tmp_path / "stdout", tmp_path / "stderr"
@@ -351,7 +361,7 @@ def _storm(tmp_path: Path, sigs: list[int], runs: int) -> None:
         with open(echo, "w") as out, open(messages, "w") as err:
             proc = subprocess.Popen([*CLI, str(path)], stdout=out, stderr=err, preexec_fn=_default)
             try:
-                _wait(lambda: "\nsleep " in echo.read_text().replace("PROMPT$ ", "\n"), proc, "the script never got to `sleep`")
+                _wait(lambda: _ready(echo), proc, messages.read_text)
                 for sig in sigs:
                     proc.send_signal(sig)
                     time.sleep(GAPS[run % len(GAPS)])
