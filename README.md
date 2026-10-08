@@ -231,6 +231,7 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
 ```
 
 - Start with the control character: after a failure the device may be in the middle of a command or have half a line typed, and `logout` would go there.
+- This breakout takes about 2.5 seconds on every run (the `delay_before` and the half second a line waits after a control character), plus the time the device takes to show its login prompt.
 - Give that control character a `delay_before`: a terminal throws away the input it has not handed on yet when Ctrl-C arrives, so a line sent just before it (the `line: exit` of a block's breakout, say) would be lost without a trace.
 - Send the logout with `line`, not `cmd`: a `cmd` waits for the next shell prompt, and a login prompt would be answered with the credentials again.
 - `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with the same `after`. Give the wait a `timeout`; the default is 300s.

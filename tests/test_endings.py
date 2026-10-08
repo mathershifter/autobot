@@ -14,6 +14,7 @@ import errno
 import fcntl
 import io
 import os
+import pty
 import resource
 import select
 import signal
@@ -26,14 +27,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 import yaml
-from conftest import BASH, FakeDevice, SentLog, default_signals, make_doc, make_runner
+from conftest import BASH, FakeDevice, default_signals, make_doc, make_runner
 from test_logout import LEFT, LOGOUT, SENT, console, report
 
 from autobot import cli, log
 from autobot.screen import CleanWriter
 from autobot.session import PromptHandler, Session
+from autobot.terminal import Pty
 
 SIGNALS = [signal.SIGTERM, signal.SIGHUP]
 IN = ["LOGIN=admin", "PASSWORD=secret"]  # the device's log of a run that logged in and did not log out
@@ -56,8 +59,12 @@ def interrupted(sig: signal.Signals) -> str:
     return f"Interrupted ({sig.name}): {cli.UNCLEAN}"
 
 
-def lost(path: Path, stream: str, why: str) -> str:
-    return f"Run failed in {path}: cannot write {stream}: {why}; {cli.UNCLEAN}"
+NONE_RAN, UNFINISHED, CLOSED = " without running the breakouts", " before the breakouts finished", ""
+
+
+def lost(path: Path, stream: str, why: str, how: str = NONE_RAN) -> str:
+    """The report of output that was lost: in a step of the script, in a step of a breakout, or in no step."""
+    return f"Run failed in {path}: cannot write {stream}: {why}; the session was closed{how}; {cli.UNKNOWN}"
 
 
 PIPE = "[Errno 32] Broken pipe"
@@ -251,7 +258,7 @@ def handled(monkeypatch: pytest.MonkeyPatch, stderr: Any, sig: signal.Signals = 
     """What the handler of `cli._ended_by_signal` does when it is called, with `stderr` as `sys.stderr`: its
     calls of `os.write`, `os.kill` (with the signal's action at that time) and `os._exit`, in order."""
     calls: list[tuple] = []
-    saved = signal.getsignal(sig)
+    saved, stop = signal.getsignal(sig), signal.getsignal(signal.SIGTTOU)
     monkeypatch.setattr(sys, "stderr", stderr)
     try:
         signal.signal(sig, signal.SIG_DFL)
@@ -261,9 +268,11 @@ def handled(monkeypatch: pytest.MonkeyPatch, stderr: Any, sig: signal.Signals = 
             monkeypatch.setattr(os, "kill", lambda pid, signum: calls.append(("kill", pid, signum, signal.getsignal(signum))))
             monkeypatch.setattr(os, "_exit", lambda status: calls.append(("exit", status)))
             handler(sig, None)  # type: ignore[operator, misc]
+            assert signal.getsignal(signal.SIGTTOU) is signal.SIG_IGN  # its write stops no background job
     finally:
         monkeypatch.undo()
         signal.signal(sig, saved)
+        signal.signal(signal.SIGTTOU, stop)
     return calls
 
 
@@ -408,7 +417,8 @@ def test_p6_115_head_1_ends_the_run_without_the_breakouts(fake_device: FakeDevic
         head.kill()
         head.wait()
     lines = run.report()
-    assert lines[0] == lost(run.path, "stdout", PIPE) and all(line.startswith("  at ") for line in lines[1:]) and len(lines) <= 2
+    assert lines[0] == lost(run.path, "stdout", PIPE, NONE_RAN if lines[1:] else CLOSED)
+    assert all(line.startswith("  at script.") for line in lines[1:]) and len(lines) <= 2
     assert not any(line.startswith(">> breakout") for line in run.err.splitlines())
     assert FakeDevice.read(device) in ([], IN[:1], IN)  # where the login was when the reader left; no logout, and no more
     run.quiet()
@@ -459,7 +469,7 @@ def test_p6_115_full_disk_ends_the_run(fake_device: FakeDevice, cli_run):
     with open("/dev/full", "w") as full_disk:
         run = cli_run(doc, stdout=full_disk)
         assert run.ends(30) == 3, run.err
-    assert run.report() == [lost(run.path, "stdout", "[Errno 28] No space left on device")]
+    assert run.report() == [lost(run.path, "stdout", "[Errno 28] No space left on device", CLOSED)]
     assert FakeDevice.read(device) == []  # the banner could not be written: nothing was answered
     run.quiet()
 
@@ -492,7 +502,7 @@ def test_p6_115_reader_gone_at_ctrl_c_ends_the_run_at_the_breakouts_first_failed
     assert run.signal(signal.SIGINT) == 3, run.err
     lines = run.err.splitlines()
     assert lines[-5:-2] == [">> step interrupted", ">> breakout: detaching", ">> control sent: ^C"]
-    assert lines[-2] == lost(run.path, "stdout", PIPE) and lines[-1].startswith("  at attach.breakout.1 (cmd: touch ")
+    assert lines[-2] == lost(run.path, "stdout", PIPE, UNFINISHED) and lines[-1].startswith("  at attach.breakout.1 (cmd: touch ")
     assert not broke.exists() and FakeDevice.read(device) == IN
     run.quiet()
 
@@ -539,26 +549,44 @@ LOST = {
 @pytest.mark.parametrize("case", LOST)
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 @pytest.mark.parametrize("error", [BrokenPipeError(errno.EPIPE, "Broken pipe"), OSError(errno.EIO, "Input/output error"), None], ids=["EPIPE", "EIO", "closed"])
-def test_p6_115_run_raises_output_lost_and_sends_nothing_more(sent: SentLog, children, monkeypatch: pytest.MonkeyPatch, case: str, stream: str, error: BaseException | None):
+def test_p6_115_run_raises_output_lost_and_sends_nothing_more(children, monkeypatch: pytest.MonkeyPatch, case: str, stream: str, error: BaseException | None):
     """`Runner.run()` raises `log.OutputLost`, no `Exception`, once the session is closed, whether it is
     the session's output or a message that could not be written. Whatever would run on the way out sends
     nothing: not `attach.breakout`, not a block's breakout, not the cleanup of an embedded script."""
     script, message = LOST[case]
-    monkeypatch.setattr(sys, stream, Breaking(error, "NOW" if stream == "stdout" else message))
+    written: list[bytes] = []
+    pty_write = Pty.write
+    monkeypatch.setattr(Pty, "write", lambda self, data, *a, **kw: written.append(data) or pty_write(self, data, *a, **kw))
+    broken = Breaking(error, "NOW" if stream == "stdout" else message)
+    monkeypatch.setattr(sys, stream, broken)
     why = r"I/O operation on closed file\.?" if error is None else rf"\[Errno {error.errno}\] {error.strerror}"
     runner = make_runner([{"cmd": "true"}, *script], breakout=[{"cmd": "echo bye"}])
     with pytest.raises(log.OutputLost, match=f"^cannot write {stream}: {why}$") as ei:
         runner.run()
     monkeypatch.undo()
-    assert not isinstance(ei.value, Exception)
-    assert not any("bye" in line or "never" in line or line.startswith("rm -f") for line in sent.lines()), sent
-    assert sent.controls() == []
+    assert not isinstance(ei.value, Exception) and broken.calls == 1
+    assert not any(b"bye" in data or b"never" in data or data.startswith(b"rm -f") or data == b"\x03" for data in written), written
+    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and log.lost is ei.value
     assert len(children) == 1 and not children[0].isalive() and runner.session._cld is None
+
+
+def test_p6_115_next_run_starts_without_the_lost_output(monkeypatch: pytest.MonkeyPatch):
+    """The lost output is the run's: a run that starts after it, of this runner or another, writes and
+    sends again."""
+    runner = make_runner([{"cmd": "echo N''OW"}])
+    monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    with pytest.raises(log.OutputLost):
+        runner.run()
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    assert log.lost is not None
+    runner.run()
+    assert log.lost is None and "NOW" in sys.stdout.getvalue()
+    monkeypatch.undo()
 
 
 def test_p6_115_writer_fails_once_and_stays_failed():
     """`CleanWriter`: after a write that failed, no write is tried again, a later one raises the same
-    `OutputLost`, and the close at the end of the session raises nothing."""
+    `OutputLost` (the run's, `log.lost`), and the close at the end of the session raises nothing."""
     stream = Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe"))
     writer = CleanWriter(stream)
     writer.write("fine\n")
@@ -569,7 +597,7 @@ def test_p6_115_writer_fails_once_and_stays_failed():
     with pytest.raises(log.OutputLost):
         writer.flush()
     writer.close()
-    assert second.value is first.value and stream.calls == 1 and stream.getvalue() == "fine\n"
+    assert second.value is first.value is log.lost and stream.calls == 1 and stream.getvalue() == "fine\n"
 
 
 def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPatch, capfd, tmp_path: Path):
@@ -589,7 +617,9 @@ def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPat
             with pytest.raises(log.OutputLost, match="^cannot write stdout: I/O operation on closed file"):
                 s.detach()
         assert s._cld is None and cld is not None and not cld.isalive()
+        assert (log.lost is None) == failing  # a loss found by a close that only logs it ends nothing
         monkeypatch.undo()
+        log.lost = None
 
 
 def test_p6_115_what_a_failed_write_is(monkeypatch: pytest.MonkeyPatch):
@@ -599,12 +629,17 @@ def test_p6_115_what_a_failed_write_is(monkeypatch: pytest.MonkeyPatch):
     for error, text in [(OSError(errno.ENOSPC, "No space left on device"), "[Errno 28] No space left on device"), (BlockingIOError(errno.EAGAIN, "x"), "[Errno 11] x")]:
         with pytest.raises(log.OutputLost, match="^cannot write the output: " + text.replace("[", r"\[").replace("]", r"\]")) as ei, log.writing(stream):
             raise error
-        assert ei.value.__cause__ is error
+        assert ei.value.__cause__ is error and log.lost is ei.value
+        with pytest.raises(log.OutputLost) as again, log.writing(stream):  # kept: nothing is written after it
+            raise AssertionError("not reached")
+        assert again.value is ei.value
+        log.lost = None
     with pytest.raises(ValueError, match="^a bug$"), log.writing(stream):
         raise ValueError("a bug")
     stream.close()
     with pytest.raises(log.OutputLost, match="^cannot write the output: I/O operation on closed file"), log.writing(stream):
         stream.write("x")
+    log.lost = None
     monkeypatch.setattr(sys, "stderr", stream)
     with pytest.raises(log.OutputLost, match="^cannot write stderr: "):
         log.say("x")
@@ -620,10 +655,32 @@ def test_p6_115_message_that_cannot_be_written_is_output_lost(monkeypatch: pytes
             raise error
 
     monkeypatch.setattr(sys, "stderr", Stderr())
-    with pytest.raises(log.OutputLost, match=r"^cannot write stderr: \[Errno "):
+    with pytest.raises(log.OutputLost, match=r"^cannot write stderr: \[Errno ") as ei:
         log.say("one")
     out = io.StringIO()
     monkeypatch.setattr(sys, "stderr", out)
+    with pytest.raises(log.OutputLost) as again:  # no message after it, until the next run
+        log.say("never")
+    assert again.value is ei.value and out.getvalue() == ""
+    log.lost = None
+    log.say("two")
+    assert out.getvalue() == ">> two\n"
+
+
+def test_p6_115_interrupted_message_is_not_printed_with_the_next(monkeypatch: pytest.MonkeyPatch):
+    """An interrupt while a message is rendered leaves nothing of it behind for the next message."""
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", out)
+    render = log.console.print
+
+    def interrupted_print(text: Any) -> None:
+        render(text)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(log.console, "print", interrupted_print)
+    with pytest.raises(KeyboardInterrupt):
+        log.say("one")
+    monkeypatch.setattr(log.console, "print", render)
     log.say("two")
     assert out.getvalue() == ">> two\n"
 
@@ -715,3 +772,316 @@ def test_p6_116_ctrl_c_always_ends_a_run_whose_stdout_nobody_reads(fake_device: 
         assert "Interrupted" in run.report()
     finally:
         os.close(r)
+
+
+# -- P6-114, P6-115: what the review of PR #59 added ------------------------------------------------------
+
+
+def on_a_terminal(argv: list[str]) -> tuple[int, int]:
+    """Start `argv` as the leader of a session of its own whose controlling terminal is a new pty, with
+    the default actions of the signals. The process id, and the pty's side here."""
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            default_signals()
+            signal.signal(signal.SIGTTOU, signal.SIG_DFL)
+            os.execvp(argv[0], argv)
+        finally:
+            os._exit(127)
+    return pid, master
+
+
+def shown(master: int, until: Callable[[], Any], seconds: float = 30) -> str:
+    """What the terminal shows until `until` is so, or the terminal's other side is closed."""
+    seen, deadline = b"", time.monotonic() + seconds
+    while not until():
+        assert time.monotonic() < deadline, seen
+        if select.select([master], [], [], 0.02)[0]:
+            try:
+                data = os.read(master, 65536)
+            except OSError:  # every process on the terminal has ended
+                break
+            if not data:
+                break
+            seen += data
+    return seen.decode(errors="replace")
+
+
+# Runs the CLI as a background job of its terminal, with `tostop` set, as `autobot script >/dev/null &`
+# does: the job is stopped at its first message. SIGTERM, then SIGCONT as a shell's `kill` sends them.
+BACKGROUND = """
+import os, signal, subprocess, sys, termios, time
+path, result = sys.argv[1:3]
+attrs = termios.tcgetattr(0)
+attrs[3] |= termios.TOSTOP
+termios.tcsetattr(0, termios.TCSANOW, attrs)
+proc = subprocess.Popen([sys.executable, "-W", "ignore", "-m", "autobot.cli", path], stdout=subprocess.DEVNULL, process_group=0)
+def state(seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+        if pid:
+            return "stopped by %d" % os.WSTOPSIG(status) if os.WIFSTOPPED(status) else "ended by %d" % os.WTERMSIG(status) if os.WIFSIGNALED(status) else "exited %d" % os.WEXITSTATUS(status)
+        time.sleep(0.02)
+    return "running"
+first = state(20)
+second = "not signalled"
+if first.startswith("stopped"):
+    os.kill(proc.pid, signal.SIGTERM)
+    os.kill(proc.pid, signal.SIGCONT)
+    second = state(5)
+if (second if second != "not signalled" else first).startswith(("stopped", "running")):
+    os.kill(proc.pid, signal.SIGKILL)
+    os.kill(proc.pid, signal.SIGCONT)
+open(result + ".part", "w").write(first + "; " + second)
+os.replace(result + ".part", result)
+"""
+
+
+def test_p6_114_handlers_line_does_not_stop_a_background_job(fake_device: FakeDevice, tmp_path: Path):
+    """SPEC "SIGTERM and SIGHUP": the line never holds the process. A background job that writes to its
+    terminal is stopped when the terminal has `tostop` set (`stty tostop`), and the handler's write is such
+    a write: the handler ignores that signal first. The job, stopped at its first message, gets SIGTERM
+    and is continued: it writes the line and ends from SIGTERM, as it does without the handler."""
+    doc, device = console(fake_device, [{"cmd": "true"}], LOGOUT)
+    path, result = tmp_path / "script.autobot.yaml", tmp_path / "result"
+    path.write_text(yaml.safe_dump(doc))
+    pid, master = on_a_terminal([sys.executable, "-c", BACKGROUND, str(path), str(result)])
+    try:
+        text = shown(master, result.exists)
+    finally:
+        os.close(master)
+        os.waitpid(pid, 0)
+    assert result.exists(), text
+    assert result.read_text() == f"stopped by {signal.SIGTTOU:d}; ended by {signal.SIGTERM:d}", text
+    assert interrupted(signal.SIGTERM) in text and FakeDevice.read(device) == []
+
+
+def process_of(path: Path) -> int | None:
+    """The process of the CLI that runs the script at `path`, if there is one."""
+    for entry in os.listdir("/proc"):
+        if entry.isdigit():
+            try:
+                argv = Path("/proc", entry, "cmdline").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            if os.fsencode(str(path)) in argv and b"autobot.cli" in argv:
+                return int(entry)
+    return None
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self"), reason="needs /proc to find the process")
+@pytest.mark.parametrize("where", ["script", "breakout"])
+def test_p6_114_closed_terminal_ends_the_run_at_once(fake_device: FakeDevice, tmp_path: Path, where: str):
+    """A terminal that is closed: an interactive bash on a pty runs the CLI in the foreground, and the
+    pty's other side is closed. The kernel sends SIGHUP to the job and the shell sends it another. The
+    process is gone within the bound, in a command or in a breakout, nothing more was sent to the device,
+    and what it wrote to a file for stderr is the one line."""
+    ready, err = tmp_path / "ready", tmp_path / "err"
+    script, breakout = ([running(ready)], LOGOUT) if where == "script" else ([{"cmd": "true"}], [running(ready), *LOGOUT])
+    doc, device = console(fake_device, script, breakout)
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    pid, master = on_a_terminal(["bash", "--norc", "--noprofile", "-i"])
+    closed = False
+    try:
+        os.write(master, f"{sys.executable} -W ignore -m autobot.cli {path} 2>{err}\n".encode())
+        shown(master, ready.exists)
+        run = process_of(path)
+        assert run is not None
+        os.close(master)
+        closed = True
+        deadline = time.monotonic() + END
+        while os.path.exists(f"/proc/{run}"):
+            assert time.monotonic() < deadline, err.read_text()
+            time.sleep(0.02)
+    finally:
+        if not closed:
+            os.close(master)
+        os.waitpid(pid, 0)
+    lines = err.read_text().splitlines()
+    assert lines[-1] == interrupted(signal.SIGHUP) and sum(line.startswith("Interrupted") for line in lines) == 1
+    assert FakeDevice.read(device) == IN and not any(word in err.read_text() for word in NOISE)
+    assert (">> breakout: detaching" in lines) == (where == "breakout") and ">> control sent: ^C" not in lines
+
+
+@pytest.mark.parametrize(
+    "burst",
+    [[signal.SIGTERM] * 3, [signal.SIGHUP, signal.SIGHUP], [signal.SIGHUP, signal.SIGTERM, signal.SIGHUP], [signal.SIGTERM, signal.SIGHUP, signal.SIGTERM, signal.SIGHUP]],
+    ids=lambda burst: "-".join(sig.name for sig in burst),
+)
+def test_p6_114_burst_of_signals_ends_from_one_of_them_with_one_line(fake_device: FakeDevice, cli_run, tmp_path: Path, burst: list[signal.Signals]):
+    """Several signals in one go, as a supervisor that repeats itself sends them: the process ends from
+    a SIGTERM or a SIGHUP among them (which of those that are pending is taken first is the system's
+    choice), with the one line for it, and nothing is sent."""
+    ready = tmp_path / "ready"
+    doc, device = console(fake_device, [running(ready)], LOGOUT)
+    run = cli_run(doc)
+    run.wait_for(ready.exists)
+    for sig in burst:
+        try:
+            run.proc.send_signal(sig)
+        except ProcessLookupError:
+            break
+    ended = run.ends()
+    assert -ended in set(burst) & set(SIGNALS)
+    lines = run.err.splitlines()
+    assert sum(line.startswith("Interrupted") for line in lines) == 1 and interrupted(signal.Signals(-ended)) in lines
+    assert FakeDevice.read(device) == IN and not any(line.startswith(">> breakout") for line in lines)
+    run.quiet()
+
+
+def test_p6_115_slow_reader_only_slows_the_run(fake_device: FakeDevice, cli_run, tmp_path: Path):
+    """A reader that is slow is no lost output: the run waits in its writes while the pipe is full, and
+    completes, logout included, once the reader reads; every line arrives."""
+    r, w = os.pipe()
+    try:
+        doc, device = console(fake_device, [{"cmd": "true"}, {"cmd": "seq 1 20000", "timeout": "60s"}], LOGOUT)
+        run = cli_run(doc, stdout=w)
+        os.close(w)
+        run.wait_for(full(r, fcntl.fcntl(r, fcntl.F_GETPIPE_SZ) - 8192))
+        out = b""
+        while data := os.read(r, 4096):
+            out += data
+        assert run.ends(30) == 0, run.err
+    finally:
+        os.close(r)
+    assert all(f"\n{n}\r\n".encode() in out for n in (1, 9999, 20000)) or all(f"\n{n}\n".encode() in out.replace(b"\r", b"") for n in (1, 9999, 20000))
+    assert FakeDevice.read(device) == [*IN, "LOGOUT="] and run.err.splitlines()[-1] == ">> run completed"
+
+
+class CleanupStep(pydantic.BaseModel):
+    cleanup: str
+
+
+class CleanupExecutor:
+    """A plugin that sends in a `finally`: a breakout of its own, a line, or, in place of the error that
+    is passing, an interrupt (as Ctrl-C does when it lands while the run is ending)."""
+
+    key = "cleanup"
+    model = CleanupStep
+
+    def execute(self, step: CleanupStep, ctx: Any, timeout: float) -> None:
+        from conftest import steps
+
+        try:
+            ctx.run_steps(steps([NOW]))
+        except log.OutputLost:
+            if step.cleanup == "interrupt":
+                raise KeyboardInterrupt from None
+            raise
+        finally:
+            if step.cleanup == "breakout":
+                ctx.run_breakout(steps([{"line": "echo plugin-bye"}]), "plugin breakout")
+            elif step.cleanup == "line":
+                ctx.session.sendline("echo plugin-bye", solicit=True, timeout=5)
+
+
+RAW = [{"control": "c"}, {"line": "echo bye"}]  # a breakout that sends without a wait before it
+
+
+@pytest.mark.parametrize("cleanup", ["breakout", "line", "interrupt"])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_p6_115_nothing_is_sent_after_the_output_is_lost_whoever_tries(register_plugin, children, monkeypatch: pytest.MonkeyPatch, cleanup: str, stream: str):
+    """The guard is at the send itself: a plugin's `ctx.run_breakout` in a `finally`, a plugin's own
+    `sendline` there, and breakouts that start with a raw send after an interrupt has taken the place of
+    the `OutputLost` on its way out. Nothing reaches the pty, and the run still ends with the `OutputLost`."""
+    register_plugin(CleanupExecutor())
+    written: list[bytes] = []
+    pty_write = Pty.write
+    monkeypatch.setattr(Pty, "write", lambda self, data, *a, **kw: written.append(data) or pty_write(self, data, *a, **kw))
+    monkeypatch.setattr(sys, stream, Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe"), "NOW" if stream == "stdout" else "cmd: echo N"))
+    block = {"name": "b", "script": [{"cleanup": cleanup}], "breakout": RAW}
+    runner = make_runner([{"cmd": "true"}, {"block": block}], breakout=RAW)
+    with pytest.raises(log.OutputLost, match=f"^cannot write {stream}: ") as ei:
+        runner.run()
+    monkeypatch.undo()
+    assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
+    assert ei.value is log.lost and len(children) == 1 and not children[0].isalive()
+    with pytest.raises(log.OutputLost):  # a breakout with nothing to send is no breakout that finished, either
+        runner.run_breakout([])
+
+
+def test_p6_115_interrupt_while_the_run_ends_does_not_hide_the_lost_output(register_plugin, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
+    """The CLI's report and status are those of the lost output, also when an interrupt is what leaves
+    `Runner.run()`: here there is no breakout, so nothing raises the `OutputLost` again on the way out."""
+    register_plugin(CleanupExecutor())
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}, {"cleanup": "interrupt"}])))
+    monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
+    monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    with pytest.raises(SystemExit) as ei:
+        cli.main()
+    monkeypatch.undo()
+    report = [line for line in capsys.readouterr().err.splitlines() if not line.startswith(">> ")]
+    assert ei.value.code == 3 and report[0] == lost(path, "stdout", PIPE) and report[1].startswith("  at script.1.cleanup.0 (cmd: echo N")
+    assert report[2:] == ["  called from script.1 (cleanup)"]
+
+
+def test_p6_115_output_lost_at_the_close_is_reported_with_the_breakouts(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
+    """The last write of the session's output, at its close, fails after a block's breakout had failed
+    and `attach.breakout` had run: status 3, and the report says no more than is so, that the session
+    was closed, and names the breakout that didn't finish."""
+    block = {"name": "b", "script": [{"cmd": "true"}], "breakout": [{"cmd": "false"}]}
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([{"block": block}], breakout=[{"cmd": "true", "timeout": "5s"}])))
+    out = Breaking(OSError(errno.EIO, "Input/output error"), "\0")  # writes fail once it is broken
+    detach = Session.detach
+
+    def closing(self, *args, **kwargs):
+        out.broken = self._cld is not None
+        return detach(self, *args, **kwargs)
+
+    def flush():
+        if out.broken:
+            raise out.error
+
+    out.flush = flush  # type: ignore[method-assign]
+    monkeypatch.setattr(Session, "detach", closing)
+    monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
+    monkeypatch.setattr(sys, "stdout", out)
+    with pytest.raises(SystemExit) as ei:
+        cli.main()
+    monkeypatch.undo()
+    report = [line for line in capsys.readouterr().err.splitlines() if not line.startswith(">> ")]
+    assert ei.value.code == 3 and report == [
+        lost(path, "stdout", "[Errno 5] Input/output error", CLOSED),
+        f"Breakout failed in {path}: command returned exit code 1",
+        "  at script.0.block.breakout.0 (cmd: false)",
+        f"{LEFT}a breakout did not finish",
+    ]
+
+
+FULL = pytest.mark.skipif(not os.path.exists("/dev/full"), reason="no /dev/full")
+
+
+@FULL
+@pytest.mark.parametrize(
+    ("command", "stream", "status"),
+    [("-h", "stdout", 3), ("-h", "stderr", 0), ("schema", "stdout", 3), ("schema", "stderr", 0), ("validate", "stdout", 0), ("validate", "stderr", 3), ("validate-invalid", "stdout", 1)],
+    ids=lambda v: str(v),
+)
+def test_p6_115_output_that_cannot_be_written_fails_any_command(tmp_path: Path, command: str, stream: str, status: int):
+    """SPEC "Exit status": a command whose output could not be written exits with status 3, with nothing
+    of the interpreter's, also when the failure shows only as the streams are flushed at the exit (`-h`).
+    A command that wrote nothing to the stream is not affected, and another failure keeps its status."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text("autobot: nope\n" if command == "validate-invalid" else yaml.safe_dump(make_doc([{"cmd": "true"}])))
+    argv = [command] if command in ("-h", "schema") else ["validate", str(path)]
+    with open("/dev/full", "w") as full_disk:
+        other = {"stdout": "stderr", "stderr": "stdout"}[stream]
+        res = subprocess.run([sys.executable, "-W", "ignore", "-m", "autobot.cli", *argv], **{stream: full_disk, other: subprocess.PIPE}, text=True, check=False, timeout=60)  # type: ignore[call-overload]
+    assert res.returncode == status
+    assert not any(word in (res.stderr or "") + (res.stdout or "") for word in (*NOISE, "Unexpected error"))
+
+
+def test_p6_115_schema_to_a_reader_that_has_gone(tmp_path: Path):
+    """`autobot schema | head -1`, with a reader that has left before the schema is written: status 3
+    and no report of an unexpected error."""
+    r, w = os.pipe()
+    os.close(r)
+    try:
+        res = subprocess.run([sys.executable, "-W", "ignore", "-m", "autobot.cli", "schema"], stdout=w, stderr=subprocess.PIPE, text=True, check=False, timeout=60, preexec_fn=default_signals)
+    finally:
+        os.close(w)
+    assert res.returncode == 3 and res.stderr == ""

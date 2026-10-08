@@ -213,7 +213,7 @@ def test_p5_86_block_breakout_that_fails_fails_the_run_and_stops_nothing(fake_de
     assert report(res) == [
         f"Breakout failed in {path}: command returned exit code 1",
         "  at script.0.block.breakout.0 (cmd: false)",
-        f"{LEFT}the script completed, but a breakout did not finish{SENT}",
+        f"{LEFT}the script completed, but a breakout did not finish",  # `attach.breakout` logged out: no login is open
     ]
     progress = res.stderr.splitlines()
     assert progress.index(">> block breakout error (StepFailure): command returned exit code 1") < progress.index(">> cmd: echo after")
@@ -690,6 +690,25 @@ def test_p5_93_credentials_sent_in_a_block_without_a_breakout_are_warned_of(fake
     """The same block without a breakout: nothing logs out, and the warning says so."""
     doc, _ = in_a_block(fake_device, breakout=False)
     runner = run(doc)
+    assert runner.session.logins_open == ("login",)
+    assert NO_LOGOUT in capfd.readouterr().err.splitlines()
+
+
+def at_the_spawn(fake_device: FakeDevice, first: list[dict[str, Any]]) -> dict[str, Any]:
+    """A console that asks for a login at the spawn, a script that starts with `first` and goes on with
+    a block that has a breakout, and no `attach.breakout`."""
+    block = {"name": "work", "script": [{"cmd": "echo in"}], "breakout": [{"cmd": "true", "timeout": "5s"}]}
+    doc, _ = console(fake_device, [*first, {"block": block}], None)
+    return doc
+
+
+@pytest.mark.parametrize("first", [[], [{"cmd": "true"}]], ids=["the-block-first", "a-cmd-before-the-block"])
+def test_p5_93_login_at_the_spawn_is_not_the_blocks(fake_device: FakeDevice, capfd, first: list[dict[str, Any]]):
+    """SPEC "A breakout that doesn't finish": the console asks for its login at the spawn, and the first
+    prompt wait answers it, whichever step that wait belongs to. When it is the first step of a block,
+    the block has sent nothing yet: the login is not one the block made, its breakout doesn't answer for
+    it, and without an `attach.breakout` the warning comes all the same."""
+    runner = run(at_the_spawn(fake_device, first))
     assert runner.session.logins_open == ("login",)
     assert NO_LOGOUT in capfd.readouterr().err.splitlines()
 

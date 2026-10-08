@@ -53,10 +53,8 @@ EXPECTED = (
 BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
 # What is left when a run ends without its breakouts: after SIGTERM, SIGHUP, or a write of its output that failed
-UNCLEAN = (
-    "the session was closed without running the breakouts; "
-    "the device may be in an unknown state and may still be logged in"
-)
+UNKNOWN = "the device may be in an unknown state and may still be logged in"
+UNCLEAN = f"the session was closed without running the breakouts; {UNKNOWN}"
 
 
 class LoadError(SystemExit):
@@ -363,6 +361,8 @@ def _ended_by_signal() -> Iterator[None]:
         # one write, straight to the file descriptor, and only if it takes one now: nothing here waits,
         # raises or touches the run. A message that can't be written is not written
         try:
+            # a background job that writes to its terminal is stopped by this signal (`stty tostop`)
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
             if select.select([], [fd], [], 0)[1]:
                 start = "\n" if log.open_line() else ""
                 os.write(fd, f"{start}Interrupted ({signal.Signals(signum).name}): {UNCLEAN}\n".encode())
@@ -387,19 +387,45 @@ def _ended_by_signal() -> Iterator[None]:
             signal.signal(sig, signal.SIG_DFL)
 
 
-def _discard_unwritten() -> None:
+def _lost(args: argparse.Namespace, ended: BaseException) -> None:
+    """If the run's output was lost: report that, on stderr if stderr can still be written, with the
+    breakouts that didn't finish, and raise the `OutputLost`, whatever `ended` the run after it."""
+    e = log.lost
+    if e is None:
+        return
+    steps = trail(e)
+    if any("breakout" in ref.path.split(".") for ref in steps):
+        how = "the session was closed before the breakouts finished"
+    elif steps:
+        how = "the session was closed without running the breakouts"
+    else:  # at the spawn, or at the close, after the breakouts
+        how = "the session was closed"
+    log.lost = None  # for the report
+    with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
+        _traceback(args, e)
+        log.error(f"Run failed in {_visible(args.script)}", f"{e}; {how}; {UNKNOWN}")
+        _where(e)
+        _left(args, ended)
+    raise e
+
+
+def _discard_unwritten() -> bool:
     """Before the process exits: what a stream still holds and can't be written is discarded, by pointing
-    its file descriptor to /dev/null. The interpreter flushes the streams as it exits, and a flush that
-    fails there prints a traceback of its own and turns the exit status into 120."""
+    its file descriptor to /dev/null, and the answer is whether there was any. The interpreter flushes
+    the streams as it exits, and a flush that fails there prints a traceback of its own and turns the
+    exit status into 120."""
+    failed = False
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
-        except (AttributeError, OSError, ValueError):
+        except (AttributeError, OSError, ValueError) as e:
+            failed = failed or isinstance(e, OSError)
             with contextlib.suppress(AttributeError, OSError, ValueError):
                 null = os.open(os.devnull, os.O_WRONLY)
                 os.dup2(null, stream.fileno())
                 os.close(null)
                 stream.flush()
+    return failed
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:
@@ -461,16 +487,14 @@ def _cmd_run(args):
     _discover(args)
     runner = _runner(args, _config(args.script))
     try:
-        with contextlib.ExitStack() as session:
-            # from the spawn on: until then `attach.prepare` deals with a signal itself
-            runner.before_attach = lambda: session.enter_context(_ended_by_signal())
-            runner.run()
-    except log.OutputLost as e:
-        with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
-            _traceback(args, e)
-            log.error(f"Run failed in {_visible(args.script)}", f"{e}; {UNCLEAN}")
-            _where(e)
-        raise
+        try:
+            with contextlib.ExitStack() as session:
+                # from the spawn on: until then `attach.prepare` deals with a signal itself
+                runner.before_attach = lambda: session.enter_context(_ended_by_signal())
+                runner.run()
+        except BaseException as e:
+            _lost(args, e)
+            raise
     except BreakoutError as e:
         _left(args, e)
         sys.exit(EXIT_BREAKOUT)
@@ -544,7 +568,8 @@ def _cmd_schema(args: argparse.Namespace | None = None):
     except SchemaError as e:
         log.error("Cannot read the schema", str(e))
         raise LoadError from None
-    print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
+    with log.writing(sys.stdout):
+        print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2), flush=True)
 
 
 def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> dict[str, Any]:
@@ -577,12 +602,19 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 
 def main():
+    code: Any = None
     try:
         _main()
     except log.OutputLost:  # reported where there was something to say, and a stream to say it on
-        sys.exit(EXIT_RUN)
+        code = EXIT_RUN
+    except SystemExit as e:
+        code = 0 if e.code is None else e.code
     finally:
-        _discard_unwritten()
+        # output that could not be written is a failure of any command that had not failed already
+        if _discard_unwritten() and not code:
+            code = EXIT_RUN
+    if code is not None:
+        sys.exit(code)
 
 
 def _main():

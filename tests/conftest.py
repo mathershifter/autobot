@@ -181,6 +181,16 @@ def children(monkeypatch: pytest.MonkeyPatch) -> list[pexpect.spawn]:
     return seen
 
 
+@pytest.fixture(autouse=True)
+def _no_lost_output() -> Iterator[None]:
+    """`log.lost` is cleared when a run starts; a test that uses a session by itself starts clear as well."""
+    from autobot import log
+
+    log.lost = None
+    yield
+    log.lost = None
+
+
 # -- F2: scriptable fake device ---------------------------------------------
 
 

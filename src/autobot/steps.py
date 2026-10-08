@@ -113,7 +113,7 @@ class CmdExecutor:
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
         output = ""
-        interrupt = lost = False
+        interrupt = False
         self._first_prompt(step, ctx, timeout)
         # rendered after the first prompt wait, like any cmd: session.* is what that wait set
         script = ctx.render(str(step.cmd))
@@ -132,16 +132,12 @@ class CmdExecutor:
             if not step.ignore_error:
                 raise
             log.say(f"error ignored: {e}", "warn")
-        except log.OutputLost:
-            lost = True  # the run ends here: nothing more is sent, the cleanup included
-            raise
         except BaseException:
             # e.g. a timeout: the script or an upload line may still be running
             interrupt = True
             raise
         finally:
-            if not lost:
-                self._cleanup(ctx, tmp, min(timeout, SCRIPT_CLEANUP_TIMEOUT), interrupt)
+            self._cleanup(ctx, tmp, min(timeout, SCRIPT_CLEANUP_TIMEOUT), interrupt)
         self._register(step, ctx, output)
 
     @staticmethod
@@ -213,20 +209,16 @@ class BlockExecutor:
         else:
             saved_handlers = None
         mark = ctx.session.login_mark()
-        lost = False
         try:
             try:
                 if step.block.enter:
                     ctx.run_steps(step.block.enter)
                 ctx.run_steps(step.block.script)
-            except log.OutputLost:
-                lost = True  # the run ends here: no breakout, and nothing more is sent
-                raise
             finally:
-                if step.block.breakout and not lost:
+                if step.block.breakout:
                     log.say(f"block breakout: {step.block.name}", "group")
-                    ctx.run_breakout(step.block.breakout, "block breakout")
-                    ctx.session.logins_covered(mark)  # what the block logged in to is the breakout's to leave
+                    if ctx.run_breakout(step.block.breakout, "block breakout"):
+                        ctx.session.logins_covered(mark)  # what the block logged in to, its breakout has left
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)

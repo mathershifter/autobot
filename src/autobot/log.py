@@ -67,7 +67,8 @@ _open_line = False  # the session echo on stdout stopped in the middle of a line
 class OutputLost(BaseException):
     """A write of the operator's output failed: the session's echo on stdout, or a message on stderr.
     The run ends at once: no breakout runs and nothing more is sent. It is no `Exception`, so that no
-    best-effort cleanup takes it for a failure to go on from."""
+    best-effort cleanup takes it for a failure to go on from. The first one of a run is kept (`lost`) and
+    raised again by `check`, which everything that writes or sends calls first."""
 
     def __init__(self, stream: object, error: BaseException):
         name = "stdout" if stream is sys.stdout else "stderr" if stream is sys.stderr else "the output"
@@ -78,18 +79,28 @@ class OutputLost(BaseException):
         super().__init__(f"cannot write {name}: {why}")
 
 
+lost: OutputLost | None = None  # the first write that failed, until the next run starts
+
+
+def check() -> None:
+    """Raise the `OutputLost` of this run again, if there is one: nothing is written or sent after it."""
+    if lost:
+        raise lost
+
+
 @contextlib.contextmanager
 def writing(stream: object) -> Iterator[None]:
     """Around a write to the operator's `stream`, or a flush of it: a failure of any kind (a reader that
-    has gone, a full disk, a size limit, a closed stream) is raised as `OutputLost`."""
+    has gone, a full disk, a size limit, a closed stream) is raised as `OutputLost`, and kept."""
+    global lost
+    check()
     try:
         yield
-    except OSError as e:
-        raise OutputLost(stream, e) from e
-    except ValueError as e:
-        if not getattr(stream, "closed", False):  # not what a closed stream raises: a bug
-            raise
-        raise OutputLost(stream, e) from e
+    except (OSError, ValueError) as e:
+        if not isinstance(e, OSError) and not getattr(stream, "closed", False):
+            raise  # not what a closed stream raises: a bug
+        lost = OutputLost(stream, e)
+        raise lost from e
 
 
 def echoed(data: str) -> None:
@@ -115,11 +126,13 @@ def open_line() -> bool:
 
 def _print(text: Text) -> None:
     global _open_line
-    console.print(text)
     buffer = console.file
-    rendered = buffer.getvalue()
-    buffer.seek(0)
-    buffer.truncate()
+    try:
+        console.print(text)
+        rendered = buffer.getvalue()
+    finally:  # an interrupt must not leave part of this message for the next one
+        buffer.seek(0)
+        buffer.truncate()
     if open_line():
         # start a new line. On stderr, so stdout stays what the session sent
         rendered, _open_line = "\n" + rendered, False

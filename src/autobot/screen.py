@@ -143,7 +143,6 @@ class CleanWriter:
     def __init__(self, stream):
         self._stream = stream
         self._held = ""
-        self._lost: log.OutputLost | None = None  # the stream could not be written: no write is tried again
 
     def write(self, data):
         data = ANSI_ESCAPE_RE.sub("", self._held + data)
@@ -157,17 +156,11 @@ class CleanWriter:
             log.echoed(data)
 
     def _out(self, data: str = ""):
-        """Write `data` and flush. A failure ends the run (`log.OutputLost`), now and at any later write."""
-        if self._lost:
-            raise self._lost
-        try:
-            with log.writing(self._stream):
-                if data:
-                    self._write(data)
-                self._stream.flush()
-        except log.OutputLost as e:
-            self._lost = e
-            raise
+        """Write `data` and flush. A failure ends the run (`log.OutputLost`), and no write is tried after it."""
+        with log.writing(self._stream):
+            if data:
+                self._write(data)
+            self._stream.flush()
 
     def _write(self, data: str):
         try:
@@ -186,7 +179,7 @@ class CleanWriter:
         """Write out what is still held: nothing more will come to complete it. The stream stays open.
         Nothing is written to a stream that could not be written before: that has ended the run already."""
         held, self._held = self._held, ""
-        if self._lost:
+        if log.lost:
             return
         self._out(held)
         if held:

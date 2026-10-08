@@ -4,6 +4,7 @@ refused when the terminal it is typed on would cut it (P8-43 to P8-47)."""
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import shutil
@@ -1394,4 +1395,80 @@ def test_p8_54_new_child_waits_for_no_control_character(shell_session: Session):
     s.sendcontrol("u", timeout=5)
     assert s._control_at > 0
     s.detach()
-    assert s._control_at == 0.0
+    assert s._control_at == -math.inf
+
+
+# -- P8-55: an interrupt before a byte is sent --------------------------------------------------------------
+
+
+def interrupting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """From here on, the pause before a line is sent ends with an interrupt."""
+
+    def sleep(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(time, "sleep", sleep)
+
+
+def test_p8_55_interrupt_before_a_line_is_sent_leaves_the_session_where_it_was(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "control": a line waits out the settle time after a control character. An interrupt in that
+    pause has sent nothing, so the session is where it was: at its prompt, after no line. The next prompt
+    wait returns at once."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendcontrol("c", timeout=5)
+    s.get_prompt(timeout=5)
+    state = (s._at_prompt, s._sent, s._solicit, s._held)
+    assert state[0] is True
+    interrupting(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        s.sendline("echo never", timeout=5)
+    monkeypatch.undo()
+    assert (s._at_prompt, s._sent, s._solicit, s._held) == state
+    started = time.monotonic()
+    assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+
+
+def test_p8_55_breakout_after_an_interrupt_in_the_settle_time_runs_at_once(sent: SentLog, monkeypatch: pytest.MonkeyPatch):
+    """Ctrl-C while a `cmd` waits out the settle time: the breakout that starts with a `cmd` finds the
+    session at its prompt and runs at once. With the session taken for one that had sent the line, its
+    prompt wait would wait for a prompt that is already there, without a Return, until its timeout."""
+    from autobot.runner import left
+
+    put_control, real = Session._put_control, time.sleep
+
+    def once(seconds: float) -> None:
+        monkeypatch.setattr(time, "sleep", real)
+        raise KeyboardInterrupt
+
+    def control(self, *args, **kwargs):
+        put_control(self, *args, **kwargs)
+        self.get_prompt(timeout=5)  # the prompt the shell prints for Ctrl-C: the session is at it
+        monkeypatch.setattr(time, "sleep", once)  # the next pause is the one before the `cmd` line
+
+    monkeypatch.setattr(Session, "_put_control", control)
+    runner = make_runner([{"cmd": "true"}, {"control": "c"}, {"cmd": "echo never"}], breakout=[{"cmd": "echo bye", "timeout": "5s"}])
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt) as ei:
+        runner.run()
+    assert left(ei.value) is None and time.monotonic() - started < 4
+    assert "echo never" in sent.lines() and "echo bye" in sent.lines()  # `sent` has the line that was tried
+
+
+def test_p8_55_interrupt_before_a_prompt_is_answered_leaves_it_unanswered(fake_device: FakeDevice, monkeypatch: pytest.MonkeyPatch):
+    """The answer to a prompt is a line like any other, with the same pause before it. An interrupt there
+    leaves the prompt on the screen without an answer: no prompt wait presses Return at it."""
+    spawn, log = fake_device("--accept", "admin:secret")
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True), PromptHandler("login", ["login: $", "Password: $"], [["admin", "secret"]], False, [0, 1])])
+    s.attach(spawn, timeout=5)
+    try:
+        assert s._cld is not None
+        s._cld.delayafterread = None  # pexpect's own pause after a read: the only one left is the one before a send
+        interrupting(monkeypatch)
+        with pytest.raises(KeyboardInterrupt):
+            s.get_prompt(timeout=5)
+        monkeypatch.undo()
+        assert s._unanswered is True and FakeDevice.read(log) == []
+    finally:
+        monkeypatch.undo()
+        s.detach(failing=True)

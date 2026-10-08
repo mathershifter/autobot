@@ -342,7 +342,7 @@ class Runner:
         return spawn
 
     def run(self):
-        self._unfinished = []  # nothing of an earlier run of this runner counts for this one
+        self._unfinished, log.lost = [], None  # nothing of an earlier run counts for this one
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
         # any other is rendered first, so one that names no command stops the run before `prepare`
@@ -362,21 +362,18 @@ class Runner:
         if self.before_attach:
             self.before_attach()
         log.say(f"attach: {spawn}")
-        lost = False
         try:
             self._session.attach(spawn, env=self._environ, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)
                 self.run_steps(self._config.script)
-            except log.OutputLost:
-                lost = True  # the run ends here: no breakout, and nothing more is sent
-                raise
             finally:
-                if attach.breakout and not lost:
+                if attach.breakout:
                     log.say("breakout: detaching", "group")
-                    self.run_breakout(attach.breakout)
-                elif self._session.logins_open and not lost:
+                    if self.run_breakout(attach.breakout):
+                        self._session.logins_covered()
+                elif self._session.logins_open:
                     names = self._session.logins_open
                     log.say(
                         f"no logout: the run sent credentials (prompt{'s' if len(names) != 1 else ''} "
@@ -404,13 +401,15 @@ class Runner:
         """Note on `error`, the one that ends the run, what the run may have left behind, for the CLI's report."""
         if self._unfinished:
             error.autobot_left = Left(  # type: ignore[attr-defined]
-                tuple(self._unfinished), self._session.logins, self._session.login_pending
+                tuple(self._unfinished), self._session.logins_open, self._session.login_pending
             )
 
-    def run_breakout(self, steps: list[Step], what: str = "breakout"):
-        """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
-        so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
-        ends the breakout as well, is kept, and goes on."""
+    def run_breakout(self, steps: list[Step], what: str = "breakout") -> bool:
+        """Run the steps of a breakout, best-effort, and return whether it finished: an error ends the
+        breakout and is logged, not raised, so what comes after it still runs. It is kept, since the run
+        can't count as completed. An interrupt ends the breakout as well, is kept, and goes on. No breakout
+        runs once the run's output is lost."""
+        log.check()
         try:
             self._session.reset_handlers()
             self.run_steps(steps)
@@ -420,6 +419,8 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - breakout is best-effort
             self._unfinished.append(e)
             log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
+            return False
+        return True
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))
