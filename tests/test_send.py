@@ -18,8 +18,9 @@ import pytest
 from conftest import BASH, FakeDevice, SentLog, make_doc, make_runner, run_cli
 from conftest import run_vars as run
 
-import autobot.session as session_mod
-from autobot.session import LineTooLong, PartialLine, PromptHandler, Session, SimpleHandler, canon_limit
+import autobot.terminal as terminal_mod
+from autobot.session import LineTooLong, PartialLine, PromptHandler, Session, SimpleHandler
+from autobot.terminal import canon_limit
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"
 # more than a pty holds for a child that has stopped reading
@@ -334,7 +335,7 @@ def test_p8_39_ordinary_send_is_one_write_after_the_pause(monkeypatch: pytest.Mo
 )  # fmt: skip
 def test_p8_39_control_characters_are_those_pexpect_sends(key: str, byte: int):
     """The session writes the control character itself; the keys and their bytes are ptyprocess's."""
-    from autobot.session import control_byte
+    from autobot.terminal import control_byte
 
     assert control_byte(key) == bytes([byte])
     r, w = os.pipe()
@@ -988,14 +989,14 @@ def test_p8_47_fpathconf_of_a_linux_pty_is_not_its_limit(attach):
 def test_p8_47_session_goes_by_the_limit_of_the_platform(attach, monkeypatch: pytest.MonkeyPatch, capsys):
     """With the limit of macOS, 1024 with the line break: 1023 bytes are sent and 1024 are not. Where no
     limit is known, nothing is refused, and a line past the Linux limit gets the warning."""
-    monkeypatch.setattr(session_mod, "canon_limit", lambda fd: 1024)
+    monkeypatch.setattr(terminal_mod, "canon_limit", lambda fd: 1024)
     s = attach(NOEDIT)
     s.sendline(echo(1023), timeout=5)
     assert s.get_prompt(timeout=5) == echo(1023)[5:] + "\n"
     with pytest.raises(LineTooLong) as ei:
         s.sendline(echo(1024), timeout=5)
     assert str(ei.value) == too_long(1024, 1023)
-    monkeypatch.setattr(session_mod, "canon_limit", lambda fd: None)
+    monkeypatch.setattr(terminal_mod, "canon_limit", lambda fd: None)
     s.sendline(echo(1024), timeout=5)
     s.get_prompt(timeout=5)
     assert "long line" not in capsys.readouterr().err
@@ -1298,7 +1299,7 @@ def test_p8_53_pty_reported_writable_that_takes_nothing_is_polled(attach, monkey
         selects.append((r, w, timeout))
         return [], [fd], []
 
-    monkeypatch.setattr(session_mod.select, "select", select)
+    monkeypatch.setattr(terminal_mod.select, "select", select)
     started = time.monotonic()
     with pytest.raises(TimeoutError, match=r"^timed out after 0\.5s while sending a line \(0 of 5 bytes sent\)$"):
         s.sendline("true", timeout=0.5)
@@ -1327,7 +1328,7 @@ def test_p8_53_pty_reported_readable_with_nothing_to_read(attach, monkeypatch: p
         reads.append(1)
         raise BlockingIOError(11, "Resource temporarily unavailable")
 
-    monkeypatch.setattr(session_mod.select, "select", lambda r, w, x, timeout=None: ([fd], [], []))
+    monkeypatch.setattr(terminal_mod.select, "select", lambda r, w, x, timeout=None: ([fd], [], []))
     s._cld.expect = expect
     try:
         s.sendline("echo ok", timeout=5)

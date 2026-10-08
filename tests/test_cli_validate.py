@@ -22,7 +22,7 @@ from conftest import ROOT, make_doc, plugin_dist
 
 from autobot import cli, prepare
 from autobot.runner import Runner
-from autobot.session import ANSI_ESCAPE_RE
+from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
 # the program's name is `autobot` when installed and `cli.py` under `python -m autobot.cli`

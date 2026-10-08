@@ -34,7 +34,8 @@ from conftest import (
 )
 
 from autobot.runner import Runner
-from autobot.session import PTY_COLS, PTY_ROWS, PromptHandler, Session
+from autobot.session import PromptHandler, Session
+from autobot.terminal import PTY_COLS, PTY_ROWS
 
 TOP_PROMPTS = [{"name": "top", "expect": [r"PROMPT\$ "], "return": True}]
 BLOCK_PROMPTS = [{"name": "blk", "expect": [r"PROMPT\$ "], "return": True}]

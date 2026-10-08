@@ -14,8 +14,8 @@ from conftest import ROOT, run_vars
 
 from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
-from autobot.session import STRAY_RE, PromptHandler, Session
-from autobot.types import ANSI_ESCAPE_RE
+from autobot.screen import ANSI_ESCAPE_RE, STRAY_RE
+from autobot.session import PromptHandler, Session
 
 EXAMPLES = sorted((ROOT / "examples").glob("*.yaml"))
 
