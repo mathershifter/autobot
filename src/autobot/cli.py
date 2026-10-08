@@ -248,23 +248,38 @@ def _left(args: argparse.Namespace | None, e: BaseException, script: str) -> Non
     state = left(e)
     if state is None:
         return
+    head = f"Breakout failed in {_visible(script)}"
     for error in state.breakouts:
         if error is e:  # the interrupt or signal that ended the breakout is what ended the run: reported
             continue
-        _traceback(args, error)
-        if isinstance(error, KeyboardInterrupt):
-            reason = "interrupted"
-        elif isinstance(error, signals.Terminated):
-            reason = f"interrupted ({error.name})"
-        else:
-            reason = str(error) or type(error).__name__
-        log.error(f"Breakout failed in {_visible(script)}", reason)
-        _where(error)
-    why = "the script completed, but a breakout did not finish" if isinstance(e, BreakoutError) else "a breakout did not finish"
+        if isinstance(error, (KeyboardInterrupt, signals.Terminated)):
+            _traceback(args, error)
+            log.error(head, f"interrupted ({error.name})" if isinstance(error, signals.Terminated) else "interrupted")
+            _where(error)
+        elif isinstance(error, EXPECTED) and not (_broad(error) and _plugins_own(error)):
+            _traceback(args, error)
+            log.error(head, str(error) or type(error).__name__)
+            _where(error)
+            if _broad(error) and not getattr(args, "traceback", False):
+                log.hint("(run with --traceback for details)")
+        else:  # a bug, in Autobot or in a plugin, not something the device did: with its traceback
+            log.error(head, f"unexpected error ({type(error).__name__}): {error}")
+            _unexpected(error)  # type: ignore[arg-type]
+    completed = isinstance(e, BreakoutError)
+    if all(isinstance(error, EOFError) for error in state.breakouts):
+        # nothing more could be said to the far side: over plain ssh the close is the logout
+        head = "Connection closed before a breakout finished"
+        why = ("the script completed; " if completed else "") + "a console behind a console server may still be logged in"
+    else:
+        head = "Session may be left logged in"
+        why = ("the script completed, but " if completed else "") + "a breakout did not finish"
     if state.logins:
-        names = ", ".join(repr(name) for name in state.logins)
-        why += f"; the run sent credentials (prompt{'s' if len(state.logins) != 1 else ''} {names})"
-    log.error("Session may be left logged in", why)
+        names = f"prompt{'s' if len(state.logins) != 1 else ''} {', '.join(repr(name) for name in state.logins)}"
+        if state.pending:
+            why += f"; credentials were sent ({names}), and no shell prompt was reached after them"
+        else:
+            why += f"; the run sent credentials ({names})"
+    log.error(head, why)
 
 
 def _broad(e: BaseException) -> bool:

@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 import yaml
-from conftest import DEVICE, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, run_cli
+from conftest import BASH, DEVICE, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
 
 from autobot import cli, signals
 from autobot.runner import BreakoutError, Left, left, trail
@@ -333,8 +333,8 @@ def test_p5_88_breakout_that_starts_with_a_control_character_delivers_the_logout
 # -- P5-89: the run knows when it sent credentials ----------------------------------------------------
 
 NO_LOGOUT = (
-    ">> no logout: the run sent credentials (prompt 'login'), and the script has no attach.breakout to log out "
-    "with before the session is closed"
+    ">> no logout: the run sent credentials (prompt 'login') outside a block with a breakout, and the script has no "
+    "attach.breakout to log out with before the session is closed"
 )
 
 
@@ -391,7 +391,7 @@ def test_p5_89_several_prompts_are_named_once_each(fake_device: FakeDevice, tmp_
     res = run_cli(doc, tmp_path)
     assert res.returncode == 0, res.stderr
     assert res.stderr.count("no logout") == 1
-    assert ">> no logout: the run sent credentials (prompts 'user', 'pw'), and" in res.stderr
+    assert ">> no logout: the run sent credentials (prompts 'user', 'pw') outside a block" in res.stderr
 
 
 def test_p5_89_session_keeps_the_names_until_the_next_spawn(fake_device: FakeDevice):
@@ -662,3 +662,171 @@ def test_p5_92_dollar_is_the_end_of_what_has_arrived(shell_session: Session):
     started = time.monotonic()
     s.expect([PATTERN], timeout=10)
     assert time.monotonic() - started < 1.5 and s.ctx["before"].endswith("Last ")
+
+
+# -- P5-93: where the credentials were sent, what the report says, and a runner that runs again -------
+
+
+def in_a_block(fake_device: FakeDevice, breakout: bool, inner: bool = False) -> tuple[dict[str, Any], Path]:
+    """A script that reaches the console from a shell, inside a block: the block's `enter` starts the
+    device, its first `cmd` logs in. With `breakout`, the block logs out and leaves the device with
+    Ctrl-]. With `inner`, the login happens in a block of its own, without a breakout, inside that one."""
+    device, log = fake_device(*ACCEPT, "--escape")
+    leave = [{"control": "c"}, {"line": "logout"}, {"control": "]", "after": PATTERN, "timeout": "5s"}, {"cmd": "true", "timeout": "5s"}]
+    login = [{"line": device}, {"cmd": "echo in", "timeout": "5s"}]
+    block: dict[str, Any] = {"name": "console", "enter": [{"block": {"name": "login", "script": login}}] if inner else login}
+    if breakout:
+        block["breakout"] = leave
+    return make_doc([IN, {"block": block}], spawn=BASH, prompts=PROMPTS, vars=CREDS), log
+
+
+@pytest.mark.parametrize("inner", [False, True], ids=["in-the-block", "in-a-block-inside-it"])
+def test_p5_93_credentials_sent_in_a_block_with_a_breakout_are_that_breakouts(fake_device: FakeDevice, capfd, inner: bool):
+    """SPEC "A breakout that doesn't finish": the login happens inside a block whose breakout logs out.
+    The script has no `attach.breakout` and needs none: there is no `no logout` warning."""
+    doc, log = in_a_block(fake_device, breakout=True, inner=inner)
+    runner = run(doc)
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT=", "DETACH="]
+    assert runner.session.logins == ("login",) and runner.session.logins_open == ()
+    assert "no logout" not in capfd.readouterr().err
+
+
+def test_p5_93_credentials_sent_in_a_block_without_a_breakout_are_warned_of(fake_device: FakeDevice, capfd):
+    """The same block without a breakout: nothing logs out, and the warning says so."""
+    doc, _ = in_a_block(fake_device, breakout=False)
+    runner = run(doc)
+    assert runner.session.logins_open == ("login",)
+    assert NO_LOGOUT in capfd.readouterr().err.splitlines()
+
+
+def test_p5_93_runner_that_runs_again_starts_with_nothing_left(fake_device: FakeDevice, tmp_path: Path):
+    """A breakout that fails in the first run and not in the second: the second run completes. What the
+    first run left is not carried over."""
+    once = tmp_path / "once"
+    spawn, _ = fake_device("--order", "none")
+    runner = make_runner([{"cmd": "true"}], spawn=spawn, breakout=[{"cmd": f"test -e {once} || {{ touch {once}; false; }}", "timeout": "5s"}])
+    with pytest.raises(BreakoutError):
+        runner.run()
+    runner.run()
+    assert runner._unfinished == []
+
+
+def test_p5_93_failed_login_is_reported_as_credentials_that_reached_no_prompt(fake_device: FakeDevice, tmp_path: Path):
+    """SPEC "Errors while the script runs": the device refuses the credentials. The breakout's `logout` is
+    read as a user name, its wait is not met, and the last line of the report says what is known: the
+    credentials were sent, and no shell prompt came after them."""
+    spawn, log = fake_device("--accept", "admin:other", "--logout")
+    res = run_cli(make_doc([{"cmd": "true"}], spawn=spawn, prompts=PROMPTS, vars=CREDS, breakout=LOGOUT), tmp_path)
+    assert res.returncode == 3, res.stderr
+    lines = report(res)
+    assert lines[0].endswith("prompt 'login': responses exhausted")
+    assert lines[-1] == f"{LEFT}a breakout did not finish; credentials were sent (prompt 'login'), and no shell prompt was reached after them"
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGIN=logout"]
+
+
+def test_p5_93_login_pending_ends_at_a_shell_prompt(fake_device: FakeDevice):
+    """`Session.login_pending`: false before any answer, true once credentials are sent, false again
+    when a prompt wait ends at a shell prompt."""
+    spawn, _ = fake_device("--accept", "admin:secret", "--post-auth-delay", "1")
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True), PromptHandler("login", ["login:", "Password:"], [["admin", "secret"]], False, [0, 1])])
+    s.attach(spawn, timeout=5)
+    try:
+        assert s.login_pending is False
+        with pytest.raises(TimeoutError):
+            s.get_prompt(timeout=0.5)
+        assert s.login_pending is True and s.logins_open == ("login",)
+        s.get_prompt(timeout=5)
+        assert s.login_pending is False and s.logins == ("login",)
+    finally:
+        s.detach(failing=True)
+
+
+def test_p5_93_closed_connection_is_reported_as_one(fake_device: FakeDevice, tmp_path: Path):
+    """The connection closes in the script, so the breakout has nobody to talk to. The last line says
+    that, and what it may mean behind a console server, instead of a session that may be left logged in."""
+    doc, _ = console(fake_device, [IN, {"line": "kill -9 $PPID"}, {"cmd": "true"}], LOGOUT)
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 3, res.stderr
+    lines = report(res)
+    assert lines[0].endswith("connection closed while waiting for a shell prompt ('sh')")
+    assert lines[-1] == (
+        "Connection closed before a breakout finished: a console behind a console server may still be logged in; "
+        "the run sent credentials (prompt 'login')"
+    )
+    assert not any(line.startswith(LEFT) for line in lines)
+
+
+BREAKOUT_BUG = """
+import pydantic
+
+
+class OopsStep(pydantic.BaseModel):
+    oops: str
+
+
+class OopsExecutor:
+    key = "oops"
+    model = OopsStep
+
+    def execute(self, step, ctx, timeout):
+        if step.oops == "os":
+            raise OSError(28, "No space left on device")
+        raise ValueError("plugin bug " + step.oops)
+"""
+
+
+def test_p5_93_bug_in_a_breakout_step_is_reported_as_a_bug(fake_device: FakeDevice, tmp_path: Path):
+    """An error in a breakout that no device explains, here a plugin's `ValueError`: the breakout's
+    report says it is unexpected, names the plugin and prints the traceback. The script completed, so
+    the status is 4, and the last line still says what may be left."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    plugin_dist(root, "oops", BREAKOUT_BUG, "OopsExecutor")
+    doc, _ = console(fake_device, [{"cmd": "true"}], [{"oops": "value"}, *LOGOUT])
+    res = run_cli(doc, tmp_path, pythonpath=root)
+    path = tmp_path / "script.autobot.yaml"
+    assert res.returncode == 4, res.stderr
+    lines = report(res)
+    assert lines[:4] == [
+        f"Breakout failed in {path}: unexpected error (ValueError): plugin bug value",
+        "Unexpected error in plugin 'oops': this is a bug in the plugin, not in the script. "
+        "Please report it to the plugin's author with the traceback below.",
+        "  at attach.breakout.0 (oops)",
+        "Traceback (most recent call last):",
+    ]
+    assert lines[-2] == "ValueError: plugin bug value"
+    assert lines[-1] == f"{LEFT}the script completed, but a breakout did not finish{SENT}"
+
+
+def test_p5_93_operating_system_error_in_a_breakout_points_to_the_traceback(fake_device: FakeDevice, tmp_path: Path):
+    """An `OSError` from the engine's side of a breakout step is a failed breakout whose report ends with
+    the pointer to `--traceback`, as the report of a failed run does; from a plugin's own code it is the
+    plugin's bug."""
+    root = tmp_path / "plugin"
+    root.mkdir()
+    plugin_dist(root, "oops", BREAKOUT_BUG, "OopsExecutor")
+    doc, _ = console(fake_device, [{"cmd": "true"}], [{"oops": "os"}])
+    res = run_cli(doc, tmp_path, pythonpath=root)
+    lines = report(res)
+    assert res.returncode == 4 and lines[1].startswith("Unexpected error in plugin 'oops'") and "OSError: [Errno 28] No space left on device" in lines
+
+    import io
+
+    from rich.console import Console
+
+    from autobot import log as log_mod
+
+    error = OSError(28, "No space left on device")
+    ended = BreakoutError("x")
+    ended.autobot_left = Left((error,), ())  # type: ignore[attr-defined]
+    out = io.StringIO()
+    saved, log_mod.console = log_mod.console, Console(file=out, soft_wrap=True, color_system=None)
+    try:
+        cli._left(None, ended, "s.yaml")
+    finally:
+        log_mod.console = saved
+    assert out.getvalue().splitlines() == [
+        "Breakout failed in s.yaml: [Errno 28] No space left on device",
+        "  (run with --traceback for details)",
+        f"{LEFT}the script completed, but a breakout did not finish",
+    ]

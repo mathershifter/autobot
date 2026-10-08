@@ -161,7 +161,7 @@ def test_p6_83_cli_expected_run_failure_has_no_traceback(case: str, tmp_path: Pa
         report += [
             f"Breakout failed in {path}: connection closed while waiting for a shell prompt ('sh')",
             f"  at attach.breakout.1 (cmd: {touch if len(touch) <= 72 else touch[:72] + '...'})",
-            "Session may be left logged in: a breakout did not finish",
+            "Connection closed before a breakout finished: a console behind a console server may still be logged in",
         ]
     assert _lines(res) == report
     assert "Run failed" not in res.stdout

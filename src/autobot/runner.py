@@ -136,6 +136,7 @@ class Left:
 
     breakouts: tuple[BaseException, ...]
     logins: tuple[str, ...]
+    pending: bool = False  # no shell prompt was reached after the credentials: the login may not have happened
 
 
 def left(error: BaseException) -> Left | None:
@@ -342,7 +343,8 @@ class Runner:
 
     def run(self):
         # SIGTERM and SIGHUP unwind the run like an interrupt: the breakouts run and the session is closed
-        self._cleanup, self._stopped, log.gone = 0, False, ""
+        # nothing of an earlier run of this runner counts for this one
+        self._unfinished, self._cleanup, self._stopped, log.gone = [], 0, False, ""
         watching, log.on_gone = log.on_gone, self._reader_gone
         try:
             with signals.terminable():
@@ -386,10 +388,10 @@ class Runner:
                 if attach.breakout:
                     log.say("breakout: detaching", "group")
                     self.run_breakout(attach.breakout)
-                elif self._session.logins:
+                elif self._session.logins_open:
                     log.say(
-                        f"no logout: the run sent credentials ({self._prompts()}), and the script has no "
-                        "attach.breakout to log out with before the session is closed",
+                        f"no logout: the run sent credentials ({self._prompts()}) outside a block with a breakout, "
+                        "and the script has no attach.breakout to log out with before the session is closed",
                         "warn",
                     )
         except BaseException as e:
@@ -406,13 +408,15 @@ class Runner:
             raise self._marked(error)
 
     def _prompts(self) -> str:
-        names = self._session.logins
+        names = self._session.logins_open
         return f"prompt{'s' if len(names) != 1 else ''} {', '.join(repr(n) for n in names)}"
 
     def _marked(self, error: BaseException) -> BaseException:
         """`error`, the one that ends the run, with what the run may have left behind, for the CLI's report."""
         if self._unfinished:
-            error.autobot_left = Left(tuple(self._unfinished), self._session.logins)  # type: ignore[attr-defined]
+            error.autobot_left = Left(  # type: ignore[attr-defined]
+                tuple(self._unfinished), self._session.logins, self._session.login_pending
+            )
         return error
 
     def run_breakout(self, steps: list[Step], what: str = "breakout"):
