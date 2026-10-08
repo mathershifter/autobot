@@ -47,8 +47,7 @@ def release() -> None:
     signal.pthread_sigmask(signal.SIG_UNBLOCK, HELD)
 
 
-@contextlib.contextmanager
-def caught(held: bool = False) -> Iterator[list[int]]:
+class caught:
     """While the block runs, a signal of `SIGNALS` raises `Terminated` in the main thread.
 
     Only a signal that has its default action is caught, and only where a handler can be set: in the main
@@ -57,24 +56,32 @@ def caught(held: bool = False) -> Iterator[list[int]]:
 
     `held`: when a signal or an interrupt ends the block, the block leaves with `hold` in effect, so
     that however many more arrive, the caller gets to report the one and to `end` from it.
+
+    A class, not a generator: a signal that raises before a generator is resumed leaves it to be
+    finalized later, with the default actions put back at a moment when a signal must not end the process.
     """
-    mine: list[int] = []
-    try:
-        for signum in SIGNALS:
-            if signal.getsignal(signum) is signal.SIG_DFL:
-                signal.signal(signum, _unwind)
-                mine.append(signum)
-    except ValueError:  # not the main thread
-        pass
-    try:
-        yield mine
-    finally:
+
+    def __init__(self, held: bool = False):
+        self._held = held
+        self._mine: list[int] = []
+
+    def __enter__(self) -> list[int]:
+        try:
+            for signum in SIGNALS:
+                if signal.getsignal(signum) is signal.SIG_DFL:
+                    signal.signal(signum, _unwind)
+                    self._mine.append(signum)
+        except ValueError:  # not the main thread
+            pass
+        return self._mine
+
+    def __exit__(self, kind: object, error: BaseException | None, traceback: object) -> None:
         # one that arrives while the default actions are put back waits for the end of that, and for
         # the end of the process when one of them is what ends the block
-        mask = signal.pthread_sigmask(signal.SIG_BLOCK, HELD if held else mine)
-        ending = held and isinstance(sys.exception(), (Terminated, KeyboardInterrupt))
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, HELD if self._held else self._mine)
+        ending = self._held and isinstance(error, (Terminated, KeyboardInterrupt))
         try:
-            for signum in mine:
+            for signum in self._mine:
                 signal.signal(signum, signal.SIG_DFL)
         finally:
             if not ending:
