@@ -263,7 +263,7 @@ prompts:
           field: password
 ```
 
-This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
+This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. The prompt is then still waiting for an answer, so autobot presses no Return at it on its own (that would be an empty user name or password) until the script sends something. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
 Without `fields`, each item (a string or number) is sent as it is, in answer to any of the prompt's `expect` regexes. A boolean is never sent: an unquoted `true`, `yes` or `on` as an item or a field's value is an error that tells you to quote it (`'true'`, `'yes'`):
 

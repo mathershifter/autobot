@@ -136,8 +136,8 @@ class Session:
         # part of a line is typed at the far side, after a send that failed: no line is sent, since its
         # Return would enter that part, until a control character has been sent
         self._partial = False
-        # a prompt's answer was refused: the prompt is still waiting for one, and a solicit newline would
-        # be an empty answer, until something is sent
+        # a prompt got no answer (it was refused, or the prompt had none left): the prompt is still waiting
+        # for one, and a solicit newline would be an empty answer, until something is sent
         self._unanswered = False
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
@@ -339,6 +339,9 @@ class Session:
                     except (LineTooLong, PartialLine) as e:
                         self._unanswered = True
                         raise type(e)(f"prompt '{h.name}': {e}") from None
+                    except Exception:
+                        self._unanswered = True  # no response left, or one that could not be rendered or sent
+                        raise
                     log.say(f"prompt answered: {h.name}")  # never the response
                     break
 

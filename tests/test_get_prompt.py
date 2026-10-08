@@ -293,6 +293,68 @@ def test_p4_17_fields_login_first_exhaustion_after_two_sets(device):
     ]
 
 
+@pytest.mark.slow
+def test_p4_45_no_return_is_pressed_at_a_prompt_that_ran_out_of_responses(device, sent: SentLog):
+    """SPEC "Prompt Handling": a `sendEach` that ran out of responses left its prompt without an answer.
+    The waits that follow go through their idle poll without the Return that would be an empty answer,
+    an empty user name here, until the script sends something itself."""
+    r, log = device([SHELL_PROMPT, LOGIN_EACH], vars=creds("bad"), kick=False)
+    with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
+        r.session.get_prompt(timeout=10)
+    assert r.session._unanswered is True
+    answered = ["LOGIN=admin", "PASSWORD=bad"]
+    for _ in range(2):
+        r.session.reset_handlers()  # as a breakout does
+        with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
+            r.session.get_prompt(timeout=6)
+    assert log_of(log) == answered and sent.lines() == ["admin", "bad"]
+    r.session.sendcontrol("u", timeout=5)
+    assert r.session._unanswered is False
+
+
+@pytest.mark.slow
+def test_p4_45_breakout_after_exhausted_responses_submits_no_empty_answer(fake_device: FakeDevice, sent: SentLog, capsys):
+    """The same through a run: the breakout's `cmd` waits for a prompt at the login prompt that got no
+    answer. Without the state the device logs `LOGIN=`, an empty user name the solicit newline entered."""
+    spawn, log = fake_device()
+    runner = make_runner(
+        [{"cmd": "echo in"}],
+        spawn=spawn,
+        prompts=[SHELL_PROMPT, LOGIN_EACH],
+        vars=creds("bad"),
+        breakout=[{"cmd": "echo bye", "timeout": "6s"}],
+    )
+    with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
+        runner.run()
+    assert log_of(log) == ["LOGIN=admin", "PASSWORD=bad"] and sent.lines() == ["admin", "bad"]
+    assert "breakout error (TimeoutError): timed out after 6.0s waiting for a shell prompt ('sh')" in capsys.readouterr().err
+
+
+@pytest.mark.slow
+def test_p4_45_prompt_with_no_response_available_gets_no_return(device, sent: SentLog):
+    """An empty collection: the prompt has no response at all, and gets no empty one either."""
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": UP_FIELDS[:1]}}
+    r, log = device([SHELL_PROMPT, login], vars={"creds": []}, kick=False)
+    with pytest.raises(RuntimeError, match="^prompt 'login': no response available"):
+        r.session.get_prompt(timeout=5)
+    with pytest.raises(TimeoutError):
+        r.session.get_prompt(timeout=6)
+    assert log_of(log) == [] and sent == []
+
+
+def test_p4_45_send_template_that_fails_leaves_its_prompt_unanswered(fake_device: FakeDevice, sent: SentLog):
+    """A `send` template that can't be rendered when its prompt appears is an answer that wasn't given."""
+    spawn, log = fake_device("--order", "password")
+    r = make_runner([], spawn=spawn, prompts=[SHELL_PROMPT, {"name": "pw", "expect": ["Password:"], "send": "{{ vars.pw }}"}])
+    r.session.attach(spawn, env=dict(SHELL_ENV), timeout=5)
+    try:
+        with pytest.raises(ValueError, match="^prompt 'pw': template error"):
+            r.session.get_prompt(timeout=5)
+        assert r.session._unanswered is True and sent == [] and log_of(log) == []
+    finally:
+        r.session.detach()
+
+
 def test_p4_24_send_each_match_alternatives_send_the_same_field(device):
     """SPEC sendEach: the regexes of one fields entry are alternatives for one field.
 
