@@ -557,15 +557,15 @@ def test_p5_91_failed_login_and_the_recommended_breakout(fake_device: FakeDevice
 
 @pytest.mark.slow
 def test_p5_91_logout_right_after_the_control_character_is_not_lost(fake_device: FakeDevice):
-    """The `logout` line follows the Ctrl-C at once, at an idle prompt and with a command running: in
-    twenty runs each it arrives every time. The command is running for certain: the process that
-    printed `ready` is the one that becomes `sleep`."""
+    """SPEC "control": a shell drops the line it is reading when it gets round to an interrupt, and what
+    it has read of the next line goes with it. The `logout` line follows the breakout's Ctrl-C, and is
+    sent `session.CONTROL_SETTLE` after it: at an idle prompt and with a command running, in twenty runs
+    each of the documented breakout, it arrives whole every time and is confirmed within its 4 s. The
+    command is running for certain: the process that printed `ready` is the one that becomes `sleep`."""
     running = [IN, {"line": """sh -c "echo rea''dy; exec sleep 30\""""}, {**READY, "after": "ready\r\n"}]
-    # the wait is long: what is counted is whether the logout arrives, not how soon on a busy machine
-    breakout = [{"control": "c"}, {"line": "logout"}, {**CONFIRM, "timeout": "20s"}]
     for script in ([{"cmd": "true"}], running):
         for _ in range(20):
-            doc, log = console(fake_device, script, breakout)
+            doc, log = console(fake_device, script, SHAPE)
             run(doc)
             assert FakeDevice.read(log)[-1] == "LOGOUT="
 

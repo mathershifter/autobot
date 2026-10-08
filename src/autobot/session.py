@@ -19,6 +19,12 @@ from .types import RunError, ScriptError
 # rest of the line in one write; the time is for a slow line between a device and its console server.
 HELD_GRACE = 1.0
 
+# How long after a control character a line is sent at the earliest. A shell or a CLI drops the line it is
+# reading when it gets round to the interrupt, and what it has read of the next line by then goes with
+# it: `logout` sent in the same breath as Ctrl-C arrives as `ogout`. Nothing shows when the far side is
+# done, so the line waits this long; it is no guarantee on a far side that is slower than that.
+CONTROL_SETTLE = 0.5
+
 
 class CommandError(RunError):
     def __init__(self, message: str, output: str = ""):
@@ -74,7 +80,10 @@ class _Echo:
         except BaseException:
             piece, self._piece = self._piece, ""
             # as pexpect itself keeps a piece it has read (`Expecter.new_data`): in what is unread, and
-            # in what the text before the next match is taken from
+            # in what the text before the next match is taken from. pexpect has no public way to do
+            # this (its `buffer` setter leaves `before` without the piece), so the version is capped in
+            # pyproject.toml and a test fails if these two are gone. One window is left, as it always
+            # was: a signal that raises between pexpect's read and this write loses the piece
             self._cld._before.write(piece)
             self._cld._buffer.write(piece)
             raise
@@ -175,6 +184,7 @@ class Session:
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
+        self._control_at = 0.0  # when the last control character was sent (monotonic)
         self._logins: list[str] = []
         # each credential answer that no breakout answers for yet: a block with a breakout takes its own
         self._open: list[str] = []
@@ -268,6 +278,7 @@ class Session:
         self._held = None
         self._partial = False
         self._unanswered = False
+        self._control_at = 0.0
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
@@ -491,6 +502,9 @@ class Session:
         assert cld
         if self._partial:
             raise PartialLine(f"line not sent: {PARTIAL}")
+        settle = self._control_at + CONTROL_SETTLE - time.monotonic()
+        if settle > 0:
+            time.sleep(settle)  # the far side is still dealing with the control character
         deadline = time.monotonic() + timeout
         if cld.delaybeforesend is not None:
             time.sleep(cld.delaybeforesend)
@@ -534,6 +548,7 @@ class Session:
             raise PartialLine(f"control character not sent: {PARTIAL}")
         self._write(data, time.monotonic() + timeout, timeout, "a control character")
         self._partial = False  # the far side has been told to drop what was typed
+        self._control_at = time.monotonic()
 
     def _write(self, data: bytes, deadline: float, timeout: float, what: str):
         """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
