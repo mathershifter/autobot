@@ -59,6 +59,9 @@ def _exit_note(cld: pexpect.spawn) -> str:
 
 
 class PromptHandler:
+    # its responses are credentials (a `sendEach`): a run that sent one has logged in, or tried to
+    credentials = True
+
     def __init__(
         self,
         name: str,
@@ -116,6 +119,8 @@ class PromptHandler:
 class SimpleHandler(PromptHandler):
     """A prompt with one `send` template, rendered and sent on any match of its patterns, each time."""
 
+    credentials = False  # an answer to a question: a confirmation, a pager
+
     def __init__(self, name: str, patterns: list[str], send: str, render: Callable[[str], str]):
         super().__init__(name, patterns, [[send]], False)
         self._send = send
@@ -149,11 +154,41 @@ class Session:
         self._held: tuple[str, str, str] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._control_at = 0.0  # when the last control character was sent (monotonic)
+        self._logins: list[str] = []
+        # each credential answer that no breakout answers for yet: a block with a breakout takes its own
+        self._open: list[str] = []
+        self._pending = False  # credentials were sent, and no shell prompt was reached after them
         self._set_handlers(handlers)
 
     @property
     def ctx(self) -> dict[str, str]:
         return self._ctx
+
+    @property
+    def logins(self) -> tuple[str, ...]:
+        """The prompts that were answered with credentials since the process was spawned, by name. They
+        are still known once the session is closed."""
+        return tuple(self._logins)
+
+    @property
+    def logins_open(self) -> tuple[str, ...]:
+        """The prompts answered with credentials that no block's breakout answers for: those sent outside
+        every block that has a breakout. By name, each once, in the order they were first answered."""
+        return tuple(dict.fromkeys(self._open))
+
+    def login_mark(self) -> int:
+        """Where the credential answers stand, for `logins_covered`: taken when a block starts."""
+        return len(self._open)
+
+    def logins_covered(self, mark: int):
+        """A breakout answers for the credentials sent since `mark`: that of the block they were sent in."""
+        del self._open[mark:]
+
+    @property
+    def login_pending(self) -> bool:
+        """Whether credentials were sent and no shell prompt was reached after them: a login that was
+        refused, or one that the run didn't see the end of."""
+        return self._pending
 
     def _set_handlers(self, handlers: list[PromptHandler]):
         self._handlers = handlers
@@ -218,6 +253,7 @@ class Session:
         # nothing of an earlier child applies to this one
         self._forget()
         self._ctx["before"] = self._ctx["match"] = ""
+        self._logins, self._open, self._pending = [], [], False
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -351,6 +387,11 @@ class Session:
                         self._unanswered = True  # no response left, or one that could not be rendered or sent
                         raise
                     log.say(f"prompt answered: {h.name}")  # never the response
+                    if h.credentials:
+                        self._open.append(h.name)
+                        self._pending = True
+                        if h.name not in self._logins:
+                            self._logins.append(h.name)
                     break
 
     def _prompt_what(self) -> str:
@@ -361,6 +402,7 @@ class Session:
         self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool, match: str
     ) -> str:
         self._at_prompt = True
+        self._pending = False
         text = "".join(output)
         text = text[: text.rfind("\n") + 1]
         if sent:
@@ -397,7 +439,7 @@ class Session:
         if not self._at_prompt and not self._cld.buffer:
             at_prompt, read = self._scan(line, True, None if broke else self._sent)
             if at_prompt:
-                self._at_prompt, self._prompt = True, line
+                self._at_prompt, self._prompt, self._pending = True, line, False
             elif read is not None:
                 # the prompt may be one written again inside the echo: the next prompt wait holds it
                 self._held = (read, line, self._ctx["match"])

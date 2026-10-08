@@ -33,7 +33,7 @@ from conftest import (
     steps,
 )
 
-from autobot.runner import Runner
+from autobot.runner import BreakoutError, Runner
 from autobot.session import PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
@@ -215,7 +215,8 @@ def test_block_breakout_template_error_is_best_effort(attached, capsys):
 
 def test_attach_breakout_failure_still_detaches(children, capsys):
     r = top_runner([{"cmd": "true"}], breakout=[STUCK])
-    r.run()
+    with pytest.raises(BreakoutError):  # the script completed; the breakout's failure is the run's (P5-84)
+        r.run()
     assert len(children) == 1
     assert not children[0].isalive()
     assert r.session._cld is None
@@ -871,7 +872,8 @@ def test_p5_08_attach_breakout_resets_handlers_first(timeline: Timeline):
 
 def test_p5_09_attach_breakout_error_logged(capsys):
     """SPEC.md:84: breakout is best-effort; errors are logged to stderr."""
-    run_script([{"cmd": "true"}], breakout=[{"cmd": "false", "timeout": "5s"}])
+    with pytest.raises(BreakoutError):
+        run_script([{"cmd": "true"}], breakout=[{"cmd": "false", "timeout": "5s"}])
     assert "breakout error (StepFailure)" in capsys.readouterr().err
 
 

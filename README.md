@@ -85,6 +85,16 @@ The first line says what went wrong, the `at` line where: the step's path in the
 
 Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
 
+A breakout that fails is reported as well, after whatever else ended the run, and the last line says what it may mean:
+
+```
+Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern '[Ll]ogin: ?$'
+  at attach.breakout.2 (control)
+Session may be left logged in: the script completed, but a breakout did not finish; the run sent credentials (prompt 'login')
+```
+
+When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in. After a failed script the status stays 3. A run that answered a `sendEach` prompt and has no breakout to log out with logs a warning, `>> no logout: ...`; its exit status is not affected.
+
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
 | Status | Meaning |
@@ -93,6 +103,7 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 1      | The script couldn't be loaded; nothing ran. `autobot validate` found a script invalid |
 | 2      | Malformed command line |
 | 3      | The run failed |
+| 4      | The script completed, but a breakout didn't finish: the session may have been left logged in |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
 | 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
 
@@ -169,7 +180,7 @@ The `attach` block controls how autobot connects to the remote console.
 5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
-The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
+The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed. A breakout that fails after a script that completed fails the run, with exit status 4.
 
 If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (`The command was not found or was not executable: <command>`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails (`connection closed while waiting for a shell prompt (...)`), and the breakout runs (its errors are logged).
 
@@ -410,7 +421,7 @@ The block lifecycle:
 
 When the session is sitting at a shell prompt, the swap and the restore keep it there if the new prompts recognize that prompt, so the next `cmd` sends at once: no 5s idle wait and no extra newline. If they don't, the next `cmd` waits for one of the new prompts, and an idle shell never prints one. So enter a sub-CLI whose prompt the block's prompts expect with `line`, not `cmd`, and leave it in the breakout (e.g. `line: exit`). See [SPEC.md](SPEC.md#prompt-state-across-a-swap).
 
-Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`.
+Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. The script goes on after a block whose breakout failed, but the run then ends with exit status 4, like a run whose `attach.breakout` failed: the block may have left what it entered.
 
 ```yaml
 - block:
@@ -587,7 +598,7 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`.
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)`, `ctx.run_steps(...)` and, for a cleanup of its own that must not stop what comes after it, `ctx.run_breakout(steps, what)`: an error in those steps is logged as `>> <what> error (...)` and fails the run as a failed breakout does.
 
 `ctx.render(template)` renders text that is sent or stored, where an expression that gives a boolean is a template error (see [Templating](#templating)). A plugin that renders a condition, to read the result as a yes or no, calls `ctx.render(template, condition=True)`, as the runner does for `when`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 

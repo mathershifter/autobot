@@ -8,12 +8,24 @@ echoes each line itself, wrapped at its right margin). Each ``--ask TEXT`` asks
 ``TEXT `` once, before the login prompts. Every line it reads is
 appended to ``--log`` as ``<KIND>=<value>`` so tests can assert on what
 Autobot actually sent, instead of parsing pty output.
+
+With ``--logout`` it is a console that can be logged out of: the shell is a login shell that the device
+waits for, and in the bare prompt loop the line ``logout`` ends the loop. It then logs ``LOGOUT=``, and
+asks for the login again. Ctrl-C at a login prompt does nothing, as at a getty. With ``--capital`` the
+login prompt is ``Login: ``, and with ``--last-login`` the device prints a ``Last login: ...`` line once
+the login is accepted, ``--banner-delay`` seconds after it and before ``--post-auth-delay``; with
+``--split-banner SECS`` it writes ``Last login: ``, waits, and writes the rest, as a slow line delivers
+it. With ``--lower-password`` the password prompt is ``password: ``. With ``--escape`` a
+Ctrl-] typed at any of the device's own prompts ends the device, as it leaves the client of a console
+server: it logs ``DETACH=``.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import signal
+import subprocess
 import sys
 import termios
 import time
@@ -25,6 +37,8 @@ BANNER = "Welcome"
 
 
 class Device:
+    escape = ""  # the log, when a Ctrl-] ends the device
+
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.order = [p for p in args.order.split(",") if p and p != "none"]
@@ -48,6 +62,11 @@ class Device:
         data = os.read(0, 4096)
         if not data:
             sys.exit(0)
+        if b"\x1d" in data and Device.escape:
+            with open(Device.escape, "a") as f:
+                f.write("DETACH=\n")
+            os.write(1, b"\ndetached\n")
+            sys.exit(0)
         return data.decode(errors="replace").rstrip("\r\n")
 
     def auth(self, first_prompt_written: bool = False) -> None:
@@ -57,7 +76,8 @@ class Device:
             got: dict[str, str] = {}
             for k, p in enumerate(self.order):
                 if not (first_prompt_written and k == 0):
-                    self.write(PROMPTS[p])
+                    text = "Login: " if p == "login" and self.args.capital else PROMPTS[p]
+                    self.write(text.lower() if p == "password" and self.args.lower_password else text)
                 first_prompt_written = False
                 got[p] = self.readline()
                 self.log(p.upper(), got[p])
@@ -82,9 +102,36 @@ class Device:
         self.log("RAW", data.hex())
         self.write(f"\nRAW={data.hex()}\n")
 
+    def console(self) -> None:
+        """The shell or the prompt loop until it is logged out of, then the login again, without end."""
+        env = {"PS1": SHELL_PROMPT, "TERM": "dumb", "PATH": os.environ.get("PATH", "")}
+        while True:
+            if self.args.then == "shell":
+                if subprocess.call(["bash", "--norc", "--noprofile", "-i", "-l"], env=env) < 0:
+                    sys.exit(0)  # the shell was ended by a signal, as when the session is closed: no logout
+            else:
+                line = ""
+                while line != "logout":
+                    self.write(SHELL_PROMPT)
+                    line = self.readline()
+                    self.log("LINE", line)
+            self.log("LOGOUT", "")
+            self.write("\n")
+            self.auth()
+
     def then(self) -> None:
+        if self.args.last_login:
+            time.sleep(self.args.banner_delay)
+            if self.args.split_banner:
+                self.write("Last login: ")
+                time.sleep(self.args.split_banner)
+                self.write("Tue Oct  7 09:00:00 2026 from 10.0.0.1\n")
+            else:  # in one write, as a program that prints a line does
+                self.write("Last login: Tue Oct  7 09:00:00 2026 from 10.0.0.1\n")
         if self.args.post_auth_delay:
             time.sleep(self.args.post_auth_delay)
+        if self.args.logout:
+            self.console()
         if self.args.then == "shell":
             env = {"PS1": SHELL_PROMPT, "TERM": "dumb", "PATH": os.environ.get("PATH", "")}
             os.execvpe("bash", ["bash", "--norc", "--noprofile", "-i"], env)
@@ -118,6 +165,13 @@ class Device:
 
     def run(self) -> None:
         a = self.args
+        if a.logout:
+            signal.signal(signal.SIGINT, lambda signum, frame: None)  # not SIG_IGN: the shell's commands would inherit it
+        if a.escape:
+            Device.escape = a.log
+            attrs = termios.tcgetattr(0)
+            attrs[6][termios.VEOL] = b"\x1d"  # a Ctrl-] ends a read, like a line break
+            termios.tcsetattr(0, termios.TCSANOW, attrs)
         if a.silent:
             attrs = termios.tcgetattr(0)
             attrs[3] &= ~termios.ECHO
@@ -154,6 +208,10 @@ class Device:
 
 
 def main() -> None:
+    # the default actions, whatever the suite was started with (`nohup`, an ignored SIGINT): the device and
+    # the shell it starts must end when the session is closed, and stop at Ctrl-C
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
     p = argparse.ArgumentParser()
     p.add_argument("--log", required=True)
     p.add_argument("--wait-enter", action="store_true")
@@ -170,6 +228,13 @@ def main() -> None:
     p.add_argument("--prompt", default=SHELL_PROMPT)
     p.add_argument("--cols", type=int, default=80)
     p.add_argument("--wrap", default="")
+    p.add_argument("--logout", action="store_true")
+    p.add_argument("--escape", action="store_true")
+    p.add_argument("--capital", action="store_true")
+    p.add_argument("--last-login", action="store_true")
+    p.add_argument("--banner-delay", type=float, default=0)
+    p.add_argument("--split-banner", type=float, default=0)
+    p.add_argument("--lower-password", action="store_true")
     Device(p.parse_args()).run()
 
 

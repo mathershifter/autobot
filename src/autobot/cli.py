@@ -21,7 +21,7 @@ from yaml.reader import ReaderError
 from . import log
 from .models import Config
 from .registry import PluginError, registry
-from .runner import Runner, _kind, trail
+from .runner import BreakoutError, Runner, _kind, left, trail
 from .types import RunError, ScriptError, text
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 EXIT_LOAD = 1  # the script can't be loaded: nothing ran
 EXIT_RUN = 3  # the run failed
+EXIT_BREAKOUT = 4  # the script completed, and a breakout did not finish
 EXIT_UNEXPECTED = 70  # a bug in autobot or a plugin (EX_SOFTWARE)
 EXIT_INTERRUPTED = 130  # Ctrl-C, where the process can't end from the signal itself
 
@@ -242,6 +243,45 @@ def _where(e: BaseException) -> None:
         log.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
+def _left(args: argparse.Namespace | None, e: BaseException) -> None:
+    """After the report of how the run ended: each breakout that did not finish, and what that may mean."""
+    state = left(e)
+    if state is None:
+        return
+    head = f"Breakout failed in {_visible(getattr(args, 'script', ''))}"
+    for error in state.breakouts:
+        if error is e:  # the interrupt that ended the breakout is what ended the run: reported already
+            continue
+        if isinstance(error, KeyboardInterrupt):
+            _traceback(args, error)
+            log.error(head, "interrupted")
+            _where(error)
+        elif isinstance(error, EXPECTED) and not (_broad(error) and _plugins_own(error)):
+            _traceback(args, error)
+            log.error(head, str(error) or type(error).__name__)
+            _where(error)
+            if _broad(error) and not getattr(args, "traceback", False):
+                log.hint("(run with --traceback for details)")
+        else:  # a bug, in Autobot or in a plugin, not something the device did: with its traceback
+            log.error(head, f"unexpected error ({type(error).__name__}): {error}")
+            _unexpected(error)  # type: ignore[arg-type]
+    completed = isinstance(e, BreakoutError)
+    if all(isinstance(error, EOFError) for error in state.breakouts):
+        # nothing more could be said to the far side: over plain ssh the close is the logout
+        head = "Connection closed before a breakout finished"
+        why = ("the script completed; " if completed else "") + "a console behind a console server may still be logged in"
+    else:
+        head = "Session may be left logged in"
+        why = ("the script completed, but " if completed else "") + "a breakout did not finish"
+    if state.logins:
+        names = f"prompt{'s' if len(state.logins) != 1 else ''} {', '.join(repr(name) for name in state.logins)}"
+        if state.pending:
+            why += f"; credentials were sent ({names}), and no shell prompt was reached after them"
+        else:
+            why += f"; the run sent credentials ({names})"
+    log.error(head, why)
+
+
 def _broad(e: BaseException) -> bool:
     return isinstance(e, BROAD) and not isinstance(e, TimeoutError)
 
@@ -358,6 +398,9 @@ def _cmd_run(args):
     runner = _runner(args, _config(args.script))
     try:
         runner.run()
+    except BreakoutError as e:
+        _left(args, e)
+        sys.exit(EXIT_BREAKOUT)
     except EXPECTED as e:
         if _broad(e) and _plugins_own(e):
             raise  # a bug in the plugin, like any other exception of its own
@@ -369,6 +412,7 @@ def _cmd_run(args):
         _where(e)
         if _broad(e) and not args.traceback:
             log.hint("(run with --traceback for details)")
+        _left(args, e)
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
 
@@ -516,9 +560,11 @@ def main():
         _traceback(args, e)
         log.error("Interrupted", style=log.WARN)
         _where(e)
+        _left(args, e)
         _interrupted()
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
+        _left(args, e)
         sys.exit(EXIT_UNEXPECTED)
 
 

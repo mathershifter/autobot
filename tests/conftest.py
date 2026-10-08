@@ -474,7 +474,18 @@ def run_cli(
         text=True,
         env=env,
         timeout=120,
+        preexec_fn=default_signals,
     )
+
+
+def default_signals() -> None:
+    """For a child (`preexec_fn`): the default actions of the signals that end a run, whatever the suite
+    was started with (`nohup` ignores SIGHUP; a wrapper may ignore SIGINT). Python then sets its own
+    handler for SIGINT, and what the child spawns inherits the defaults."""
+    import signal
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
 
 
 # -- F7: JSON schema validator ----------------------------------------------

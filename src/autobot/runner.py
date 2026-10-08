@@ -13,7 +13,7 @@ from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
 from .terminal import run_environ
-from .types import EnvError, ScriptError, check_regex, check_template, template_names, text
+from .types import EnvError, RunError, ScriptError, check_regex, check_template, template_names, text
 from .types import render as render_template
 
 
@@ -125,6 +125,25 @@ def trail(error: BaseException) -> tuple[StepRef, ...]:
     return getattr(error, "autobot_trail", ())
 
 
+class BreakoutError(RunError):
+    """The script completed, and a breakout did not: what it was to undo, a login for one, may be left."""
+
+
+@dataclass(frozen=True)
+class Left:
+    """What a run may have left behind: the errors that ended its breakouts, in the order they were raised,
+    and the prompts it answered with credentials."""
+
+    breakouts: tuple[BaseException, ...]
+    logins: tuple[str, ...]
+    pending: bool = False  # no shell prompt was reached after the credentials: the login may not have happened
+
+
+def left(error: BaseException) -> Left | None:
+    """What the run that `error` ended may have left behind; None when every breakout finished."""
+    return getattr(error, "autobot_left", None)
+
+
 class _Unset(UndefinedError):
     """A default read a variable that nothing sets; `prepare` may still set it."""
 
@@ -222,6 +241,7 @@ class Runner:
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
         self._stack: list[StepRef] = []
+        self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list
         self._paths: dict[int, str] = {}
         self._index(config.attach.script, "attach.script")
@@ -320,6 +340,7 @@ class Runner:
         return spawn
 
     def run(self):
+        self._unfinished = []  # nothing of an earlier run of this runner counts for this one
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
         # any other is rendered first, so one that names no command stops the run before `prepare`
@@ -346,15 +367,51 @@ class Runner:
             finally:
                 if attach.breakout:
                     log.say("breakout: detaching", "group")
-                    try:
-                        self._session.reset_handlers()
-                        self.run_steps(attach.breakout)
-                    except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        log.say(f"breakout error ({type(e).__name__}): {e}", "warn")
-        except BaseException:
+                    self.run_breakout(attach.breakout)
+                elif self._session.logins_open:
+                    names = self._session.logins_open
+                    log.say(
+                        f"no logout: the run sent credentials (prompt{'s' if len(names) != 1 else ''} "
+                        f"{', '.join(repr(n) for n in names)}) outside a block with a breakout, and the script "
+                        "has no attach.breakout to log out with before the session is closed",
+                        "warn",
+                    )
+        except BaseException as e:
             self._session.detach(failing=True)  # a close that fails must not replace this error
+            self._mark(e)
             raise
-        self._session.detach()
+        try:
+            self._session.detach()
+        except BaseException as e:
+            self._mark(e)
+            raise
+        if self._unfinished:
+            first = self._unfinished[0]
+            error = BreakoutError(f"a breakout did not finish ({type(first).__name__}): {first}")
+            error.autobot_trail = trail(first)  # type: ignore[attr-defined]
+            self._mark(error)
+            raise error
+
+    def _mark(self, error: BaseException):
+        """Note on `error`, the one that ends the run, what the run may have left behind, for the CLI's report."""
+        if self._unfinished:
+            error.autobot_left = Left(  # type: ignore[attr-defined]
+                tuple(self._unfinished), self._session.logins, self._session.login_pending
+            )
+
+    def run_breakout(self, steps: list[Step], what: str = "breakout"):
+        """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
+        so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
+        ends the breakout as well, is kept, and goes on."""
+        try:
+            self._session.reset_handlers()
+            self.run_steps(steps)
+        except KeyboardInterrupt as e:
+            self._unfinished.append(e)
+            raise
+        except Exception as e:  # noqa: BLE001 - breakout is best-effort
+            self._unfinished.append(e)
+            log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))
