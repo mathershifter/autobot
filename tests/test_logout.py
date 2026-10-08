@@ -34,8 +34,10 @@ CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
 ACCEPT = ("--accept", "admin:secret", "--logout")
 # the wait for the login prompt is a step of its own here: a block with nothing in it but its `after`
 CONFIRM = {"block": {"name": "logged out"}, "after": "login:", "timeout": "4s"}
-# the documented shape: drop what is typed or running, log out, wait for the proof
+# drop what is typed or running, log out, wait for the proof
 LOGOUT = [{"control": "c"}, {"line": "logout"}, CONFIRM]
+# the documented shape: the same, and the Ctrl-C waits for the far side to read what was sent before it
+SHAPE = [{"control": "c", "delay_before": "2s"}, {"line": "logout"}, CONFIRM]
 # the same without the control character
 BARE = [{"line": "logout"}, CONFIRM]
 CONFIRM_TIMEOUT = "timed out after 4.0s waiting for the after pattern 'login:'"
@@ -448,6 +450,10 @@ def test_p5_90_left_names_the_interrupt_that_ended_an_inner_breakout():
 # -- P5-91: the state a breakout starts in --------------------------------------------------------------
 
 IN = {"cmd": "true"}  # the first prompt wait logs in; a `line` would be typed at the login prompt
+# a block that enters a sub-shell and leaves it in its breakout
+SUBSHELL = {"name": "sub", "enter": [{"line": "bash --norc --noprofile"}], "breakout": [{"control": "c"}, {"line": "exit"}]}
+# a command that goes on for a while after Ctrl-C: what is typed meanwhile waits in the terminal, unread
+SLOW_TO_STOP = """sh -c 'trap "sleep %s; exit" INT; sleep 30'"""
 # case -> (script, make_doc keywords, the type of the script's error)
 STATES: dict[str, tuple[list[dict[str, Any]], dict[str, Any], type[BaseException]]] = {
     "completed": ([{"cmd": "echo configured"}], {}, type(None)),
@@ -457,12 +463,9 @@ STATES: dict[str, tuple[list[dict[str, Any]], dict[str, Any], type[BaseException
     "timeout-program-reading": ([{"cmd": "cat", "timeout": "1s"}], {}, TimeoutError),
     "timeout-half-typed-line": ([IN, {"line": "echo half-typed \\"}, {"cmd": "echo never", "timeout": "1s"}], {}, TimeoutError),
     "after-timeout-after-a-line": ([IN, {"line": "sleep 30"}, {"control": "z", "after": "NEVER", "timeout": "1s"}], {}, TimeoutError),
-    "in-a-block-with-its-own-breakout": (
-        [IN, {"block": {"name": "sub", "enter": [{"line": "bash --norc --noprofile"}], "script": [{"cmd": "sleep 30", "timeout": "1s"}],
-                    "breakout": [{"control": "c"}, {"line": "exit"}]}}],
-        {},
-        TimeoutError,
-    ),
+    "in-a-block-with-its-own-breakout": ([IN, {"block": {**SUBSHELL, "script": [{"cmd": "sleep 30", "timeout": "1s"}]}}], {}, TimeoutError),
+    # the command takes half a second to stop, and the sub-shell reads the block's `exit` only then
+    "in-a-block-whose-command-stops-slowly": ([IN, {"block": {**SUBSHELL, "script": [{"cmd": SLOW_TO_STOP % "0.5", "timeout": "1s"}]}}], {}, TimeoutError),
 }
 
 
@@ -473,7 +476,7 @@ def test_p5_91_recommended_breakout_logs_out_from_every_state(fake_device: FakeD
     breakout that starts with a control character gets its `logout` to the shell, and the login prompt
     confirms it. The device's shell is a real bash."""
     script, kw, error = STATES[case]
-    doc, log = console(fake_device, script, LOGOUT, **kw)
+    doc, log = console(fake_device, script, SHAPE, **kw)
     if error is type(None):
         run(doc)
     else:
@@ -488,7 +491,7 @@ def test_p5_91_recommended_breakout_logs_out_from_every_state(fake_device: FakeD
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP], ids=lambda s: s.name)
 def test_p5_91_recommended_breakout_logs_out_after_an_interrupt_or_a_signal(fake_device: FakeDevice, tmp_path: Path, sig: signal.Signals):
     """The same after Ctrl-C, SIGTERM and SIGHUP in the middle of a command, through the CLI."""
-    doc, log = console(fake_device, [{"cmd": "sleep 30", "timeout": "20s"}], LOGOUT)
+    doc, log = console(fake_device, [{"cmd": "sleep 30", "timeout": "20s"}], SHAPE)
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
 
@@ -514,6 +517,20 @@ def test_p5_91_recommended_breakout_logs_out_after_an_interrupt_or_a_signal(fake
     assert proc.returncode == -sig, err
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
     assert "Breakout failed" not in err and "logged in" not in err
+
+
+def test_p5_91_control_character_discards_a_line_the_far_side_has_not_read(fake_device: FakeDevice):
+    """SPEC "control": a terminal throws away the input it holds when Ctrl-C arrives. The block's
+    breakout sends Ctrl-C and `exit`; the command takes a second to stop, so `exit` is still unread
+    when the Ctrl-C of an `attach.breakout` that doesn't wait arrives and discards it. The `logout`
+    then goes to the sub-shell, which is no login shell, and the login prompt never comes."""
+    script = [IN, {"block": {**SUBSHELL, "script": [{"cmd": SLOW_TO_STOP % "1", "timeout": "1s"}]}}]
+    doc, log = console(fake_device, script, LOGOUT)
+    with pytest.raises(TimeoutError, match="waiting for a shell prompt") as ei:
+        run(doc)
+    state = left(ei.value)
+    assert state is not None and str(state.breakouts[0]) == CONFIRM_TIMEOUT
+    assert "LOGOUT=" not in FakeDevice.read(log)
 
 
 def test_p5_91_program_that_ignores_the_control_character_is_caught_by_the_confirmation(fake_device: FakeDevice):

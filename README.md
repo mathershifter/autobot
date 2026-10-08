@@ -205,6 +205,7 @@ attach:
   timeout: 300s
   breakout:
     - control: c
+      delay_before: 2s
     - line: logout
     - control: "]"
       after: 'login:'
@@ -219,6 +220,7 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
 ```yaml
   breakout:
     - control: c          # drop a half-typed line, stop a command that is still running
+      delay_before: 2s    # Ctrl-C also discards what the device has not read yet: let it read first
     - line: logout        # the device's logout command
     - control: "]"        # leave the console server, once the device asks for a login again
       after: 'login:'
@@ -227,6 +229,7 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
 ```
 
 - Start with the control character: after a failure the device may be in the middle of a command or have half a line typed, and `logout` would go there.
+- Give that control character a `delay_before`: a terminal throws away the input it has not handed on yet when Ctrl-C arrives, so a line sent just before it (the `line: exit` of a block's breakout, say) would be lost without a trace.
 - Send the logout with `line`, not `cmd`: a `cmd` waits for the next shell prompt, and a login prompt would be answered with the credentials again.
 - `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with `after: 'login:'`. Give the wait a `timeout`; the default is 300s.
 
@@ -497,6 +500,8 @@ Sends text without waiting for a prompt before or after. Use for commands that w
 ```
 
 Each value is one character: a letter (either case) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. Anything else (`""`, `"ab"`, `"1"`) fails validation with `control_char` when the script is loaded.
+
+Ctrl-C, Ctrl-\\ and Ctrl-Z make the far side's terminal throw away the input it holds, which includes a line that was sent just before and not read yet. Give such a `control` an `after` or a `delay_before` when it follows a `line` (see [Logging out](#logging-out)).
 
 ## Common Step Properties
 

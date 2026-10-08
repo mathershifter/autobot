@@ -276,6 +276,7 @@ attach:
   spawn: ssh console-server
   breakout:
     - control: c          # drop a half-typed line, stop a command that is still running
+      delay_before: 2s    # Ctrl-C discards what the device has not read yet: let it read first
     - line: logout        # the device's own logout command
     - block:              # wait for the proof: the console asks for a login again
         name: logged out
@@ -284,6 +285,7 @@ attach:
 ```
 
 - **Clear the line first.** The control character is the first step, so that the logout starts on an empty line whatever the script left. At an idle prompt Ctrl-C does nothing but print a new prompt. It drops a line that is typed and not entered, and stops a command that is still running, such as one whose step timed out. After a send that failed partway it is also what lets the breakout send a line at all (see [The length of a sent line](#the-length-of-a-sent-line)). Which key does this is the device's business, and so is anything Ctrl-C doesn't leave: a pager that wants `q`, a mode that must be left before `logout` is a command. The wait in the third part is what catches a breakout that got this wrong.
+- **Give the far side time to read before a control character.** A terminal throws away the input it holds when Ctrl-C arrives (see [`control`](#control--send-control-characters)): a line that was sent and not read yet is gone, with no sign of it. What was sent just before the breakout is often such a line: the `line: exit` of a block's breakout, sent while the command it interrupted was still stopping, or anything at all on a slow serial console. The Ctrl-C of `attach.breakout` would discard the `exit`, and the `logout` would go to the sub-shell. So the leading `control` has a `delay_before`, long enough for the device to read what came before it; 2s is ample for a shell, and a slow line may need more. Autobot can't do this by itself: nothing tells it when the far side has read a line, since the echo of a line is written by the terminal or the line editor when the line arrives, not when the program takes it. Inside a breakout, a control character that follows a `line` waits the same way: with an `after` for what the line brings, where there is something to wait for (the `control: "]"` below waits for the login prompt), and with a `delay_before` otherwise.
 - **Log out with `line`, not `cmd`.** A `cmd` waits for the next shell prompt, and what comes after a logout is a login prompt: a prompt with `sendEach` would answer it, and the run would log in again.
 - **Wait for the proof.** `after` waits before its step, so the wait for what the device shows once it is logged out goes on the step that follows the `logout` line. Where a step follows anyway, put it there (`control: "]"` below). Where the logout is the last thing the breakout does, a block with nothing but a name carries it, as above. Give the wait a `timeout`: the default is 300s. The pattern is one that only a logged-out console shows; the wait reads everything that hasn't been read yet, the output from before the `logout` line included.
 
@@ -294,6 +296,7 @@ A logout that closes the connection can't be waited for, and needs no proof: the
 ```yaml
   breakout:
     - control: c
+      delay_before: 2s
     - line: logout        # the switch
     - control: "]"        # leave the console server, once the switch asks for a login again
       after: 'login:'
@@ -740,6 +743,8 @@ The value is required and must be an integer ≥ 1. As in JSON, a number with a 
 ```
 
 Each value is exactly one character: a letter `a`-`z` (Ctrl+A to Ctrl+Z; `A`-`Z` is the same) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. These are the keys that have a control character: `@` and `` ` `` send NUL, `[` and `{` ESC, `\` and `|` FS, `]` and `}` GS, `^` and `~` RS, `_` US, and `?` DEL. Anything else, such as `""`, `"ab"`, `"1"` or a non-ASCII letter, is a validation error (`control_char`) at the step's `control`, reported when the script is loaded: ``a control value is one character, a letter or one of @ ` [ { \ | ] } ^ ~ _ ?, got '<value>'``. An empty list is accepted and sends nothing. Quote the punctuation in YAML (`control: "]"`).
+
+**A signal key discards unread input.** Ctrl-C, Ctrl-\\ and Ctrl-Z are the keys a terminal turns into a signal (interrupt, quit, suspend), and with the signal it throws away the input it holds: everything that was sent and that the program has not read yet. That is how Ctrl-C drops a half-typed line. It also drops a whole line sent just before it, Return included, if the far side has not got to reading it: a line sent while a command was still running or still stopping, or sent to a device on a slow line. Nothing shows that it is gone. A device's own CLI may do the same with its interrupt key. So a signal key that follows a `line` is given time: an `after` on the `control` step for what the line brings, or a `delay_before` where there is nothing to wait for (see [Logging out](#logging-out)). A key that is no signal key, such as `control: "]"`, discards nothing. The other direction is safe: a line sent right after the key arrives after the discard.
 
 ## Common Step Properties
 

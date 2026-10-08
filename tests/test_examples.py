@@ -362,11 +362,11 @@ def test_p6_115_examples_are_valid_for_the_cli():
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_p6_115_example_breakout_clears_the_line_logs_out_and_waits_for_the_login_prompt(path: Path):
-    """SPEC "Logging out": the shape of each example's `attach.breakout`. A control character first, the
-    logout as a `line`, the wait for the login prompt on the step after it, with a timeout, and no `cmd`,
+    """SPEC "Logging out": the shape of each example's `attach.breakout`. A control character first, after
+    a pause in which the far side reads what was sent before it, the logout as a `line`, the wait for the login prompt on the step after it, with a timeout, and no `cmd`,
     whose prompt wait would answer the login prompt."""
     steps = breakout_of(path)
-    assert steps[0] == {"control": "c"} and steps[1] == {"line": "logout"}
+    assert steps[0] == {"control": "c", "delay_before": "2s"} and steps[1] == {"line": "logout"}
     assert steps[2] == {"control": "]", "after": "login:", "timeout": "30s"}
     assert not any("cmd" in step for step in steps)
     assert steps[3:] == ([{"line": "logout"}] if path.name.startswith("eos") else [])
