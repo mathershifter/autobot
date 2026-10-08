@@ -5,8 +5,11 @@ The session's output never comes through here: `screen.CleanWriter` writes it to
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
+from collections.abc import Iterator
 
 from rich.console import Console
 from rich.text import Text
@@ -49,13 +52,44 @@ def _styled() -> bool:
 def _console() -> Console:
     # Every message is printed as a `Text`, never as a string: that is what keeps rich from reading markup
     # or emoji codes in it and from highlighting numbers and quotes. soft_wrap: a log line is one line,
-    # whatever the terminal's width
+    # whatever the terminal's width. Rich renders into a buffer, and `_print` writes that to stderr: rich
+    # itself ends the process (`SystemExit`) when a write fails with a broken pipe
     styled = _styled()
-    return Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
+    return Console(
+        file=io.StringIO(), soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None
+    )
 
 
 console = _console()
 _open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
+
+
+class OutputLost(BaseException):
+    """A write of the operator's output failed: the session's echo on stdout, or a message on stderr.
+    The run ends at once: no breakout runs and nothing more is sent. It is no `Exception`, so that no
+    best-effort cleanup takes it for a failure to go on from."""
+
+    def __init__(self, stream: object, error: BaseException):
+        name = "stdout" if stream is sys.stdout else "stderr" if stream is sys.stderr else "the output"
+        if isinstance(error, OSError) and error.errno is not None:
+            why = f"[Errno {error.errno}] {error.strerror}"
+        else:
+            why = str(error) or type(error).__name__
+        super().__init__(f"cannot write {name}: {why}")
+
+
+@contextlib.contextmanager
+def writing(stream: object) -> Iterator[None]:
+    """Around a write to the operator's `stream`, or a flush of it: a failure of any kind (a reader that
+    has gone, a full disk, a size limit, a closed stream) is raised as `OutputLost`."""
+    try:
+        yield
+    except OSError as e:
+        raise OutputLost(stream, e) from e
+    except ValueError as e:
+        if not getattr(stream, "closed", False):  # not what a closed stream raises: a bug
+            raise
+        raise OutputLost(stream, e) from e
 
 
 def echoed(data: str) -> None:
@@ -74,14 +108,26 @@ def _shared() -> bool:
     return (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
 
 
+def open_line() -> bool:
+    """Whether a message on stderr would continue a line of the session's, e.g. its prompt."""
+    return _open_line and _shared()
+
+
 def _print(text: Text) -> None:
     global _open_line
-    if _open_line and _shared():
-        # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
-        # so stdout stays what the session sent
-        console.file.write("\n")
-        _open_line = False
     console.print(text)
+    buffer = console.file
+    rendered = buffer.getvalue()
+    buffer.seek(0)
+    buffer.truncate()
+    if open_line():
+        # start a new line. On stderr, so stdout stays what the session sent
+        rendered, _open_line = "\n" + rendered, False
+    if sys.stderr is None:  # file descriptor 2 is closed: there is nowhere to say it
+        return
+    with writing(sys.stderr):
+        sys.stderr.write(rendered)
+        sys.stderr.flush()
 
 
 def say(text: str, kind: str = "step") -> None:

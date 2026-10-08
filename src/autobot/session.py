@@ -305,7 +305,7 @@ class Session:
             finally:
                 if echo:
                     echo.close()
-        except Exception as e:  # noqa: BLE001 - must not replace the error that is propagating
+        except (Exception, log.OutputLost) as e:  # noqa: BLE001 - must not replace the error that is propagating
             if not failing:
                 raise
             log.say(f"close error ({type(e).__name__}): {e}", "warn")

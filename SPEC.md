@@ -230,7 +230,7 @@ The attach lifecycle:
 5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
-Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`. A run whose breakout fails is not a completed run, though: see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish).
+Steps 5 and 6 run after step 3 or 4 fails, and step 6 runs even if the breakout fails. A breakout error never replaces an error raised by `attach.script` or `script`. A run whose breakout fails is not a completed run, though: see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish). Three endings skip step 5 altogether: `SIGTERM`, `SIGHUP`, and output that can't be written (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)).
 
 Closing the session (step 6, and the close after a failed spawn wait) closes the process's pty and terminates a process that is still running. It can fail: pexpect raises `ExceptionPexpect` (`Could not terminate the child.`) for a process that survives `SIGHUP`, `SIGINT` and `SIGKILL`. Then:
 - The session forgets the process either way. It isn't closed a second time, and nothing more can be sent to it.
@@ -306,6 +306,8 @@ A logout that closes the connection can't be waited for, and needs no wait: the 
       timeout: 30s
     - line: logout        # the jump host: this closes the connection
 ```
+
+**When no breakout runs.** The breakout is the only logout there is, and three endings don't run it: `SIGTERM`, `SIGHUP` (a closed terminal) and output that can't be written. After any of them the console may still be logged in. See [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts) for what Autobot says then, and for how to stop a run so that it does log out.
 
 **At a login prompt.** A breakout runs from wherever the run stopped, and that may be before the login was done: the credentials were refused, or Ctrl-C stopped the run in the middle of the login. The device is then at its `login:` or `Password:` prompt, and the breakout's lines are typed there: `logout` is read as a user name, or as the password for the user name that was just sent. Nobody is logged in, but the device counts and logs a failed login for that user, which matters where failed logins lock an account. Autobot knows this state (no shell prompt was reached after the credentials) and says so in its report (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)); it doesn't skip the breakout for it, because a breakout may do more than log out, and it can't tell a refused login from one that was cut short after it succeeded.
 
@@ -658,7 +660,7 @@ The block lifecycle:
 4. `breakout` steps execute in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
-Steps 4 and 5 run after step 2 or 3 fails, so the breakout runs and the prompts are restored even when `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. After a breakout that fails, the block ends as it would have without the failure: it completes, and the script goes on, or the error of `enter` or `script` propagates. The run can't end as a completed one, though: the block may have left what it entered (a sub-shell, a login on another system), so the run ends as one whose breakout didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
+Steps 4 and 5 run after step 2 or 3 fails, so the breakout runs and the prompts are restored even when `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. After a breakout that fails, the block ends as it would have without the failure: it completes, and the script goes on, or the error of `enter` or `script` propagates. The run can't end as a completed one, though: the block may have left what it entered (a sub-shell, a login on another system), so the run ends as one whose breakout didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)). A block's breakout doesn't run when the run ends from `SIGTERM`, `SIGHUP` or output that can't be written (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)); the prompts are still restored.
 
 #### Prompt state across a swap
 
@@ -797,7 +799,7 @@ A plugin can't use the model of a built-in step. A built-in step is dispatched b
 
 A plugin whose entry point raises while it is loaded (its module fails to import, the named attribute is missing, or creating the executor fails) is also a `PluginError`, `entry point '<name>' (distribution <dist>) failed to load: <type>: <message>` (just `<type>` when the exception has no message), chained from the original exception. `KeyboardInterrupt` and `SystemExit` are not wrapped. Discovery stops at the first plugin that fails; a broken plugin is never skipped, because a script or schema without it would fail or validate in a misleading way. A failed discovery isn't tried again: every later attempt in the same process (an explicit `discover()`, creating a `Runner`, or looking up a step key that isn't registered, as validating a script does) raises a `PluginError` with the same message, chained from the first one, so the plugins after the broken one are never silently missing. A `KeyboardInterrupt` or `SystemExit` during discovery isn't remembered; the next attempt loads the entry points again. The CLI reports a `PluginError` this way only from discovery: one raised while a script runs is an unexpected error, printed with its traceback (see [CLI](#cli)).
 
-An executor reaches the runner through its `ctx` (`autobot.protocols.RunnerContext`): `ctx.session`, `ctx.config`, `ctx.render(...)`, `ctx.run_steps(steps)`, `ctx.build_handler(prompt)` and `ctx.run_breakout(steps, what)`. A plugin that has a cleanup of its own runs it with `ctx.run_breakout(steps, what)`, as `attach` and `block` do: the response selection of the prompts starts over, the steps run, and an error ends them, is logged as `>> <what> error (<type>): <message>` (`what` is `breakout` by default) and counts as a breakout that didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)). The call returns after an error; an interrupt goes on through it.
+An executor reaches the runner through its `ctx` (`autobot.protocols.RunnerContext`): `ctx.session`, `ctx.config`, `ctx.render(...)`, `ctx.run_steps(steps)`, `ctx.build_handler(prompt)` and `ctx.run_breakout(steps, what)`. A plugin that has a cleanup of its own runs it with `ctx.run_breakout(steps, what)`, as `attach` and `block` do: the response selection of the prompts starts over, the steps run, and an error ends them, is logged as `>> <what> error (<type>): <message>` (`what` is `breakout` by default) and counts as a breakout that didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)). The call returns after an error; an interrupt goes on through it, and so does `log.OutputLost` (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)).
 
 Order of evaluation: `after` (wait) -> `when` (decide) -> `delay_before` -> execute -> `delay_after`.
 
@@ -1114,6 +1116,8 @@ SONiC Software Version: ...
 
 The line break goes to stderr, never to stdout, and none is written when the two streams are different or the session's output ended its line. So stdout is the same transcript however the streams are set up.
 
+**A write that fails ends the run.** Autobot writes the session's output and its messages for an operator. If either can't be written (the reader of a pipe has exited, the disk is full, the stream is closed), the run ends at that write, without its breakouts, and the CLI exits with status 3: see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts).
+
 **The session's output is never restyled.** It is written as the device sent it, less the escape sequences: not wrapped, cut, reflowed or highlighted. The one exception is a character that stdout's encoding can't represent, e.g. `→` with `PYTHONIOENCODING=ascii` or a C locale: it is written as its backslash escape (`\u2192`), so the echo never fails the step that was reading. A stdout that can represent the character, such as a UTF-8 one, gets it unchanged. Text in it that looks like markup or an emoji code (`[bold]`, `[/]`, `:warning:`) is printed as it is, and no style is ever added to it.
 
 **A progress line** starts with the marker `>> `, so the lines are told apart from the device's in a plain log (`grep '^>> '`). After the marker comes a label, which ends at the first `: `, and the rest of the text. These are the progress lines:
@@ -1150,7 +1154,7 @@ A block's own lines (`block enter`, `block breakout`, `block completed`) and a `
 
 Autobot says that a `line` step sent a line and that a prompt was answered, never what was sent: the text may be a password, and it shows only as far as the device echoes it. That goes for a `send` string and for the values of a `sendEach` alike. A `cmd` line is printed, since a command is echoed by the device anyway. The newline that a prompt wait sends on its own to an idle console (see [Prompt Handling](#prompt-handling-get_prompt)) prints no line.
 
-**The CLI's reports** have no marker: the load errors, `Run failed in ...`, `Interrupted`, `Unexpected error in ...`, `Breakout failed in ...` and `Session may be left logged in: ...` (see below). They start at the first column with what happened, then `: ` and the message. The lines `<path>: valid` and `<path>: invalid` of `autobot validate` have no marker either.
+**The CLI's reports** have no marker: the load errors, `Run failed in ...`, `Interrupted`, `Interrupted (<SIGNAL>): ...`, `Unexpected error in ...`, `Breakout failed in ...` and `Session may be left logged in: ...` (see below). They start at the first column with what happened, then `: ` and the message. The lines `<path>: valid` and `<path>: invalid` of `autobot validate` have no marker either.
 
 A message is printed as it is. Nothing in it is read as markup or as an emoji code, and numbers, quoted strings and paths get no highlighting. Only a few control characters are not passed on: a tab is written as spaces, up to the next multiple of eight columns, and a BEL, backspace, vertical tab, form feed or carriage return is left out. Autobot adds no line break to a message and never cuts it, whatever the width of the terminal.
 
@@ -1164,7 +1168,7 @@ A message is printed as it is. Nothing in it is read as markup or as an emoji co
 | detail | marker and text dim |
 | warning | marker bold yellow, label yellow, the rest plain |
 | failure | marker bold red, label red, the rest plain |
-| a report's first words, up to the `: ` | bold red; `Interrupted` is bold yellow |
+| a report's first words, up to the `: ` | bold red; `Interrupted` is bold yellow. The line of a `SIGTERM` or `SIGHUP`, `Interrupted (<SIGNAL>): ...`, has no styles |
 | a validation error's location, and its type | bold, and dim |
 | the `valid` and the `invalid` of `autobot validate`, after the path, which is plain | green, and bold red |
 | the `at` and `called from` labels of a report | dim |
@@ -1179,7 +1183,7 @@ The session's output on stdout has no styles in any of these cases.
 
 ### Errors while the script runs
 
-Once the script is loaded, the run itself can fail or be interrupted. For an error after the spawn wait succeeds, breakouts still run and the session is closed first, as the [`attach`](#attach) and [`block`](#block--named-group-of-steps) lifecycles describe. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the CLI reports the error on stderr and exits. It tells three kinds of error apart; after any of them, and after a script that completed, it reports the breakouts that didn't finish.
+Once the script is loaded, the run itself can fail or be interrupted. For an error after the spawn wait succeeds, breakouts still run and the session is closed first, as the [`attach`](#attach) and [`block`](#block--named-group-of-steps) lifecycles describe. When the spawn wait itself fails, no breakout runs; the process is closed first (see [`attach`](#attach)). Then the CLI reports the error on stderr and exits. It tells three kinds of error apart; after any of them, and after a script that completed, it reports the breakouts that didn't finish. A run can also end without its breakouts: from `SIGTERM` or `SIGHUP`, or when its output can't be written (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)).
 
 **A failed run** is a problem of the script, the device or the environment: something the user can act on. It is reported without a traceback, and the CLI exits with status 3:
 
@@ -1262,6 +1266,54 @@ When a plugin step was running, the first line names the plugin instead, whether
 
 With `--traceback`, the Python traceback of a failed run, of an interrupt, and of a `Script error` or `Plugin error` is printed as well, before the report. The report is the same as without the flag, less the line that points to the flag, and so is the way the process ends.
 
+#### A run that ends without its breakouts
+
+Three endings run the breakouts and close the session in the usual order: the script finishing, a failed step, and Ctrl-C. Three do not:
+
+| The run ends from | What happens |
+|---|---|
+| `SIGTERM` (`kill`, `timeout`, `systemctl stop`, a CI job that is cancelled) | The process ends at once, from the signal |
+| `SIGHUP` (the terminal or the ssh session that runs `autobot` goes away) | The same |
+| Output that can't be written (`autobot script \| head -1`, a full disk) | The run ends at once, the session is closed, and the CLI exits with status 3 |
+
+In these no breakout runs and no cleanup is sent: not `attach.breakout`, not a block's `breakout`, not the `rm` of an embedded script's temp file. The device is left where the run was: a console behind a console server may still be logged in, a command may still be running, and a temp file may be left in `/tmp` on the device. Autobot says so in one line and does nothing more about it, because there is nothing it can do safely: a logout takes seconds, and needs a console to read from and somewhere to write to.
+
+So, in practice:
+
+- **To stop a run and have it log out, use Ctrl-C**, or send the interrupt: `kill -INT <pid>`, `timeout -s INT 10m autobot ...`. A plain `kill` or `timeout` sends `SIGTERM`, which ends the run where it is. (A run that a script started in the background, `autobot ... &`, has `SIGINT` ignored by the shell that started it, and an interrupt doesn't stop it.)
+- **Don't pipe the output into something that may exit before the run does** (`| head`, `| grep -m1`, a pager that is quit). Redirect it to a file, or use a reader that reads to the end (`| tee log`). Note that Ctrl-C on `autobot script | tee log` ends `tee` as well, so the breakout's first write of the session's output fails and the run ends there, without the rest of the breakout.
+- **Run a long job where a closed terminal doesn't reach it**, e.g. in `tmux` or `screen`. Under `nohup`, `SIGHUP` is ignored when `autobot` starts and stays ignored, and `nohup` sends the output to `nohup.out` when it would have gone to the terminal: the run goes on after the terminal is closed, and its breakouts run when it ends.
+
+**`SIGTERM` and `SIGHUP`.** While the session is open, from the spawn until it is closed, either signal ends the process at once: the CLI writes one line to stderr, restores the signal's default action and sends itself the signal. A shell reports that as status 143 for `SIGTERM` and 129 for `SIGHUP`, and a parent that reads the wait status sees a process killed by the signal. The line is:
+
+```
+Interrupted (SIGTERM): the session was closed without running the breakouts; the device may be in an unknown state and may still be logged in
+```
+
+- Nothing else is done. No step is sent after the signal, no breakout runs, and the spawned process is not signalled by Autobot: it gets its hang-up when the process ends and its pty is closed, as at the end of any run.
+- The line is written once, straight to stderr's file descriptor, and only if stderr takes it at once: a stderr that nobody reads, that is closed or that has hung up with the terminal gets no line, and never holds the process. It starts on a line of its own. It has no styles.
+- No signal is ever blocked or held back, and the handler raises nothing into the run: the process ends from the first `SIGTERM` or `SIGHUP`, also when the run is waiting in a write to a stdout that nobody reads.
+- **Only a default action is replaced.** The handler is set for a signal only if the signal has its default action then. One that is ignored stays ignored (`nohup` ignores `SIGHUP`: the run goes on when the terminal goes away), and a handler that is already set stays. A handler can be set only in the main thread. The default actions are put back when the session is closed, so a signal during the CLI's report ends the process without the line.
+- **Before the spawn**, the signals do what they do without Autobot. While `attach.prepare` runs, `SIGTERM` is dealt with there: the script's shell is killed, its temp file is removed, and the process ends from the signal (see [`attach`](#attach)); `SIGHUP` has its default action. Neither prints the line: no session is open.
+- **As a library**, `Runner.run()` sets no handler and prints no line: the signals do what the program that calls it has set up. The CLI sets its handler through `Runner.before_attach`, a callable that `run()` calls, if it is set, once `attach.prepare` has run and before the process is spawned.
+
+**Output that can't be written.** The session's output on stdout and Autobot's messages on stderr are the operator's, and a write of either can fail: the reader of a pipe has exited (`EPIPE`), the terminal has hung up (`EIO`), the disk is full (`ENOSPC`), the file has reached a size limit (`EFBIG`), the stream is closed. Whatever the reason, a run that can't write its output is a run nobody is watching, and it ends at the write that failed:
+
+- `Runner.run()` raises `autobot.log.OutputLost` once the session is closed, with the message `cannot write stdout: [Errno 32] Broken pipe` (or `stderr`, and the error of the write). It is a `BaseException`, not an `Exception`: nothing that goes on after a failure (`ignore_error`, a breakout, a cleanup) takes it for one. The failed write is its `__cause__`.
+- No step is sent after the failed write: the script goes no further, no breakout runs, and an embedded script's cleanup is not sent. That holds wherever the write fails, also in a breakout that Ctrl-C or a failed step started: the breakout ends there. What was sent before the failed write was sent: Autobot finds out at the write, not before, so a run that prints nothing for a while notices late.
+- The CLI reports it on stderr, if stderr can still be written, and exits with status 3:
+
+  ```
+  Run failed in <path>: cannot write stdout: [Errno 32] Broken pipe; the session was closed without running the breakouts; the device may be in an unknown state and may still be logged in
+    at script.3 (cmd: show version)
+  ```
+
+  The `at` line is there when a step was running. When stderr is the stream that failed, there is nowhere to report it, and the status is what tells.
+- The status is always 3, whatever the reason and whichever stream: the process doesn't end from `SIGPIPE`, and never with Python's own status 120 for a stream that could not be flushed at exit. What a stream that failed still holds is discarded before the process exits (its file descriptor is pointed to `/dev/null`), so nothing of the interpreter's is printed either. There is no traceback without `--traceback`.
+- The last of the session's output is written when the session is closed. If that write is the one that fails, it ends the run the same way, unless another error is already ending it: then it is logged like any close that fails (`>> close error (OutputLost): cannot write stdout: ...`), and that error stays the run's.
+- A message that can't be written ends any command the same way, with status 3: `autobot validate` with a stderr that takes nothing, for one.
+- A plugin's own cleanup, in a `finally` or an `except BaseException` of its `execute`, still runs as `OutputLost` passes, like any Python code. It should send nothing then: `except log.OutputLost: raise` before it.
+
 ### Exit status
 
 | Status | Meaning |
@@ -1269,7 +1321,8 @@ With `--traceback`, the Python traceback of a failed run, of an interrupt, and o
 | 0 | The run completed; `autobot validate` found every script valid; `autobot schema` printed the schema; `-h` printed the help |
 | 1 | The script couldn't be loaded (the load errors above), and nothing ran; `autobot validate` found a script invalid (unreadable, not YAML, or with validation errors), or a `Plugin error`. Also `autobot` with no arguments, and a `Plugin error` or a missing schema in `autobot schema` |
 | 2 | A malformed command line |
-| 3 | The run failed. `attach.prepare` or the session may have run, and the breakouts have run if the session got past the spawn wait |
+| 3 | The run failed. `attach.prepare` or the session may have run, and the breakouts have run if the session got past the spawn wait. Also a run, or any command, whose output could not be written: then no breakout has run (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)) |
 | 4 | The script completed, and a breakout didn't finish: the session may have been left logged in (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)). A run that failed and whose breakout didn't finish either exits with 3 |
 | 70 | An unexpected error: a bug in Autobot or in a plugin |
 | 130 | Interrupted. The process ends from `SIGINT`, which a shell reports as 130; it isn't an exit status of the process itself (see above) |
+| 143, 129 | Ended by `SIGTERM` or `SIGHUP` while the session was open: no breakout has run. The process ends from the signal, which a shell reports as 143 or 129; it isn't an exit status of the process itself (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)) |

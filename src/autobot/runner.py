@@ -242,6 +242,8 @@ class Runner:
         self._session.restore_handlers(handlers)
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
+        # called when `attach.prepare` has run and the process is about to be spawned, if set: the CLI's
+        self.before_attach: Callable[[], None] | None = None
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list
         self._paths: dict[int, str] = {}
         self._index(config.attach.script, "attach.script")
@@ -357,18 +359,24 @@ class Runner:
         if spawn is None:
             spawn = self._spawn_command()
 
+        if self.before_attach:
+            self.before_attach()
         log.say(f"attach: {spawn}")
+        lost = False
         try:
             self._session.attach(spawn, env=self._environ, timeout=timeout)
             try:
                 if attach.script:
                     self.run_steps(attach.script)
                 self.run_steps(self._config.script)
+            except log.OutputLost:
+                lost = True  # the run ends here: no breakout, and nothing more is sent
+                raise
             finally:
-                if attach.breakout:
+                if attach.breakout and not lost:
                     log.say("breakout: detaching", "group")
                     self.run_breakout(attach.breakout)
-                elif self._session.logins_open:
+                elif self._session.logins_open and not lost:
                     names = self._session.logins_open
                     log.say(
                         f"no logout: the run sent credentials (prompt{'s' if len(names) != 1 else ''} "

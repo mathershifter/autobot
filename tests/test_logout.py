@@ -8,6 +8,7 @@ what reached it: ``LOGOUT=`` is the proof of a logout.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import signal
 import subprocess
@@ -18,11 +19,9 @@ from typing import Any
 
 import pytest
 import yaml
-from rich.console import Console
-from conftest import BASH, DEVICE, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
+from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
 
 from autobot import cli
-from autobot import log as log_mod
 from autobot.runner import BreakoutError, Left, left, trail
 from autobot.session import PromptHandler, Session, SimpleHandler
 from autobot.steps import StepFailure
@@ -89,13 +88,10 @@ def interrupted(doc: dict[str, Any], tmp_path: Path, running: str, sig: int = si
 
 
 def said(call: Any) -> list[str]:
-    """What `call` prints through the log, on a console of its own."""
+    """What `call` prints through the log."""
     out = io.StringIO()
-    saved, log_mod.console = log_mod.console, Console(file=out, soft_wrap=True, color_system=None)
-    try:
+    with contextlib.redirect_stderr(out):
         call()
-    finally:
-        log_mod.console = saved
     return out.getvalue().splitlines()
 
 

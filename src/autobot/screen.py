@@ -143,6 +143,7 @@ class CleanWriter:
     def __init__(self, stream):
         self._stream = stream
         self._held = ""
+        self._lost: log.OutputLost | None = None  # the stream could not be written: no write is tried again
 
     def write(self, data):
         data = ANSI_ESCAPE_RE.sub("", self._held + data)
@@ -152,9 +153,21 @@ class CleanWriter:
         if m and len(data) - m.start() <= ESCAPE_HOLD:
             data, self._held = data[: m.start()], data[m.start() :]
         if data:
-            self._write(data)
-            self._stream.flush()
+            self._out(data)
             log.echoed(data)
+
+    def _out(self, data: str = ""):
+        """Write `data` and flush. A failure ends the run (`log.OutputLost`), now and at any later write."""
+        if self._lost:
+            raise self._lost
+        try:
+            with log.writing(self._stream):
+                if data:
+                    self._write(data)
+                self._stream.flush()
+        except log.OutputLost as e:
+            self._lost = e
+            raise
 
     def _write(self, data: str):
         try:
@@ -167,12 +180,14 @@ class CleanWriter:
 
     def flush(self):
         # pexpect flushes after every read, so this must not release what is held
-        self._stream.flush()
+        self._out()
 
     def close(self):
-        """Write out what is still held: nothing more will come to complete it. The stream stays open."""
+        """Write out what is still held: nothing more will come to complete it. The stream stays open.
+        Nothing is written to a stream that could not be written before: that has ended the run already."""
         held, self._held = self._held, ""
+        if self._lost:
+            return
+        self._out(held)
         if held:
-            self._write(held)
             log.echoed(held)
-        self._stream.flush()

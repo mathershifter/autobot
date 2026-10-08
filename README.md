@@ -95,6 +95,13 @@ Session may be left logged in: the script completed, but a breakout did not fini
 
 When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [Logging out](#logging-out)). After a failed script the status stays 3. A run that answered a `sendEach` prompt and has no breakout to log out with logs a warning, `>> no logout: ...`; its exit status is not affected.
 
+**Stopping a run.** Ctrl-C is the way to stop a run and have it log out: `kill -INT <pid>` and `timeout -s INT 10m autobot ...` do the same. Three endings run no breakout at all:
+
+- `SIGTERM` (a plain `kill` or `timeout`, `systemctl stop`, a cancelled CI job) and `SIGHUP` (the terminal or ssh session that runs `autobot` goes away) end the process at once, after one line: `Interrupted (SIGTERM): the session was closed without running the breakouts; the device may be in an unknown state and may still be logged in`.
+- Output that can't be written ends the run at once with status 3: `autobot script | head -1`, a log collector that exits, a full disk. The report is `Run failed in ...: cannot write stdout: [Errno 32] Broken pipe; the session was closed without running the breakouts; ...`.
+
+After these a console behind a console server may still be logged in, a command may still be running, and an embedded script's temp file may be left on the device. So don't pipe the output into something that may exit before the run does (redirect it to a file, or use `| tee log`), and run a long job where a closed terminal doesn't reach it: in `tmux` or `screen`, or under `nohup`, which makes the run ignore the hang-up and sends its output to `nohup.out`. See [SPEC.md](SPEC.md#a-run-that-ends-without-its-breakouts).
+
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
 | Status | Meaning |
@@ -102,10 +109,11 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 0      | The run completed; `autobot validate` found every script valid |
 | 1      | The script couldn't be loaded; nothing ran. `autobot validate` found a script invalid |
 | 2      | Malformed command line |
-| 3      | The run failed |
+| 3      | The run failed, or its output could not be written |
 | 4      | The script completed, but a breakout didn't finish: the session may have been left logged in |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
-| 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
+| 130    | Interrupted (Ctrl-C), after the breakouts: the process ends from `SIGINT`, which a shell reports as 130 |
+| 143, 129 | Ended by `SIGTERM` or `SIGHUP`, without the breakouts: the process ends from the signal, which a shell reports as 143 or 129 |
 
 `--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 

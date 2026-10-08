@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import importlib.resources
 import json
 import os
+import select
 import signal
 import sys
 import traceback
 import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -49,6 +52,11 @@ EXPECTED = (
 # traceback is, and from a plugin's own code they are the plugin's bug. A timeout isn't one of them.
 BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
+# What is left when a run ends without its breakouts: after SIGTERM, SIGHUP, or a write of its output that failed
+UNCLEAN = (
+    "the session was closed without running the breakouts; "
+    "the device may be in an unknown state and may still be logged in"
+)
 
 
 class LoadError(SystemExit):
@@ -338,6 +346,62 @@ def _interrupted() -> NoReturn:
     sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
 
 
+@contextlib.contextmanager
+def _ended_by_signal() -> Iterator[None]:
+    """While the session is open, SIGTERM and SIGHUP end the process at once, as they do by default,
+    after one line on stderr that says what that leaves. Nothing is cleaned up and nothing more is sent.
+
+    Only a signal that has its default action gets the handler (one that is ignored stays ignored, as
+    under `nohup`), and only in the main thread, where a handler can be set.
+    """
+    try:
+        fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):  # no stderr: file descriptor 2 may be anything
+        fd = -1
+
+    def ended(signum: int, frame: object) -> None:
+        # one write, straight to the file descriptor, and only if it takes one now: nothing here waits,
+        # raises or touches the run. A message that can't be written is not written
+        try:
+            if select.select([], [fd], [], 0)[1]:
+                start = "\n" if log.open_line() else ""
+                os.write(fd, f"{start}Interrupted ({signal.Signals(signum).name}): {UNCLEAN}\n".encode())
+        except (OSError, ValueError):
+            pass
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+        os._exit(128 + signum)  # the signal didn't arrive
+
+    replaced = []
+    try:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is signal.SIG_DFL:
+                signal.signal(sig, ended)
+                replaced.append(sig)
+    except ValueError:  # not the main thread
+        pass
+    try:
+        yield
+    finally:
+        for sig in replaced:
+            signal.signal(sig, signal.SIG_DFL)
+
+
+def _discard_unwritten() -> None:
+    """Before the process exits: what a stream still holds and can't be written is discarded, by pointing
+    its file descriptor to /dev/null. The interpreter flushes the streams as it exits, and a flush that
+    fails there prints a traceback of its own and turns the exit status into 120."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            with contextlib.suppress(AttributeError, OSError, ValueError):
+                null = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(null, stream.fileno())
+                os.close(null)
+                stream.flush()
+
+
 def _discover(args: argparse.Namespace | None = None) -> None:
     # validation depends on the installed plugins, so a broken one is reported first, before the script is read
     try:
@@ -397,7 +461,16 @@ def _cmd_run(args):
     _discover(args)
     runner = _runner(args, _config(args.script))
     try:
-        runner.run()
+        with contextlib.ExitStack() as session:
+            # from the spawn on: until then `attach.prepare` deals with a signal itself
+            runner.before_attach = lambda: session.enter_context(_ended_by_signal())
+            runner.run()
+    except log.OutputLost as e:
+        with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
+            _traceback(args, e)
+            log.error(f"Run failed in {_visible(args.script)}", f"{e}; {UNCLEAN}")
+            _where(e)
+        raise
     except BreakoutError as e:
         _left(args, e)
         sys.exit(EXIT_BREAKOUT)
@@ -504,6 +577,15 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 
 def main():
+    try:
+        _main()
+    except log.OutputLost:  # reported where there was something to say, and a stream to say it on
+        sys.exit(EXIT_RUN)
+    finally:
+        _discard_unwritten()
+
+
+def _main():
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
