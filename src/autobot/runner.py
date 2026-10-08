@@ -7,7 +7,7 @@ from typing import Any
 
 from jinja2 import StrictUndefined, UndefinedError
 
-from . import log, prepare
+from . import log, prepare, signals
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
@@ -320,6 +320,11 @@ class Runner:
         return spawn
 
     def run(self):
+        # SIGTERM and SIGHUP unwind the run like an interrupt: the breakouts run and the session is closed
+        with signals.terminable():
+            self._run()
+
+    def _run(self):
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
         # any other is rendered first, so one that names no command stops the run before `prepare`
@@ -380,6 +385,8 @@ class Runner:
                 e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
                 if isinstance(e, KeyboardInterrupt):
                     log.say("step interrupted", "fail")
+                elif isinstance(e, signals.Terminated):
+                    log.say(f"step interrupted ({e.name})", "fail")
                 elif isinstance(e, Exception):
                     log.say(f"step failed ({type(e).__name__}): {e}", "fail")
             raise

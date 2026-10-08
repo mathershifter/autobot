@@ -85,6 +85,8 @@ The first line says what went wrong, the `at` line where: the step's path in the
 
 Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
 
+`SIGTERM` (`kill`, `timeout`, a cancelled CI job, `systemctl stop`) and `SIGHUP` (the terminal or ssh session that runs `autobot` goes away) do the same, at any point of the run: the breakouts run and the session is closed, the CLI prints `Terminated (SIGTERM)` and the step it stopped in, and the process ends from the signal. A second signal while a breakout runs ends that breakout, so a device that doesn't answer can't hold the process. A signal that is ignored when `autobot` starts stays ignored: under `nohup` the run goes on when the terminal closes.
+
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
 | Status | Meaning |
@@ -95,6 +97,7 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 3      | The run failed |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
 | 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
+| 143, 129 | Ended by `SIGTERM` or `SIGHUP` after the cleanup: the process ends from the signal, which a shell reports as 143 or 129 |
 
 `--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 

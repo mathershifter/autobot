@@ -18,7 +18,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
-from . import log
+from . import log, signals
 from .models import Config
 from .registry import PluginError, registry
 from .runner import Runner, _kind, trail
@@ -288,13 +288,7 @@ def _unexpected(e: Exception) -> None:
 def _interrupted() -> NoReturn:
     """End as a process that SIGINT killed: a shell reports status 130, and a loop around autobot stops,
     which it wouldn't for a process that exits with a status of its own."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except (AttributeError, OSError, ValueError):  # no stream, or a closed one
-            pass
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    os.kill(os.getpid(), signal.SIGINT)
+    signals.end(signal.SIGINT)
     sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
 
 
@@ -357,7 +351,9 @@ def _cmd_run(args):
     _discover(args)
     runner = _runner(args, _config(args.script))
     try:
-        runner.run()
+        # caught here, so the run's own block leaves the end of the process to `main`, after its report
+        with signals.caught():
+            runner.run()
     except EXPECTED as e:
         if _broad(e) and _plugins_own(e):
             raise  # a bug in the plugin, like any other exception of its own
@@ -517,6 +513,12 @@ def main():
         log.error("Interrupted", style=log.WARN)
         _where(e)
         _interrupted()
+    except signals.Terminated as e:
+        _traceback(args, e)
+        log.error(f"Terminated ({e.name})", style=log.WARN)
+        _where(e)
+        signals.end(e.signum)
+        sys.exit(128 + e.signum)  # the signal is blocked or didn't arrive
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
         sys.exit(EXIT_UNEXPECTED)
