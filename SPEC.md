@@ -92,11 +92,13 @@ Iterates over a collection from `vars` to build responses. With `fields`, each e
   send:
     each: vars.creds
     fields:
-      - match: ['(?:L|l)ogin:', 'Username:']
+      - match: ['[Ll]ogin: ?$', 'Username: ?$']
         field: username
-      - match: '(?:P|p)assword:'
+      - match: '[Pp]assword: ?$'
         field: password
 ```
+
+**A login prompt is the last thing written.** Each regex above ends with `$`, the end of the unread output (see [Prompt Handling](#prompt-handling-get_prompt)): the device has written its prompt and waits. Without the `$`, `login:` is found wherever the word is, and the line that most systems print after a login, `Last login: Tue Oct  7 09:00:00 from 10.0.0.1`, is taken for a second login prompt and answered: with one credential set the run fails with `responses exhausted` although it is logged in, and with two the second user name is typed at the shell. With the `$`, that line is passed over when it arrives with what follows it, as one written in one piece does. The limit: on a slow line (a 9600-baud console) a line can arrive in pieces, and a piece that ends right after `Last login:` is the end of the unread output for as long as the next piece takes. Autobot answers a prompt as soon as its regex matches, so that piece is answered. Where that can happen, make the regex say more than the banner has: the host name the device puts in front of its prompt (`'switch1 login: ?$'`).
 
 `fields` is a non-empty list of entries. Each entry has exactly two keys:
 - `match` — a regex, or a non-empty list of regexes. No regex may be empty (`''`): it would match at once, before any output. The regexes of one list are alternatives for the same prompt: each of them sends the entry's field.
@@ -212,7 +214,7 @@ fn:
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Rendered as a Jinja2 template. It must not contain a NUL character (U+0000, `"\0"` in a double-quoted YAML string), anywhere: no command line can hold one. A literal NUL is a validation error in the schema and the models (`nul_character` at `attach.spawn`: `spawn must not contain a NUL character (\0): no command line can hold one`), and a `spawn` that renders to a command line with one (e.g. from a value in `vars`) is a `ValueError`, `attach.spawn rendered to a command line with a NUL character: '<template>'`, raised where an empty command is: when `spawn` is rendered (see the end of this entry). It must name a command: an empty or blank string (`''`, `'  '`) is a validation error. Blank means nothing but whitespace, and whitespace is the same fixed set of characters in the schema and the models: U+0009 to U+000D, U+001C to U+001F, the space, U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000 (so a byte order mark, U+FEFF, isn't whitespace). The error is `empty_command` at `attach.spawn`: `spawn must be a command, not an empty or blank string`. The command line is split into words as pexpect does it (whitespace separates words; `'...'`, `"..."` and `\` quote), and its first word, the command, must not be empty either: a `spawn` of nothing but quotes or a backslash (`"''"`, `'""'`, `'\'`) has no words at all, and `'' ls` has an empty first one. That is `empty_command` too, with the message ``spawn must name a command: the first word of <value> is empty (quotes or a backslash with nothing in them)`` (the value as a Python string literal), and only the models report it: a schema pattern can't split a command line (see [YAML Script Structure](#yaml-script-structure)). Whitespace before the command is not part of the command line. It is removed from the `spawn`, as written or once rendered, before the command line is checked, split and spawned, so `spawn: ' ssh host'` and `spawn: "{{ args.wrapper | default('') }} ssh host"` without a `wrapper` both run `ssh host` (pexpect by itself takes a leading space for an empty first word and finds no command). The progress line and the spawn-wait errors show the command line without that whitespace. What follows the whitespace must still name a command: `" ''"` and `" '' ls"` are `empty_command` like `"''"` and `"'' ls"`. A `spawn` with Jinja2 syntax (`{{`, `{%` or `{#`) is checked for this once it is rendered. A template that renders to an empty or blank string, or to a command line whose first word is empty, is a `ValueError`, `attach.spawn rendered to an empty command: '<template>'`, and nothing is spawned. `spawn` is rendered when the run starts, before `attach.prepare` runs, so that error, like any other template error in it, stops the run before `prepare`. The exception is a `spawn` that reads `env` (the template uses the variable `env` anywhere) in a script with `prepare`: `prepare` may set what it reads, so it is rendered once `prepare` has run, with the environment `prepare` left (`spawn: ssh {{ env.TARGET }}`, where `prepare` exports `TARGET`). Only its template syntax is checked before `prepare`; an empty command or an undefined variable stops the run after `prepare` has run, before anything is spawned. The rendered command line is printed (`>> attach: <spawn>`) and quoted in the spawn-wait errors, so a secret interpolated into `spawn` (`{{ env.TOKEN }}`) appears there: leave a secret in the environment, which the process inherits, rather than putting it on the command line. |
 | `timeout` | no | Timeout for the initial spawn (duration) |
 | `script` | no | Steps to run immediately after spawn (before main script) |
-| `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect) |
+| `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect); see [Logging out](#logging-out) |
 
 The attach lifecycle:
 1. `attach.prepare` runs locally (if defined) — aborts on failure. With `prepare`, in this order:
@@ -251,7 +253,7 @@ Any output ends the spawn wait successfully, even if the process then exits. A p
 
 A breakout is what puts the remote back as the run found it: it logs out, leaves a console server, exits a sub-shell. Behind a console server that matters more than over plain `ssh`: closing an `ssh` connection ends the login at its far end, but a console stays logged in after Autobot is gone, for whoever attaches to it next. So a breakout that doesn't finish is never a detail of a run that otherwise went well.
 
-A breakout doesn't finish when one of its steps fails (the steps after it don't run), and when an interrupt ends it. That goes for `attach.breakout` and for the `breakout` of every block alike, and for every kind of failure: a command that fails, a wait that times out, a closed connection, and a line that is refused because part of an earlier one is typed at the far side (see [The length of a sent line](#the-length-of-a-sent-line)). Then:
+A breakout doesn't finish when one of its steps fails (the steps after it don't run), and when an interrupt ends it. That goes for `attach.breakout` and for the `breakout` of every block alike, and for every kind of failure: a command that fails, a wait that times out (the wait for the login prompt after a logout, see [Logging out](#logging-out)), a closed connection, and a line that is refused because part of an earlier one is typed at the far side (see [The length of a sent line](#the-length-of-a-sent-line)). Then:
 
 - Everything that runs after a breakout still runs: the rest of the script after a block, the breakouts further out, the restore of a block's prompts, and the close of the session.
 - The failure is logged where it happens (`>> breakout error (<type>): <message>`, `>> block breakout error (<type>): <message>`).
@@ -265,7 +267,47 @@ Either way the error that ends the run carries what the run may have left behind
 - The report of a breakout that didn't finish names the prompts (`the run sent credentials (prompt 'login')`), never a value. Autobot also knows whether a shell prompt was reached after the credentials (`session.login_pending` is true from a credential answer to the next wait that ends at a shell prompt). If none was, the login was refused or the run never saw the end of it, and the report says that instead: `credentials were sent (prompt 'login'), and no shell prompt was reached after them`. The breakout runs all the same: Autobot can't tell a refused login from one that was cut short.
 - A run that sent credentials where no breakout answers for them logs a warning where `attach.breakout` would have run, after `script` whether it failed or not: `>> no logout: the run sent credentials (prompt 'login') outside a block with a breakout, and the script has no attach.breakout to log out with before the session is closed`. Credentials sent inside a block that has a `breakout` are that breakout's to log out of, also when they were sent in a block inside it; they are not warned of, whether or not there is an `attach.breakout`. The others are `attach.breakout`'s (`session.logins_open` holds their prompts), and the warning comes when there is none. It is a warning only: the run completes, with status 0, since over plain `ssh` the close is the logout.
 
-Autobot never sends a logout of its own: it can't know the command of the device, or whether the session is in a state to take one. The breakout is where a script says how to log out, and the run fails when the breakout does.
+Autobot never sends a logout of its own: it can't know the command of the device, or whether the session is in a state to take one. The breakout is where a script says how to log out, and the run fails when the breakout does: see [Logging out](#logging-out) for the breakout to write.
+
+#### Logging out
+
+When `attach` gets to a prompt by logging in, the breakout logs out again, and makes sure of it. Over plain `ssh` the close of the connection ends the login. Behind a console server it doesn't: the console stays as the run left it, logged in, for whoever attaches next. Sending the word `logout` is not yet a logout: after a failure the device may be in the middle of a command, at a pager, in a configuration mode or with half a line typed, and the word goes somewhere else. So the breakout has three parts: clear the line, log out, and wait for the login prompt.
+
+```yaml
+attach:
+  spawn: ssh console-server
+  breakout:
+    - control: c          # drop a half-typed line, stop a command that is still running
+      delay_before: 2s    # Ctrl-C discards what the device has not read yet: let it read first
+    - line: logout        # the device's own logout command
+    - block:              # wait until the output ends with a login prompt
+        name: logged out
+      after: '[Ll]ogin: ?$'
+      timeout: 30s
+```
+
+- **Clear the line first.** The control character is the first step, so that the logout starts on an empty line whatever the script left. At an idle prompt Ctrl-C does nothing but print a new prompt. It drops a line that is typed and not entered, and stops a command that is still running, such as one whose step timed out. After a send that failed partway it is also what lets the breakout send a line at all (see [The length of a sent line](#the-length-of-a-sent-line)). Which key does this is the device's business, and so is anything Ctrl-C doesn't leave: a pager that wants `q`, a mode that must be left before `logout` is a command. The wait in the third part is what catches a breakout that got this wrong.
+- **Give the far side time to read before the control character.** Ctrl-C makes the terminal throw away the input it holds (see [`control`](#control--send-control-characters)): a line that was sent and not read yet is gone, with no sign of it. What was sent just before the breakout is often such a line: the `line: exit` of a block's breakout, sent while the command it interrupted was still stopping, or anything at all on a slow serial console. So the leading `control` has a `delay_before`, long enough for the device to read what came before it; 2s is ample for a shell, and a slow line may need more. Inside a breakout, a control character that follows a `line` waits the same way: with an `after` for what the line brings, where there is something to wait for (the `control: "]"` below waits for the login prompt), and with a `delay_before` otherwise.
+- **Log out with `line`, not `cmd`.** A `cmd` waits for the next shell prompt, and what comes after a logout is a login prompt: a prompt with `sendEach` would answer it, and the run would log in again.
+- **Wait for the login prompt.** `after` waits before its step, so the wait for what the device shows once it is logged out goes on the step that follows the `logout` line. Where a step follows anyway, put it there (`control: "]"` below). Where the logout is the last thing the breakout does, a block with nothing but a name carries it, as above. Give the wait a `timeout`: the default is 300s.
+- **The pattern is the login prompt at the end of the output.** `'[Ll]ogin: ?$'` is `login:` or `Login:`, a blank or none, and then nothing: in an `after` pattern `$` is the end of what has arrived and not been read when the pattern is tried, and it is tried again whenever more arrives. A console that is logged out stops at its login prompt, so the pattern is met and stays met. The word alone would not do. An `after` wait reads everything that hasn't been read yet, the output from before the `logout` line included, and `login:` is in a banner (`Last login: Tue ...`) and may be in the output of a command: the bare word is met by text that is no prompt, and the breakout would go on, and report nothing, with the console still logged in. With `$`, such text counts only while it is the last thing that has arrived. That leaves two cases the pattern can't tell from a prompt: text ending in `login:` that was already there, unread, when the wait began, and a banner that arrives in pieces with a pause right after `Last login:`, as it may on a slow serial line. Where either can happen, wait for something more particular to the device's prompt, such as its host name (`'switch1 login: ?$'`).
+
+If the login prompt doesn't come, the step that waits fails, and with it the breakout: the steps after it don't run, the session is closed, and the run ends as one whose breakout didn't finish, with a report that the session may be left logged in and a status that isn't 0 (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
+
+A logout that closes the connection can't be waited for, and needs no wait: the last hop of a chain, or the only one over plain `ssh`. A step that waits after it fails with `connection closed ...`. So it is the last step of the breakout. Through a console server and a jump host, as in `examples/eos-bootstrap.autobot.yaml`:
+
+```yaml
+  breakout:
+    - control: c
+      delay_before: 2s
+    - line: logout        # the switch
+    - control: "]"        # leave the console server, once the switch asks for a login again
+      after: '[Ll]ogin: ?$'
+      timeout: 30s
+    - line: logout        # the jump host: this closes the connection
+```
+
+**At a login prompt.** A breakout runs from wherever the run stopped, and that may be before the login was done: the credentials were refused, or Ctrl-C stopped the run in the middle of the login. The device is then at its `login:` or `Password:` prompt, and the breakout's lines are typed there: `logout` is read as a user name, or as the password for the user name that was just sent. Nobody is logged in, but the device counts and logs a failed login for that user, which matters where failed logins lock an account. Autobot knows this state (no shell prompt was reached after the credentials) and says so in its report (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)); it doesn't skip the breakout for it, because a breakout may do more than log out, and it can't tell a refused login from one that was cut short after it succeeded.
 
 #### `prepare` as an rc script
 
@@ -668,9 +710,9 @@ With block-scoped prompts (e.g. a sub-console with different prompt patterns):
         send:
           each: vars.creds
           fields:
-            - match: 'login:'
+            - match: '[Ll]ogin: ?$'
               field: username
-            - match: 'Password:'
+            - match: '[Pp]assword: ?$'
               field: password
     enter:
       # line: the block's prompts don't recognize the outer prompt, so a cmd would time out
@@ -705,9 +747,9 @@ The value is required and must be an integer ≥ 1. As in JSON, a number with a 
 
 Each value is exactly one character: a letter `a`-`z` (Ctrl+A to Ctrl+Z; `A`-`Z` is the same) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. These are the keys that have a control character: `@` and `` ` `` send NUL, `[` and `{` ESC, `\` and `|` FS, `]` and `}` GS, `^` and `~` RS, `_` US, and `?` DEL. Anything else, such as `""`, `"ab"`, `"1"` or a non-ASCII letter, is a validation error (`control_char`) at the step's `control`, reported when the script is loaded: ``a control value is one character, a letter or one of @ ` [ { \ | ] } ^ ~ _ ?, got '<value>'``. An empty list is accepted and sends nothing. Quote the punctuation in YAML (`control: "]"`).
 
-**A signal key discards input that has not been read.** Ctrl-C, Ctrl-\\ and Ctrl-Z are the keys a terminal turns into a signal (interrupt, quit, suspend), and with the signal it throws away the input it holds: everything that was sent and that the program has not read yet. That is how Ctrl-C drops a half-typed line. It also drops a whole line sent just before it, Return included, if the far side has not got to reading it: a line sent while a command was still running or still stopping, or sent to a device on a slow line. Nothing shows that it is gone, and a device's own CLI may do the same with its interrupt key. Autobot can't wait for this by itself: nothing tells it when the far side has read a line. So the script waits before a signal key that follows a `line`: with an `after` on the `control` step for what the line brings, or with a `delay_before` where there is nothing to wait for. A key that is no signal key, such as `control: "]"`, discards nothing.
+**A signal key discards input that has not been read.** Ctrl-C, Ctrl-\\ and Ctrl-Z are the keys a terminal turns into a signal (interrupt, quit, suspend), and with the signal it throws away the input it holds: everything that was sent and that the program has not read yet. That is how Ctrl-C drops a half-typed line. It also drops a whole line sent just before it, Return included, if the far side has not got to reading it: a line sent while a command was still running or still stopping, or sent to a device on a slow line. Nothing shows that it is gone, and a device's own CLI may do the same with its interrupt key. Autobot can't wait for this by itself: nothing tells it when the far side has read a line. So the script waits before a signal key that follows a `line`: with an `after` on the `control` step for what the line brings, or with a `delay_before` where there is nothing to wait for (see [Logging out](#logging-out)). A key that is no signal key, such as `control: "]"`, discards nothing.
 
-**A line after a control character is sent half a second later.** The other direction has a race of its own, and here Autobot waits by itself. A shell that gets an interrupt drops the line it is reading when it gets round to handling it, and what it has read of the next line by then goes with it: `logout` sent in the same breath as Ctrl-C arrives as `ogout`, a command that isn't found. So a line is sent 0.5 seconds (`session.CONTROL_SETTLE`) after the last control character at the earliest. That holds for every line: a `line`, a `cmd` line, a `return`, the answer to a prompt, the solicit newline, a plugin's `session.sendline`. A line that follows later is not delayed, since the time has passed, and neither is another control character. Nothing else about a send changes: the bytes that are sent and their order are the same. Half a second is ample for a shell on a machine that is not overloaded, and no guarantee for a far side that takes longer; where it matters that the line arrived, wait for what it brings.
+**A line after a control character is sent half a second later.** The other direction has a race of its own, and here Autobot waits by itself. A shell that gets an interrupt drops the line it is reading when it gets round to handling it, and what it has read of the next line by then goes with it: `logout` sent in the same breath as Ctrl-C arrives as `ogout`, a command that isn't found. So a line is sent 0.5 seconds (`session.CONTROL_SETTLE`) after the last control character at the earliest. That holds for every line: a `line`, a `cmd` line, a `return`, the answer to a prompt, the solicit newline, a plugin's `session.sendline`. A line that follows later is not delayed, since the time has passed, and neither is another control character. Nothing else about a send changes: the bytes that are sent and their order are the same. Half a second is ample for a shell on a machine that is not overloaded, and no guarantee for a far side that takes longer; where it matters that the line arrived, as for a logout, wait for what it brings (see [Logging out](#logging-out)).
 
 ## Common Step Properties
 
@@ -726,6 +768,7 @@ All step types except `sleep` support:
 An empty `after` pattern would match at once, before any output, so the step would wait for nothing. It is treated like an empty `assert` pattern (see [`cmd`](#cmd--send-commands-to-the-shell)):
 - `after: ''` is a validation error, in the schema and the models (`string_too_short` at the step's `after`: `an after pattern must not be empty: an empty regex matches at once, so the step would wait for nothing`), also on a plugin step.
 - An `after` that renders to an empty string (e.g. `after: "{{ vars.p }}"` with `p: ""`) aborts the step with a `ValueError`, `after: the pattern rendered to an empty regex, which matches at once`, before anything is waited for or sent and before `when` is evaluated. Like an invalid regex it isn't a command failure, so `ignore_error` doesn't cover it.
+- In an `after` pattern, `$` is the end of what has arrived and is unread when the pattern is tried, and the pattern is tried again whenever more arrives. `after: '[Ll]ogin: ?$'` is met by a login prompt the device has stopped at, and not by `login:` in a line that arrived together with what follows it. Text that ends in `login:` meets it for as long as it is the last thing that has arrived, whether it is a prompt or not (see [Logging out](#logging-out)).
 
 To run a step without waiting, omit `after`. Only the empty string is rejected: `after: ' '` waits for a space.
 
