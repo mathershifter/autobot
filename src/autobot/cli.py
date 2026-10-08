@@ -333,32 +333,28 @@ def _interrupted() -> NoReturn:
 
 
 def _signalled(args: argparse.Namespace | None, e: BaseException) -> NoReturn:
-    """Report the interrupt or the signal that ended the command, and end the process from it. The
-    signals are held back first: one more of them, here or later, would raise in the middle of the
-    report or of the interpreter's own end, and the process would exit with a status that means
-    something else."""
+    """Report the interrupt or the signal that ended the command, and end the process from it. From
+    here on one more signal never raises: it is dropped while it can be the same request again, and
+    after that it ends the process at once, in the middle of the report if need be."""
     while True:
         try:
-            signals.hold()
+            signals.last(e)
             break
         except (KeyboardInterrupt, signals.Terminated) as again:  # it arrived just before: the last one counts
             e = again
-    try:
-        log.renew()  # an interrupt outside a run may have been raised in the middle of a message
-        _traceback(args, e)
-        if isinstance(e, signals.ReaderGone):
-            log.error(f"Terminated ({e.name})", f"nobody reads {e.stream} any more", style=log.WARN)
-        else:
-            log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
-        _where(e)
-        script = getattr(args, "script", "")
-        _left(args, e, script if isinstance(script, str) else "")
-        if isinstance(e, signals.Terminated):
-            signals.end(e.signum)
-            sys.exit(128 + e.signum)  # the signal didn't arrive
-        _interrupted()
-    finally:
-        signals.release()
+    log.renew()  # an interrupt outside a run may have been raised in the middle of a message
+    _traceback(args, e)
+    if isinstance(e, signals.ReaderGone):
+        log.error(f"Terminated ({e.name})", f"nobody reads {e.stream} any more", style=log.WARN)
+    else:
+        log.error(f"Terminated ({e.name})" if isinstance(e, signals.Terminated) else "Interrupted", style=log.WARN)
+    _where(e)
+    script = getattr(args, "script", "")
+    _left(args, e, script if isinstance(script, str) else "")
+    if isinstance(e, signals.Terminated):
+        signals.end(e.signum)
+        sys.exit(128 + e.signum)  # the signal didn't arrive
+    _interrupted()
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:

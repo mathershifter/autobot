@@ -85,7 +85,7 @@ The first line says what went wrong, the `at` line where: the step's path in the
 
 Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
 
-`SIGTERM` (`kill`, `timeout`, a cancelled CI job, `systemctl stop`) and `SIGHUP` (the terminal or ssh session that runs `autobot` goes away) do the same, at any point of the run: the breakouts run and the session is closed, the CLI prints `Terminated (SIGTERM)` and the step it stopped in, and the process ends from the signal. A second signal while a breakout runs ends that breakout, so a device that doesn't answer can't hold the process. A signal that is ignored when `autobot` starts stays ignored: under `nohup` the run goes on when the terminal closes.
+`SIGTERM` (`kill`, `timeout`, a cancelled CI job, `systemctl stop`) and `SIGHUP` (the terminal or ssh session that runs `autobot` goes away) do the same, at any point of the run: the breakouts run and the session is closed, the CLI prints `Terminated (SIGTERM)` and the step it stopped in, and the process ends from the signal. A second signal within 5 seconds of the first, or of the start of a breakout, is dropped: closing a terminal sends two, and an impatient second Ctrl-C must not skip the logout. One that comes later ends the breakout that is running, so a device that doesn't answer can't hold the process, and once the breakouts are over a signal ends the process at once. No signal is ever blocked, and once a signal is ending the run, output that nobody takes (a pager that isn't scrolled) is discarded instead of holding the cleanup up. A signal that is ignored when `autobot` starts stays ignored: under `nohup` the run goes on when the terminal closes.
 
 A breakout that fails is reported as well, after whatever else ended the run, and the last line says what it may mean:
 
@@ -97,7 +97,7 @@ Session may be left logged in: the script completed, but a breakout did not fini
 
 When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [Logging out](#logging-out)). After a failed script the status stays 3.
 
-The run also stops, with the same cleanup, when nobody reads its output any more: `autobot script | head -1`, a log collector that exits, a terminal that hangs up. Autobot notices at the first write that fails, points that stream to `/dev/null`, runs the breakouts with their output discarded, and ends from `SIGPIPE` as any Unix program does (a shell reports 141). It does not go on with the script unseen. When a signal is what ends the run and the reader is gone as well (`autobot script | tee log` and Ctrl-C), the breakouts still run and the signal decides how the process ends.
+The run also stops, with the same cleanup, when nobody reads its output any more: `autobot script | head -1`, a log collector that exits, a terminal that hangs up. Autobot notices at the first write that fails, points that stream to `/dev/null`, runs the breakouts with their output discarded, and ends from `SIGPIPE` as any Unix program does (a shell reports 141). It does not go on with the script unseen. The stream stays pointed to `/dev/null` for the rest of the process, also in a program that uses Autobot as a library. If the output can't be written for another reason (a full disk, a file size limit), the run stops and logs out the same way and then fails: `Run failed in ...: cannot write stdout: [Errno 28] No space left on device`, status 3. When a signal is what ends the run and the reader is gone as well (`autobot script | tee log` and Ctrl-C), the breakouts still run and the signal decides how the process ends.
 
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
@@ -234,7 +234,7 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
 - `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with the same `after`. Give the wait a `timeout`; the default is 300s.
 - Wait for the prompt at the end of the output, not for the word: `'[Ll]ogin: ?$'` is `login:` or `Login:` with nothing after it. The bare word is also in `Last login: ...` and may be in a command's output, and would let the breakout go on with the console still logged in.
 
-If the login prompt doesn't come, the breakout fails at that step and the run fails with it: the CLI reports `Breakout failed in ...` and `Session may be left logged in: ...`, and exits with status 4 when the script itself completed (3 when it had failed already). A run that answered a `sendEach` prompt and has no `attach.breakout` at all logs a warning, `>> no logout: the run sent credentials (prompt 'login') ...`, unless the login happened in a block whose own `breakout` logs out. When the connection had already closed, the last line says that instead (`Connection closed before a breakout finished: a console behind a console server may still be logged in`). Autobot never sends a logout of its own. See [SPEC.md](SPEC.md#logging-out).
+If the login prompt doesn't come, the breakout fails at that step and the run fails with it: the CLI reports `Breakout failed in ...` and `Session may be left logged in: ...`, and exits with status 4 when the script itself completed (3 when it had failed already). A run that answered a `sendEach` prompt and has no `attach.breakout` at all logs a warning, `>> no logout: the run sent credentials (prompt 'login') ...`, unless the login happened in a block whose own `breakout` logs out. When the connection had already closed, the last line says that instead (`Connection closed before a breakout finished: a console behind a console server may still be logged in`). Autobot never sends a logout of its own. A breakout also runs when the run was stopped before the login was done; its `logout` is then typed at the login or password prompt, which the device logs as a failed login. See [SPEC.md](SPEC.md#logging-out).
 
 ### `prepare` as an rc script
 
@@ -301,11 +301,13 @@ prompts:
     send:
       each: vars.creds
       fields:
-        - match: ['(?:L|l)ogin:', 'Username:']
+        - match: ['[Ll]ogin: ?$', 'Username: ?$']
           field: username
-        - match: '(?:P|p)assword:'
+        - match: '[Pp]assword: ?$'
           field: password
 ```
+
+End a login regex with `$`: the prompt is the last thing the device has written. Without it, the `Last login: ...` line that follows a login is taken for a second login prompt and answered with the next user name. If a slow console delivers that line in pieces, put the host name in the regex (`'switch1 login: ?$'`); see [SPEC.md](SPEC.md#sendeach).
 
 This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. The prompt is then still waiting for an answer, so autobot presses no Return at it on its own (that would be an empty user name or password) until the script sends something. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
@@ -502,7 +504,7 @@ Sends text without waiting for a prompt before or after. Use for commands that w
 
 Each value is one character: a letter (either case) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. Anything else (`""`, `"ab"`, `"1"`) fails validation with `control_char` when the script is loaded.
 
-Ctrl-C, Ctrl-\\ and Ctrl-Z make the far side's terminal throw away the input it holds, which includes a line that was sent just before and not read yet. Give such a `control` an `after` or a `delay_before` when it follows a `line` (see [Logging out](#logging-out)).
+Ctrl-C, Ctrl-\\ and Ctrl-Z make the far side's terminal throw away the input it holds, which includes a line that was sent just before and not read yet. Give such a `control` an `after` or a `delay_before` when it follows a `line` (see [Logging out](#logging-out)). The other way round autobot waits by itself: a line is sent half a second after a control character at the earliest, because a shell that is still handling the interrupt would drop the start of it.
 
 ## Common Step Properties
 

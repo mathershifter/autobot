@@ -113,8 +113,11 @@ def test_p6_117_head_1_stops_the_run_and_the_breakout_runs(fake_device: FakeDevi
     assert run.report == ["Terminated (SIGPIPE): nobody reads stdout any more", "  at script.0 (cmd: echo one)"]
     assert ">> step interrupted (SIGPIPE)" in run.progress and ">> breakout: detaching" in run.progress
     assert not never.exists() and ">> cmd: touch" not in run.err
-    # the run was stopped in the middle of the login: nothing empty was entered, and nobody is logged in
-    assert "LOGIN=" not in run.device and "PASSWORD=" not in run.device and "LOGOUT=" not in run.device
+    # `head` left at the banner, so the run was stopped in the middle of the login: the user name was
+    # sent, and the breakout's `logout` line is what the device read as the password. Nobody is logged
+    # in, nothing empty was entered, and the device has one failed login for the user in its log (SPEC
+    # "Logging out" says so)
+    assert run.device == ["LOGIN=admin", "PASSWORD=logout"]
     assert "Traceback" not in run.err and "Broken pipe" not in run.err
 
 
@@ -219,24 +222,25 @@ def test_p6_119_reader_gone_during_a_block_breakout_stops_the_script_after_it(fa
     assert ">> block completed: sub" in run.progress
 
 
-def test_p6_119_lost_tells_a_reader_that_is_gone_from_any_other_error(tmp_path: Path):
-    """`log.lost`: EPIPE and EIO, and a write to a closed stream, mean nobody reads the stream; a full
-    disk or any other error is still an error."""
+def test_p6_119_lost_points_the_stream_away_and_tells_the_run(tmp_path: Path):
+    """`log.lost`: a stream that can't be written is pointed to /dev/null and the run is told, once per
+    failed write; an error that is none of the operating system's is no lost stream. (What each error
+    means: P6-122.)"""
     told: list[str] = []
-    saved, log.on_gone, was = log.on_gone, told.append, log.gone
+    saved = (log.on_gone, log.gone, log.failure)
+    log.on_gone, log.gone, log.failure = told.append, "", ""
     try:
         with open(tmp_path / "f", "w") as f:
-            assert not log.lost(f, OSError(errno.ENOSPC, "No space left on device"))
             assert not log.lost(f, ValueError("x"))
             assert not log.lost(f, UnicodeEncodeError("ascii", "x", 0, 1, "x"))
             assert told == []
-            assert log.lost(f, BrokenPipeError(errno.EPIPE, "Broken pipe")) and log.lost(f, OSError(errno.EIO, "I/O error"))
+            assert log.lost(f, BrokenPipeError(errno.EPIPE, "Broken pipe"))
             assert os.fstat(f.fileno()).st_rdev == os.stat(os.devnull).st_rdev  # the descriptor is /dev/null's
         assert log.lost(f, ValueError("I/O operation on closed file."))
         assert log.lost(io.StringIO(), BrokenPipeError(errno.EPIPE, "Broken pipe"))  # no descriptor: nothing to point
-        assert told == ["output"] * 4
+        assert told == ["output"] * 3 and log.failure == ""
     finally:
-        log.on_gone, log.gone = saved, was
+        log.on_gone, log.gone, log.failure = saved
 
 
 LIBRARY = """
@@ -308,3 +312,43 @@ def test_p6_119_stop_raised_while_a_piece_is_echoed_does_not_cost_the_session_th
     s._solicit = False  # as after the command: the wait must find the prompt, not ask for a new one
     assert s.get_prompt(timeout=4) == "kept\n"
     assert time.monotonic() - started < 2
+
+
+
+def test_p6_119_pexpect_keeps_a_piece_where_the_session_puts_one_back():
+    """`session._Echo` puts a piece back into the two buffers pexpect keeps what it has read in. They are
+    private to pexpect, whose version is capped for that: a version that names them otherwise fails here."""
+    import io
+
+    import pexpect
+
+    child = pexpect.spawn("true", encoding="utf-8")
+    try:
+        assert isinstance(child._buffer, io.StringIO) and isinstance(child._before, io.StringIO)
+        child._buffer.write("kept")
+        assert child.buffer == "kept"
+    finally:
+        child.close()
+    assert tuple(int(n) for n in pexpect.__version__.split(".")[:2]) == (4, 9)
+
+
+def test_p6_117_prepare_script_that_loses_its_reader_ends_the_run_the_same_way(tmp_path: Path):
+    """SPEC "Output": `attach.prepare` writes to the run's own stdout. With `| head -1` the script is
+    what gets SIGPIPE; the run ends as one whose reader has gone, from SIGPIPE, with nothing spawned."""
+    spawned = tmp_path / "spawned"
+    doc = make_doc([{"cmd": "true"}], spawn=f"sh -c 'touch {spawned}; exec bash --norc --noprofile -i'",
+                   prepare="#!/bin/sh\nwhile :; do echo line; done\n")
+    path, messages = tmp_path / "script.autobot.yaml", tmp_path / "stderr"
+    path.write_text(yaml.safe_dump(doc))
+    reader = subprocess.Popen(["head", "-1"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    with open(messages, "w") as err:
+        proc = subprocess.Popen([*CLI, str(path)], stdout=reader.stdin, stderr=err, preexec_fn=_default)
+        assert reader.stdin is not None
+        reader.stdin.close()
+        try:
+            assert proc.wait(timeout=60) == -signal.SIGPIPE, messages.read_text()
+        finally:
+            proc.kill()
+            reader.kill()
+    report = [line for line in messages.read_text().splitlines() if not line.startswith(">> ")]
+    assert report == ["Terminated (SIGPIPE): nobody reads the output of prepare any more"] and not spawned.exists()

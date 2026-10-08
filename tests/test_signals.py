@@ -90,10 +90,11 @@ def _signalled(
     *,
     setup: Callable[[], None] = _default,
     then: Callable[[], bool] | None = None,
+    after: float = 0,
     argv: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the CLI on `doc`, send it `sigs[0]` once the command has printed `ready`, and each further signal
-    once `then` holds. Its return code, the session's output and its messages."""
+    `after` seconds after `then` holds. Its return code, the session's output and its messages."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
     echo, messages = tmp_path / "stdout", tmp_path / "stderr"
@@ -105,6 +106,7 @@ def _signalled(
             for sig in sigs[1:]:
                 assert then is not None
                 _wait(then, proc, messages.read_text)
+                time.sleep(after)
                 proc.send_signal(sig)
             proc.wait(timeout=60)
         finally:
@@ -174,13 +176,15 @@ def test_p6_112_signal_during_a_step_of_the_breakout_of_a_run_that_completed(tmp
 @pytest.mark.parametrize("sigs", [[signal.SIGTERM, signal.SIGTERM], [signal.SIGHUP, signal.SIGTERM], [signal.SIGTERM, signal.SIGINT]], ids=["term-term", "hup-term", "term-int"])
 def test_p6_113_second_signal_ends_the_breakout(tmp_path: Path, sigs: list[signal.Signals]):
     """SPEC "Errors while the script runs": a breakout that hangs doesn't hold the process. A second signal
-    ends the breakout that is running, the session is closed, and the process ends from that signal."""
+    that arrives more than `signals.GRACE` seconds after the breakout started ends it, the session is
+    closed, and the process ends from that signal."""
     began, never = tmp_path / "began", tmp_path / "never"
     breakout = [{"cmd": f"touch {began}"}, {"cmd": "sleep 40", "timeout": "30s"}, {"cmd": f"touch {never}"}]
     doc, log, spawn = _doc(tmp_path, breakout=breakout)
     started = time.monotonic()
-    res = _signalled(tmp_path, doc, sigs, then=lambda: began.exists() and ">> cmd: sleep 40" in (tmp_path / "stderr").read_text())
-    assert time.monotonic() - started < 20
+    running = lambda: began.exists() and ">> cmd: sleep 40" in (tmp_path / "stderr").read_text()  # noqa: E731
+    res = _signalled(tmp_path, doc, sigs, then=running, after=signals.GRACE + 0.5)
+    assert time.monotonic() - started < 30
     assert res.returncode == -sigs[1], res.stderr
     head = "Interrupted" if sigs[1] == signal.SIGINT else f"Terminated ({sigs[1].name})"
     assert _lines(res) == [head, "  at attach.breakout.1 (cmd: sleep 40)", LEFT]
@@ -402,92 +406,118 @@ def test_p6_116_storm_a_few_times(tmp_path: Path, sigs: list[signal.Signals]):
     _storm(tmp_path, sigs, 5)
 
 
-def test_p6_116_block_that_a_signal_ends_leaves_the_signals_held():
-    """`signals.caught(held=True)`: a signal or an interrupt that ends the block leaves the three signals
-    blocked, for the caller's report; any other way out leaves the mask as it was, and so does a block
-    that isn't `held`."""
+def _mask() -> set[int]:
+    return set(signal.pthread_sigmask(signal.SIG_BLOCK, [])) & {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+
+
+@pytest.fixture
+def default_actions():
+    """SIGTERM and SIGHUP at their default action for the test, as a run finds them; put back after it."""
     before = {sig: signal.getsignal(sig) for sig in SIGS}
-    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
-    try:
+    for sig in SIGS:
+        signal.signal(sig, signal.SIG_DFL)
+    yield
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
+    signals._reset()
+
+
+def test_p6_116_first_signal_is_taken_and_the_next_are_dropped_for_the_grace(monkeypatch: pytest.MonkeyPatch, default_actions):
+    """SPEC "Errors while the script runs", the rule: the first signal is taken at once; one that follows
+    within `GRACE` seconds of it, or of the start of a breakout, is dropped; a later one is taken; and
+    once the breakouts are over, one that is not dropped ends the process at once. No signal is ever
+    blocked."""
+    clock = [1000.0]
+    monkeypatch.setattr(signals.time, "monotonic", lambda: clock[0])
+    died: list[int] = []
+    monkeypatch.setattr(signals, "_die", died.append)
+    with signals.caught() as mine:
+        assert mine == SIGS and not signals.taken()
+        with pytest.raises(signals.Terminated) as first:
+            signal.raise_signal(signal.SIGTERM)
+        assert first.value.signum == signal.SIGTERM and signals.taken() and _mask() == set()
+        signal.raise_signal(signal.SIGHUP)  # the same request again: dropped
+        clock[0] += signals.GRACE - 0.1
+        signal.raise_signal(signal.SIGTERM)  # still within the grace: dropped
+        clock[0] += 0.2
+        signals.breakout()  # a breakout starts: the grace starts again
+        signal.raise_signal(signal.SIGTERM)  # dropped: it is not what ends this breakout
+        clock[0] += signals.GRACE - 0.1
+        signal.raise_signal(signal.SIGHUP)
+        clock[0] += 0.2
+        with pytest.raises(signals.Terminated) as second:  # after the grace: taken, and ends the breakout
+            signal.raise_signal(signal.SIGHUP)
+        assert second.value.signum == signal.SIGHUP and died == []
+        signals.closing()  # the breakouts are over
+        signal.raise_signal(signal.SIGTERM)  # within the grace of the last one taken: dropped
+        assert died == []
+        clock[0] += signals.GRACE + 0.1
+        with pytest.raises(signals.Terminated):  # `_die` is replaced here: it returns, and the signal is taken
+            signal.raise_signal(signal.SIGTERM)
+        assert died == [signal.SIGTERM] and _mask() == set()
+    assert not signals.taken() and [signal.getsignal(sig) for sig in SIGS] == [signal.SIG_DFL, signal.SIG_DFL]
+
+
+def test_p6_116_breakout_of_a_run_that_no_signal_is_ending_has_no_grace(monkeypatch: pytest.MonkeyPatch, default_actions):
+    """The first signal is taken at once wherever it arrives, in a breakout that has just started too:
+    the grace is for the signals that follow one."""
+    with signals.caught():
+        signals.breakout()
+        signals.closing()
+        with pytest.raises(signals.Terminated):
+            signal.raise_signal(signal.SIGHUP)
+
+
+def test_p6_116_held_block_keeps_its_handlers_for_the_report(default_actions):
+    """`signals.caught(held=True)`: a block that a signal or an interrupt ended leaves the handlers in
+    place, so that one more signal can't raise in the caller's report; any other way out puts back what
+    the block found and forgets the run's state, and so does a block that is not `held`."""
+    for held, error, kept in (
+        (True, None, False), (True, RuntimeError(), False), (True, signals.Terminated(signal.SIGTERM), True),
+        (True, KeyboardInterrupt(), True), (False, signals.Terminated(signal.SIGTERM), False),
+    ):
         for sig in SIGS:
             signal.signal(sig, signal.SIG_DFL)
-        with signals.caught(held=True):
-            pass
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        with pytest.raises(RuntimeError), signals.caught(held=True):
-            raise RuntimeError
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        for error in (signals.Terminated(signal.SIGTERM), KeyboardInterrupt()):
-            with pytest.raises(type(error)), signals.caught(held=True):
-                raise error
-            assert set(signals.HELD) <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
-            assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
-            signals.release()
-            assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        with pytest.raises(signals.Terminated), signals.caught():
-            raise signals.Terminated(signal.SIGTERM)
-        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
-        for sig, handler in before.items():
-            signal.signal(sig, handler)
+        try:
+            with signals.caught(held=held):
+                if error is not None:
+                    raise error
+        except BaseException as e:  # noqa: BLE001
+            assert e is error
+        assert (signal.getsignal(signal.SIGTERM) is signals._unwind) == kept, (held, error)
+        assert _mask() == set()
 
 
-def test_p6_116_signal_that_arrives_while_a_message_is_printed_is_taken_after_it(monkeypatch: pytest.MonkeyPatch, capsys):
-    """rich buffers what it prints, and a signal that raised in the middle of a message left the console
-    holding that message and every later one: a run could end from its signal with no report at all. The
-    signal is taken when the message is out, and the next message is printed as ever."""
+def test_p6_116_signal_while_a_message_is_rendered_is_taken_after_it(monkeypatch: pytest.MonkeyPatch, capsys, default_actions):
+    """rich renders a message into a buffer of its own, and a signal that raised in the middle of that
+    left the console holding the message and every later one: a run could end from its signal with no
+    report at all. The signal is taken when the rendering is done, and the next message is printed as
+    ever."""
     from autobot import log
 
-    before = {sig: signal.getsignal(sig) for sig in SIGS}
-    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
     printing = log.console.print
 
     def interrupted(text: object) -> None:
         signal.raise_signal(signal.SIGTERM)  # the handler runs here, in the middle of the message
         printing(text)
 
-    try:
-        for sig in SIGS:
-            signal.signal(sig, signal.SIG_DFL)
-        with signals.caught():
-            monkeypatch.setattr(log.console, "print", interrupted)
-            with pytest.raises(signals.Terminated):
-                log.say("cmd: one")
-            assert signals.holding()
-            monkeypatch.setattr(log.console, "print", printing)
-            log.say("cmd: two")
-        assert not signals.holding() and signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        assert capsys.readouterr().err == ">> cmd: one\n>> cmd: two\n"
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
-        for sig, handler in before.items():
-            signal.signal(sig, handler)
+    with signals.caught():
+        monkeypatch.setattr(log.console, "print", interrupted)
+        with pytest.raises(signals.Terminated):
+            log.say("cmd: one")
+        assert signals.taken()
+        monkeypatch.setattr(log.console, "print", printing)
+        log.say("cmd: two")
+    assert capsys.readouterr().err == ">> cmd: two\n"
 
 
-def test_p6_116_one_signal_is_taken_and_the_next_waits_for_a_release():
-    """The handler that takes a signal blocks the three; one that arrives then is pending, and is taken
-    at `release`. A block that is not `held` leaves them unblocked."""
-    before = {sig: signal.getsignal(sig) for sig in SIGS}
-    interrupt = signal.getsignal(signal.SIGINT)
-    mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
-    try:
-        for sig in SIGS:
-            signal.signal(sig, signal.SIG_DFL)
-        with signals.caught():
-            with pytest.raises(signals.Terminated) as first:
-                signal.raise_signal(signal.SIGTERM)
-            assert first.value.signum == signal.SIGTERM and signals.holding()
-            assert set(signals.HELD) <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
-            signal.raise_signal(signal.SIGHUP)  # held back: nothing is raised
-            assert signal.SIGHUP in signal.sigpending()
-            with pytest.raises(signals.Terminated) as second:
-                signals.release()
-                pass  # the pending one arrives in `release`, or right after it
-            assert second.value.signum == signal.SIGHUP and signals.holding()
-        assert not signals.holding() and signal.pthread_sigmask(signal.SIG_BLOCK, []) == mask
-        assert signal.getsignal(signal.SIGINT) is interrupt  # as it was: Python's handler, or ignored by the suite's parent
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
-        for sig, handler in before.items():
-            signal.signal(sig, handler)
+def test_p6_116_signal_deferred_by_statements_that_fail_is_still_taken(default_actions):
+    """`signals.uninterrupted`: a signal that arrives while its statements run is taken when they are
+    done, also when they end with an error of their own. The signal is what is raised, from that error."""
+    with signals.caught():
+        with pytest.raises(signals.Terminated) as ei:
+            with signals.uninterrupted():
+                signal.raise_signal(signal.SIGHUP)
+                raise OSError(28, "No space left on device")
+        assert ei.value.signum == signal.SIGHUP and isinstance(ei.value.__cause__, OSError)
+        assert signals._deferred is None and signals._busy == 0

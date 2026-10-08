@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import errno
 import os
+import select
+import stat
 import sys
 from collections.abc import Callable
 
@@ -14,6 +16,7 @@ from rich.console import Console
 from rich.text import Text
 
 from . import signals
+from .types import RunError
 
 MARK = ">>"
 
@@ -50,11 +53,6 @@ def _styled() -> bool:
     return terminal and os.environ.get("TERM", "").lower() not in ("dumb", "unknown")
 
 
-class _Console(Console):
-    def on_broken_pipe(self) -> None:
-        raise  # the BrokenPipeError itself, for `_print`: rich would end the process, in the middle of a run
-
-
 def _console() -> Console:
     # Every message is printed as a `Text`, never as a string: that is what keeps rich from reading markup
     # or emoji codes in it and from highlighting numbers and quotes. soft_wrap: a log line is one line,
@@ -63,41 +61,102 @@ def _console() -> Console:
 
 
 def _make(styled: bool) -> Console:
-    return _Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
+    return Console(stderr=True, soft_wrap=True, force_terminal=styled, color_system="standard" if styled else None)
 
 
 console = _console()
 _open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
 
-# What a write fails with when nobody reads the stream any more: a pipe whose reader has exited, a terminal
-# that has hung up
-GONE = (errno.EPIPE, errno.EIO)
-gone = ""  # the first stream found that way, `stdout` or `stderr`
-on_gone: Callable[[str], None] | None = None  # the run's: told when a stream is found that way
+class OutputError(RunError):
+    """The run's output could not be written, for a reason other than a reader that has gone: a full
+    disk, a file size limit."""
 
 
-def lost(stream: object, error: BaseException) -> bool:
-    """Whether `error`, raised by a write to `stream`, says that nobody reads the stream any more. Then
-    its file descriptor is pointed to /dev/null, so that no later write to it fails, and the run is told
-    (`on_gone`), which may raise. A closed stream counts too; there is nothing to point elsewhere."""
-    global gone
-    if isinstance(error, OSError) and error.errno in GONE:
-        try:
-            fd = stream.fileno()  # type: ignore[attr-defined]
-            null = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(null, fd)
-            os.close(null)
-        except (AttributeError, OSError, ValueError):  # no descriptor to point elsewhere
-            fd = -1
-    elif isinstance(error, ValueError) and getattr(stream, "closed", False):
+gone = ""  # the first stream that could no longer be written, `stdout` or `stderr`
+failure = ""  # why, when that was an error and not a reader that had gone: `cannot write stdout: ...`
+on_gone: Callable[[str], None] | None = None  # the run's: told when the session's echo can't be written
+
+
+def _away(stream: object, why: str = "") -> None:
+    """Point the stream's file descriptor to /dev/null, so that no later write to it fails or waits, and
+    note it as the stream that was lost, if it is the first."""
+    global gone, failure
+    try:
+        fd = stream.fileno()  # type: ignore[attr-defined]
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, fd)
+        os.close(null)
+    except (AttributeError, OSError, ValueError):  # no descriptor to point elsewhere
         fd = -1
+    if not gone:
+        gone = "stdout" if stream is sys.stdout or fd == 1 else "stderr" if stream is sys.stderr or fd == 2 else "output"
+        failure = why and f"cannot write {gone}: {why}"
+
+
+def _regular(stream: object) -> bool:
+    try:
+        return stat.S_ISREG(os.fstat(stream.fileno()).st_mode)  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def lost(stream: object, error: BaseException, tell: bool = True) -> bool:
+    """Whether `error`, raised by a write to `stream`, means that the stream can't be written any more:
+    any error of the operating system but one that says to try again, and a write to a closed stream.
+    Then the stream is pointed to /dev/null and noted (`gone`), and with `tell` the run is told
+    (`on_gone`), which may raise.
+
+    Nobody reads the stream any more when the error is EPIPE, a pipe whose reader has exited, or EIO on
+    anything but a regular file, a terminal that has hung up. Any other error is a failure to write
+    (`failure`): a full disk, a file size limit, EIO from the disk under a file."""
+    if isinstance(error, OSError) and not isinstance(error, (BlockingIOError, InterruptedError)):
+        reader = error.errno == errno.EPIPE or (error.errno == errno.EIO and not _regular(stream))
+        _away(stream, "" if reader else f"[Errno {error.errno}] {error.strerror}")
+    elif isinstance(error, ValueError) and getattr(stream, "closed", False):
+        _away(stream)
     else:
         return False
-    name = "stdout" if stream is sys.stdout or fd == 1 else "stderr" if stream is sys.stderr or fd == 2 else "output"
-    gone = gone or name
-    if on_gone:
-        on_gone(name)
+    if tell and on_gone:
+        on_gone(gone)
     return True
+
+
+def stalled(stream: object) -> bool:
+    """Whether a write to `stream` would wait, in a run that a signal is ending: nothing the operator
+    doesn't read may hold up the breakouts then. Such a stream is pointed to /dev/null like one whose
+    reader has gone, for the rest of the run. In a run that no signal is ending this is never so: a
+    slow reader slows the run, as it does any program."""
+    if not signals.taken():
+        return False
+    try:
+        if select.select([], [stream.fileno()], [], 0)[1]:  # type: ignore[attr-defined]
+            return False
+    except (AttributeError, OSError, ValueError):  # no descriptor to ask: the write says what is wrong
+        return False
+    _away(stream)
+    return True
+
+
+def put(stream: object, data: str = "", tell: bool = False) -> None:
+    """Write `data` to the operator's stream and flush it, unless that can't be done (`stalled`, `lost`)."""
+    if stalled(stream):
+        return
+    try:
+        if data:
+            stream.write(data)  # type: ignore[attr-defined]
+        stream.flush()  # type: ignore[attr-defined]
+    except (OSError, ValueError) as e:
+        if not lost(stream, e, tell):
+            raise
+
+
+def flush() -> None:
+    """Flush stdout and stderr before the process ends from a signal, where that can be done."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            put(stream)
+        except (AttributeError, OSError, ValueError):  # no stream, or one that can't be flushed
+            pass
 
 
 def echoed(data: str) -> None:
@@ -118,19 +177,18 @@ def _shared() -> bool:
 
 def _print(text: Text) -> None:
     global _open_line
-    try:
-        # rich buffers what it prints: a signal that raised in the middle of it would leave the console
-        # holding this message and every later one
-        with signals.uninterrupted():
-            if _open_line and _shared():
-                # the message would continue the session's line, e.g. its prompt: start a new one. On
-                # stderr, so stdout stays what the session sent
-                console.file.write("\n")
-                _open_line = False
-            console.print(text)
-    except (OSError, ValueError) as e:
-        if not lost(console.file, e):
-            raise
+    # rich renders into a buffer of its own: a signal that raised in the middle of that would leave the
+    # console holding this message and every later one. Rendering can't block; the write can, and a
+    # signal may end it
+    with signals.uninterrupted(), console.capture() as capture:
+        console.print(text)
+    rendered = capture.get()
+    if _open_line and _shared():
+        # the message would continue the session's line, e.g. its prompt: start a new one. On stderr,
+        # so stdout stays what the session sent
+        rendered, _open_line = "\n" + rendered, False
+    # a message that can't be written stops nothing here: the run stops before its next step
+    put(console.file, rendered)
 
 
 def renew() -> None:

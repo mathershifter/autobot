@@ -158,6 +158,8 @@ class CleanWriter:
     def _out(self, data: str = ""):
         """Write `data` and flush. A stream that nobody reads any more is no error of the session's:
         `log.lost` points it elsewhere and tells the run."""
+        if log.stalled(self._stream):
+            return
         try:
             if data:
                 self._write(data)

@@ -243,7 +243,7 @@ class Runner:
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         self._cleanup = 0  # how many breakouts are running, and whether the run is ending: nothing stops those
-        self._stopped = False  # the run was stopped because nobody reads its output
+        self._stopped = False  # the run was stopped because its output can't be written
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list
         self._paths: dict[int, str] = {}
         self._index(config.attach.script, "attach.script")
@@ -344,7 +344,7 @@ class Runner:
     def run(self):
         # SIGTERM and SIGHUP unwind the run like an interrupt: the breakouts run and the session is closed
         # nothing of an earlier run of this runner counts for this one
-        self._unfinished, self._cleanup, self._stopped, log.gone = [], 0, False, ""
+        self._unfinished, self._cleanup, self._stopped, log.gone, log.failure = [], 0, False, "", ""
         watching, log.on_gone = log.on_gone, self._reader_gone
         try:
             with signals.terminable():
@@ -353,10 +353,13 @@ class Runner:
             log.on_gone = watching
 
     def _reader_gone(self, stream: str = ""):
-        """Stop the run, as an interrupt does, when nobody reads its output any more. Not while a breakout
-        runs or the run is ending anyway: then the next step of the script, if one is to come, stops it."""
-        if log.gone and not self._cleanup and not self._stopped:
+        """Stop the run when its output can't be written any more: as an interrupt does when nobody
+        reads it, and as a failed run when the write failed. Not while a breakout runs or the run is
+        ending anyway: then the next step of the script, if one is to come, stops it."""
+        if log.gone and not self._cleanup and not self._stopped and not signals.taken():
             self._stopped = True
+            if log.failure:
+                raise log.OutputError(log.failure)
             raise signals.ReaderGone(stream or log.gone)
 
     def _run(self):
@@ -395,9 +398,11 @@ class Runner:
                         "warn",
                     )
         except BaseException as e:
+            signals.closing()
             self._session.detach(failing=True)  # a close that fails must not replace this error
             raise self._marked(e)
         try:
+            signals.closing()
             self._session.detach()
         except BaseException as e:
             raise self._marked(e)
@@ -423,10 +428,8 @@ class Runner:
         """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
         so what comes after it still runs. It is kept, since the run can't count as completed."""
         self._cleanup += 1
-        held = signals.holding()  # a signal is ending the run: the next one is held back while it unwinds
+        signals.breakout()  # a signal that came before this is not what ends it
         try:
-            if held:
-                signals.release()  # a breakout is what a second signal may end: also one that has waited
             self._session.reset_handlers()
             self.run_steps(steps)
         except BaseException as e:
@@ -436,8 +439,6 @@ class Runner:
             log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
         finally:
             self._cleanup -= 1
-            if held:
-                signals.hold()
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))
@@ -462,16 +463,12 @@ class Runner:
             # at once, before any breakout runs
             if not hasattr(e, "autobot_trail"):
                 e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
-                self._cleanup += 1  # the step has ended: a reader found gone by this line changes nothing
-                try:
-                    if isinstance(e, KeyboardInterrupt):
-                        log.say("step interrupted", "fail")
-                    elif isinstance(e, signals.Terminated):
-                        log.say(f"step interrupted ({e.name})", "fail")
-                    elif isinstance(e, Exception):
-                        log.say(f"step failed ({type(e).__name__}): {e}", "fail")
-                finally:
-                    self._cleanup -= 1
+                if isinstance(e, KeyboardInterrupt):
+                    log.say("step interrupted", "fail")
+                elif isinstance(e, signals.Terminated):
+                    log.say(f"step interrupted ({e.name})", "fail")
+                elif isinstance(e, Exception):
+                    log.say(f"step failed ({type(e).__name__}): {e}", "fail")
             raise
         finally:
             self._stack.pop()

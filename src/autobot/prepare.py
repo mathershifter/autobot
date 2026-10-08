@@ -7,6 +7,7 @@ import fcntl
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -241,6 +242,9 @@ def run(script: str, environ: dict[str, str] | None = None) -> Changes:
             result = subprocess.run(argv, check=False, env=environ, pass_fds=fds)
         except OSError as e:
             raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
+        if result.returncode == -signal.SIGPIPE:
+            # the script wrote to the output it shares with the run, and nobody reads that any more
+            raise signals.ReaderGone("the output of prepare")
         if result.returncode != 0:
             raise RunError(f"prepare script failed with exit code {result.returncode}")
         if shell is not None:
