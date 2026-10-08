@@ -33,14 +33,15 @@ PROMPTS = [SHELL_PROMPT, LOGIN]
 CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
 ACCEPT = ("--accept", "admin:secret", "--logout")
 # the wait for the login prompt is a step of its own here: a block with nothing in it but its `after`
-CONFIRM = {"block": {"name": "logged out"}, "after": "login:", "timeout": "4s"}
+PATTERN = "[Ll]ogin: ?$"  # the login prompt at the end of the output
+CONFIRM = {"block": {"name": "logged out"}, "after": PATTERN, "timeout": "4s"}
 # drop what is typed or running, log out, wait for the proof
 LOGOUT = [{"control": "c"}, {"line": "logout"}, CONFIRM]
 # the documented shape: the same, and the Ctrl-C waits for the far side to read what was sent before it
 SHAPE = [{"control": "c", "delay_before": "2s"}, {"line": "logout"}, CONFIRM]
 # the same without the control character
 BARE = [{"line": "logout"}, CONFIRM]
-CONFIRM_TIMEOUT = "timed out after 4.0s waiting for the after pattern 'login:'"
+CONFIRM_TIMEOUT = f"timed out after 4.0s waiting for the after pattern '{PATTERN}'"
 LEFT = "Session may be left logged in: "
 SENT = "; the run sent credentials (prompt 'login')"
 
@@ -55,6 +56,19 @@ def console(fake_device: FakeDevice, script: list[dict[str, Any]], breakout: lis
 def report(res: subprocess.CompletedProcess[str]) -> list[str]:
     """What the CLI itself says on stderr: not the engine's `>> ` progress lines, not runpy's warning."""
     return [line for line in res.stderr.splitlines() if not line.startswith(">> ") and "RuntimeWarning" not in line]
+
+
+def defaults() -> None:
+    """For a child: the default actions, whatever the suite was started with (`nohup`, an ignored SIGINT)."""
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
+
+
+def wait_for(what: Any, proc: subprocess.Popen, seconds: float = 30) -> None:
+    deadline = time.monotonic() + seconds
+    while not what():
+        assert proc.poll() is None and time.monotonic() < deadline
+        time.sleep(0.05)
 
 
 def run(doc: dict[str, Any]):
@@ -227,7 +241,7 @@ def test_p5_86_plugin_runs_a_breakout_through_the_context(attached_runner, capfd
 
 @pytest.mark.parametrize(
     "carrier",
-    [CONFIRM, {"control": "c", "after": "login:", "timeout": "4s"}, {"line": "", "after": "login:"}],
+    [CONFIRM, {"control": "c", "after": PATTERN, "timeout": "4s"}, {"line": "", "after": PATTERN}],
     ids=["block", "control", "line"],
 )
 def test_p5_87_logout_is_confirmed_by_the_after_of_the_next_step(fake_device: FakeDevice, carrier: dict[str, Any], capsys):
@@ -242,7 +256,7 @@ def test_p5_87_confirmation_that_never_matches_fails_the_breakout(fake_device: F
     """A logout that went elsewhere, here to a shell whose prompt loop doesn't know the word the script
     uses, is not confirmed: the breakout fails at the step that waits."""
     doc, log = console(fake_device, [{"cmd": "show"}], [{"control": "c"}, {"line": "quit"}, CONFIRM], "--then", "prompt", errors=["^% .*"])
-    with pytest.raises(BreakoutError, match="waiting for the after pattern 'login:'"):
+    with pytest.raises(BreakoutError, match="waiting for the after pattern"):
         run(doc)
     assert FakeDevice.read(log)[-1] == "LINE=quit"
 
@@ -575,3 +589,96 @@ def test_p5_91_logout_right_after_the_control_character_is_not_lost(fake_device:
             except TimeoutError as e:
                 assert left(e) is None
             assert FakeDevice.read(log)[-1] == "LOGOUT="
+
+
+# -- P5-92: what confirms a logout ----------------------------------------------------------------------
+
+WORD = {"block": {"name": "logged out"}, "after": "login:", "timeout": "4s"}  # the word, wherever it is
+
+
+def confirmed_by(confirm: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{"control": "c", "delay_before": "2s"}, {"line": "logout"}, confirm]
+
+
+@pytest.mark.parametrize("confirm", [CONFIRM, WORD], ids=["prompt-at-the-end", "the-word"])
+def test_p5_92_last_login_banner_is_no_login_prompt(fake_device: FakeDevice, tmp_path: Path, confirm: dict[str, Any]):
+    """SPEC "Logging out": SIGTERM arrives after the password was accepted and before the shell is there.
+    The device prints `Last login: ...` three seconds later, while the breakout runs, and starts its
+    shell four seconds after that. The pattern for the prompt at the end of the output is not met by the
+    banner: the breakout waits until the shell has taken the `logout` and the device asks for a login
+    again. The bare word is met by the banner, and the session is closed with the device still logged
+    in, and no word of it in the report."""
+    # the login prompt of this script is one at the end of the output, too: `login:` alone would take
+    # the banner for a second login prompt and answer it
+    login = {**LOGIN, "send": {"each": "vars.creds", "fields": [{"match": "login: $", "field": "username"}, {"match": "Password:", "field": "password"}]}}
+    breakout = confirmed_by({**confirm, "timeout": "15s"})
+    doc, log = console(
+        fake_device, [{"cmd": "sleep 30", "timeout": "20s"}], breakout,
+        "--last-login", "--banner-delay", "3", "--post-auth-delay", "4", prompts=[SHELL_PROMPT, login],
+    )
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    proc = subprocess.Popen(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        text=True, preexec_fn=defaults,
+    )
+    try:
+        wait_for(lambda: "PASSWORD=secret" in FakeDevice.read(log), proc)
+        proc.send_signal(signal.SIGTERM)
+        err = proc.communicate(timeout=60)[1]
+    finally:
+        proc.kill()
+    assert proc.returncode == -signal.SIGTERM, err
+    assert "Breakout failed" not in err, err
+    assert ("LOGOUT=" in FakeDevice.read(log)) == (confirm is CONFIRM)
+
+
+@pytest.mark.parametrize("confirm", [CONFIRM, WORD], ids=["prompt-at-the-end", "the-word"])
+def test_p5_92_login_prompt_with_a_capital_is_a_login_prompt(fake_device: FakeDevice, confirm: dict[str, Any]):
+    """A device that asks `Login: `. The pattern takes either case; `login:` alone waits out its timeout
+    on a device that is logged out, and the run reports a session that may be left logged in."""
+    login = {**LOGIN, "send": {"each": "vars.creds", "fields": [{"match": "[Ll]ogin:", "field": "username"}, {"match": "Password:", "field": "password"}]}}
+    doc, log = console(fake_device, [{"cmd": "true"}], confirmed_by(confirm), "--capital", prompts=[SHELL_PROMPT, login])
+    if confirm is CONFIRM:
+        run(doc)
+    else:
+        with pytest.raises(BreakoutError):
+            run(doc)
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
+
+
+@pytest.mark.parametrize("confirm", [CONFIRM, WORD], ids=["prompt-at-the-end", "the-word"])
+def test_p5_92_unread_output_with_the_word_in_it_is_no_login_prompt(fake_device: FakeDevice, confirm: dict[str, Any]):
+    """Output from before the logout that nothing has read, with `login:` in it, and a program that
+    takes the `logout` line. The pattern for the end of the output is not met and the breakout fails,
+    as it should; the bare word is met by the old text, and the run completes with the device logged in."""
+    script = [IN, {"cmd": "trap '' INT"}, {"line": "echo 3 failed login: attempts; cat"}]
+    doc, log = console(fake_device, script, confirmed_by(confirm))
+    if confirm is CONFIRM:
+        with pytest.raises(BreakoutError, match="waiting for the after pattern"):
+            run(doc)
+    else:
+        run(doc)
+    assert "LOGOUT=" not in FakeDevice.read(log)
+
+
+def test_p5_92_dollar_is_the_end_of_what_has_arrived(shell_session: Session):
+    """What `$` means in an `after` pattern, and where the pattern stops telling a prompt from a banner:
+    the end of the unread output at the time the pattern is tried. Text that ends in `login: ` and is
+    followed by more in the same write doesn't meet it; the same text meets it while it is the last
+    thing that has arrived, whether it came before the wait or stops there in the middle of a line."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("stty -echo", timeout=5)  # the echo of the lines below has the word in it, and comes in pieces
+    s.get_prompt(timeout=5)
+    s.sendline("printf 'Last login: Tue Oct 7\\n'; sleep 1; printf 'hostname login: '; sleep 30", solicit=True, timeout=5)
+    started = time.monotonic()
+    s.expect([PATTERN], timeout=10)
+    assert time.monotonic() - started > 0.8 and s.ctx["before"].endswith("hostname ")  # the banner was passed over
+    s.sendcontrol("c", timeout=5)
+    s.get_prompt(timeout=10)
+    # a banner that arrives in two pieces, with a pause after `Last login: `: met at the pause
+    s.sendline("printf 'Last login: '; sleep 2; printf 'Tue Oct 7\\n'", solicit=True, timeout=5)
+    started = time.monotonic()
+    s.expect([PATTERN], timeout=10)
+    assert time.monotonic() - started < 1.5 and s.ctx["before"].endswith("Last ")

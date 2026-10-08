@@ -278,16 +278,17 @@ attach:
     - control: c          # drop a half-typed line, stop a command that is still running
       delay_before: 2s    # Ctrl-C discards what the device has not read yet: let it read first
     - line: logout        # the device's own logout command
-    - block:              # wait for the proof: the console asks for a login again
+    - block:              # wait for the proof: the output ends with a login prompt
         name: logged out
-      after: 'login:'
+      after: '[Ll]ogin: ?$'
       timeout: 30s
 ```
 
 - **Clear the line first.** The control character is the first step, so that the logout starts on an empty line whatever the script left. At an idle prompt Ctrl-C does nothing but print a new prompt. It drops a line that is typed and not entered, and stops a command that is still running, such as one whose step timed out. After a send that failed partway it is also what lets the breakout send a line at all (see [The length of a sent line](#the-length-of-a-sent-line)). Which key does this is the device's business, and so is anything Ctrl-C doesn't leave: a pager that wants `q`, a mode that must be left before `logout` is a command. The wait in the third part is what catches a breakout that got this wrong.
 - **Give the far side time to read before a control character.** A terminal throws away the input it holds when Ctrl-C arrives (see [`control`](#control--send-control-characters)): a line that was sent and not read yet is gone, with no sign of it. What was sent just before the breakout is often such a line: the `line: exit` of a block's breakout, sent while the command it interrupted was still stopping, or anything at all on a slow serial console. The Ctrl-C of `attach.breakout` would discard the `exit`, and the `logout` would go to the sub-shell. So the leading `control` has a `delay_before`, long enough for the device to read what came before it; 2s is ample for a shell, and a slow line may need more. Autobot can't do this by itself: nothing tells it when the far side has read a line, since the echo of a line is written by the terminal or the line editor when the line arrives, not when the program takes it. Inside a breakout, a control character that follows a `line` waits the same way: with an `after` for what the line brings, where there is something to wait for (the `control: "]"` below waits for the login prompt), and with a `delay_before` otherwise.
 - **Log out with `line`, not `cmd`.** A `cmd` waits for the next shell prompt, and what comes after a logout is a login prompt: a prompt with `sendEach` would answer it, and the run would log in again.
-- **Wait for the proof.** `after` waits before its step, so the wait for what the device shows once it is logged out goes on the step that follows the `logout` line. Where a step follows anyway, put it there (`control: "]"` below). Where the logout is the last thing the breakout does, a block with nothing but a name carries it, as above. Give the wait a `timeout`: the default is 300s. The pattern is one that only a logged-out console shows; the wait reads everything that hasn't been read yet, the output from before the `logout` line included.
+- **Wait for the proof.** `after` waits before its step, so the wait for what the device shows once it is logged out goes on the step that follows the `logout` line. Where a step follows anyway, put it there (`control: "]"` below). Where the logout is the last thing the breakout does, a block with nothing but a name carries it, as above. Give the wait a `timeout`: the default is 300s.
+- **The pattern is the login prompt at the end of the output.** `'[Ll]ogin: ?$'` is `login:` or `Login:`, a blank or none, and then nothing: in an `after` pattern `$` is the end of what has arrived and not been read when the pattern is tried, and it is tried again whenever more arrives. A console that is logged out stops at its login prompt, so the pattern is met and stays met. The word alone would not do. An `after` wait reads everything that hasn't been read yet, the output from before the `logout` line included, and `login:` is in a banner (`Last login: Tue ...`) and may be in the output of a command: the bare word is met by text that is no prompt, and the breakout would go on, and report nothing, with the console still logged in. With `$`, such text counts only while it is the last thing that has arrived. That leaves two cases the pattern can't tell from a prompt: text ending in `login:` that was already there, unread, when the wait began, and a banner that arrives in pieces with a pause right after `Last login:`, as it may on a slow serial line. Autobot doesn't tell output from before a send from output after it; where either case can happen, wait for something more particular to the device's prompt, such as its host name (`'switch1 login: ?$'`).
 
 If the proof doesn't come, the step that waits fails, and with it the breakout: the steps after it don't run, the session is closed, and the run ends as one whose breakout didn't finish, with a report that the session may be left logged in and a status that isn't 0 (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
 
@@ -299,7 +300,7 @@ A logout that closes the connection can't be waited for, and needs no proof: the
       delay_before: 2s
     - line: logout        # the switch
     - control: "]"        # leave the console server, once the switch asks for a login again
-      after: 'login:'
+      after: '[Ll]ogin: ?$'
       timeout: 30s
     - line: logout        # the jump host: this closes the connection
 ```
@@ -1251,7 +1252,7 @@ There is one `Breakout failed` report for each breakout that didn't finish, in t
 ```
 Run failed in upgrade.autobot.yaml: timed out after 30.0s waiting for a shell prompt ('cli')
   at script.3 (cmd: show version)
-Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern 'login:'
+Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern '[Ll]ogin: ?$'
   at attach.breakout.2 (control)
 Session may be left logged in: a breakout did not finish; the run sent credentials (prompt 'login')
 ```

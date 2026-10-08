@@ -340,7 +340,7 @@ def test_example_prompt_regex_registers_clean_output(name: str, ps1: str):
 
 LOGIN = {
     "name": "login",
-    "send": {"each": "vars.creds", "fields": [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]},
+    "send": {"each": "vars.creds", "fields": [{"match": "[Ll]ogin:", "field": "username"}, {"match": "Password:", "field": "password"}]},
 }
 CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
 CONSOLE = ("--accept", "admin:secret", "--logout", "--escape")
@@ -363,21 +363,24 @@ def test_p6_115_examples_are_valid_for_the_cli():
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
 def test_p6_115_example_breakout_clears_the_line_logs_out_and_waits_for_the_login_prompt(path: Path):
     """SPEC "Logging out": the shape of each example's `attach.breakout`. A control character first, after
-    a pause in which the far side reads what was sent before it, the logout as a `line`, the wait for the login prompt on the step after it, with a timeout, and no `cmd`,
-    whose prompt wait would answer the login prompt."""
+    a pause in which the far side reads what was sent before it, the logout as a `line`, the wait for
+    a login prompt at the end of the output on the step after it, with a timeout, and no `cmd`, whose
+    prompt wait would answer the login prompt."""
     steps = breakout_of(path)
     assert steps[0] == {"control": "c", "delay_before": "2s"} and steps[1] == {"line": "logout"}
-    assert steps[2] == {"control": "]", "after": "login:", "timeout": "30s"}
+    assert steps[2] == {"control": "]", "after": "[Ll]ogin: ?$", "timeout": "30s"}
     assert not any("cmd" in step for step in steps)
     assert steps[3:] == ([{"line": "logout"}] if path.name.startswith("eos") else [])
 
 
-def console_server(fake_device: FakeDevice, path: Path, script: list[dict[str, Any]], wait: str | None = None) -> tuple[dict[str, Any], Path]:
+def console_server(
+    fake_device: FakeDevice, path: Path, script: list[dict[str, Any]], wait: str | None = None, opts: tuple[str, ...] = ()
+) -> tuple[dict[str, Any], Path]:
     """A stand-in for what the example attaches to: the fake console, which asks for a login, runs a
     real bash, asks for the login again after `logout`, and ends at Ctrl-], like the client of a console
     server. For the EOS example it is started from a login shell, the jump host. The breakout is the
     example's own; `wait` shortens the timeout of its wait."""
-    device, log = fake_device(*CONSOLE)
+    device, log = fake_device(*CONSOLE, *opts)
     breakout = breakout_of(path)
     if wait:
         breakout[2]["timeout"] = wait
@@ -421,8 +424,27 @@ def test_p6_115_example_breakout_fails_when_the_logout_does_not_happen(fake_devi
     """A program that ignores Ctrl-C takes the `logout` line: no login prompt comes, the breakout fails at
     the step that waits, and the steps after it (the Ctrl-], the jump host's logout) are not sent."""
     doc, log = console_server(fake_device, path, [{"cmd": "trap '' INT"}, {"line": "cat"}], wait="3s")
-    with pytest.raises(BreakoutError, match=r"^a breakout did not finish \(TimeoutError\): timed out after 3.0s waiting for the after pattern 'login:'$") as ei:
+    with pytest.raises(BreakoutError, match=r"^a breakout did not finish \(TimeoutError\): timed out after 3.0s waiting for the after pattern ") as ei:
         Runner(Config.model_validate(doc), {}).run()
     assert [ref.path for ref in trail(ei.value)] == ["attach.breakout.2"]
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
     assert sent[-2:] == [("ctrl", "c"), ("line", "logout")]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_115_example_breakout_takes_login_with_a_capital_for_the_prompt(fake_device: FakeDevice, path: Path):
+    """A device that asks `Login: `: the example's wait is met, as its own login prompt is."""
+    doc, log = console_server(fake_device, path, [{"cmd": "echo configured"}], opts=("--capital",))
+    Runner(Config.model_validate(doc), {}).run()
+    assert FakeDevice.read(log)[:3] == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_115_example_breakout_is_not_met_by_text_with_the_word_in_it(fake_device: FakeDevice, path: Path):
+    """Unread output with `login:` in it, and a program that takes the `logout` line: the example's wait
+    is for a prompt at the end of the output, so the breakout fails, and the device's log has no logout."""
+    script = [{"cmd": "trap '' INT"}, {"line": "echo Last login: Tue Oct 7; cat"}]
+    doc, log = console_server(fake_device, path, script, wait="3s")
+    with pytest.raises(BreakoutError):
+        Runner(Config.model_validate(doc), {}).run()
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]

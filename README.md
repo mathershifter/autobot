@@ -90,7 +90,7 @@ Ctrl-C stops the run the same way: the breakouts run, the session is closed, and
 A breakout that fails is reported as well, after whatever else ended the run, and the last line says what it may mean:
 
 ```
-Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern 'login:'
+Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern '[Ll]ogin: ?$'
   at attach.breakout.2 (control)
 Session may be left logged in: the script completed, but a breakout did not finish; the run sent credentials (prompt 'login')
 ```
@@ -208,7 +208,7 @@ attach:
       delay_before: 2s
     - line: logout
     - control: "]"
-      after: 'login:'
+      after: '[Ll]ogin: ?$'
       timeout: 30s
     - line: logout
 ```
@@ -222,8 +222,8 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
     - control: c          # drop a half-typed line, stop a command that is still running
       delay_before: 2s    # Ctrl-C also discards what the device has not read yet: let it read first
     - line: logout        # the device's logout command
-    - control: "]"        # leave the console server, once the device asks for a login again
-      after: 'login:'
+    - control: "]"        # leave the console server, once the output ends with a login prompt
+      after: '[Ll]ogin: ?$'
       timeout: 30s
     - line: logout        # the jump host: this closes the connection, so nothing is waited for after it
 ```
@@ -231,7 +231,8 @@ Over plain `ssh`, closing the connection ends the login. Behind a console server
 - Start with the control character: after a failure the device may be in the middle of a command or have half a line typed, and `logout` would go there.
 - Give that control character a `delay_before`: a terminal throws away the input it has not handed on yet when Ctrl-C arrives, so a line sent just before it (the `line: exit` of a block's breakout, say) would be lost without a trace.
 - Send the logout with `line`, not `cmd`: a `cmd` waits for the next shell prompt, and a login prompt would be answered with the credentials again.
-- `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with `after: 'login:'`. Give the wait a `timeout`; the default is 300s.
+- `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with the same `after`. Give the wait a `timeout`; the default is 300s.
+- Wait for the prompt at the end of the output, not for the word: `'[Ll]ogin: ?$'` is `login:` or `Login:` with nothing after it. The bare word is also in `Last login: ...` and may be in a command's output, and would let the breakout go on with the console still logged in.
 
 If the login prompt doesn't come, the breakout fails at that step and the run fails with it: the CLI reports `Breakout failed in ...` and `Session may be left logged in: ...`, and exits with status 4 when the script itself completed (3 when it had failed already). A run that answered a `sendEach` prompt and has no `attach.breakout` at all logs a warning, `>> no logout: the run sent credentials (prompt 'login'), ...`. Autobot never sends a logout of its own. See [SPEC.md](SPEC.md#logging-out).
 
