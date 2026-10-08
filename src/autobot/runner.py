@@ -423,7 +423,10 @@ class Runner:
         """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
         so what comes after it still runs. It is kept, since the run can't count as completed."""
         self._cleanup += 1
+        held = signals.holding()  # a signal is ending the run: the next one is held back while it unwinds
         try:
+            if held:
+                signals.release()  # a breakout is what a second signal may end: also one that has waited
             self._session.reset_handlers()
             self.run_steps(steps)
         except BaseException as e:
@@ -433,6 +436,8 @@ class Runner:
             log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
         finally:
             self._cleanup -= 1
+            if held:
+                signals.hold()
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))
