@@ -95,7 +95,7 @@ Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the a
 Session may be left logged in: the script completed, but a breakout did not finish; the run sent credentials (prompt 'login')
 ```
 
-When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [SPEC.md](SPEC.md#a-breakout-that-doesnt-finish)). After a failed script the status stays 3.
+When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [Logging out](#logging-out)). After a failed script the status stays 3.
 
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
@@ -172,7 +172,7 @@ The `attach` block controls how autobot connects to the remote console.
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
-| `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
+| `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect); see [Logging out](#logging-out)                               |
 
 ### Lifecycle
 
@@ -183,7 +183,7 @@ The `attach` block controls how autobot connects to the remote console.
 5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
-The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. A breakout that fails after a script that completed fails the run, with exit status 4 (see [Errors and exit status](#errors-and-exit-status)). The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
+The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed. A breakout that fails after a script that completed fails the run, with exit status 4 (see [Logging out](#logging-out)).
 
 If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (`The command was not found or was not executable: <command>`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails (`connection closed while waiting for a shell prompt (...)`), and the breakout runs (its errors are logged).
 
@@ -201,10 +201,33 @@ attach:
       after: "attached to"
   timeout: 300s
   breakout:
+    - control: c
     - line: logout
     - control: "]"
+      after: 'login:'
+      timeout: 30s
     - line: logout
 ```
+
+### Logging out
+
+Over plain `ssh`, closing the connection ends the login. Behind a console server it doesn't: if autobot detaches without logging out, the device's console stays logged in for whoever attaches next. So a breakout that follows a login does three things: it clears the line, logs out, and waits for the proof.
+
+```yaml
+  breakout:
+    - control: c          # drop a half-typed line, stop a command that is still running
+    - line: logout        # the device's logout command
+    - control: "]"        # leave the console server, once the device asks for a login again
+      after: 'login:'
+      timeout: 30s
+    - line: logout        # the jump host: this closes the connection, so nothing is waited for after it
+```
+
+- Start with the control character: after a failure the device may be in the middle of a command or have half a line typed, and `logout` would go there.
+- Send the logout with `line`, not `cmd`: a `cmd` waits for the next shell prompt, and a login prompt would be answered with the credentials again.
+- `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with `after: 'login:'`. Give the wait a `timeout`; the default is 300s.
+
+If the login prompt doesn't come, the breakout fails at that step and the run fails with it: the CLI reports `Breakout failed in ...` and `Session may be left logged in: ...`, and exits with status 4 when the script itself completed (3 when it had failed already). A run that answered a `sendEach` prompt and has no `attach.breakout` at all logs a warning, `>> no logout: the run sent credentials (prompt 'login'), ...`. Autobot never sends a logout of its own. See [SPEC.md](SPEC.md#logging-out).
 
 ### `prepare` as an rc script
 

@@ -45,8 +45,16 @@ attach:
     - control: c
   timeout: 300s
   breakout:
+    # Log out of the switch before detaching: its console stays logged in when the connection
+    # just closes. Ctrl-C first, so that logout starts on an empty line: it drops a half-typed
+    # line and stops a command that is still running.
+    - control: c
     - line: logout
+    # Leave the console server (Ctrl-]) once the switch asks for a login again. If it doesn't
+    # within 30s, the breakout fails here, and the run reports that the console may be logged in.
     - control: "]"
+      after: 'login:'
+      timeout: 30s
 
 fn:
   is_system_running:

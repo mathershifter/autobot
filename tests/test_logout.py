@@ -252,6 +252,14 @@ def test_p5_87_without_a_confirmation_the_same_breakout_passes(fake_device: Fake
     assert "LOGOUT=" not in FakeDevice.read(log)
 
 
+def test_p5_87_logout_sent_with_cmd_logs_in_again(fake_device: FakeDevice):
+    """SPEC "Logging out": why the logout is a `line`. A `cmd` waits for the next shell prompt, the login
+    prompt comes instead, and the `sendEach` prompt answers it: the run is logged in again when it ends."""
+    doc, log = console(fake_device, [{"cmd": "true"}], [{"control": "c"}, {"cmd": "logout", "timeout": "5s"}])
+    run(doc)
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT=", "LOGIN=admin", "PASSWORD=secret"]
+
+
 # -- P5-88: part of a line is typed at the far side ----------------------------------------------------
 
 

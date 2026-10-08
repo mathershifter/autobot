@@ -212,7 +212,7 @@ fn:
 | `spawn` | yes | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Rendered as a Jinja2 template. It must not contain a NUL character (U+0000, `"\0"` in a double-quoted YAML string), anywhere: no command line can hold one. A literal NUL is a validation error in the schema and the models (`nul_character` at `attach.spawn`: `spawn must not contain a NUL character (\0): no command line can hold one`), and a `spawn` that renders to a command line with one (e.g. from a value in `vars`) is a `ValueError`, `attach.spawn rendered to a command line with a NUL character: '<template>'`, raised where an empty command is: when `spawn` is rendered (see the end of this entry). It must name a command: an empty or blank string (`''`, `'  '`) is a validation error. Blank means nothing but whitespace, and whitespace is the same fixed set of characters in the schema and the models: U+0009 to U+000D, U+001C to U+001F, the space, U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000 (so a byte order mark, U+FEFF, isn't whitespace). The error is `empty_command` at `attach.spawn`: `spawn must be a command, not an empty or blank string`. The command line is split into words as pexpect does it (whitespace separates words; `'...'`, `"..."` and `\` quote), and its first word, the command, must not be empty either: a `spawn` of nothing but quotes or a backslash (`"''"`, `'""'`, `'\'`) has no words at all, and `'' ls` has an empty first one. That is `empty_command` too, with the message ``spawn must name a command: the first word of <value> is empty (quotes or a backslash with nothing in them)`` (the value as a Python string literal), and only the models report it: a schema pattern can't split a command line (see [YAML Script Structure](#yaml-script-structure)). Whitespace before the command is not part of the command line. It is removed from the `spawn`, as written or once rendered, before the command line is checked, split and spawned, so `spawn: ' ssh host'` and `spawn: "{{ args.wrapper | default('') }} ssh host"` without a `wrapper` both run `ssh host` (pexpect by itself takes a leading space for an empty first word and finds no command). The progress line and the spawn-wait errors show the command line without that whitespace. What follows the whitespace must still name a command: `" ''"` and `" '' ls"` are `empty_command` like `"''"` and `"'' ls"`. A `spawn` with Jinja2 syntax (`{{`, `{%` or `{#`) is checked for this once it is rendered. A template that renders to an empty or blank string, or to a command line whose first word is empty, is a `ValueError`, `attach.spawn rendered to an empty command: '<template>'`, and nothing is spawned. `spawn` is rendered when the run starts, before `attach.prepare` runs, so that error, like any other template error in it, stops the run before `prepare`. The exception is a `spawn` that reads `env` (the template uses the variable `env` anywhere) in a script with `prepare`: `prepare` may set what it reads, so it is rendered once `prepare` has run, with the environment `prepare` left (`spawn: ssh {{ env.TARGET }}`, where `prepare` exports `TARGET`). Only its template syntax is checked before `prepare`; an empty command or an undefined variable stops the run after `prepare` has run, before anything is spawned. The rendered command line is printed (`>> attach: <spawn>`) and quoted in the spawn-wait errors, so a secret interpolated into `spawn` (`{{ env.TOKEN }}`) appears there: leave a secret in the environment, which the process inherits, rather than putting it on the command line. |
 | `timeout` | no | Timeout for the initial spawn (duration) |
 | `script` | no | Steps to run immediately after spawn (before main script) |
-| `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect) |
+| `breakout` | no | Steps to run in `finally` after the main script (cleanup/disconnect); see [Logging out](#logging-out) |
 
 The attach lifecycle:
 1. `attach.prepare` runs locally (if defined) — aborts on failure. With `prepare`, in this order:
@@ -251,7 +251,7 @@ Any output ends the spawn wait successfully, even if the process then exits. A p
 
 A breakout is what puts the remote back as the run found it: it logs out, leaves a console server, exits a sub-shell. Behind a console server that matters more than over plain `ssh`: closing an `ssh` connection ends the login at its far end, but a console stays logged in after Autobot is gone, for whoever attaches to it next. So a breakout that doesn't finish is never a detail of a run that otherwise went well.
 
-A breakout doesn't finish when one of its steps fails (the steps after it don't run), and when an interrupt or a signal ends it. That goes for `attach.breakout` and for the `breakout` of every block alike, and for every kind of failure: a command that fails, a wait that times out (the wait for the login prompt after a logout), a closed connection, and a line that is refused because part of an earlier one is typed at the far side (see [The length of a sent line](#the-length-of-a-sent-line)). Then:
+A breakout doesn't finish when one of its steps fails (the steps after it don't run), and when an interrupt or a signal ends it. That goes for `attach.breakout` and for the `breakout` of every block alike, and for every kind of failure: a command that fails, a wait that times out (the wait for the login prompt after a logout, see [Logging out](#logging-out)), a closed connection, and a line that is refused because part of an earlier one is typed at the far side (see [The length of a sent line](#the-length-of-a-sent-line)). Then:
 
 - Everything that runs after a breakout still runs: the rest of the script after a block, the breakouts further out, the restore of a block's prompts, and the close of the session.
 - The failure is logged where it happens (`>> breakout error (<type>): <message>`, `>> block breakout error (<type>): <message>`).
@@ -265,7 +265,41 @@ Either way the error that ends the run carries what the run may have left behind
 - The report of a breakout that didn't finish names the prompts (`the run sent credentials (prompt 'login')`).
 - A run that sent credentials and has **no `attach.breakout`** logs a warning where the breakout would have run, after `script` whether it failed or not: `>> no logout: the run sent credentials (prompt 'login'), and the script has no attach.breakout to log out with before the session is closed`. It is a warning only: the run completes, with status 0, since over plain `ssh` the close is the logout.
 
-Autobot never sends a logout of its own: it can't know the command of the device, or whether the session is in a state to take one. The breakout is where a script says how to log out, and the run fails when the breakout does.
+Autobot never sends a logout of its own: it can't know the command of the device, or whether the session is in a state to take one. The breakout is where a script says how to log out, and the run fails when the breakout does: see [Logging out](#logging-out) for the breakout to write.
+
+#### Logging out
+
+When `attach` gets to a prompt by logging in, the breakout logs out again, and makes sure of it. Over plain `ssh` the close of the connection ends the login. Behind a console server it doesn't: the console stays as the run left it, logged in, for whoever attaches next. Sending the word `logout` is not yet a logout: after a failure the device may be in the middle of a command, at a pager, in a configuration mode or with half a line typed, and the word goes somewhere else. So the breakout has three parts: clear the line, log out, and wait for the proof.
+
+```yaml
+attach:
+  spawn: ssh console-server
+  breakout:
+    - control: c          # drop a half-typed line, stop a command that is still running
+    - line: logout        # the device's own logout command
+    - block:              # wait for the proof: the console asks for a login again
+        name: logged out
+      after: 'login:'
+      timeout: 30s
+```
+
+- **Clear the line first.** The control character is the first step, so that the logout starts on an empty line whatever the script left. At an idle prompt Ctrl-C does nothing but print a new prompt. It drops a line that is typed and not entered, and stops a command that is still running, such as one whose step timed out. After a send that failed partway it is also what lets the breakout send a line at all (see [The length of a sent line](#the-length-of-a-sent-line)). Which key does this is the device's business, and so is anything Ctrl-C doesn't leave: a pager that wants `q`, a mode that must be left before `logout` is a command. The wait in the third part is what catches a breakout that got this wrong.
+- **Log out with `line`, not `cmd`.** A `cmd` waits for the next shell prompt, and what comes after a logout is a login prompt: a prompt with `sendEach` would answer it, and the run would log in again.
+- **Wait for the proof.** `after` waits before its step, so the wait for what the device shows once it is logged out goes on the step that follows the `logout` line. Where a step follows anyway, put it there (`control: "]"` below). Where the logout is the last thing the breakout does, a block with nothing but a name carries it, as above. Give the wait a `timeout`: the default is 300s. The pattern is one that only a logged-out console shows; the wait reads everything that hasn't been read yet, the output from before the `logout` line included.
+
+If the proof doesn't come, the step that waits fails, and with it the breakout: the steps after it don't run, the session is closed, and the run ends as one whose breakout didn't finish, with a report that the session may be left logged in and a status that isn't 0 (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
+
+A logout that closes the connection can't be waited for, and needs no proof: the last hop of a chain, or the only one over plain `ssh`. A step that waits after it fails with `connection closed ...`. So it is the last step of the breakout. Through a console server and a jump host, as in `examples/eos-bootstrap.autobot.yaml`:
+
+```yaml
+  breakout:
+    - control: c
+    - line: logout        # the switch
+    - control: "]"        # leave the console server, once the switch asks for a login again
+      after: 'login:'
+      timeout: 30s
+    - line: logout        # the jump host: this closes the connection
+```
 
 #### `prepare` as an rc script
 
@@ -616,7 +650,7 @@ The block lifecycle:
 4. `breakout` steps execute in `finally` (best-effort, errors logged to stderr)
 5. If `prompts` was defined, restore the previous session handlers
 
-Steps 4 and 5 run after step 2 or 3 fails, so the breakout runs and the prompts are restored even when `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. After a breakout that fails, the block ends as it would have without the failure: it completes, and the script goes on, or the error of `enter` or `script` propagates. The run can't complete any more, though: the block may have left what it entered (a sub-shell, a login on another system), so the run ends as one whose breakout didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
+Steps 4 and 5 run after step 2 or 3 fails, so the breakout runs and the prompts are restored even when `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. After a breakout that fails, the block ends as it would have without the failure: it completes, and the script goes on, or the error of `enter` or `script` propagates. The run can't end as a completed one, though: the block may have left what it entered (a sub-shell, a login on another system), so the run ends as one whose breakout didn't finish (see [A breakout that doesn't finish](#a-breakout-that-doesnt-finish)).
 
 A plugin that has a cleanup of its own runs it with `ctx.run_breakout(steps, what)`, as `attach` and `block` do: the response selection of the prompts starts over, the steps run, and an error ends them, is logged as `>> <what> error (<type>): <message>` (`what` is `breakout` by default) and counts as a breakout that didn't finish. The call returns after an error; an interrupt or a signal goes on through it.
 
