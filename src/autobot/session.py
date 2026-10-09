@@ -206,8 +206,14 @@ class Session:
 
     @property
     def posix(self) -> bool:
-        """Whether the shell prompt the session is at is one of a `posix` prompt: the shell there has `$?`."""
-        return self._at_prompt and self._scan(self._prompt, False, None, posix=True)[0]
+        """Whether the session is at a shell prompt of a `posix` prompt of the current handlers: the shell
+        there has `$?`. False once anything is sent, until the next wait that ends at such a prompt."""
+        h = self._shell()
+        return bool(h and h.posix)
+
+    def _shell(self) -> PromptHandler | None:
+        """The handler of the shell prompt the session is at, if it is at one."""
+        return self._scan(self._prompt, False, None)[2] if self._at_prompt else None
 
     def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
         """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
@@ -217,29 +223,26 @@ class Session:
         """
         return self._scan(text, whole, sent)[0]
 
-    def _scan(self, text: str, whole: bool, sent: str | None, posix: bool = False) -> tuple[bool, str | None]:
-        """`_is_shell_prompt`, and what get_prompt would have captured if `text` ends with a prompt it holds.
-
-        `posix`: and the prompt is one of a `posix` handler.
-        """
+    def _scan(self, text: str, whole: bool, sent: str | None) -> tuple[bool, str | None, PromptHandler | None]:
+        """`_is_shell_prompt`, what get_prompt would have captured if `text` ends with a prompt it holds, and
+        the handler of the shell prompt it would stop at."""
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
-            return False, None  # the next get_prompt reports it
+            return False, None, None  # the next get_prompt reports it
         read = ""
         held = False
         while True:
             found = [(m.start(), i, m.end()) for i, r in enumerate(regexes) if (m := r.search(text))]
             if not found:
-                return False, read if held else None
+                return False, read if held else None, None
             start, i, end = min(found)
             read += text[:start]
             held = False
             if 1 < i < self._stray:
                 h = next(h for h in self._handlers if h.start <= i < h.end)
-                is_return = h.is_return and (h.posix or not posix)
-                if not (is_return and _mid_echo(read, sent)):
-                    return is_return and (not whole or end == len(text)), None
+                if not (h.is_return and _mid_echo(read, sent)):
+                    return h.is_return and (not whole or end == len(text)), None, h if h.is_return else None
                 read += "\r"  # a prompt that may be written again inside the echo: get_prompt holds it
                 held = end == len(text)
             elif i == 0:
@@ -447,7 +450,7 @@ class Session:
         # session is at it, as after a prompt wait
         _, broke, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
         if not self._at_prompt and not self._cld.buffer:
-            at_prompt, read = self._scan(line, True, None if broke else self._sent)
+            at_prompt, read, _ = self._scan(line, True, None if broke else self._sent)
             if at_prompt:
                 self._at_prompt, self._prompt, self._pending = True, line, False
             elif read is not None:
@@ -553,16 +556,21 @@ class Session:
                 raise EOFError(f"connection closed while sending {what}") from e
             raise
 
-    def check_rc(self, timeout: float = 300) -> int:
+    def check_rc(self, timeout: float = 300, *, posix: bool = False) -> int:
+        """`posix`: the check is made only because the prompt is a `posix` one. A timeout then names it."""
         if not self._cld:
             raise RuntimeError("not attached")
 
+        h = self._shell() if posix else None
         self.sendline("echo __AUTOBOT_RC=$?", timeout=timeout)
         try:
             # the lookahead waits for what follows the digits: a code split across two reads is read whole
             self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
-        except BaseException:
+        except BaseException as e:
             self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
+            if h and h.posix and isinstance(e, TimeoutError):
+                # a regex of the prompt that also matches a CLI's prompt sends the check to the CLI
+                raise TimeoutError(f"{e} at prompt '{h.name}' (posix: true): is it a POSIX shell?") from e
             raise
 
         rc = int(self._cld.match.group(1))  # type: ignore

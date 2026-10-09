@@ -609,7 +609,7 @@ script:
   - cmd: show bogus    # raises because output matches '% .*'
 ```
 
-The patterns replace the exit code check of command lines, since such a CLI may have no `$?`. Where the device also has a shell (e.g. `bash` on EOS), give the shell's prompt its own entry with `posix: true`: a command that ends at that prompt gets both checks, the patterns and then the exit code. An embedded script's exit code is always checked.
+The patterns replace the exit code check of command lines, since such a CLI may have no `$?`. Where the device also has a shell (e.g. `bash` on EOS), give the shell's prompt its own entry with `posix: true`: a command that ends at that prompt gets both checks, the patterns and then the exit code. An embedded script's exit code is always checked. The `posix` regexes must not match the CLI's prompt: the check would be typed into the CLI and time out. An `exit` from one `posix` shell to another reads the status the inner shell ended with; see [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
 
 ```yaml
 prompts:
@@ -672,6 +672,8 @@ When a plugin sends text itself, it tells the session what kind of send it is:
 - `ctx.session.sendcontrol(char)` sends a control character, like a `control` step.
 
 Each send takes a `timeout` in seconds, by keyword: `ctx.session.sendline(text, timeout=timeout)`, `ctx.session.sendcontrol("c", timeout=timeout)`. It is 300 by default; pass on the `timeout` that `execute` was given, as the built-in steps do. A send that isn't complete in that time, because the far side has stopped reading, raises `TimeoutError` (`timed out after <timeout>s while sending a line ...`); see [SPEC.md](SPEC.md#the-length-of-a-sent-line).
+
+`ctx.session.posix` tells a plugin whether the shell has `$?`: it is true while the session is at a shell prompt of a `posix` prompt, i.e. right after a prompt wait that ended at one, and false once anything is sent.
 
 A plugin reports a failure the user can act on by raising `autobot.types.RunError` (what the device did; `autobot.steps.StepFailure` is one) or `autobot.types.ScriptError` (a bad value in the script). The CLI reports these as a failed run with the step's path, and likewise a `TimeoutError`, an `EOFError` or a pexpect error, whether the session raises it or the plugin does. Any other exception that the plugin's own code raises is reported as a bug in the plugin, with its traceback. That includes an `OSError`, `UnicodeError` or `RecursionError` of the plugin's own; the same error from Autobot's session underneath, e.g. a write to a pty that is gone, is a failed run (see [Errors and exit status](#errors-and-exit-status)).
 

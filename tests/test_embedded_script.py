@@ -282,7 +282,7 @@ def test_p2_15_embedded_errors_patterns_apply(tmp_path_hex: Path):
     assert_removed(tmp_path_hex)
 
 
-def test_p2_15_errors_do_not_replace_the_exit_code_check(tmp_path_hex: Path, sent: SentLog):
+def test_p2_25_errors_do_not_replace_the_exit_code_check(tmp_path_hex: Path, sent: SentLog):
     """SPEC "cmd": an embedded script runs in a POSIX shell, so with top-level `errors` its exit code is
     still checked. The step fails and the next one isn't sent."""
     with pytest.raises(StepFailure, match="^command returned exit code 3$"):
@@ -292,7 +292,7 @@ def test_p2_15_errors_do_not_replace_the_exit_code_check(tmp_path_hex: Path, sen
     assert_removed(tmp_path_hex)
 
 
-def test_p2_15_errors_and_exit_code_0_pass(tmp_path_hex: Path, sent: SentLog):
+def test_p2_25_errors_and_exit_code_0_pass(tmp_path_hex: Path, sent: SentLog):
     """No pattern matches and the script exits with 0: the step passes, and the run goes on."""
     out = run(
         [{"cmd": "#!/bin/sh\necho fine\n", "register": "out"}, {"cmd": "echo next", "register": "next"}],
@@ -304,7 +304,7 @@ def test_p2_15_errors_and_exit_code_0_pass(tmp_path_hex: Path, sent: SentLog):
     assert_removed(tmp_path_hex)
 
 
-def test_p2_15_errors_match_comes_before_the_exit_code(tmp_path_hex: Path, sent: SentLog):
+def test_p2_25_errors_match_comes_before_the_exit_code(tmp_path_hex: Path, sent: SentLog):
     """A pattern that matches fails the step as before, whatever the exit code, and no `$?` check is made."""
     for code in (0, 3):
         with pytest.raises(CommandError, match="^command error: % bad$"):
@@ -314,14 +314,14 @@ def test_p2_15_errors_match_comes_before_the_exit_code(tmp_path_hex: Path, sent:
     assert_removed(tmp_path_hex)
 
 
-def test_p2_15_assert_replaces_the_exit_code_check_with_errors(tmp_path_hex: Path, sent: SentLog):
+def test_p2_25_assert_replaces_the_exit_code_check_with_errors(tmp_path_hex: Path, sent: SentLog):
     """`assert` is the way to opt out of the exit code check, with `errors` defined too."""
     run([{"cmd": "#!/bin/sh\necho fine\nexit 3\n", "assert": "fine"}], errors=["% .*"])
     assert RC_PROBE not in sent.lines()
     assert_removed(tmp_path_hex)
 
 
-def test_p2_15_ignore_error_covers_the_exit_code_with_errors(tmp_path_hex: Path):
+def test_p2_25_ignore_error_covers_the_exit_code_with_errors(tmp_path_hex: Path):
     out = run(
         [
             {"cmd": "#!/bin/sh\necho fine\nexit 3\n", "ignore_error": True, "register": "out"},

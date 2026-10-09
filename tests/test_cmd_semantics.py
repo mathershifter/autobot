@@ -43,7 +43,7 @@ def test_p1_02_errors_without_assert_replace_rc_check(sent: SentLog):
     assert RC_PROBE not in sent.lines()
 
 
-def test_p1_02_errors_send_no_rc_check_to_a_cli_without_one(sent: SentLog, fake_device: FakeDevice):
+def test_p1_28_errors_send_no_rc_check_to_a_cli_without_one(sent: SentLog, fake_device: FakeDevice):
     """Why they replace it: a CLI that reports its errors as text may have no `$?`. Its command lines get no
     `echo __AUTOBOT_RC=$?`, which such a CLI would answer with an error and no exit code."""
     opts = ("--order", "none", "--then", "editor", "--prompt", "'sw#'", "--cols", "80", "--wrap", "0a")

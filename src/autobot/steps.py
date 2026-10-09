@@ -103,7 +103,7 @@ class CmdExecutor:
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
         elif probe and (shell or not ctx.config.errors or ctx.session.posix):
-            rc = ctx.session.check_rc(timeout=timeout)
+            rc = ctx.session.check_rc(timeout=timeout, posix=bool(ctx.config.errors) and not shell)
             if rc != 0:
                 raise StepFailure(f"command returned exit code {rc}")
 
