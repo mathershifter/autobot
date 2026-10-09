@@ -27,12 +27,16 @@ prompts:
     return: true
 
   - name: login
+    # Each regex ends with $: a login prompt is the last thing the switch has written. Without
+    # the $, the 'Last login: ...' line printed after a login is answered too, with the next user
+    # name. If a slow console delivers that line in pieces, put the host name in the first regex,
+    # e.g. 'switch1 login: ?$'.
     send:
       each: vars.creds
       fields:
-        - match: '(?:L|l)ogin:'
+        - match: '[Ll]ogin: ?$'
           field: username
-        - match: '(?:P|p)assword:'
+        - match: '[Pp]assword: ?$'
           field: password
 
 attach:
@@ -45,8 +49,17 @@ attach:
     - control: c
   timeout: 300s
   breakout:
+    # Log out of the switch before detaching: its console stays logged in if the connection just
+    # closes. Ctrl-C first, so that logout starts on an empty line. The 2s wait is there because
+    # Ctrl-C throws away whatever was sent and not read yet.
+    - control: c
+      delay_before: 2s
     - line: logout
+    # Leave the console server (Ctrl-]) only once the switch asks for a login again. If it doesn't
+    # within 30s, the breakout fails here and the run reports that the console may be logged in.
     - control: "]"
+      after: '[Ll]ogin: ?$'
+      timeout: 30s
 
 fn:
   is_system_running:

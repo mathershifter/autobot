@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import importlib.resources
 import json
 import os
+import select
 import signal
 import sys
 import traceback
 import urllib.parse
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -21,7 +24,7 @@ from yaml.reader import ReaderError
 from . import log
 from .models import Config
 from .registry import PluginError, registry
-from .runner import Runner, _kind, trail
+from .runner import BreakoutError, Runner, _kind, left, trail
 from .types import RunError, ScriptError, text
 
 if TYPE_CHECKING:
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
 
 EXIT_LOAD = 1  # the script can't be loaded: nothing ran
 EXIT_RUN = 3  # the run failed
+EXIT_BREAKOUT = 4  # the script completed, and a breakout did not finish
 EXIT_UNEXPECTED = 70  # a bug in autobot or a plugin (EX_SOFTWARE)
 EXIT_INTERRUPTED = 130  # Ctrl-C, where the process can't end from the signal itself
 
@@ -48,6 +52,9 @@ EXPECTED = (
 # traceback is, and from a plugin's own code they are the plugin's bug. A timeout isn't one of them.
 BROAD = (OSError, UnicodeError, RecursionError)
 CALLERS = 5
+# What is left when a run ends without its breakouts: after SIGTERM, SIGHUP, or a write of its output that failed
+UNKNOWN = "the device may be in an unknown state and may still be logged in"
+UNCLEAN = f"the session was closed without running the breakouts; {UNKNOWN}"
 
 
 class LoadError(SystemExit):
@@ -242,6 +249,45 @@ def _where(e: BaseException) -> None:
         log.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
+def _left(args: argparse.Namespace | None, e: BaseException) -> None:
+    """After the report of how the run ended: each breakout that did not finish, and what that may mean."""
+    state = left(e)
+    if state is None:
+        return
+    head = f"Breakout failed in {_visible(getattr(args, 'script', ''))}"
+    for error in state.breakouts:
+        if error is e:  # the interrupt that ended the breakout is what ended the run: reported already
+            continue
+        if isinstance(error, KeyboardInterrupt):
+            _traceback(args, error)
+            log.error(head, "interrupted")
+            _where(error)
+        elif isinstance(error, EXPECTED) and not (_broad(error) and _plugins_own(error)):
+            _traceback(args, error)
+            log.error(head, str(error) or type(error).__name__)
+            _where(error)
+            if _broad(error) and not getattr(args, "traceback", False):
+                log.hint("(run with --traceback for details)")
+        else:  # a bug, in Autobot or in a plugin, not something the device did: with its traceback
+            log.error(head, f"unexpected error ({type(error).__name__}): {error}")
+            _unexpected(error)  # type: ignore[arg-type]
+    completed = isinstance(e, BreakoutError)
+    if all(isinstance(error, EOFError) for error in state.breakouts):
+        # nothing more could be said to the far side: over plain ssh the close is the logout
+        head = "Connection closed before a breakout finished"
+        why = ("the script completed; " if completed else "") + "a console behind a console server may still be logged in"
+    else:
+        head = "Session may be left logged in"
+        why = ("the script completed, but " if completed else "") + "a breakout did not finish"
+    if state.logins:
+        names = f"prompt{'s' if len(state.logins) != 1 else ''} {', '.join(repr(name) for name in state.logins)}"
+        if state.pending:
+            why += f"; credentials were sent ({names}), and no shell prompt was reached after them"
+        else:
+            why += f"; the run sent credentials ({names})"
+    log.error(head, why)
+
+
 def _broad(e: BaseException) -> bool:
     return isinstance(e, BROAD) and not isinstance(e, TimeoutError)
 
@@ -296,6 +342,85 @@ def _interrupted() -> NoReturn:
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     os.kill(os.getpid(), signal.SIGINT)
     sys.exit(EXIT_INTERRUPTED)  # the signal is blocked or didn't arrive
+
+
+@contextlib.contextmanager
+def _ended_by_signal() -> Iterator[None]:
+    """While the session is open, SIGTERM and SIGHUP end the process at once, as they do by default,
+    after one line on stderr that says what that leaves. Nothing is cleaned up and nothing more is sent.
+
+    Only a signal that has its default action gets the handler (one that is ignored stays ignored, as
+    under `nohup`), and only in the main thread, where a handler can be set.
+    """
+    try:
+        fd = sys.stderr.fileno()
+    except (AttributeError, OSError, ValueError):  # no stderr: file descriptor 2 may be anything
+        fd = -1
+
+    def ended(signum: int, frame: object) -> None:
+        # one write, straight to the file descriptor, and only if it takes one now: nothing here waits,
+        # raises or touches the run. A message that can't be written is not written
+        try:
+            # a background job that writes to its terminal is stopped by this signal (`stty tostop`)
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+            if select.select([], [fd], [], 0)[1]:
+                start = "\n" if log.open_line() else ""
+                os.write(fd, f"{start}Interrupted ({signal.Signals(signum).name}): {UNCLEAN}\n".encode())
+        except (OSError, ValueError):
+            pass
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+        os._exit(128 + signum)  # the signal didn't arrive
+
+    replaced = []
+    try:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is signal.SIG_DFL:
+                signal.signal(sig, ended)
+                replaced.append(sig)
+    except ValueError:  # not the main thread
+        pass
+    try:
+        yield
+    finally:
+        for sig in replaced:
+            signal.signal(sig, signal.SIG_DFL)
+
+
+def _lost(args: argparse.Namespace, e: log.OutputLost) -> None:
+    """Report a run whose output was lost, on stderr if stderr can still be written, with the breakouts
+    that didn't finish."""
+    state = left(e)
+    if state and e in state.breakouts:
+        how = "the session was closed before the breakouts finished"
+    elif trail(e):
+        how = "the session was closed without running the breakouts"
+    else:  # at the spawn, or at the close, after the breakouts
+        how = "the session was closed"
+    with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
+        _traceback(args, e)
+        log.error(f"Run failed in {_visible(args.script)}", f"{e}; {how}; {UNKNOWN}")
+        _where(e)
+        _left(args, e)
+
+
+def _discard_unwritten() -> bool:
+    """Before the process exits: what a stream still holds and can't be written is discarded, by pointing
+    its file descriptor to /dev/null, and the answer is whether there was any. The interpreter flushes
+    the streams as it exits, and a flush that fails there prints a traceback of its own and turns the
+    exit status into 120."""
+    failed = False
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError) as e:
+            failed = failed or isinstance(e, OSError)
+            with contextlib.suppress(AttributeError, OSError, ValueError):
+                null = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(null, stream.fileno())
+                os.close(null)
+                stream.flush()
+    return failed
 
 
 def _discover(args: argparse.Namespace | None = None) -> None:
@@ -357,7 +482,16 @@ def _cmd_run(args):
     _discover(args)
     runner = _runner(args, _config(args.script))
     try:
-        runner.run()
+        with contextlib.ExitStack() as session:
+            # from the spawn on: until then `attach.prepare` deals with a signal itself
+            runner.before_attach = lambda: session.enter_context(_ended_by_signal())
+            runner.run()
+    except log.OutputLost as e:
+        _lost(args, e)
+        raise
+    except BreakoutError as e:
+        _left(args, e)
+        sys.exit(EXIT_BREAKOUT)
     except EXPECTED as e:
         if _broad(e) and _plugins_own(e):
             raise  # a bug in the plugin, like any other exception of its own
@@ -369,6 +503,7 @@ def _cmd_run(args):
         _where(e)
         if _broad(e) and not args.traceback:
             log.hint("(run with --traceback for details)")
+        _left(args, e)
         sys.exit(EXIT_RUN)
     log.say("run completed", "ok")
 
@@ -427,7 +562,8 @@ def _cmd_schema(args: argparse.Namespace | None = None):
     except SchemaError as e:
         log.error("Cannot read the schema", str(e))
         raise LoadError from None
-    print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2))
+    with log.writing(sys.stdout):
+        print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2), flush=True)
 
 
 def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> dict[str, Any]:
@@ -460,6 +596,24 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 
 def main():
+    code: Any = None
+    log.clear()
+    try:
+        _main()
+    except log.OutputLost:  # reported where there was something to say, and a stream to say it on
+        code = EXIT_RUN
+    except SystemExit as e:
+        code = 0 if e.code is None else e.code
+    finally:
+        # output that could not be written is a failure of any command that had not failed already
+        if _discard_unwritten() and not code:
+            code = EXIT_RUN
+        log.clear()
+    if code is not None:
+        sys.exit(code)
+
+
+def _main():
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -516,9 +670,11 @@ def main():
         _traceback(args, e)
         log.error("Interrupted", style=log.WARN)
         _where(e)
+        _left(args, e)
         _interrupted()
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
         _unexpected(e)
+        _left(args, e)
         sys.exit(EXIT_UNEXPECTED)
 
 

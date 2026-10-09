@@ -1,19 +1,22 @@
-"""P6-19/20, P6-74, P6-76: every example validates against the models and the schema, and its shell prompt regexes read whole
-prompts and nothing else."""
+"""P6-19/20, P6-74, P6-76, P6-112, P6-113: every example validates against the models and the schema, its shell prompt regexes read
+whole prompts and nothing else, and its breakout logs out and makes sure of it."""
 
 from __future__ import annotations
 
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from conftest import ROOT, run_vars
+from conftest import ROOT, SHELL_PROMPT, FakeDevice, SentLog, make_doc, run_vars
 
 from autobot.cli import UniqueKeyLoader
 from autobot.models import Config
+from autobot.runner import BreakoutError, Runner, left, trail
 from autobot.screen import ANSI_ESCAPE_RE, STRAY_RE
 from autobot.session import PromptHandler, Session
 
@@ -331,3 +334,189 @@ def test_example_prompt_regex_registers_clean_output(name: str, ps1: str):
     )
     assert out["a"] == "hello"
     assert out["b"] == "again hello"
+
+
+# -- P6-112: the examples log out, and make sure of it -----------------------------------------------
+
+LOGIN = {
+    "name": "login",
+    "send": {"each": "vars.creds", "fields": [{"match": "[Ll]ogin:", "field": "username"}, {"match": "Password:", "field": "password"}]},
+}
+CREDS = {"creds": [{"username": "admin", "password": "secret"}]}
+CONSOLE = ("--accept", "admin:secret", "--logout", "--escape")
+# after a `line` that starts with `echo rea''dy`: the wait for that output, so the shell has read the line
+# before the breakout's Ctrl-C, which would discard a line that is still unread
+RUNS = {"block": {"name": "the program runs"}, "after": "ready\r\n", "timeout": "10s"}
+
+
+def breakout_of(path: Path) -> list[dict[str, Any]]:
+    return load(path)["attach"]["breakout"]
+
+
+def test_p6_112_examples_are_valid_for_the_cli():
+    """`autobot validate` on both examples: each is `valid`."""
+    res = subprocess.run(
+        [sys.executable, "-W", "ignore", "-m", "autobot.cli", "validate", *map(str, EXAMPLES)],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert res.stderr.splitlines() == [f"{path}: valid" for path in EXAMPLES]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_112_example_breakout_clears_the_line_logs_out_and_waits_for_the_login_prompt(path: Path):
+    """SPEC "Logging out": the shape of each example's `attach.breakout`. A control character first, after
+    a pause in which the far side reads what was sent before it, the logout as a `line`, the wait for
+    a login prompt at the end of the output on the step after it, with a timeout, and no `cmd`, whose
+    prompt wait would answer the login prompt."""
+    steps = breakout_of(path)
+    assert steps[0] == {"control": "c", "delay_before": "2s"} and steps[1] == {"line": "logout"}
+    assert steps[2] == {"control": "]", "after": "[Ll]ogin: ?$", "timeout": "30s"}
+    assert not any("cmd" in step for step in steps)
+    assert steps[3:] == ([{"line": "logout"}] if path.name.startswith("eos") else [])
+
+
+def console_server(
+    fake_device: FakeDevice, path: Path, script: list[dict[str, Any]], wait: str | None = None, opts: tuple[str, ...] = ()
+) -> tuple[dict[str, Any], Path]:
+    """A stand-in for what the example attaches to: the fake console, which asks for a login, runs a
+    real bash, asks for the login again after `logout`, and ends at Ctrl-], like the client of a console
+    server. For the EOS example it is started from a login shell, the jump host. The breakout is the
+    example's own; `wait` shortens the timeout of its wait."""
+    device, log = fake_device(*CONSOLE, *opts)
+    breakout = breakout_of(path)
+    if wait:
+        breakout[2]["timeout"] = wait
+    kw: dict[str, Any] = {"spawn": device}
+    if path.name.startswith("eos"):
+        kw = {
+            "spawn": "bash --norc --noprofile -i -l",
+            # the wait for the device's banner reads past the jump host's own prompt, as the example's
+            # `after: "attached to"` does
+            "attach_script": [{"line": device}, {"block": {"name": "attached"}, "after": "Welcome"}],
+        }
+    return make_doc(script, prompts=[SHELL_PROMPT, LOGIN], vars=CREDS, breakout=breakout, **kw), log
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "script",
+    [[{"cmd": "echo configured"}], [{"cmd": "false"}], [{"cmd": "sleep 30", "timeout": "1s"}], [{"cmd": "true"}, {"line": "echo half-typed \\"}]],
+    ids=["completed", "failed", "command-running", "half-typed"],
+)
+def test_p6_112_example_breakout_logs_out_and_leaves_the_console_server(
+    fake_device: FakeDevice, sent: SentLog, path: Path, script: list[dict[str, Any]]
+):
+    """Each example's breakout, as it is written, against the stand-in: the device logs the logout, which
+    the breakout waits for, and then the Ctrl-] is sent, and for the EOS example the jump host's `logout`.
+    Nothing waits for those two to be read before the session is closed, so nothing is asserted of what
+    they do. After a script that completed, one that failed, one whose command is still running and one
+    that left a line typed."""
+    doc, log = console_server(fake_device, path, script)
+    runner = Runner(Config.model_validate(doc), {})
+    try:
+        runner.run()
+    except (RuntimeError, TimeoutError) as e:
+        assert left(e) is None, e
+    assert FakeDevice.read(log)[:3] == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
+    breakout = [("ctrl", "c"), ("line", "logout"), ("ctrl", "]"), *([("line", "logout")] if path.name.startswith("eos") else [])]
+    assert sent[-len(breakout):] == breakout
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_112_example_breakout_fails_when_the_logout_does_not_happen(fake_device: FakeDevice, sent: SentLog, path: Path):
+    """A program that ignores Ctrl-C takes the `logout` line: no login prompt comes, the breakout fails at
+    the step that waits, and the steps after it (the Ctrl-], the jump host's logout) are not sent."""
+    doc, log = console_server(fake_device, path, [{"cmd": "trap '' INT"}, {"line": "echo rea''dy; cat"}, RUNS], wait="3s")
+    with pytest.raises(BreakoutError, match=r"^a breakout did not finish \(TimeoutError\): timed out after 3.0s waiting for the after pattern ") as ei:
+        Runner(Config.model_validate(doc), {}).run()
+    assert [ref.path for ref in trail(ei.value)] == ["attach.breakout.2"]
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
+    assert sent[-2:] == [("ctrl", "c"), ("line", "logout")]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_112_example_breakout_takes_login_with_a_capital_for_the_prompt(fake_device: FakeDevice, path: Path):
+    """A device that asks `Login: `: the example's wait is met, as its own login prompt is."""
+    doc, log = console_server(fake_device, path, [{"cmd": "echo configured"}], opts=("--capital",))
+    Runner(Config.model_validate(doc), {}).run()
+    assert FakeDevice.read(log)[:3] == ["LOGIN=admin", "PASSWORD=secret", "LOGOUT="]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_112_example_breakout_is_not_met_by_text_with_the_word_in_it(fake_device: FakeDevice, path: Path):
+    """Unread output with `login:` in it, and a program that takes the `logout` line: the example's wait
+    is for a prompt at the end of the output, so the breakout fails, and the device's log has no logout."""
+    script = [{"cmd": "trap '' INT"}, {"line": "echo rea''dy; echo Last login: Tue Oct 7; cat"}, RUNS]
+    doc, log = console_server(fake_device, path, script, wait="3s")
+    with pytest.raises(BreakoutError):
+        Runner(Config.model_validate(doc), {}).run()
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
+
+
+# -- P6-113: the examples' login prompt answers a login prompt, and nothing else --------------------------
+
+TWO = {"creds": [{"username": "admin", "password": "secret"}, {"username": "root", "password": "other"}]}
+
+
+def login_of(path: Path) -> dict[str, Any]:
+    return next(p for p in load(path)["prompts"] if p["name"] == "login")
+
+
+def logged_in(fake_device: FakeDevice, path: Path, *opts: str) -> tuple[dict[str, Any], Path]:
+    """A script with the example's own `login` prompt and two credential sets, against the fake console."""
+    device, log = fake_device("--accept", "admin:secret", *opts)
+    return make_doc([{"cmd": "echo in", "register": "out"}], spawn=device, prompts=[SHELL_PROMPT, login_of(path)], vars=TWO), log
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_113_example_login_prompt_is_one_at_the_end_of_the_output(path: Path):
+    assert login_of(path)["send"]["fields"] == [
+        {"match": "[Ll]ogin: ?$", "field": "username"},
+        {"match": "[Pp]assword: ?$", "field": "password"},
+    ]
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "opts",
+    [(), ("--last-login",), ("--capital",), ("--lower-password",), ("--capital", "--lower-password", "--last-login"), ("--same-chunk", "--last-login")],
+    ids=["plain", "last-login-banner", "Login", "password", "all-three", "banner-and-prompt-in-one-write"],
+)
+def test_p6_113_example_login_prompt_answers_the_prompts_and_not_the_banner(fake_device: FakeDevice, sent: SentLog, path: Path, opts: tuple[str, ...]):
+    """SPEC "sendEach": `Login:` and `login:`, `Password:` and `password:` are answered, once each, and
+    the `Last login: ...` line that follows is not: the second credential set is never sent, and the
+    command runs at the shell."""
+    doc, log = logged_in(fake_device, path, *opts)
+    runner = Runner(Config.model_validate(doc), {})
+    runner.run()
+    assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
+    assert sent.lines()[:3] == ["admin", "secret", "echo in"] and "root" not in sent.lines()
+    assert runner.config.vars["out"] == "in"
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_113_banner_that_arrives_in_pieces_is_the_documented_limit(fake_device: FakeDevice, sent: SentLog, path: Path):
+    """The limit SPEC names: the device writes `Last login: `, and the rest two seconds later. While the
+    first piece is the last thing that has arrived, it is a login prompt for the regex, and the second
+    user name is sent, to the shell. (With the host name in the regex it would not be.)"""
+    doc, _ = logged_in(fake_device, path, "--last-login", "--split-banner", "2")
+    try:
+        Runner(Config.model_validate(doc), {}).run()
+    except (RuntimeError, TimeoutError):
+        pass  # what the shell makes of a user name is not the point
+    assert sent.lines()[:3] == ["admin", "secret", "root"]
+
+
+@pytest.mark.parametrize("pattern", ["(?:L|l)ogin:", "login:"])
+def test_p6_113_login_regex_without_the_end_answers_the_banner(fake_device: FakeDevice, sent: SentLog, pattern: str):
+    """What the `$` is for: a regex that finds the word anywhere takes `Last login: ...` for a second login
+    prompt and types the next user name at the shell."""
+    device, log = fake_device("--accept", "admin:secret", "--last-login")
+    login = {"name": "login", "send": {"each": "vars.creds", "fields": [{"match": pattern, "field": "username"}, {"match": "(?:P|p)assword:", "field": "password"}]}}
+    doc = make_doc([{"cmd": "echo in", "timeout": "3s"}], spawn=device, prompts=[SHELL_PROMPT, login], vars=TWO)
+    try:
+        Runner(Config.model_validate(doc), {}).run()
+    except (RuntimeError, TimeoutError):
+        pass
+    assert sent.lines()[:3] == ["admin", "secret", "root"]

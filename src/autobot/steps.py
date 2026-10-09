@@ -216,11 +216,7 @@ class BlockExecutor:
             finally:
                 if step.block.breakout:
                     log.say(f"block breakout: {step.block.name}", "group")
-                    try:
-                        ctx.session.reset_handlers()
-                        ctx.run_steps(step.block.breakout)
-                    except Exception as e:  # noqa: BLE001 - breakout is best-effort
-                        log.say(f"block breakout error ({type(e).__name__}): {e}", "warn")
+                    ctx.run_breakout(step.block.breakout, "block breakout")
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)

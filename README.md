@@ -85,6 +85,23 @@ The first line says what went wrong, the `at` line where: the step's path in the
 
 Ctrl-C stops the run the same way: the breakouts run, the session is closed, and the CLI prints `Interrupted` and the step it stopped in. The process then ends from the interrupt signal itself, so a shell loop that runs `autobot` once per device stops there instead of going on to the next device.
 
+A breakout that fails is reported as well, after whatever else ended the run, and the last line says what it may mean:
+
+```
+Breakout failed in upgrade.autobot.yaml: timed out after 30.0s waiting for the after pattern '[Ll]ogin: ?$'
+  at attach.breakout.2 (control)
+Session may be left logged in: the script completed, but a breakout did not finish; the run sent credentials (prompt 'login')
+```
+
+When that is all that went wrong, the exit status is 4, not 0: the script's work is done, but the console may still be logged in (see [Logging out](#logging-out)). After a failed script the status stays 3. A run that answered a `sendEach` prompt and ran no breakout after it logs a warning, `>> no logout: ...`; its exit status is not affected.
+
+**Stopping a run.** Ctrl-C is the way to stop a run and have it log out: `kill -INT <pid>` and `timeout -s INT 10m autobot ...` do the same. Three endings run no breakout at all:
+
+- `SIGTERM` (a plain `kill` or `timeout`, `systemctl stop`, a cancelled CI job) and `SIGHUP` (the terminal or ssh session that runs `autobot` goes away) end the process at once, after one line: `Interrupted (SIGTERM): the session was closed without running the breakouts; the device may be in an unknown state and may still be logged in`.
+- Output that can't be written ends the run at once with status 3: `autobot script | head -1`, a log collector that exits, a full disk. The report is `Run failed in ...: cannot write stdout: [Errno 32] Broken pipe; the session was closed without running the breakouts; ...`.
+
+After these a console behind a console server may still be logged in, a command may still be running, and an embedded script's temp file may be left on the device. So don't pipe the output into something that may exit before the run does (redirect it to a file, or use `| tee log`), and run a long job where a closed terminal doesn't reach it: in `tmux` or `screen`, or under `nohup`, which makes the run ignore the hang-up and sends its output to `nohup.out`. See [SPEC.md](SPEC.md#a-run-that-ends-without-its-breakouts).
+
 Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpected error in Autobot: ...` or `Unexpected error in plugin '<key>': ...`) and prints the Python traceback to report.
 
 | Status | Meaning |
@@ -92,9 +109,11 @@ Anything else is a bug in Autobot or in a plugin. The CLI says which (`Unexpecte
 | 0      | The run completed; `autobot validate` found every script valid |
 | 1      | The script couldn't be loaded; nothing ran. `autobot validate` found a script invalid |
 | 2      | Malformed command line |
-| 3      | The run failed |
+| 3      | The run failed, or its output could not be written |
+| 4      | The script completed, but a breakout didn't finish: the session may have been left logged in |
 | 70     | Unexpected error (a bug in Autobot or a plugin) |
-| 130    | Interrupted (Ctrl-C): the process ends from `SIGINT`, which a shell reports as 130 |
+| 130    | Interrupted (Ctrl-C), after the breakouts: the process ends from `SIGINT`, which a shell reports as 130 |
+| 143, 129 | Ended by `SIGTERM` or `SIGHUP`, without the breakouts: the process ends from the signal, which a shell reports as 143 or 129 |
 
 `--traceback` also prints the Python traceback of an error that is normally reported without one. The report of an operating-system, encoding or recursion error ends with `(run with --traceback for details)`, since such an error may have more behind it than its message says. See [SPEC.md](SPEC.md#errors-while-the-script-runs) for the full list of errors.
 
@@ -158,7 +177,7 @@ The `attach` block controls how autobot connects to the remote console.
 | `spawn`    | yes      | Command to spawn via pexpect (e.g. `ssh host`, `telnet host port`). Must name a command, as written or once rendered: not empty or blank, and not just quotes or a backslash (`''`) |
 | `timeout`  | no       | Timeout for the initial spawn                                                                                                       |
 | `script`   | no       | Steps to run immediately after spawn (before main script)                                                                           |
-| `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect)                                                                |
+| `breakout` | no       | Steps to run in `finally` after the main script (cleanup/disconnect); see [Logging out](#logging-out)                               |
 
 ### Lifecycle
 
@@ -169,7 +188,7 @@ The `attach` block controls how autobot connects to the remote console.
 5. `attach.breakout` steps execute (best-effort, errors logged to stderr)
 6. Session closed
 
-The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed.
+The session is always closed, even if the initial spawn wait times out or the breakout fails. A breakout error never replaces an error raised by the script; the original error is what propagates. The same goes for a session that can't be closed (a process that survives being killed): it is logged as `>> close error (...)` next to the script's error, and is the run's error only when nothing else failed. A breakout that fails after a script that completed fails the run, with exit status 4 (see [Logging out](#logging-out)).
 
 If the initial spawn wait fails, nothing after it runs, including `attach.breakout`: no step has sent anything for the breakout to undo. That covers `attach.timeout` expiring before any output (`timed out after <timeout>s waiting for the first output from '<spawn>' (attach.timeout)`), the process exiting before any output (`connection closed before any output from '<spawn>' (exit status <n>)`, or `(killed by <SIGNAL>)`), and a spawn command that isn't found (`The command was not found or was not executable: <command>`). The process is killed and its pty closed, which drops a silent `ssh` or `telnet` connection. `attach.prepare` has already run, and nothing undoes it. A process that prints a banner and then exits has passed the spawn wait: the first step fails (`connection closed while waiting for a shell prompt (...)`), and the breakout runs (its errors are logged).
 
@@ -187,10 +206,38 @@ attach:
       after: "attached to"
   timeout: 300s
   breakout:
+    - control: c
+      delay_before: 2s
     - line: logout
     - control: "]"
+      after: '[Ll]ogin: ?$'
+      timeout: 30s
     - line: logout
 ```
+
+### Logging out
+
+Over plain `ssh`, closing the connection ends the login. Behind a console server it doesn't: if autobot detaches without logging out, the device's console stays logged in for whoever attaches next. So a breakout that follows a login does three things: it clears the line, logs out, and waits for the login prompt.
+
+```yaml
+  breakout:
+    - control: c          # drop a half-typed line, stop a command that is still running
+      delay_before: 2s    # Ctrl-C also discards what the device has not read yet: let it read first
+    - line: logout        # the device's logout command
+    - control: "]"        # leave the console server, once the output ends with a login prompt
+      after: '[Ll]ogin: ?$'
+      timeout: 30s
+    - line: logout        # the jump host: this closes the connection, so nothing is waited for after it
+```
+
+- Start with the control character: after a failure the device may be in the middle of a command or have half a line typed, and `logout` would go there.
+- This breakout takes about 2.5 seconds on every run (the `delay_before` and the half second a line waits after a control character), plus the time the device takes to show its login prompt.
+- Give that control character a `delay_before`: a terminal throws away the input it has not handed on yet when Ctrl-C arrives, so a line sent just before it (the `line: exit` of a block's breakout, say) would be lost without a trace.
+- Send the logout with `line`, not `cmd`: a `cmd` waits for the next shell prompt, and a login prompt would be answered with the credentials again.
+- `after` waits before its step, so the step after the `logout` line carries the wait for the login prompt. If no step follows, use a block with nothing but a name: `- block: {name: logged out}` with the same `after`. Give the wait a `timeout`; the default is 300s.
+- Wait for the prompt at the end of the output, not for the word: `'[Ll]ogin: ?$'` is `login:` or `Login:` with nothing after it. The bare word is also in `Last login: ...` and may be in a command's output, and would let the breakout go on with the console still logged in.
+
+If the login prompt doesn't come, the breakout fails at that step and the run fails with it: the CLI reports `Breakout failed in ...` and `Session may be left logged in: ...`, and exits with status 4 when the script itself completed (3 when it had failed already). A run that answered a `sendEach` prompt and after that finished no breakout at all, neither a block's nor `attach.breakout`, logs a warning: `>> no logout: the run sent credentials (prompt 'login'), and no breakout ran after them to log out before the session is closed`. When the connection had already closed, the last line says that instead (`Connection closed before a breakout finished: a console behind a console server may still be logged in`). Autobot never sends a logout of its own. A breakout also runs when the run was stopped before the login was done; its `logout` is then typed at the login or password prompt, which the device logs as a failed login. See [SPEC.md](SPEC.md#logging-out).
 
 ### `prepare` as an rc script
 
@@ -257,13 +304,15 @@ prompts:
     send:
       each: vars.creds
       fields:
-        - match: ['(?:L|l)ogin:', 'Username:']
+        - match: ['[Ll]ogin: ?$', 'Username: ?$']
           field: username
-        - match: '(?:P|p)assword:'
+        - match: '[Pp]assword: ?$'
           field: password
 ```
 
-This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
+End a login regex with `$`: the prompt is the last thing the device has written. Without it, the `Last login: ...` line that follows a login is taken for a second login prompt and answered with the next user name. If a slow console delivers that line in pieces, put the host name in the regex (`'switch1 login: ?$'`); see [SPEC.md](SPEC.md#sendeach).
+
+This resolves `vars.creds`, and each item is one login attempt (credential cycling). Each entry sends its field of the current item when one of its regexes matches. When the same entry matches again (e.g. `login:` after a rejected password, or `Password:` twice), autobot moves on to the next item. A password-only login such as `ssh admin@host` works with the same prompt. If autobot must move on and no item is left, the step fails with `responses exhausted`. The prompt is then still waiting for an answer, so autobot presses no Return at it on its own (that would be an empty user name or password) until the script sends something. See [SPEC.md](SPEC.md#response-selection) for the exact rules.
 
 Without `fields`, each item (a string or number) is sent as it is, in answer to any of the prompt's `expect` regexes. A boolean is never sent: an unquoted `true`, `yes` or `on` as an item or a field's value is an error that tells you to quote it (`'true'`, `'yes'`):
 
@@ -410,7 +459,7 @@ The block lifecycle:
 
 When the session is sitting at a shell prompt, the swap and the restore keep it there if the new prompts recognize that prompt, so the next `cmd` sends at once: no 5s idle wait and no extra newline. If they don't, the next `cmd` waits for one of the new prompts, and an idle shell never prints one. So enter a sub-CLI whose prompt the block's prompts expect with `line`, not `cmd`, and leave it in the breakout (e.g. `line: exit`). See [SPEC.md](SPEC.md#prompt-state-across-a-swap).
 
-Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`.
+Steps 4 and 5 run even if `enter` fails, and step 5 runs even if the breakout fails. A breakout error never replaces an error raised by `enter` or `script`. The script goes on after a block whose breakout failed, but the run then ends with exit status 4, like a run whose `attach.breakout` failed: the block may have left what it entered.
 
 ```yaml
 - block:
@@ -457,6 +506,8 @@ Sends text without waiting for a prompt before or after. Use for commands that w
 ```
 
 Each value is one character: a letter (either case) or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. Anything else (`""`, `"ab"`, `"1"`) fails validation with `control_char` when the script is loaded.
+
+Ctrl-C, Ctrl-\\ and Ctrl-Z make the far side's terminal throw away the input it holds, which includes a line that was sent just before and not read yet. Give such a `control` an `after` or a `delay_before` when it follows a `line` (see [Logging out](#logging-out)). The other way round autobot waits by itself: a line is sent half a second after a control character at the earliest, because a shell that is still handling the interrupt would drop the start of it.
 
 ## Common Step Properties
 
@@ -585,7 +636,7 @@ Every `call` target must be defined in `fn`. This is checked when the script is 
 
 ## Plugins
 
-A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)` and `ctx.run_steps(...)`.
+A plugin adds a step type. It is an executor class registered in the `autobot.steps` entry-point group, with a `key` (the step's YAML key), a `model` (a pydantic model of the step's own fields) and `execute(step, ctx, timeout)`. The model can't be a built-in step's model or `PluginStep`; a subclass of one is fine, and two plugins may share a model, since a plugin step is dispatched by its key. `ctx` gives it the session (`ctx.session`), the config, `ctx.render(...)`, `ctx.run_steps(...)` and, for a cleanup of its own that must not stop what comes after it, `ctx.run_breakout(steps, what)`: an error in those steps is logged as `>> <what> error (...)` and fails the run as a failed breakout does.
 
 `ctx.render(template)` renders text that is sent or stored, where an expression that gives a boolean is a template error (see [Templating](#templating)). A plugin that renders a condition, to read the result as a yes or no, calls `ctx.render(template, condition=True)`, as the runner does for `when`. The rules for keys and model fields are in [SPEC.md](SPEC.md#common-step-properties).
 

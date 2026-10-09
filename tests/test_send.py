@@ -4,6 +4,7 @@ refused when the terminal it is typed on would cut it (P8-43 to P8-47)."""
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import shutil
@@ -1347,3 +1348,165 @@ def test_p8_51_timeout_of_a_send_is_given_by_keyword(attach):
     with pytest.raises(TypeError):
         s.sendline("true", False, 5)  # type: ignore[misc]
     s.sendcontrol("c", timeout=5)
+
+
+# -- P8-54: a line after a control character ---------------------------------------------------------------
+
+
+def test_p8_54_line_after_a_control_character_waits_for_the_far_side(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "control": a shell drops the line it is reading when it gets to an interrupt, and what it has
+    read of the next line by then goes with it. So a line is sent `session.CONTROL_SETTLE` after a
+    control character at the earliest; a line that follows later, another control character, and a line
+    that follows a line wait for nothing."""
+    from autobot import session as session_mod
+
+    s = shell_session
+    s.get_prompt(timeout=5)
+    assert s._cld is not None
+    fd, write, times = s._cld.child_fd, os.write, []
+
+    def os_write(target, data):
+        if target == fd:
+            times.append((time.monotonic(), bytes(data)))
+        return write(target, data)
+
+    monkeypatch.setattr(os, "write", os_write)
+    s.sendcontrol("c", timeout=5)
+    s.sendcontrol("u", timeout=5)
+    s.sendline("echo one", timeout=5)
+    s.sendline("echo two", solicit=True, timeout=5)
+    time.sleep(session_mod.CONTROL_SETTLE + 0.1)
+    s.sendcontrol("u", timeout=5)
+    time.sleep(session_mod.CONTROL_SETTLE + 0.1)
+    s.sendline("echo three", timeout=5)
+    (c, _), (u, _), (one, _), (two, _), (u2, _), (three, _) = times
+    assert u - c < 0.05  # a control character follows one at once
+    assert session_mod.CONTROL_SETTLE <= one - u < session_mod.CONTROL_SETTLE + 0.3  # the line waits out the rest
+    assert two - one < 0.2  # only the pause before every send
+    assert three - u2 < session_mod.CONTROL_SETTLE + 0.3  # the time had passed: no more is added
+    assert [data for _, data in times] == [b"\x03", b"\x15", b"echo one\n", b"echo two\n", b"\x15", b"echo three\n"]
+    assert session_mod.CONTROL_SETTLE == 0.5
+
+
+def test_p8_54_new_child_waits_for_no_control_character(shell_session: Session):
+    """What is known of a control character sent to one process doesn't apply to the next."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendcontrol("u", timeout=5)
+    assert s._control_at > 0
+    s.detach()
+    assert s._control_at == -math.inf
+
+
+# -- P8-55: an interrupt before a byte is sent --------------------------------------------------------------
+
+
+def interrupting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """From here on, the pause before a line is sent ends with an interrupt."""
+
+    def sleep(seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(time, "sleep", sleep)
+
+
+def test_p8_55_interrupt_before_a_line_is_sent_leaves_the_session_where_it_was(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "control": a line waits out the settle time after a control character. An interrupt in that
+    pause has sent nothing, so the session is where it was: at its prompt, after no line. The next prompt
+    wait returns at once."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendcontrol("c", timeout=5)
+    s.get_prompt(timeout=5)
+    state = (s._at_prompt, s._sent, s._solicit, s._held)
+    assert state[0] is True
+    interrupting(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        s.sendline("echo never", timeout=5)
+    monkeypatch.undo()
+    assert (s._at_prompt, s._sent, s._solicit, s._held) == state
+    started = time.monotonic()
+    assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+
+
+@pytest.mark.parametrize("when", ["partway", "written"])
+def test_p8_55_interrupt_once_the_write_began_is_no_line_that_was_not_sent(shell_session: Session, monkeypatch: pytest.MonkeyPatch, when: str):
+    """The session is where it was only if the send never got to the write. An interrupt that arrives
+    with part of the line written leaves that part typed at the far side, as any send that failed does;
+    one that arrives when the whole line is written leaves a session that has sent the line."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    assert s._cld is not None
+    fd = s._cld.child_fd
+    if when == "partway":
+
+        def write(self, data, *args, **kwargs):
+            self.done = os.write(fd, data[:4])
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(terminal_mod.Pty, "write", write)
+    else:
+        real = Session._write
+
+        def written(self, *args, **kwargs):
+            real(self, *args, **kwargs)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(Session, "_write", written)
+    with pytest.raises(KeyboardInterrupt):
+        s.sendline("echo sent", timeout=5)
+    monkeypatch.undo()
+    assert s._at_prompt is False and s._held is None
+    if when == "partway":
+        assert s._partial is True and s._sent is None and s._solicit is False
+        s.expect(["echo"], timeout=5)  # the shell has the part, and shows it
+        s.sendcontrol("c", timeout=5)  # drops it
+        s.get_prompt(timeout=5)
+    else:
+        assert s._partial is False and s._sent == "echo sent"
+        assert s.get_prompt(timeout=5) == "sent\n"
+
+
+def test_p8_55_breakout_after_an_interrupt_in_the_settle_time_runs_at_once(sent: SentLog, monkeypatch: pytest.MonkeyPatch):
+    """Ctrl-C while a `cmd` waits out the settle time: the breakout that starts with a `cmd` finds the
+    session at its prompt and runs at once. With the session taken for one that had sent the line, its
+    prompt wait would wait for a prompt that is already there, without a Return, until its timeout."""
+    from autobot.runner import left
+
+    put_control, real = Session._put_control, time.sleep
+
+    def once(seconds: float) -> None:
+        monkeypatch.setattr(time, "sleep", real)
+        raise KeyboardInterrupt
+
+    def control(self, *args, **kwargs):
+        put_control(self, *args, **kwargs)
+        self.get_prompt(timeout=5)  # the prompt the shell prints for Ctrl-C: the session is at it
+        monkeypatch.setattr(time, "sleep", once)  # the next pause is the one before the `cmd` line
+
+    monkeypatch.setattr(Session, "_put_control", control)
+    runner = make_runner([{"cmd": "true"}, {"control": "c"}, {"cmd": "echo never"}], breakout=[{"cmd": "echo bye", "timeout": "5s"}])
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt) as ei:
+        runner.run()
+    assert left(ei.value) is None and time.monotonic() - started < 4
+    assert "echo never" in sent.lines() and "echo bye" in sent.lines()  # `sent` has the line that was tried
+
+
+def test_p8_55_interrupt_before_a_prompt_is_answered_leaves_it_unanswered(fake_device: FakeDevice, monkeypatch: pytest.MonkeyPatch):
+    """The answer to a prompt is a line like any other, with the same pause before it. An interrupt there
+    leaves the prompt on the screen without an answer: no prompt wait presses Return at it."""
+    spawn, log = fake_device("--accept", "admin:secret")
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True), PromptHandler("login", ["login: $", "Password: $"], [["admin", "secret"]], False, [0, 1])])
+    s.attach(spawn, timeout=5)
+    try:
+        assert s._cld is not None
+        s._cld.delayafterread = None  # pexpect's own pause after a read: the only one left is the one before a send
+        interrupting(monkeypatch)
+        with pytest.raises(KeyboardInterrupt):
+            s.get_prompt(timeout=5)
+        monkeypatch.undo()
+        assert s._unanswered is True and FakeDevice.read(log) == []
+    finally:
+        monkeypatch.undo()
+        s.detach(failing=True)
