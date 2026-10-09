@@ -208,7 +208,6 @@ class BlockExecutor:
             ctx.session.restore_handlers(block_handlers)
         else:
             saved_handlers = None
-        mark = ctx.session.login_mark()
         try:
             try:
                 if step.block.enter:
@@ -217,8 +216,7 @@ class BlockExecutor:
             finally:
                 if step.block.breakout:
                     log.say(f"block breakout: {step.block.name}", "group")
-                    if ctx.run_breakout(step.block.breakout, "block breakout"):
-                        ctx.session.logins_covered(mark)  # what the block logged in to, its breakout has left
+                    ctx.run_breakout(step.block.breakout, "block breakout")
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)

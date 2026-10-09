@@ -77,15 +77,33 @@ class OutputLost(BaseException):
         else:
             why = str(error) or type(error).__name__
         super().__init__(f"cannot write {name}: {why}")
+        self.__cause__ = error
 
 
-lost: OutputLost | None = None  # the first write that failed, until the next run starts
+# The first write that failed, until the run is over: the stream and its error, and from the first
+# `check` on the `OutputLost` that is made of them
+lost: OutputLost | tuple[object, BaseException] | None = None
 
 
 def check() -> None:
     """Raise the `OutputLost` of this run again, if there is one: nothing is written or sent after it."""
+    global lost
+    if isinstance(lost, tuple):
+        lost = OutputLost(*lost)
     if lost:
         raise lost
+
+
+def clear() -> OutputLost | None:
+    """Forget the lost output, of a run that is over or about to start, and return it if there was one."""
+    global lost
+    try:
+        check()
+    except OutputLost as e:
+        return e
+    finally:
+        lost = None
+    return None
 
 
 @contextlib.contextmanager
@@ -97,10 +115,11 @@ def writing(stream: object) -> Iterator[None]:
     try:
         yield
     except (OSError, ValueError) as e:
+        kept, lost = lost, (stream, e)  # kept in one step, before anything an interrupt can come in at
         if not isinstance(e, OSError) and not getattr(stream, "closed", False):
+            lost = kept
             raise  # not what a closed stream raises: a bug
-        lost = OutputLost(stream, e)
-        raise lost from e
+        check()
 
 
 def echoed(data: str) -> None:

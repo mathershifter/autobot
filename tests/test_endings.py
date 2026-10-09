@@ -15,6 +15,7 @@ import fcntl
 import io
 import os
 import pty
+import re
 import resource
 import select
 import signal
@@ -30,7 +31,7 @@ from typing import Any
 import pydantic
 import pytest
 import yaml
-from conftest import BASH, FakeDevice, default_signals, make_doc, make_runner
+from conftest import BASH, SHELL_ENV, FakeDevice, default_signals, make_doc, make_runner
 from test_logout import LEFT, LOGOUT, SENT, console, report
 
 from autobot import cli, log
@@ -501,8 +502,9 @@ def test_p6_115_reader_gone_at_ctrl_c_ends_the_run_at_the_breakouts_first_failed
         os.close(r)
     assert run.signal(signal.SIGINT) == 3, run.err
     lines = run.err.splitlines()
-    assert lines[-5:-2] == [">> step interrupted", ">> breakout: detaching", ">> control sent: ^C"]
-    assert lines[-2] == lost(run.path, "stdout", PIPE, UNFINISHED) and lines[-1].startswith("  at attach.breakout.1 (cmd: touch ")
+    assert lines[-6:-3] == [">> step interrupted", ">> breakout: detaching", ">> control sent: ^C"]
+    assert lines[-3] == lost(run.path, "stdout", PIPE, UNFINISHED) and lines[-2].startswith("  at attach.breakout.1 (cmd: touch ")
+    assert lines[-1] == f"{LEFT}a breakout did not finish{SENT}"
     assert not broke.exists() and FakeDevice.read(device) == IN
     run.quiet()
 
@@ -564,24 +566,138 @@ def test_p6_115_run_raises_output_lost_and_sends_nothing_more(children, monkeypa
     with pytest.raises(log.OutputLost, match=f"^cannot write {stream}: {why}$") as ei:
         runner.run()
     monkeypatch.undo()
+    for name in {m for data in written for m in re.findall(rb"/tmp/_autobot_[0-9a-f]{32}", data)}:
+        for left_behind in (name, name + b".b64"):  # no cleanup is sent: the test removes the script's files
+            Path(os.fsdecode(left_behind)).unlink(missing_ok=True)
     assert not isinstance(ei.value, Exception) and broken.calls == 1
     assert not any(b"bye" in data or b"never" in data or data.startswith(b"rm -f") or data == b"\x03" for data in written), written
-    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and log.lost is ei.value
+    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and log.lost is None
     assert len(children) == 1 and not children[0].isalive() and runner.session._cld is None
 
 
-def test_p6_115_next_run_starts_without_the_lost_output(monkeypatch: pytest.MonkeyPatch):
-    """The lost output is the run's: a run that starts after it, of this runner or another, writes and
-    sends again."""
+def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
+    """The lost output is the run's. Once `Runner.run()` has raised it, on streams that work, a message
+    is printed, a session sends, the runner runs again, and `validate` and `schema` in the same process
+    exit as they do; and so after a run through `cli.main()`."""
     runner = make_runner([{"cmd": "echo N''OW"}])
-    monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
-    with pytest.raises(log.OutputLost):
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([{"cmd": "echo N''OW"}])))
+    for through_cli in (False, True):
+        monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+        if through_cli:
+            monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
+            with pytest.raises(SystemExit) as ei:
+                cli.main()
+            assert ei.value.code == 3
+        else:
+            with pytest.raises(log.OutputLost):
+                runner.run()
+        monkeypatch.undo()
+        assert log.lost is None
+        capsys.readouterr()
+        log.say("after")
+        s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+        s.attach(BASH, env=dict(SHELL_ENV), timeout=5)
+        try:
+            s.get_prompt(timeout=5)
+            s.sendline("echo again", timeout=5)
+            assert s.get_prompt(timeout=5) == "again\n"
+        finally:
+            s.detach()
         runner.run()
-    monkeypatch.setattr(sys, "stdout", io.StringIO())
-    assert log.lost is not None
-    runner.run()
-    assert log.lost is None and "NOW" in sys.stdout.getvalue()
+        assert capsys.readouterr().err.startswith(">> after\n")
+        for argv, status in ((["validate", str(path)], 0), (["schema"], 0)):
+            monkeypatch.setattr(sys, "argv", ["autobot", *argv])
+            try:
+                cli.main()
+                code: Any = 0
+            except SystemExit as e:
+                code = e.code
+            assert code == status
+        out = capsys.readouterr()
+        assert out.out.startswith("{") and out.err.endswith(f"{path}: valid\n")
+        monkeypatch.undo()
+
+
+def test_p6_115_run_raises_the_lost_output_whatever_came_after_it(monkeypatch: pytest.MonkeyPatch):
+    """An interrupt arrives while the session is closed for the lost output, where nothing is written or
+    sent any more that would raise the `OutputLost` again: `Runner.run()` raises it all the same."""
+    detach = Session.detach
+
+    def interrupted_close(self, *args, **kwargs):
+        detach(self, *args, **kwargs)
+        if kwargs.get("failing"):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(Session, "detach", interrupted_close)
+    monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    with pytest.raises(log.OutputLost, match="^cannot write stdout: ") as ei:
+        make_runner([NOW]).run()
     monkeypatch.undo()
+    assert isinstance(ei.value.__context__, KeyboardInterrupt) and log.lost is None
+
+
+def test_p6_115_command_that_lost_its_messages_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
+    """`cli.main()` for a command that is no run, with a stderr that fails: status 3, and the loss is
+    forgotten when it returns."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}])))
+    monkeypatch.setattr(sys, "argv", ["autobot", "validate", str(path)])
+    monkeypatch.setattr(sys, "stderr", Breaking(OSError(errno.ENOSPC, "No space left on device"), "valid"))
+    with pytest.raises(SystemExit) as ei:
+        cli.main()
+    monkeypatch.undo()
+    assert ei.value.code == 3 and log.lost is None
+    log.say("after")
+    assert capsys.readouterr().err == ">> after\n"
+
+
+class Interrupted(log.OutputLost):
+    """The error of a lost output, the first time it is made, is cut short by an interrupt: one that
+    arrives right after the write failed."""
+
+    made = 0
+
+    def __init__(self, *args: Any):
+        type(self).made += 1
+        if type(self).made == 1:
+            raise KeyboardInterrupt
+        super().__init__(*args)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_p6_115_interrupt_right_after_the_failed_write_does_not_let_a_breakout_send(children, monkeypatch: pytest.MonkeyPatch, stream: str):
+    """The loss is kept before its error is made. An interrupt that arrives in between ends the step as
+    an interrupt, and the breakouts, which start with raw sends, still send nothing: the run ends with
+    the `OutputLost`."""
+    written: list[bytes] = []
+    pty_write = Pty.write
+    monkeypatch.setattr(Pty, "write", lambda self, data, *a, **kw: written.append(data) or pty_write(self, data, *a, **kw))
+    monkeypatch.setattr(Interrupted, "made", 0)
+    monkeypatch.setattr(log, "OutputLost", Interrupted)
+    monkeypatch.setattr(sys, stream, Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe"), "NOW" if stream == "stdout" else "cmd: echo N"))
+    block = {"name": "b", "script": [NOW], "breakout": RAW}
+    runner = make_runner([{"cmd": "true"}, {"block": block}], breakout=RAW)
+    with pytest.raises(log.OutputLost, match=f"^cannot write {stream}: ") as ei:
+        runner.run()
+    made = Interrupted.made
+    monkeypatch.undo()
+    assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
+    assert made == 2 and isinstance(ei.value.__context__, KeyboardInterrupt)
+
+
+def test_p6_115_function_named_breakout_is_no_breakout(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
+    """The report says that the breakouts had not finished only when a breakout was running, not for a
+    step whose path has the word in it: here a function of that name, called by the script."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}, {"call": "breakout"}], fn={"breakout": {"script": [NOW]}}, breakout=RAW)))
+    monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
+    monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    with pytest.raises(SystemExit) as ei:
+        cli.main()
+    monkeypatch.undo()
+    report = [line for line in capsys.readouterr().err.splitlines() if not line.startswith(">> ")]
+    assert ei.value.code == 3 and report == [lost(path, "stdout", PIPE, NONE_RAN), "  at fn.breakout.script.0 (cmd: echo N''OW)", "  called from script.1 (call: breakout)"]
 
 
 def test_p6_115_writer_fails_once_and_stays_failed():
@@ -597,7 +713,7 @@ def test_p6_115_writer_fails_once_and_stays_failed():
     with pytest.raises(log.OutputLost):
         writer.flush()
     writer.close()
-    assert second.value is first.value is log.lost and stream.calls == 1 and stream.getvalue() == "fine\n"
+    assert second.value is first.value is log.clear() and stream.calls == 1 and stream.getvalue() == "fine\n"
 
 
 def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPatch, capfd, tmp_path: Path):
@@ -617,9 +733,8 @@ def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPat
             with pytest.raises(log.OutputLost, match="^cannot write stdout: I/O operation on closed file"):
                 s.detach()
         assert s._cld is None and cld is not None and not cld.isalive()
-        assert (log.lost is None) == failing  # a loss found by a close that only logs it ends nothing
+        assert (log.clear() is None) == failing  # a loss found by a close that only logs it ends nothing
         monkeypatch.undo()
-        log.lost = None
 
 
 def test_p6_115_what_a_failed_write_is(monkeypatch: pytest.MonkeyPatch):
@@ -630,19 +745,21 @@ def test_p6_115_what_a_failed_write_is(monkeypatch: pytest.MonkeyPatch):
         with pytest.raises(log.OutputLost, match="^cannot write the output: " + text.replace("[", r"\[").replace("]", r"\]")) as ei, log.writing(stream):
             raise error
         assert ei.value.__cause__ is error and log.lost is ei.value
+        with pytest.raises(log.OutputLost):  # no breakout runs after it, one with nothing to send either
+            make_runner([{"cmd": "true"}]).run_breakout([])
         with pytest.raises(log.OutputLost) as again, log.writing(stream):  # kept: nothing is written after it
             raise AssertionError("not reached")
-        assert again.value is ei.value
-        log.lost = None
+        assert again.value is ei.value is log.clear() and log.lost is None
     with pytest.raises(ValueError, match="^a bug$"), log.writing(stream):
         raise ValueError("a bug")
     stream.close()
     with pytest.raises(log.OutputLost, match="^cannot write the output: I/O operation on closed file"), log.writing(stream):
         stream.write("x")
-    log.lost = None
+    log.clear()
     monkeypatch.setattr(sys, "stderr", stream)
     with pytest.raises(log.OutputLost, match="^cannot write stderr: "):
         log.say("x")
+    log.clear()
 
 
 @pytest.mark.parametrize("error", [BrokenPipeError(errno.EPIPE, "Broken pipe"), OSError(errno.ENOSPC, "No space left on device")], ids=["EPIPE", "ENOSPC"])
@@ -662,7 +779,7 @@ def test_p6_115_message_that_cannot_be_written_is_output_lost(monkeypatch: pytes
     with pytest.raises(log.OutputLost) as again:  # no message after it, until the next run
         log.say("never")
     assert again.value is ei.value and out.getvalue() == ""
-    log.lost = None
+    log.clear()
     log.say("two")
     assert out.getvalue() == ">> two\n"
 
@@ -997,9 +1114,7 @@ def test_p6_115_nothing_is_sent_after_the_output_is_lost_whoever_tries(register_
         runner.run()
     monkeypatch.undo()
     assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
-    assert ei.value is log.lost and len(children) == 1 and not children[0].isalive()
-    with pytest.raises(log.OutputLost):  # a breakout with nothing to send is no breakout that finished, either
-        runner.run_breakout([])
+    assert log.lost is None and len(children) == 1 and not children[0].isalive()
 
 
 def test_p6_115_interrupt_while_the_run_ends_does_not_hide_the_lost_output(register_plugin, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):

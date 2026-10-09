@@ -179,7 +179,7 @@ class CleanWriter:
         """Write out what is still held: nothing more will come to complete it. The stream stays open.
         Nothing is written to a stream that could not be written before: that has ended the run already."""
         held, self._held = self._held, ""
-        if log.lost:
+        if log.lost:  # nothing is written after the write that failed
             return
         self._out(held)
         if held:

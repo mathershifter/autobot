@@ -156,10 +156,8 @@ class Session:
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._control_at = -math.inf  # when the last control character was sent (monotonic)
         self._logins: list[str] = []
-        # each credential answer that no breakout answers for yet, with the number of the script's sends
-        # before it: a block with a breakout takes its own
-        self._open: list[tuple[str, int]] = []
-        self._sends = 0  # the lines and control characters the script has sent, not the answers to prompts
+        self._open: list[str] = []  # those answered since a breakout last finished
+        self._writes = 0  # how many sends got as far as the write
         self._pending = False  # credentials were sent, and no shell prompt was reached after them
         self._set_handlers(handlers)
 
@@ -175,20 +173,13 @@ class Session:
 
     @property
     def logins_open(self) -> tuple[str, ...]:
-        """The prompts answered with credentials that no block's breakout answers for: those sent outside
-        every block that has a breakout. By name, each once, in the order they were first answered."""
-        return tuple(dict.fromkeys(name for name, _ in self._open))
+        """The prompts answered with credentials since a breakout last finished (`logins_covered`), or
+        since the spawn. By name, each once, in the order they were first answered."""
+        return tuple(dict.fromkeys(self._open))
 
-    def login_mark(self) -> tuple[int, int]:
-        """Where the credential answers and the script's sends stand, for `logins_covered`: taken when a
-        block starts."""
-        return len(self._open), self._sends
-
-    def logins_covered(self, mark: tuple[int, int] = (0, -1)):
-        """A breakout that finished answers for the credentials sent since `mark`: that of the block they
-        were sent in, or with no mark `attach.breakout`, for all of them. Not for credentials sent before
-        the block had sent anything: that prompt was there when the block began, and is not the block's."""
-        self._open[mark[0] :] = [entry for entry in self._open[mark[0] :] if entry[1] <= mark[1]]
+    def logins_covered(self):
+        """A breakout has finished: it may have logged out of what was logged in to before it."""
+        self._open = []
 
     @property
     def login_pending(self) -> bool:
@@ -259,7 +250,7 @@ class Session:
         # nothing of an earlier child applies to this one
         self._forget()
         self._ctx["before"] = self._ctx["match"] = ""
-        self._logins, self._open, self._pending, self._sends = [], [], False, 0
+        self._logins, self._open, self._pending = [], [], False
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -314,8 +305,8 @@ class Session:
         except (Exception, log.OutputLost) as e:  # noqa: BLE001 - must not replace the error that is propagating
             if not failing:
                 raise
-            if log.lost is e:
-                log.lost = None  # found only now, by a run that another error is ending: it ends nothing
+            if isinstance(e, log.OutputLost):
+                log.clear()  # found only now, by a run that another error is ending: it ends nothing
             log.say(f"close error ({type(e).__name__}): {e}", "warn")
 
     def get_prompt(
@@ -396,7 +387,7 @@ class Session:
                         raise
                     log.say(f"prompt answered: {h.name}")  # never the response
                     if h.credentials:
-                        self._open.append((h.name, self._sends))
+                        self._open.append(h.name)
                         self._pending = True
                         if h.name not in self._logins:
                             self._logins.append(h.name)
@@ -458,7 +449,7 @@ class Session:
         a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
-        state = (self._at_prompt, self._sent, self._solicit, self._held)
+        state = (self._at_prompt, self._sent, self._solicit, self._held, self._writes)
         self._at_prompt = False
         self._sent = line
         self._solicit = solicit
@@ -466,12 +457,10 @@ class Session:
         try:
             self._put_line(line, timeout)
         except (LineTooLong, PartialLine, KeyboardInterrupt):
-            # nothing was sent: the session is where it was. (A write that began has dropped `_sent`)
-            if self._sent is not None:
-                self._at_prompt, self._sent, self._solicit, self._held = state
+            if self._writes == state[4]:  # it never got to the write: the session is where it was
+                self._at_prompt, self._sent, self._solicit, self._held = state[:4]
             raise
         self._unanswered = False
-        self._sends += 1
 
     def _put_line(self, line: str, timeout: float, of: float | None = None):
         """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
@@ -540,6 +529,7 @@ class Session:
         cld = self._cld
         assert cld
         log.check()  # nothing is sent once the run's output is lost
+        self._writes += 1
         pty = Pty(cld.child_fd)
         try:
             # into pexpect's buffer and the operator echo, like the output a wait reads
@@ -576,7 +566,6 @@ class Session:
         self._held = None
         self._put_control(char, timeout)
         self._unanswered = False
-        self._sends += 1
 
     def sleep(self, seconds: float):
         if not self._cld:

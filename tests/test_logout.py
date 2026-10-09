@@ -213,7 +213,7 @@ def test_p5_86_block_breakout_that_fails_fails_the_run_and_stops_nothing(fake_de
     assert report(res) == [
         f"Breakout failed in {path}: command returned exit code 1",
         "  at script.0.block.breakout.0 (cmd: false)",
-        f"{LEFT}the script completed, but a breakout did not finish",  # `attach.breakout` logged out: no login is open
+        f"{LEFT}the script completed, but a breakout did not finish{SENT}",
     ]
     progress = res.stderr.splitlines()
     assert progress.index(">> block breakout error (StepFailure): command returned exit code 1") < progress.index(">> cmd: echo after")
@@ -343,8 +343,8 @@ def test_p5_88_breakout_that_starts_with_a_control_character_delivers_the_logout
 # -- P5-89: the run knows when it sent credentials ----------------------------------------------------
 
 NO_LOGOUT = (
-    ">> no logout: the run sent credentials (prompt 'login') outside a block with a breakout, and the script has no "
-    "attach.breakout to log out with before the session is closed"
+    ">> no logout: the run sent credentials (prompt 'login'), and no breakout ran after them to log out before the "
+    "session is closed"
 )
 
 
@@ -401,7 +401,7 @@ def test_p5_89_several_prompts_are_named_once_each(fake_device: FakeDevice, tmp_
     res = run_cli(doc, tmp_path)
     assert res.returncode == 0, res.stderr
     assert res.stderr.count("no logout") == 1
-    assert ">> no logout: the run sent credentials (prompts 'user', 'pw') outside a block" in res.stderr
+    assert ">> no logout: the run sent credentials (prompts 'user', 'pw'), and no breakout ran after them" in res.stderr
 
 
 def test_p5_89_session_keeps_the_names_until_the_next_spawn(fake_device: FakeDevice):
@@ -694,23 +694,36 @@ def test_p5_93_credentials_sent_in_a_block_without_a_breakout_are_warned_of(fake
     assert NO_LOGOUT in capfd.readouterr().err.splitlines()
 
 
-def at_the_spawn(fake_device: FakeDevice, first: list[dict[str, Any]]) -> dict[str, Any]:
-    """A console that asks for a login at the spawn, a script that starts with `first` and goes on with
-    a block that has a breakout, and no `attach.breakout`."""
-    block = {"name": "work", "script": [{"cmd": "echo in"}], "breakout": [{"cmd": "true", "timeout": "5s"}]}
-    doc, _ = console(fake_device, [*first, {"block": block}], None)
-    return doc
+BLOCK = {"name": "work", "script": [{"cmd": "echo in"}]}
+OK, FAILS = [{"cmd": "true", "timeout": "5s"}], [{"cmd": "false", "timeout": "5s"}]
+# case -> (the block's breakout, attach.breakout, whether `no logout` is logged, the last line of the report)
+SCOPES: dict[str, tuple[list | None, list | None, bool, str | None]] = {
+    "no-breakout-at-all": (None, None, True, None),
+    "attach-breakout": (None, OK, False, None),
+    "the-blocks-breakout": (OK, None, False, None),
+    "both": (OK, OK, False, None),
+    "the-blocks-breakout-fails": (FAILS, None, False, f"{LEFT}the script completed, but a breakout did not finish{SENT}"),
+    "the-blocks-fails-and-attach-finishes": (FAILS, OK, False, f"{LEFT}the script completed, but a breakout did not finish{SENT}"),
+    "attach-breakout-fails": (OK, FAILS, False, f"{LEFT}the script completed, but a breakout did not finish{SENT}"),
+}
 
 
-@pytest.mark.parametrize("first", [[], [{"cmd": "true"}]], ids=["the-block-first", "a-cmd-before-the-block"])
-def test_p5_93_login_at_the_spawn_is_not_the_blocks(fake_device: FakeDevice, capfd, first: list[dict[str, Any]]):
-    """SPEC "A breakout that doesn't finish": the console asks for its login at the spawn, and the first
-    prompt wait answers it, whichever step that wait belongs to. When it is the first step of a block,
-    the block has sent nothing yet: the login is not one the block made, its breakout doesn't answer for
-    it, and without an `attach.breakout` the warning comes all the same."""
-    runner = run(at_the_spawn(fake_device, first))
-    assert runner.session.logins_open == ("login",)
-    assert NO_LOGOUT in capfd.readouterr().err.splitlines()
+@pytest.mark.parametrize("case", SCOPES)
+@pytest.mark.parametrize("nested", [False, True], ids=["block", "block-in-a-block"])
+def test_p5_93_no_logout_is_a_run_whose_credentials_no_breakout_followed(fake_device: FakeDevice, tmp_path: Path, case: str, nested: bool):
+    """SPEC "A breakout that doesn't finish", the two rules. The console asks for its login at the spawn
+    and the script is one block (or a block in a block), whose first `cmd` answers it. The warning is
+    logged when no breakout finished after the credentials, the block's or `attach.breakout`. A breakout
+    that failed is reported instead, and its report names the prompt, whichever breakout it was and
+    whatever finished after it."""
+    inner, outer, warned, last = SCOPES[case]
+    block: dict[str, Any] = {**BLOCK, **({"breakout": inner} if inner else {})}
+    doc, _ = console(fake_device, [{"block": {"name": "outer", "script": [{"block": block}]}} if nested else {"block": block}], outer)
+    res = run_cli(doc, tmp_path)
+    lines = res.stderr.splitlines()
+    assert (NO_LOGOUT in lines) == warned and lines.count(NO_LOGOUT) <= 1, res.stderr
+    assert res.returncode == (4 if last else 0)
+    assert (report(res)[-1:] or [None])[0] == last
 
 
 def test_p5_93_runner_that_runs_again_starts_with_nothing_left(fake_device: FakeDevice, tmp_path: Path):

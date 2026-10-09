@@ -342,7 +342,19 @@ class Runner:
         return spawn
 
     def run(self):
-        self._unfinished, log.lost = [], None  # nothing of an earlier run counts for this one
+        self._unfinished = []  # nothing of an earlier run of this runner counts for this one
+        log.clear()
+        try:
+            self._run()
+        finally:
+            # lost output is the run's, and gone with it. It is what ended the run, whatever came after it
+            # on the way out (an interrupt)
+            lost = log.clear()
+            if lost:
+                self._mark(lost)
+                raise lost
+
+    def _run(self):
         attach = self._config.attach
         # a spawn that reads `env` is rendered once `prepare` has run, which may set what it reads;
         # any other is rendered first, so one that names no command stops the run before `prepare`
@@ -371,14 +383,13 @@ class Runner:
             finally:
                 if attach.breakout:
                     log.say("breakout: detaching", "group")
-                    if self.run_breakout(attach.breakout):
-                        self._session.logins_covered()
-                elif self._session.logins_open:
-                    names = self._session.logins_open
+                    self.run_breakout(attach.breakout)
+                names = self._session.logins_open
+                if names and not self._unfinished:  # a breakout that failed is reported, with the credentials
                     log.say(
                         f"no logout: the run sent credentials (prompt{'s' if len(names) != 1 else ''} "
-                        f"{', '.join(repr(n) for n in names)}) outside a block with a breakout, and the script "
-                        "has no attach.breakout to log out with before the session is closed",
+                        f"{', '.join(repr(n) for n in names)}), and no breakout ran after them to log out "
+                        "before the session is closed",
                         "warn",
                     )
         except BaseException as e:
@@ -401,26 +412,25 @@ class Runner:
         """Note on `error`, the one that ends the run, what the run may have left behind, for the CLI's report."""
         if self._unfinished:
             error.autobot_left = Left(  # type: ignore[attr-defined]
-                tuple(self._unfinished), self._session.logins_open, self._session.login_pending
+                tuple(self._unfinished), self._session.logins, self._session.login_pending
             )
 
-    def run_breakout(self, steps: list[Step], what: str = "breakout") -> bool:
-        """Run the steps of a breakout, best-effort, and return whether it finished: an error ends the
-        breakout and is logged, not raised, so what comes after it still runs. It is kept, since the run
-        can't count as completed. An interrupt ends the breakout as well, is kept, and goes on. No breakout
-        runs once the run's output is lost."""
+    def run_breakout(self, steps: list[Step], what: str = "breakout"):
+        """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
+        so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
+        ends the breakout as well, and so does lost output: they are kept, and go on. No breakout runs once
+        the run's output is lost."""
         log.check()
         try:
             self._session.reset_handlers()
             self.run_steps(steps)
-        except KeyboardInterrupt as e:
+            self._session.logins_covered()
+        except (KeyboardInterrupt, log.OutputLost) as e:
             self._unfinished.append(e)
             raise
         except Exception as e:  # noqa: BLE001 - breakout is best-effort
             self._unfinished.append(e)
             log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
-            return False
-        return True
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))

@@ -1429,6 +1429,44 @@ def test_p8_55_interrupt_before_a_line_is_sent_leaves_the_session_where_it_was(s
     assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
 
 
+@pytest.mark.parametrize("when", ["partway", "written"])
+def test_p8_55_interrupt_once_the_write_began_is_no_line_that_was_not_sent(shell_session: Session, monkeypatch: pytest.MonkeyPatch, when: str):
+    """The session is where it was only if the send never got to the write. An interrupt that arrives
+    with part of the line written leaves that part typed at the far side, as any send that failed does;
+    one that arrives when the whole line is written leaves a session that has sent the line."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    assert s._cld is not None
+    fd = s._cld.child_fd
+    if when == "partway":
+
+        def write(self, data, *args, **kwargs):
+            self.done = os.write(fd, data[:4])
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(terminal_mod.Pty, "write", write)
+    else:
+        real = Session._write
+
+        def written(self, *args, **kwargs):
+            real(self, *args, **kwargs)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(Session, "_write", written)
+    with pytest.raises(KeyboardInterrupt):
+        s.sendline("echo sent", timeout=5)
+    monkeypatch.undo()
+    assert s._at_prompt is False and s._held is None
+    if when == "partway":
+        assert s._partial is True and s._sent is None and s._solicit is False
+        s.expect(["echo"], timeout=5)  # the shell has the part, and shows it
+        s.sendcontrol("c", timeout=5)  # drops it
+        s.get_prompt(timeout=5)
+    else:
+        assert s._partial is False and s._sent == "echo sent"
+        assert s.get_prompt(timeout=5) == "sent\n"
+
+
 def test_p8_55_breakout_after_an_interrupt_in_the_settle_time_runs_at_once(sent: SentLog, monkeypatch: pytest.MonkeyPatch):
     """Ctrl-C while a `cmd` waits out the settle time: the breakout that starts with a `cmd` finds the
     session at its prompt and runs at once. With the session taken for one that had sent the line, its

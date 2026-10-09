@@ -387,26 +387,21 @@ def _ended_by_signal() -> Iterator[None]:
             signal.signal(sig, signal.SIG_DFL)
 
 
-def _lost(args: argparse.Namespace, ended: BaseException) -> None:
-    """If the run's output was lost: report that, on stderr if stderr can still be written, with the
-    breakouts that didn't finish, and raise the `OutputLost`, whatever `ended` the run after it."""
-    e = log.lost
-    if e is None:
-        return
-    steps = trail(e)
-    if any("breakout" in ref.path.split(".") for ref in steps):
+def _lost(args: argparse.Namespace, e: log.OutputLost) -> None:
+    """Report a run whose output was lost, on stderr if stderr can still be written, with the breakouts
+    that didn't finish."""
+    state = left(e)
+    if state and e in state.breakouts:
         how = "the session was closed before the breakouts finished"
-    elif steps:
+    elif trail(e):
         how = "the session was closed without running the breakouts"
     else:  # at the spawn, or at the close, after the breakouts
         how = "the session was closed"
-    log.lost = None  # for the report
     with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
         _traceback(args, e)
         log.error(f"Run failed in {_visible(args.script)}", f"{e}; {how}; {UNKNOWN}")
         _where(e)
-        _left(args, ended)
-    raise e
+        _left(args, e)
 
 
 def _discard_unwritten() -> bool:
@@ -487,14 +482,13 @@ def _cmd_run(args):
     _discover(args)
     runner = _runner(args, _config(args.script))
     try:
-        try:
-            with contextlib.ExitStack() as session:
-                # from the spawn on: until then `attach.prepare` deals with a signal itself
-                runner.before_attach = lambda: session.enter_context(_ended_by_signal())
-                runner.run()
-        except BaseException as e:
-            _lost(args, e)
-            raise
+        with contextlib.ExitStack() as session:
+            # from the spawn on: until then `attach.prepare` deals with a signal itself
+            runner.before_attach = lambda: session.enter_context(_ended_by_signal())
+            runner.run()
+    except log.OutputLost as e:
+        _lost(args, e)
+        raise
     except BreakoutError as e:
         _left(args, e)
         sys.exit(EXIT_BREAKOUT)
@@ -603,6 +597,7 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
 
 def main():
     code: Any = None
+    log.clear()
     try:
         _main()
     except log.OutputLost:  # reported where there was something to say, and a stream to say it on
@@ -613,6 +608,7 @@ def main():
         # output that could not be written is a failure of any command that had not failed already
         if _discard_unwritten() and not code:
             code = EXIT_RUN
+        log.clear()
     if code is not None:
         sys.exit(code)
 
