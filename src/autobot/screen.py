@@ -24,13 +24,29 @@ ECHO_READINGS = 8
 ECHO_PART = 8
 ECHO_PARTS = 2
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# The session's decoding writes one U+FFFD for the first bytes of a character that came without its
+# last ones, however many they are, and a line editor counts a column for each. Readline, given only
+# part of a character, writes those bytes and goes back over them with a backspace each (after any blanks
+# it cleared the rest of the row with) before it writes the character, or more of its bytes.
+_CUT_RE = re.compile("\ufffd( *)(\b+)(?=[\u0800-\U0010ffff])")
 
 
-def _shown(text: str) -> str:
+def _uncut(m: re.Match[str]) -> str:
+    """The U+FFFD of a character's first 2 or 3 bytes, with as many backspaces as go back to its cell:
+    one for it, where the editor wrote one for each of its bytes. The character that follows has more
+    bytes than those, or the backspaces are read as they are."""
+    over = len(m[2]) - len(m[1])
+    return m[0][: 1 - over] if over in (2, 3) and over < _size(m.string[m.end()]) else m[0]
+
+
+def _shown(text: str, cut: bool = False) -> str:
     """What a terminal shows of `text`, less the blanks: a backspace steps back one cell, a character
-    replaces the one in its cell, and the other control characters show nothing."""
+    replaces the one in its cell, and the other control characters show nothing. With `cut`, a U+FFFD
+    is the first bytes of a character where the backspaces after it are those of its bytes."""
     if "\b" not in text:
         return "".join(_CONTROL_RE.sub("", text).split())
+    if cut:
+        text = _CUT_RE.sub(_uncut, text)
     cells: list[str] = []
     col = 0
     for ch in text:
@@ -48,9 +64,17 @@ def strip_echo(text: str, sent: str) -> str:
     The echo is what a line editor writes for the line: the line itself, broken where it wraps. Blanks
     don't count. A line break continues it. A `\\r` returns to the start of a row, and the width of a row
     isn't known: what follows either continues the echo or writes again, unchanged, part of what the
-    captured line already shows of it.
+    captured line already shows of it. Text with a U+FFFD that is no echo with every backspace a cell
+    is read once more, for characters that came in parts (`_CUT_RE`).
     """
-    target = _shown(sent)
+    out = _strip(text, sent, False)
+    if out is text and ("\ufffd" in text or "\ufffd" in sent):
+        out = _strip(text, sent, True)
+    return out
+
+
+def _strip(text: str, sent: str, cut: bool) -> str:
+    target = _shown(sent, cut)
     if not target:
         return text
     limit = ECHO_PART * len(sent) + 1024
@@ -62,19 +86,42 @@ def strip_echo(text: str, sent: str) -> str:
         # readline horizontal-scroll mode (e.g. TERM=dumb) redraws only the
         # visible tail of a long line, prefixed with '<'
         tail = line.rpartition("\r")[2]
+        inside = False
         if ends == {0} and len(tail) <= limit:
-            tail = _shown(tail)
-            if len(tail) > 1 and tail[0] == "<" and target.endswith(tail[1:]):
-                return "\n".join(lines[k + 1 :])
-        ends = _extend(target, ends, line, limit)
-        if len(target) in ends:
+            tail = _shown(tail, cut)
+            if len(tail) > 1 and tail[0] == "<":
+                if target.endswith(tail[1:]):
+                    return "\n".join(lines[k + 1 :])
+                inside = _inside(target, tail[1:])
+        ends = _extend(target, ends, line, limit, cut)
+        if len(target) in ends or (inside and not ends):
             return "\n".join(lines[k + 1 :])
         if not ends:
             break
     return text
 
 
-def _extend(target: str, starts: set[int], line: str, limit: int) -> set[int]:
+def _inside(target: str, tail: str) -> bool:
+    """Whether `tail`, what readline shows after the `<` of a line scrolled sideways, starts inside a
+    character of `target` and is its end from there.
+
+    Readline places the `<` by bytes, so it may stand for a byte inside a character. The bytes of that
+    character after it are no character, and the session reads each as a U+FFFD: before the end of
+    `target` that is shown, at most 3 of them, and fewer than the character before that end has bytes.
+    """
+    rest = tail.lstrip("\ufffd")
+    cut = len(tail) - len(rest)
+    at = len(target) - len(rest)
+    return 0 < cut <= 3 and 0 < at < len(target) and target.endswith(rest) and cut < _size(target[at - 1])
+
+
+def _size(ch: str) -> int:
+    """The bytes `ch` is sent as: its UTF-8 encoding, and the `?` that goes out for a lone surrogate."""
+    code = ord(ch)
+    return 1 if code < 0x80 or 0xD800 <= code < 0xE000 else 2 if code < 0x800 else 3 if code < 0x10000 else 4
+
+
+def _extend(target: str, starts: set[int], line: str, limit: int, cut: bool = False) -> set[int]:
     """How much of `target` is shown after the captured `line`, which began with one of `starts` shown.
 
     Empty when the line is no part of an echo of it, or is past the bounds: a part longer than `limit`,
@@ -86,7 +133,7 @@ def _extend(target: str, starts: set[int], line: str, limit: int) -> set[int]:
     for raw in line.split("\r"):
         if len(raw) > limit:
             return set()
-        part = _shown(raw) if raw else ""
+        part = _shown(raw, cut) if raw else ""
         if part:
             count += 1
             if count > ECHO_PARTS * len(target) + 2:
@@ -124,11 +171,15 @@ def _write(target: str, readings: set[tuple[int, int]], part: str, rewrite: bool
 
 def _mid_echo(read: str, sent: str | None) -> bool:
     """Whether `read`, all that came since the line `sent` went out, is its echo still being written:
-    no line break yet, and what it shows is the start of the line or all of it."""
+    no line break yet, and what it shows is the start of the line or all of it. Read as `strip_echo` reads."""
     if not sent or "\n" in read:
         return False
-    target = _shown(sent)
-    return bool(target) and max(_extend(target, {0}, read, ECHO_PART * len(sent) + 1024), default=0) > 0
+    limit = ECHO_PART * len(sent) + 1024
+    for cut in (False, True) if "\ufffd" in read or "\ufffd" in sent else (False,):
+        target = _shown(sent, cut)
+        if target and max(_extend(target, {0}, read, limit, cut), default=0) > 0:
+            return True
+    return False
 
 
 # the start of a sequence ANSI_ESCAPE_RE removes, cut off by the end of a read: ESC, or an unfinished CSI
