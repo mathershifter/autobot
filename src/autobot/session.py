@@ -70,9 +70,11 @@ class PromptHandler:
         responses: list[list[str]],
         is_return: bool,
         slots: list[int | None] | None = None,
+        posix: bool = False,
     ):
         self.name = name
         self.is_return = is_return
+        self.posix = posix  # a shell prompt of a POSIX shell: it has $?
         self.patterns = patterns
         # slot k: a match regex of fields entry k; None: an expect regex (sendEach without fields)
         self.slots = slots if slots is not None else [None] * len(patterns)
@@ -202,6 +204,11 @@ class Session:
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
         self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
 
+    @property
+    def posix(self) -> bool:
+        """Whether the shell prompt the session is at is one of a `posix` prompt: the shell there has `$?`."""
+        return self._at_prompt and self._scan(self._prompt, False, None, posix=True)[0]
+
     def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
         """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
 
@@ -210,8 +217,11 @@ class Session:
         """
         return self._scan(text, whole, sent)[0]
 
-    def _scan(self, text: str, whole: bool, sent: str | None) -> tuple[bool, str | None]:
-        """`_is_shell_prompt`, and what get_prompt would have captured if `text` ends with a prompt it holds."""
+    def _scan(self, text: str, whole: bool, sent: str | None, posix: bool = False) -> tuple[bool, str | None]:
+        """`_is_shell_prompt`, and what get_prompt would have captured if `text` ends with a prompt it holds.
+
+        `posix`: and the prompt is one of a `posix` handler.
+        """
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
@@ -226,7 +236,8 @@ class Session:
             read += text[:start]
             held = False
             if 1 < i < self._stray:
-                is_return = next(h for h in self._handlers if h.start <= i < h.end).is_return
+                h = next(h for h in self._handlers if h.start <= i < h.end)
+                is_return = h.is_return and (h.posix or not posix)
                 if not (is_return and _mid_echo(read, sent)):
                     return is_return and (not whole or end == len(text)), None
                 read += "\r"  # a prompt that may be written again inside the echo: get_prompt holds it

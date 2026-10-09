@@ -162,7 +162,7 @@ script:                 # main steps to execute
 | `env`     | no       | Defaults for environment variables. `{{ env.KEY }}` reads any variable of the environment, declared here or not; a key of this section gives a variable a value when the environment doesn't set it (a value of the environment is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
-| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking of command lines; an embedded script's exit code is still checked |
+| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking of command lines, except at a `posix` shell prompt; an embedded script's exit code is still checked |
 | `fn`      | no       | Named functions (reusable step sequences)                                                                                    |
 | `attach`  | yes      | Session spawn and lifecycle config                                                                                           |
 | `script`  | yes      | Ordered list of steps to execute                                                                                             |
@@ -275,6 +275,8 @@ A prompt with `return: true` (or no `send` field) is a **shell prompt** — when
   return: true
 ```
 
+A shell prompt with `posix: true` is the prompt of a POSIX shell, where `$?` can be read. It matters only with top-level `errors`: see [Global error patterns](#error-handling). It can't have `send` (`posix_with_send`).
+
 Prompt regexes are searched for anywhere in the unread output, with `re.DOTALL` (`.` also matches line breaks) and without `re.MULTILINE` (`$` matches only at the end of the output read so far). Start a regex with `^`, as above, to anchor the prompt to the start of its line: the line breaks, escape sequences and any stray `\r`, NUL or BEL before a prompt are consumed first, so the prompt is the first thing in the unread output. Without it, output that only contains something like a prompt and ends a read with the prompt character (`scp admin@host:/x $`) is taken for one. The cost is a prompt with other text in front of it on its line, such as one printed right after output with no final newline: it isn't recognized. End a shell prompt regex at the prompt character, as above. A regex that stops short (e.g. `[^\$]+`, which stops before the `$`) leaves the rest of the prompt in the stream: it becomes the start of the next command's output, so the echo isn't removed and `register`, `assert` and `errors` see `$ <command>`. One that ends in `.+` swallows whatever follows the prompt. For a colored prompt, see [ANSI escape sequences](SPEC.md#ansi-escape-sequences) before anchoring with `$`.
 
 A prompt with `send` is an **interactive prompt**: autobot responds automatically. `expect` is a regex or a non-empty list of regexes. The regexes are alternatives, so any of them triggers the prompt. An empty regex (`''`, here or in a `fields` entry's `match`) is a validation error, because it would match at once, before any output. The `send` field accepts two forms.
@@ -343,7 +345,7 @@ After each command line, the step waits for a shell prompt and, if top-level `er
 
 After the last command line, the step:
 1. If `assert` is defined, checks the captured output of all lines for a matching pattern — raises if none match
-2. Otherwise, if no top-level `errors` are defined, checks the return code of the last line via `echo $?` — raises on non-zero
+2. Otherwise, if no top-level `errors` are defined or the session is at a `posix` shell prompt, checks the return code of the last line via `echo $?` — raises on non-zero
 
 An [embedded script](#embedded-scripts) always runs in a shell, so step 2 applies to it with `errors` defined too: its output is checked against the patterns, and then its exit code.
 
@@ -607,7 +609,26 @@ script:
   - cmd: show bogus    # raises because output matches '% .*'
 ```
 
-The patterns replace the exit code check of command lines, since such a CLI may have no `$?`. So a command line that fails in a shell (e.g. after `line: bash` on EOS) without printing a matching line doesn't stop the run: give it an `assert`, or run it as an embedded script, whose exit code is always checked.
+The patterns replace the exit code check of command lines, since such a CLI may have no `$?`. Where the device also has a shell (e.g. `bash` on EOS), give the shell's prompt its own entry with `posix: true`: a command that ends at that prompt gets both checks, the patterns and then the exit code. An embedded script's exit code is always checked.
+
+```yaml
+prompts:
+  - name: bash               # listed first: the cli regex below also matches 'bash-5.1#'
+    expect:
+      - '^\-?bash(?:\-\d+\.\d+)?[#\$] ?$'
+      - '^\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'
+    posix: true
+  - name: cli
+    expect: '^[\w\-\.]+[>#] ?$'
+
+errors:
+  - '% .*'
+
+script:
+  - cmd: show version   # the errors patterns only
+  - cmd: bash
+  - cmd: "false"        # fails: command returned exit code 1
+```
 
 Patterns are searched with `re.MULTILINE` (`^` and `$` match at each line, and `.` doesn't cross line breaks) against the captured output once the prompt returns. The echoed command itself is never matched, so a comment like `! note` in a command doesn't trigger `'! .*'`.
 

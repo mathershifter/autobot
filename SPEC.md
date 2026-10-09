@@ -41,7 +41,7 @@ An optional field is either omitted or given a value of its type. An explicit `n
 | `env` | no | Defaults for environment variables: string values under string keys. In a template, `env` is the whole environment: the one Autobot was started with, as `attach.prepare` changed it. So `{{ env.HOME }}` reads any variable, whether it is a key of this section or not (see [The environment in templates](#the-environment-in-templates)). A key of this section is a default: it gives the variable a value where the environment doesn't set it. A variable that the environment sets keeps its value, even an empty one, and its default isn't used. The defaults are for templates only: they aren't added to the environment of the spawned process (see [The environment of the spawned process](#the-environment-of-the-spawned-process)). Supports nesting: a default may reference other variables (e.g. `{{ env.OTHER_KEY }}`, `{{ env['OTHER_KEY'] }}`), keys of this section in any order and variables of the environment alike. Each default is rendered once, after the values it references, and once more when `attach.prepare` has run; the text it renders to isn't rendered again. Any read of a variable's value counts as a reference, including `env.get('KEY')` and `env.items()`. A variable of the environment is used exactly as it is set: its value isn't a template and is never rendered, so `{{` in it is plain text, and a default that references it gets that text. The default it overrides isn't used, so the default's references aren't followed. A reference cycle, a default that references itself directly or through other keys, is an error naming the cycle (`env cycle: A -> B -> A`), and so is a chain more than 50 keys deep. A reference to a variable that the environment doesn't set and that isn't a key of `env` is an undefined variable (`template error: env has no key 'KEY'`), so `default` applies to it. An error in a default names the default: its message starts with `env.<KEY>: `, e.g. `env.IMAGE: template error: env has no key 'BASE_URL'` or `env.HOST: template error: args has no key 'host'; pass it with --arg host=VALUE`. It names the default whose own template has the error, once, and not the defaults that reference it; a cycle and a chain that is too deep name their keys themselves and have no such prefix. In a script with `attach.prepare`, a default with such a reference waits for `prepare`, which may set the variable (see [The environment in templates](#the-environment-in-templates)). Accessible as `{{ env.KEY }}` |
 | `vars` | no | Arbitrary objects under string keys, accessible as `{{ vars.KEY }}` |
 | `prompts` | no | Named prompt/response definitions for interactive sessions |
-| `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, they replace the `$?` exit code check of a `cmd` that sends command lines, since the CLI they describe may have no `$?`. An [embedded script](#embedded-scripts) always runs in a POSIX shell, so its exit code is checked as well. Each pattern is a valid, non-empty regex: an empty one (`''`) would match any output and fail every command, so it is a validation error (`string_too_short` at `errors.N`: `an errors pattern must not be empty: an empty regex matches any output, so every command would fail`), and one that doesn't compile is `invalid_regex`. `errors: []` is the same as no `errors`. |
+| `errors` | no | Regex patterns for CLI error detection (e.g. `% .*`). When defined, they replace the `$?` exit code check of a `cmd` that sends command lines, since the CLI they describe may have no `$?`. Where there is one, the exit code is checked as well: at a shell prompt marked `posix: true` (see [`prompts`](#prompts)), and for an [embedded script](#embedded-scripts), which always runs in a POSIX shell. Each pattern is a valid, non-empty regex: an empty one (`''`) would match any output and fail every command, so it is a validation error (`string_too_short` at `errors.N`: `an errors pattern must not be empty: an empty regex matches any output, so every command would fail`), and one that doesn't compile is `invalid_regex`. `errors: []` is the same as no `errors`. |
 | `fn` | no | Named functions (reusable step sequences) |
 | `attach` | yes | Session spawn and lifecycle config |
 | `script` | yes | Ordered list of steps to execute |
@@ -52,6 +52,7 @@ Each prompt has:
 - `name` — identifier
 - `expect` — a regex, or a non-empty list of regexes, to match against session output. The regexes are alternatives: any of them triggers the prompt. A single regex is the same as a list holding it. Every entry of the list is a single regex: a list inside `expect` is a validation error (`grouped_expect`, see below). `expect: []` would never fire, and an empty regex (`''`) matches at once, before any output, so both are validation errors (see below). Required, except in a prompt whose `send` is a `sendEach` with `fields`: there `expect` must be absent, because the patterns come from the `fields` entries (see [`sendEach`](#sendeach)).
 - `return` — optional boolean; if `true`, matching this prompt means "we have a shell prompt" and the pending `cmd` is sent. Defaults to `false`. A prompt with no `send` field is also treated as a shell prompt. A prompt with `return: true` must not have `send`, in either form (a string, including `send: ''`, or a `sendEach` with or without `fields`): it would never be sent. That is a validation error (`return_with_send`) at `prompts.N.send`: `a return prompt is a shell prompt and sends nothing; remove send or return`. It is reported together with any other error of the prompt, e.g. `expect_with_fields`, a missing `expect` or `grouped_expect`.
+- `posix` — optional boolean; if `true`, this shell prompt is the prompt of a POSIX shell, which has `$?`. A `cmd` whose last command line ends at such a prompt gets its return code checked also when top-level `errors` are defined (see [`cmd`](#cmd--send-commands-to-the-shell)). Defaults to `false`. Without `errors` it changes nothing: the return code is checked at every shell prompt. A script that drives both a CLI and a shell gives each its own prompt and marks the shell's: when their regexes can match the same text, list the `posix` prompt first, since of two regexes that match at the same place the one defined first is taken (see [Prompt Handling](#prompt-handling-get_prompt)). `posix: true` needs a shell prompt, so it can't stand next to `send`. That is a validation error (`posix_with_send`) at `prompts.N.posix`: `posix marks the shell prompt of a POSIX shell, and a prompt with send is no shell prompt; remove send or posix`.
 - `send` — optional; what to send when a pattern matches. Accepts two forms:
   - A string, for a *simple prompt*: a single question with a single answer, such as a confirmation. The string is sent on any match: whichever of the prompt's `expect` regexes matches, each time the prompt appears (see [Response selection](#response-selection)). `send: ''` sends an empty line, i.e. presses Enter.
   - A `sendEach` object for data-driven responses, such as a login that asks for a user name and then a password (see below).
@@ -128,6 +129,7 @@ These rules are validation errors, reported like any other before anything runs:
 | `expect` next to `fields` (even `expect: []` or `expect: ''`) | `prompts.N.expect` | `expect_with_fields` (`a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes`) |
 | no `expect`, and no `sendEach` with `fields` | `prompts.N.expect` | `missing` |
 | `return: true` with a `sendEach` (with or without `fields`), or any other `send` | `prompts.N.send` | `return_with_send` (`a return prompt is a shell prompt and sends nothing; remove send or return`) |
+| `posix: true` with any `send` | `prompts.N.posix` | `posix_with_send` (`posix marks the shell prompt of a POSIX shell, and a prompt with send is no shell prompt; remove send or posix`) |
 
 The JSON schema states all of them except `invalid_regex`, which only the models can check, so apart from that the models and the schema reject the same documents. A block's prompts are validated the same way, at `script.N.block.block.prompts.M...` (the step's type tag comes before its key).
 
@@ -417,11 +419,33 @@ After each command line, the step waits for a shell prompt. If top-level `errors
 
 After the last command line, the step:
 1. If `assert` is defined, checks the captured output of all lines for a matching pattern — raises if none match
-2. If `assert` is not defined and no `errors` are defined, checks the return code of the last line via `echo $?` — raises on non-zero
+2. If `assert` is not defined, and no `errors` are defined or the session is at a `posix` shell prompt, checks the return code of the last line via `echo $?` — raises on non-zero
 
-When `assert` is defined, it replaces the return code check — the assertion pattern is the success criteria. If top-level `errors` patterns are defined, they replace the `$?` check of command lines: the patterns are there for a CLI that reports its errors as text, and such a CLI may have no `$?` to read (the check would wait for an exit code until the step times out). So with `errors` defined, a command line that fails in a shell without printing a matching line doesn't fail the step; give it an `assert`, or run it as an embedded script.
+When `assert` is defined, it replaces the return code check — the assertion pattern is the success criteria. If top-level `errors` patterns are defined, they replace the `$?` check of command lines: the patterns are there for a CLI that reports its errors as text, and such a CLI may have no `$?` to read (the check would wait for an exit code until the step times out).
 
-An [embedded script](#embedded-scripts) is the exception: it can only run in a POSIX shell, so its exit code is always checked unless `assert` is defined, also with `errors` defined. Its output is checked against the `errors` patterns first, and then a non-zero exit code fails the step with `command returned exit code <N>`.
+A shell has one, and a prompt with `posix: true` says where a shell is. When the wait after the last command line ends at a shell prompt of such a prompt entry, the return code is checked with `errors` defined too: each line's output is checked against the patterns first, and then a non-zero return code fails the step with `command returned exit code <N>`, as it does without `errors`. What counts is the prompt the last line ends at, which is where `echo $?` is sent: a line that leaves the shell for the CLI (`exit`) isn't checked, and one that enters the shell from the CLI (`bash`) is, and reads the new shell's `$?`, which is 0. So a script may mix the two on one device:
+
+```yaml
+prompts:
+  - name: bash
+    expect: '^\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'
+    posix: true
+  - name: cli
+    expect: '^[\w\-\.]+[>#] ?$'
+
+errors:
+  - '% .*'
+
+script:
+  - cmd: show version        # at 'switch#': the errors patterns only
+  - cmd: bash
+  - cmd: test -f /mnt/flash/startup-config   # at '[admin@switch ~]$': the patterns, and then $?
+  - cmd: exit
+```
+
+At a shell prompt that isn't marked, a command line that fails without printing a matching line doesn't fail the step.
+
+An [embedded script](#embedded-scripts) needs no mark: it can only run in a POSIX shell, so its exit code is always checked unless `assert` is defined, also with `errors` defined. Its output is checked against the `errors` patterns first, and then a non-zero exit code fails the step with `command returned exit code <N>`.
 
 The `$?` check sends `echo __AUTOBOT_RC=$?` and reads the digits that follow the marker in the output. It waits for the character after the last digit (the line break, usually) before it takes the number, so an exit code that arrives in pieces (`1`, then `27`) is read whole, as 127. The echo of the check itself has no digit after the marker and is never taken for the result.
 

@@ -56,12 +56,20 @@
             "properties": { "return": { "const": true } }
           },
           "then": { "not": { "required": ["send"] } }
+        },
+        {
+          "if": {
+            "required": ["posix"],
+            "properties": { "posix": { "const": true } }
+          },
+          "then": { "not": { "required": ["send"] } }
         }
       ],
       "properties": {
         "name": { "type": "string" },
         "expect": { "$ref": "#/$defs/regexes" },
         "return": { "type": "boolean", "default": false },
+        "posix": { "type": "boolean", "default": false },
         "send": {
           "oneOf": [
             { "type": "string" },

@@ -178,6 +178,7 @@ class Prompt(pydantic.BaseModel):
     expect: Omittable[list[str | list[str]]] = None
     send: Omittable[str | SendEach] = None
     is_shell_prompt: NotNull[bool] = pydantic.Field(False, alias="return", strict=True)
+    posix: NotNull[bool] = pydantic.Field(False, strict=True)
 
     @pydantic.field_validator("expect", mode="before")
     @classmethod
@@ -218,6 +219,13 @@ class Prompt(pydantic.BaseModel):
                 "return_with_send",
                 "a return prompt is a shell prompt and sends nothing; remove send or return",
                 ("send",), self.model_dump(by_alias=True)["send"],
+            ))
+        if self.posix and self.send is not None:
+            errors.append(_error(
+                "posix_with_send",
+                "posix marks the shell prompt of a POSIX shell, and a prompt with send is no shell prompt; "
+                "remove send or posix",
+                ("posix",), True,
             ))
         if send and send.fields:
             if self.expect is not None:
