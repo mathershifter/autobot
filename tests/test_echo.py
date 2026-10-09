@@ -1,8 +1,10 @@
-"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-35, P4-44)."""
+"""The echo of a sent line, as a line editor writes it when the line wraps (P8-30 to P8-35, P4-44),
+and where it counts the bytes of a character (P8-56, P8-57)."""
 
 from __future__ import annotations
 
 import os
+import random
 import subprocess
 import sys
 import time
@@ -12,8 +14,8 @@ import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
-from autobot.screen import strip_echo
-from autobot.session import HELD_GRACE, CommandError, LineTooLong
+from autobot.screen import _inside, _mid_echo, _shown, strip_echo
+from autobot.session import HELD_GRACE, CommandError, LineTooLong, PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"
@@ -713,3 +715,355 @@ def test_p4_44_output_that_starts_like_the_command_is_one_poll_late():
     )
     assert out == {"out": "", "zz": ""}
     assert HELD_GRACE - 0.2 < time.monotonic() - started < HELD_GRACE + 2
+
+
+# -- P8-56: characters of more than one byte, where the line editor counts bytes ----------------------
+
+CHARS = ["é", "€", "😀"]  # 2, 3 and 4 bytes
+CUT = "\ufffd"  # what the session reads for bytes that are no character
+
+
+def read(raw: bytes) -> str:
+    """Bytes of the session as a prompt wait hands them to `strip_echo`: decoded as the session decodes."""
+    return raw.decode("utf-8", "replace").replace("\r\n", "\n")
+
+
+def scrolled(line: str, at: int) -> bytes:
+    """Readline's last redraw of `line` scrolled sideways: a `<` in place of its byte `at`, and the rest."""
+    return b"\r<" + line.encode()[at + 1 :]
+
+
+def taken_back(ch: str, size: int, blanks: int = 0) -> bytes:
+    """What readline writes for `ch` when it has `size` of its bytes: those bytes, the blanks that clear
+    the rest of the row, a backspace for each blank and each byte, and then the character."""
+    return ch.encode()[:size] + b" " * blanks + b"\b" * (blanks + size) + ch.encode()
+
+
+@pytest.mark.parametrize(
+    ("raw", "sent"),
+    [
+        # the last redraw of a line of 2 kB, written to readline whole and a byte at a time
+        (b"\r<\xa9253\xe2\x82\xac \xc3\xa9254\xe2\x82\xac", "echo é252€ é253€ é254€"),
+        (b"\r<\xac \xc3\xa9254\xe2\x82\xac", "echo é252€ é253€ é254€"),
+        (b"\r<\xa9\xc3\xa9\xc3\xa9\xc3\xa9", "echo ééééé"),
+        (b"\r<\x9f\x98\x80\xe2\x82\xac \xc3\xa9168\xf0\x9f\x98\x80", "echo é167😀€ é168😀"),
+        (b"\r<\x98\x80\xe2\x82\xac \xc3\xa9168\xf0\x9f\x98\x80", "echo é167😀€ é168😀"),
+        (b"\r<\x80\xe2\x82\xac \xc3\xa9168\xf0\x9f\x98\x80", "echo é167😀€ é168😀"),
+        # a character that came a byte at a time
+        (b"echo \xc3\xa9258\xe2\x82\x08\x08\xe2\x82\xac \xc3\x08\xc3\xa9259\xe2\x08\xe2\x82\xac", "echo é258€ é259€"),
+        (
+            b"echo 1\xf0\x9f\x98\x08\x08\x08\xf0\x9f\x98\x80\xe2\x08\xe2\x82\xac \xc3\x08\xc3\xa9172"
+            + b"\xf0\x9f\x08\x08\xf0\x9f\x98\x80\xe2\x82\x08\x08\xe2\x82\xac \x08",
+            "echo 1😀€ é172😀€",
+        ),
+        # the row cleared with blanks after the bytes, then all of it taken back
+        (
+            b"\r<\xa9171\xf0\x9f\x98" + b" " * 14 + b"\x08" * 17 + b"\xf0\x9f\x98\x80\xe2\x08\xe2\x82\xac",
+            "echo é170 é171😀€",
+        ),
+        (
+            b"\r< \xc3\xa9172\xf0\x9f\x98\x80\xe2\x82" + b" " * 14 + b"\x08" * 16 + b"\xe2\x82\xac \x08",
+            "echo é171 é172😀€",
+        ),
+        (
+            b"\r< \xc3\xa9258" + b" " * 15 + b"\x08" * 15 + b"\xe2\x82\x08\x08\xe2\x82\xac \xc3\xa9259\xe2\x08\xe2\x82\xac",
+            "echo é257€ é258€ é259€",
+        ),
+    ],
+)
+def test_p8_56_captured_forms_of_readline_are_the_echo(raw: bytes, sent: str):
+    """SPEC "The echo of a sent line": the bytes bash wrote on `TERM=dumb` in a UTF-8 locale, for lines
+    cut down to their last words."""
+    assert CUT in read(raw)
+    assert strip_echo(read(raw + b"\r\nout\r\n"), sent) == "out\n"
+
+
+@pytest.mark.parametrize("ch", CHARS)
+def test_p8_56_scrolled_window_that_starts_inside_a_character(ch: str):
+    """The `<` in place of each byte of a character: the bytes after it are read as one U+FFFD each."""
+    size = len(ch.encode())
+    for line in (f"echo w001 {ch}w002 w003", f"echo w001 w002{ch}", f"echo {ch}{ch}{ch}{ch}", f"echo w001 {ch} w002"):
+        start = line.encode().index(ch.encode())
+        for at in range(size):
+            text = read(scrolled(line, start + at) + b"\r\nout\r\n")
+            assert text.partition("<")[2].startswith(CUT * (size - 1 - at))
+            assert text.count(CUT) == size - 1 - at
+            if not line.encode()[start + size :]:  # nothing of the line is shown after the bytes that are no character
+                assert strip_echo(text, line) == text
+                continue
+            assert strip_echo(text, line) == "out\n"
+            # after the line typed up to the margin, and with the forms a redraw is written in
+            assert strip_echo("echo w0" + text, line) == "out\n"
+            assert strip_echo(text.replace("<", "\x07<", 1).replace("\n", " \b\n", 1), line) == "out\n"
+
+
+@pytest.mark.parametrize("blanks", [0, 1, 14])
+@pytest.mark.parametrize("ch", CHARS)
+def test_p8_56_first_bytes_of_a_character_taken_back(ch: str, blanks: int):
+    """Each number of bytes a character can come short with: one U+FFFD, and a backspace for each byte."""
+    size = len(ch.encode())
+    sent = f"echo ab{ch}cd {ch}"
+    for part in range(1, size):
+        raw = b"echo ab" + taken_back(ch, part, blanks) + b"cd " + taken_back(ch, part, blanks)
+        text = read(raw + b"\r\nout\r\n")
+        assert text.count(CUT) == 2 and text.count("\b") == 2 * (blanks + part)
+        assert strip_echo(text, sent) == "out\n"
+        assert _mid_echo(read(raw), sent) and _mid_echo(read(raw[: raw.index(b"cd")]), sent)
+        # in the window of a scrolled line, which may start inside a character itself
+        window = b"echo \r<" + ch.encode()[1:] + raw[5:] + b"\r\nout\r\n"
+        assert strip_echo(read(window), f"echo {ch}{sent[5:]}") == "out\n"
+    # a byte more at a time
+    steps = b"".join(ch.encode()[:part] + b"\b" * part for part in range(1, size)) + ch.encode()
+    assert strip_echo(read(b"echo ab" + steps + b"cd " + ch.encode() + b"\r\nout\r\n"), sent) == "out\n"
+
+
+@pytest.mark.parametrize("wrap", WRAPS)
+def test_p8_56_cut_characters_in_a_wrapped_echo(wrap: str):
+    """With every wrap form: a character taken back before the margin, at it and after it."""
+    cmd = "echo " + " ".join(f"é{i:02d}€😀" for i in range(30))
+    echo = echo_of(cmd, *WRAPS[wrap])
+    for ch in CHARS:
+        for part in range(1, len(ch.encode())):
+            cut = echo.replace(ch, CUT + "\b" * part + ch)
+            assert cut.count(CUT) >= 30
+            assert strip_echo(f"{cut}\nout\n", cmd) == "out\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "sent"),
+    [
+        # output that starts with U+FFFD
+        ("\ufffdls -l\nout\n", "ls -l"),
+        ("\ufffd\nls -l\nout\n", "ls -l"),
+        ("l\ufffds -l\nout\n", "ls -l"),
+        # like a scrolled echo, but the U+FFFD stand for no character of the line: the one before the
+        # end that is shown has too few bytes, or there is none
+        ("<\ufffdbar\nout\n", "foobar"),
+        ("<\ufffdbar\nout\n", "bar"),
+        ("<\ufffd\nout\n", "fooé"),
+        ("<\ufffd\ufffd\nout\n", "foo€"),
+        ("<\ufffd\ufffdbar\nout\n", "fooébar"),
+        ("<\ufffd\ufffd\ufffdbar\nout\n", "foo€bar"),
+        ("<\ufffd\ufffd\ufffd\ufffdbar\nout\n", "foo😀bar"),
+        ("<\ufffdxbar\nout\n", "fooébar"),
+        ("<\ufffdéxbar\nout\n", "fooébar"),
+        # U+FFFD anywhere but right after the `<`
+        ("<ab\ufffdcd\nout\n", "xxabécd"),
+        ("<ab\ufffd\nout\n", "xxabé"),
+        ("\ufffd<bar\nout\n", "fooébar"),
+        # only the first line of the echo can be a scrolled one
+        ("foo\n<\ufffdbar\nout\n", "fooébar"),
+        # a byte of the line that is no UTF-8 goes out as `?`: no character of more than one byte
+        ("<\ufffdbar\nout\n", "foo\udcffbar"),
+        # backspaces after a U+FFFD that are no bytes of the next character: too many for it, more than
+        # 3, or before a character of one byte
+        ("ab\ufffd\b\béd\nout\n", "abéd"),
+        ("ab\ufffd\b\b\b€d\nout\n", "ab€d"),
+        ("ab\ufffd\b\b\b\b😀d\nout\n", "ab😀d"),
+        ("ab\ufffd\b\bcd\nout\n", "abcd"),
+        ("ab\ufffd \b\b\b\b€d\nout\n", "ab€d"),
+        ("ab\ufffd\b\b\nout\n", "ab"),
+        # a U+FFFD that is not taken back
+        ("ab\ufffd€d\nout\n", "ab€d"),
+        ("ab\ufffd\nout\n", "abé"),
+        ("ab?\nout\n", "abé"),
+    ],
+)
+def test_p8_56_output_that_is_no_echo_is_kept(text: str, sent: str):
+    assert strip_echo(text, sent) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "sent"),
+    [
+        # a single-byte locale: readline writes each byte of the character as its octal escape
+        ("echo \\303\\251\nout\n", "echo é"),
+        # readline on a terminal that wraps, given part of a character: bytes that show the line on no terminal
+        (b"echo ab\xc3\x08\x08\xa9cd\r\nout\r\n".decode("utf-8", "replace"), "echo abécd"),
+        (b"echo ab\xe2\x08\x08\x82\xac\x08\x08 \xc3\xa9\r\nout\r\n".decode("utf-8", "replace"), "echo ab€ é"),
+        (b"echo ab\xe6\x08\x97\xa5\r\nout\r\n".decode("utf-8", "replace"), "echo ab日"),
+    ],
+)
+def test_p8_56_forms_that_are_not_recognized(text: str, sent: str):
+    """SPEC lists them: the echo stays in the captured output."""
+    text = text.replace("\r\n", "\n")
+    assert strip_echo(text, sent) == text
+
+
+def test_p8_56_sent_line_with_a_replacement_character_or_a_lone_surrogate():
+    """U+FFFD in the line itself is a character of 3 bytes like any other. A lone surrogate went out as `?`:
+    its echo is recognized only where the `?` is not shown."""
+    sent = "echo a\ufffdb w001 w002"
+    assert strip_echo(sent + "\nout\n", sent) == "out\n"
+    start = sent.encode().index("\ufffd".encode())
+    for at in range(3):
+        assert strip_echo(read(scrolled(sent, start + at) + b"\r\nout\r\n"), sent) == "out\n"
+    for part in (1, 2):
+        raw = b"echo a" + taken_back("\ufffd", part) + b"b w001 w002\r\nout\r\n"
+        assert strip_echo(read(raw), sent) == "out\n"
+    lone = "echo a\udcffb w001 w002"
+    assert strip_echo("echo a?b w001 w002\nout\n", lone) == "echo a?b w001 w002\nout\n"
+    assert strip_echo("\r<?b w001 w002\nout\n", lone) == "\r<?b w001 w002\nout\n"
+    assert strip_echo("\r<b w001 w002\nout\n", lone) == "out\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "sent", "expected"),
+    [
+        # SPEC's examples of a window that starts inside a character
+        ("<\ufffd253€\nout\n", "echo é252€ é253€", "out\n"),
+        ("<\ufffd\ufffd é253€\nout\n", "echo é252€ é253€", "out\n"),
+        ("<\ufffd\ufffd253€\nout\n", "echo é252€ é253€", "<\ufffd\ufffd253€\nout\n"),
+        # and of a character taken back
+        ("ab\ufffd\b\b€\nout\n", "ab€", "out\n"),
+        ("ab\ufffd\b\b\b😀\nout\n", "ab😀", "out\n"),
+        ("ab\ufffd\b\b\ufffd\b\b\b😀\nout\n", "ab😀", "out\n"),
+        # both readings of backspaces after a U+FFFD: a cell each, which shows `€€ a`, or those of the
+        # bytes of a third `€`
+        ("€€\ufffd\b\b€ a\nout\n", "€€ a", "out\n"),
+        ("€€\ufffd\b\b€ a\nout\n", "€€€ a", "out\n"),
+        ("€€\ufffd\b\b€ a\nout\n", "€€ €a x", "€€\ufffd\b\b€ a\nout\n"),
+        # one reading for the whole echo, not one for each U+FFFD
+        ("€€\ufffd\b\b€ a\ufffd\b\b€\nout\n", "€€ a€", "€€\ufffd\b\b€ a\ufffd\b\b€\nout\n"),
+        # a first line that reads as the start of the sent line is that, and no scrolled echo
+        ("<\ufffdé\nbbéé\nout\n", "<\ufffdébbéé", "out\n"),
+    ],
+)
+def test_p8_56_readings_of_a_replacement_character(text: str, sent: str, expected: str):
+    assert strip_echo(text, sent) == expected
+
+
+def test_p8_56_only_the_echo_is_read_this_way():
+    """One echo is removed, and the output after it keeps its U+FFFD and backspaces as they came."""
+    sent = "echo w001 éw002"
+    echo = read(scrolled(sent, sent.encode().index("é".encode())))
+    rest = "<\ufffdw002\nab\ufffd\b\b€\n\ufffd\n"
+    assert strip_echo(f"{echo}\n{rest}", sent) == rest
+    assert strip_echo(f"echo w001 \ufffd\bé\ufffd\b\b€w002\n{rest}", "echo w001 é€w002") == rest
+
+
+def test_p8_56_text_without_a_replacement_character_is_read_as_a_terminal_shows_it():
+    """A guard for the rest: without a U+FFFD, a backspace is one cell and a scrolled echo is the end
+    of the line, whatever the characters."""
+    rng = random.Random(8056)
+    for _ in range(3000):
+        text = "".join(rng.choice("ab é€😀\b\b\r<") for _ in range(rng.randrange(1, 14)))
+        cells: list[str] = []
+        col = 0
+        for ch in text:
+            if ch == "\b":
+                col = max(col - 1, 0)
+            elif ch != "\r":
+                cells[col : col + 1] = [ch]
+                col += 1
+        assert _shown(text) == _shown(text, True) == "".join(cells).replace(" ", "")
+        target = _shown("".join(rng.choice("abé€😀") for _ in range(6)))
+        assert not _inside(target, text)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "\ufffd\b\b€" * 1_250_000,
+        "<" + "\ufffd" * 5_000_000,
+        "\ufffd" + " " * 2_500_000 + "\b" * 2_500_002 + "€",
+        "<\ufffdw €" + ("\ufffd \b\b\b€" * 200 + "\r") * 5000,
+    ],
+    ids=["taken-back", "scrolled", "blanks", "parts"],
+)
+def test_p8_33_large_output_with_replacement_characters_is_left_alone_quickly(line: str):
+    """The budget of P8-33 for output full of U+FFFD and backspaces, after a line of such characters."""
+    text = line + "\nout\n"
+    out, seconds = timed(text, "show w €")
+    assert out == text
+    assert seconds < 0.2
+
+
+def test_p8_33_echo_with_a_cut_character_at_each_of_its_characters_is_read_quickly():
+    sent = "echo " + "é€😀 " * 1000
+    echo = sent.replace("€", "\ufffd\b\b€").replace("😀", "\ufffd \b\b\b\ufffd\b\b\b😀")
+    out, seconds = timed(echo + "\nout\n", sent)
+    assert out == "out\n"
+    assert seconds < 0.2
+
+
+# -- P8-57: real bash on `TERM=dumb` in a UTF-8 locale -------------------------------------------------
+
+# readline scrolls by bytes: after `PROMPT$ `, a line of more than 71 bytes is shown scrolled
+SCROLL = 71
+UNITS = ["é", "€", "😀", "aé€b ", "x😀y€ ", "日本", "a日 "]
+SHELL = [PromptHandler("sh", [r"PROMPT\$ "], [], True)]
+
+
+def dumb(script: list[dict], **kw) -> dict:
+    return run(script, spawn=f"env INPUTRC=/dev/null TERM=dumb LC_ALL={UTF8} {BASH}", **kw)
+
+
+def words(unit: str, size: int) -> str:
+    """`unit` repeated, for an `echo` line of about `size` bytes."""
+    return (unit * max((size - 5) // len(unit.encode()), 1)).strip()
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+@pytest.mark.parametrize("unit", UNITS)
+def test_p8_57_register_holds_the_output_of_a_line_of_multibyte_characters(unit: str):
+    """Lines shorter than the row, around the point where readline scrolls, and well past it."""
+    sizes = [40, SCROLL - 4, *range(SCROLL - 2, SCROLL + 9), 100, 150, 151, 152, 153, 400, 2000]
+    lines = [words(unit, size) for size in sizes]
+    out = dumb([{"cmd": f"echo {line}", "register": f"out{i}"} for i, line in enumerate(lines)])
+    assert out == {f"out{i}": line for i, line in enumerate(lines)}
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+def test_p8_57_reported_line_registers_only_its_output():
+    """The report: `echo` and 45 `é` registered the end of the echo, a line break and the output."""
+    line = "é" * 45
+    out = dumb([{"cmd": f"echo {line}", "register": "out"}, {"cmd": "echo {{ vars.out | length }}", "register": "n"}])
+    assert out == {"out": line, "n": "45"}
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+def test_p8_57_errors_and_assert_see_the_output_alone():
+    """`errors` would match the command, and `assert` is anchored at the start of the output."""
+    lines = ["é" * 60, "x😀y€ " * 30 + "end"]
+    script = [
+        {"cmd": f"echo {line}", "register": f"out{i}", "assert": r"\A[^<\ufffd]+\Z"} for i, line in enumerate(lines)
+    ]
+    assert dumb(script, errors=["echo", "\ufffd", "^<"]) == {"out0": lines[0], "out1": lines[1]}
+    with pytest.raises(CommandError, match="command error: failed"):
+        dumb([{"cmd": f"echo {lines[0]} failed"}], errors=["failed$"])
+
+
+def sweep(units: list[str], counts: list[int]) -> list[tuple[str, int]]:
+    """`echo` and each unit repeated each number of times, one write a line: those not captured exactly."""
+    wrong = []
+    env = {"TERM": "dumb", "LC_ALL": str(UTF8), "PS1": "PROMPT$ ", "PATH": os.environ["PATH"], "INPUTRC": "/dev/null"}
+    for unit in units:
+        s = Session(SHELL)
+        s.attach(BASH, env=env, timeout=5)
+        try:
+            s.get_prompt(timeout=5)
+            for n in counts:
+                line = (unit * n).strip()
+                s.sendline(f"echo {line}", timeout=10)
+                if s.get_prompt(timeout=10) != line + "\n":
+                    wrong.append((unit, n))
+        finally:
+            s.detach(failing=True)
+    return wrong
+
+
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+def test_p8_57_sweep_of_lengths():
+    """Which window readline ends on depends on the bytes of the line: a few lengths of each unit."""
+    assert sweep(UNITS, [1, 7, 13, 17, 26, 33, 40, 44, 60, 80, 100, 124]) == []
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(UTF8 is None, reason="no UTF-8 locale installed")
+@pytest.mark.parametrize(
+    "units", [["é", "€", "é€ ", "a€"], ["😀", "a😀", "é😀€ ", "日本"]], ids=["two-and-three-bytes", "four-bytes-and-wide"]
+)
+def test_p8_57_sweep_of_every_length(units: list[str]):
+    """The sweep of the report: 496 lines, each unit 1 to 124 times."""
+    assert sweep(units, list(range(1, 125))) == []
