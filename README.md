@@ -162,7 +162,7 @@ script:                 # main steps to execute
 | `env`     | no       | Defaults for environment variables. `{{ env.KEY }}` reads any variable of the environment, declared here or not; a key of this section gives a variable a value when the environment doesn't set it (a value of the environment is used as written, not rendered as a template). Supports nesting in any order: `{{ env.OTHER_KEY }}`; a reference cycle (`env cycle: A -> B -> A`) is a load error |
 | `vars`    | no       | Arbitrary objects, accessible as `{{ vars.KEY }}`                                                                            |
 | `prompts` | no       | Named prompt/response definitions for interactive sessions                                                                   |
-| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking                         |
+| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, replaces `$?` exit code checking of command lines; an embedded script's exit code is still checked |
 | `fn`      | no       | Named functions (reusable step sequences)                                                                                    |
 | `attach`  | yes      | Session spawn and lifecycle config                                                                                           |
 | `script`  | yes      | Ordered list of steps to execute                                                                                             |
@@ -344,6 +344,8 @@ After each command line, the step waits for a shell prompt and, if top-level `er
 After the last command line, the step:
 1. If `assert` is defined, checks the captured output of all lines for a matching pattern — raises if none match
 2. Otherwise, if no top-level `errors` are defined, checks the return code of the last line via `echo $?` — raises on non-zero
+
+An [embedded script](#embedded-scripts) always runs in a shell, so step 2 applies to it with `errors` defined too: its output is checked against the patterns, and then its exit code.
 
 An `assert` or `errors` pattern can't be empty (an empty regex matches any output), and `register` can't be an empty name; both fail validation. An `assert` that renders to an empty or invalid regex aborts the step.
 
@@ -604,6 +606,8 @@ errors:
 script:
   - cmd: show bogus    # raises because output matches '% .*'
 ```
+
+The patterns replace the exit code check of command lines, since such a CLI may have no `$?`. So a command line that fails in a shell (e.g. after `line: bash` on EOS) without printing a matching line doesn't stop the run: give it an `assert`, or run it as an embedded script, whose exit code is always checked.
 
 Patterns are searched with `re.MULTILINE` (`^` and `$` match at each line, and `.` doesn't cross line breaks) against the captured output once the prompt returns. The echoed command itself is never matched, so a comment like `! note` in a command doesn't trigger `'! .*'`.
 

@@ -15,6 +15,7 @@ import pytest
 from conftest import (
     RC_PROBE,
     SHELL_PROMPT,
+    FakeDevice,
     ProbeExecutor,
     SentLog,
     Timeline,
@@ -40,6 +41,18 @@ def test_p1_02_errors_without_assert_replace_rc_check(sent: SentLog):
     """SPEC.md:105, 107: top-level errors replace the $? check."""
     run_vars([{"cmd": "false"}], errors=PCT_ERR)
     assert RC_PROBE not in sent.lines()
+
+
+def test_p1_02_errors_send_no_rc_check_to_a_cli_without_one(sent: SentLog, fake_device: FakeDevice):
+    """Why they replace it: a CLI that reports its errors as text may have no `$?`. Its command lines get no
+    `echo __AUTOBOT_RC=$?`, which such a CLI would answer with an error and no exit code."""
+    opts = ("--order", "none", "--then", "editor", "--prompt", "'sw#'", "--cols", "80", "--wrap", "0a")
+    cli = [{"name": "cli", "expect": [r"^sw#"], "return": True}]
+    out = run_vars([{"cmd": "echo hi", "register": "out"}], spawn=fake_device(*opts)[0], prompts=cli, errors=["^% .*"])
+    assert out["out"] == "hi"
+    assert RC_PROBE not in sent.lines()
+    with pytest.raises(CommandError, match="^command error: % Invalid input$"):
+        run_vars([{"cmd": "show bogus"}], spawn=fake_device(*opts)[0], prompts=cli, errors=["^% .*"])
 
 
 def test_p1_03_no_assert_no_errors_nonzero_rc_raises(sent: SentLog):

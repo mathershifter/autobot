@@ -89,8 +89,10 @@ class CmdExecutor:
         return [l for l in re.split(r"\r\n?|\n", text) if l.strip()] or [""]
 
     def _check(
-        self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float, probe: bool = True
+        self, step: CmdStep, ctx: RunnerContext, output: str, timeout: float, probe: bool = True, shell: bool = False
     ) -> None:
+        # `errors` are for a CLI that has no $?, so they stand in for the check. `shell`: the command can only
+        # have run in a POSIX shell, which has one
         assertions = ensure_list(step.assert_)
         if assertions:
             rendered = [ctx.render(a) for a in assertions]
@@ -100,7 +102,7 @@ class CmdExecutor:
                 check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
-        elif probe and not ctx.config.errors:
+        elif probe and (shell or not ctx.config.errors):
             rc = ctx.session.check_rc(timeout=timeout)
             if rc != 0:
                 raise StepFailure(f"command returned exit code {rc}")
@@ -125,7 +127,7 @@ class CmdExecutor:
             log.say(f"script: executing {tmp}", "detail")
             ctx.session.sendline(tmp, timeout=timeout)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
-            self._check(step, ctx, output, timeout)
+            self._check(step, ctx, output, timeout, shell=True)
         except (CommandError, StepFailure) as e:
             if isinstance(e, CommandError):
                 output = e.output
