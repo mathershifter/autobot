@@ -144,6 +144,8 @@ class Session:
         self._echo: CleanWriter | None = None
         self._at_prompt = False
         self._prompt = ""
+        # the handler whose regex matched the shell prompt the session is at; it counts while `_at_prompt`
+        self._at: PromptHandler | None = None
         self._sent: str | None = None
         self._solicit = True
         self._warned = False  # of a long line, once
@@ -154,7 +156,8 @@ class Session:
         # for one, and a solicit newline would be an empty answer, until something is sent
         self._unanswered = False
         # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
-        self._held: tuple[str, str, str] | None = None
+        # and the handler of that prompt
+        self._held: tuple[str, str, str, PromptHandler] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
         self._control_at = -math.inf  # when the last control character was sent (monotonic)
         self._logins: list[str] = []
@@ -202,7 +205,13 @@ class Session:
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
-        self._at_prompt = self._at_prompt and self._is_shell_prompt(self._prompt)
+        at_prompt, _, found = self._scan(self._prompt, False, None)
+        self._at_prompt = self._at_prompt and at_prompt
+        if not any(h is self._at for h in handlers):
+            # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
+            # is read from the prompt's text. That text ends where its match ended, so a regex that ends
+            # with `$` may match it where it did not match the output
+            self._at = found if at_prompt else None
 
     @property
     def posix(self) -> bool:
@@ -212,8 +221,8 @@ class Session:
         return bool(h and h.posix)
 
     def _shell(self) -> PromptHandler | None:
-        """The handler of the shell prompt the session is at, if it is at one."""
-        return self._scan(self._prompt, False, None)[2] if self._at_prompt else None
+        """The handler whose regex matched the shell prompt the session is at, if it is at one."""
+        return self._at if self._at_prompt else None
 
     def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
         """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
@@ -225,17 +234,18 @@ class Session:
 
     def _scan(self, text: str, whole: bool, sent: str | None) -> tuple[bool, str | None, PromptHandler | None]:
         """`_is_shell_prompt`, what get_prompt would have captured if `text` ends with a prompt it holds, and
-        the handler of the shell prompt it would stop at."""
+        the handler of the shell prompt it would stop at, or of the one it holds."""
         try:
             regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
         except re.error:
             return False, None, None  # the next get_prompt reports it
         read = ""
         held = False
+        holder: PromptHandler | None = None
         while True:
             found = [(m.start(), i, m.end()) for i, r in enumerate(regexes) if (m := r.search(text))]
             if not found:
-                return False, read if held else None, None
+                return False, read if held else None, holder if held else None
             start, i, end = min(found)
             read += text[:start]
             held = False
@@ -244,7 +254,7 @@ class Session:
                 if not (h.is_return and _mid_echo(read, sent)):
                     return h.is_return and (not whole or end == len(text)), None, h if h.is_return else None
                 read += "\r"  # a prompt that may be written again inside the echo: get_prompt holds it
-                held = end == len(text)
+                held, holder = end == len(text), h
             elif i == 0:
                 read += "\n"
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
@@ -253,6 +263,7 @@ class Session:
         """Drop what is known of a child: its prompt, the last line sent to it and whether to solicit."""
         self._at_prompt = False
         self._prompt = ""
+        self._at = None
         self._sent = None
         self._solicit = True
         self._held = None
@@ -343,12 +354,12 @@ class Session:
             h.reset()
         output: list[str] = []
         # a held prompt: one that may be written again inside the echo. The size of `output` with it, the
-        # prompt's line and its match
-        held: tuple[int, str, str] | None = None
+        # prompt's line, its match and its handler
+        held: tuple[int, str, str, PromptHandler] | None = None
         carried, self._held = self._held, None
         if carried:
             output.append(carried[0])
-            held = (1, carried[1], carried[2])
+            held = (1, *carried[1:])
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -367,7 +378,7 @@ class Session:
                 if held:
                     if self._cld.buffer == unread:
                         # nothing came after it for a whole poll: it was the prompt
-                        self._prompt = held[1]
+                        self._prompt, self._at = held[1], held[3]
                         return self._finish(output, sent, errors, capture, held[2])
                     continue  # no Return is pressed at a prompt that is held
                 if not (solicited or self._partial or self._unanswered) and all(h.is_fresh for h in self._handlers):
@@ -387,9 +398,9 @@ class Session:
                             # the line editor wrote the prompt again while echoing the line (readline does
                             # for a line that ends at the right margin): the echo goes on from the row's start
                             output.append("\r")
-                            held = (len(output), before + str(self._cld.after), str(self._cld.after))
+                            held = (len(output), before + str(self._cld.after), str(self._cld.after), h)
                             break
-                        self._prompt = before + str(self._cld.after)
+                        self._prompt, self._at = before + str(self._cld.after), h
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
                     try:
                         self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
@@ -450,12 +461,12 @@ class Session:
         # session is at it, as after a prompt wait
         _, broke, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
         if not self._at_prompt and not self._cld.buffer:
-            at_prompt, read, _ = self._scan(line, True, None if broke else self._sent)
+            at_prompt, read, h = self._scan(line, True, None if broke else self._sent)
             if at_prompt:
-                self._at_prompt, self._prompt, self._pending = True, line, False
-            elif read is not None:
+                self._at_prompt, self._prompt, self._at, self._pending = True, line, h, False
+            elif read is not None and h:
                 # the prompt may be one written again inside the echo: the next prompt wait holds it
-                self._held = (read, line, self._ctx["match"])
+                self._held = (read, line, self._ctx["match"], h)
         return idx
 
     def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):

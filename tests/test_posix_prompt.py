@@ -360,8 +360,58 @@ def test_p1_31_timeout_of_the_check_names_the_posix_prompt(fake_device: FakeDevi
     assert str(e.value) == message
 
 
-def test_p1_31_closed_connection_keeps_its_message():
-    """Only the timeout is about the mark: a connection that closes during the check is reported as before."""
+def test_p1_31_closed_connection_keeps_its_message(sent: SentLog):
+    """Only the timeout is about the mark: a connection that closes during the check is reported as before.
+    The command writes the prompt, reads the check as its one line and exits."""
+    closes = """exec bash --norc --noprofile -c "printf '%s%s ' PROM 'PT$'; read x\""""
     with pytest.raises(EOFError) as e:
-        run_vars([{"cmd": "exec true"}], prompts=POSIX, errors=PCT_ERR)
-    assert "posix" not in str(e.value)
+        run_vars([{"cmd": closes}], prompts=POSIX, errors=PCT_ERR)
+    assert str(e.value) == "connection closed while waiting for the exit code of the command (echo $?)"
+    assert sent.lines()[-1] == RC_PROBE
+
+
+# -- P1-32: the prompt entry is the one whose regex matched -------------------------
+
+
+def test_p1_32_posix_is_of_the_entry_that_matched_the_output(sent: SentLog, fake_device: FakeDevice):
+    """The CLI's prompt is `switch# `. The posix regex, defined first, doesn't match it in the output, where a
+    blank follows the `#`; it does match the prompt's text as the session keeps it, which ends with the `#`.
+    The wait ended at the `cli` entry, so no check is typed into the CLI."""
+    spawn, _ = fake_device("--order", "none", "--then", "editor", "--prompt", "'switch# '", "--cols", "80", "--wrap", "0a")
+    prompts = [
+        {"name": "bash", "expect": [r"^[\w\-]+[#\$]$"], "posix": True},
+        {"name": "cli", "expect": [r"^switch#"], "return": True},
+    ]
+    script = [{"cmd": "echo hi", "register": "out"}, {"cmd": "echo next", "register": "next"}]
+    out = run_vars(script, spawn=spawn, prompts=prompts, errors=["^% .*"])
+    assert (out["out"], out["next"]) == ("hi", "next")
+    assert sent.lines() == ["echo hi", "echo next"]
+
+
+def test_p1_32_posix_after_expect_is_of_the_prompt_the_line_ends_with():
+    """A plugin's `session.expect` that reads up to a shell prompt: the line holds a prompt written again
+    inside the echo, of a posix entry, and ends with the prompt of another. The session is at the last one."""
+    inner = PromptHandler("inner", [r"X> "], [], True, posix=True)
+    last = PromptHandler("last", [r"Y> $"], [], True)
+    s = Session([inner, last])
+    s.attach("""bash --norc --noprofile -c "stty -echo; echo ready; read x; printf 'abX> zzzY> '; sleep 30\"""", timeout=5)
+    try:
+        s.expect([r"ready\r\n"], timeout=5)
+        s.sendline("abc", solicit=True, timeout=5)
+        s.expect([r"Y> $"], timeout=5)
+        assert s.ctx["before"] + s.ctx["match"] == "abX> zzzY> "
+        assert s._shell() is last
+        assert s.posix is False
+        assert s.get_prompt(timeout=5) == ""  # at the prompt already
+        s.restore_handlers([PromptHandler("last", [r"Y> $"], [], True, posix=True), inner])
+        assert s.posix is True  # other handlers: read again from the prompt's text
+    finally:
+        s.detach()
+
+
+def test_p1_32_block_prompt_swap_at_an_unchanged_prompt(sent: SentLog):
+    """The same prompt, under a block's prompts and under the script's again: each wait and each swap gives
+    the entry of the prompts that are current."""
+    block = {"block": {"name": "sh", "prompts": POSIX, "script": [{"cmd": "true"}, {"cmd": "true"}]}}
+    run_vars([{"cmd": "false"}, block, {"cmd": "false"}, {"cmd": "false"}], errors=PCT_ERR)
+    assert sent.lines().count(RC_PROBE) == 2
