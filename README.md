@@ -1,6 +1,6 @@
 # Autobot
 
-Autobot runs a YAML script against an interactive console: SSH, telnet, or a serial console behind a console server. It waits for prompts, answers logins, sends commands, checks their results, and logs out when the run ends.
+Autobot runs a YAML script against an interactive console: SSH, telnet, or a serial console behind a console server. It waits for prompts, answers logins, sends commands, checks their results, and runs the cleanup steps you give it (the breakout, such as a logout) when the run ends.
 
 This README is the introduction and quick reference. [SPEC.md](SPEC.md) has the exact rules.
 
@@ -27,7 +27,7 @@ prompts:
   - name: cli                 # a shell prompt: the device is ready for a command
     expect: '^\w+@[\w.-]+:[^\r\n]*[$#] ?$'
     return: true
-  - name: login               # answered whenever it appears
+  - name: login               # answered when it appears while a cmd waits for a shell prompt
     send:
       each: vars.creds
       fields:
@@ -53,6 +53,7 @@ $ autobot hello.autobot.yaml -a host=sonic
 >> attach: ssh admin@sonic
 admin@sonic's password: 
 >> prompt answered: login
+
 admin@sonic:~$ 
 >> cmd: show version
 show version
@@ -63,7 +64,7 @@ admin@sonic:~$
 >> run completed
 ```
 
-Lines that start with `>>` are Autobot's own. The rest is the device's output. Complete scripts are in [`examples/`](examples/).
+Lines that start with `>>` are Autobot's own. The rest is the device's output. The script assumes that `ssh` already knows the host's key: nothing in it answers ssh's `yes/no` question, and the run would time out there. Complete scripts are in [`examples/`](examples/).
 
 ## Command line
 
@@ -109,7 +110,7 @@ See [SPEC.md](SPEC.md#checking-scripts-with-validate).
 
 The session's output goes to stdout, with ANSI escape sequences removed. Autobot's `>>` messages and error reports go to stderr. So `autobot script.yaml > device.log` keeps the device's transcript, and `2> run.log` keeps what Autobot did.
 
-Autobot never prints what a `line` step or a prompt answer sent, since it may be a password. It prints `>> line sent` and `>> prompt answered: <name>`.
+Autobot's messages never show what a `line` step or a prompt answer sent, since it may be a password: they say `>> line sent` and `>> prompt answered: <name>`. The text shows only as far as the device echoes it. A `cmd` line is printed as rendered (`>> cmd: ...`), so a secret that a template puts into a `cmd` shows.
 
 On a terminal the messages are colored. Set `NO_COLOR` to turn that off, or `FORCE_COLOR` to keep it in a pipe. The full list of messages is in [SPEC.md](SPEC.md#output).
 
@@ -135,7 +136,7 @@ The `at` line is the step's path in the script: here, the second step of the blo
 | 130 | Interrupted with Ctrl-C, after the breakouts ran |
 | 143, 129 | Ended by `SIGTERM` or `SIGHUP`, without the breakouts |
 
-To stop a run and have it log out, use Ctrl-C or `kill -INT <pid>`. Three endings run no breakout, so the device may be left logged in: `SIGTERM` (a plain `kill` or `timeout`), `SIGHUP` (a closed terminal), and output that can't be written (`autobot script.yaml | head -1`). Run a long job in `tmux` or under `nohup`, and send the output to a file or to `tee`.
+To stop a run and have it log out, use Ctrl-C or `kill -INT <pid>`. Three endings run no breakout: `SIGTERM` (a plain `kill` or `timeout`), `SIGHUP` (a closed terminal), and output that can't be written (`autobot script.yaml | head -1`). After them the device may be left logged in, with a command still running or an embedded script's temp file left on it. Run a long job in `tmux` or under `nohup`, and send the output to a file. Ctrl-C on a pipeline into `tee` ends `tee` too, and the run then ends at the breakout's first output, without the rest of the breakout.
 
 See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A run that ends without its breakouts](SPEC.md#a-run-that-ends-without-its-breakouts).
 
@@ -152,7 +153,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | `attach`  | yes      | How to connect and disconnect. See [Attach](#attach) |
 | `script`  | yes      | The steps to run. See [Steps](#steps) |
 
-A key that is repeated in a mapping is an error, not an override.
+A key that is repeated in a mapping is an error, not an override. See [Top-level fields](SPEC.md#top-level-fields).
 
 ## Attach
 
@@ -173,7 +174,7 @@ A run goes in this order:
 5. `attach.breakout` runs, also when step 3 or 4 failed.
 6. The session is closed.
 
-If the spawn fails (step 2), no step runs after it, the breakout included. A breakout error never replaces the script's error. A breakout that fails after a script that completed fails the run with exit status 4.
+If the spawn fails (step 2), no step runs after it, the breakout included, and nothing undoes `prepare`: one that sets something up, such as a tunnel, must clean up after itself. A breakout error never replaces the script's error. A breakout that fails after a script that completed fails the run with exit status 4. See [`attach`](SPEC.md#attach) and [A breakout that doesn't finish](SPEC.md#a-breakout-that-doesnt-finish).
 
 ```yaml
 attach:
@@ -188,22 +189,24 @@ attach:
   breakout:
     - control: c
       delay_before: 2s
-    - line: logout
-    - control: "]"
+    - line: logout            # the device
+    - control: "]"            # leave the console server, once the device asks for a login again
       after: '[Ll]ogin: ?$'
       timeout: 30s
-    - line: logout
+    - line: logout            # the jump host: this closes the connection
 ```
 
 ### Logging out
 
-Over plain `ssh`, closing the connection ends the login. Behind a console server it doesn't: the console stays logged in for whoever attaches next. Autobot never sends a logout of its own, so the breakout must do it. The breakout above does it in three parts:
+Over plain `ssh`, closing the connection ends the login. Behind a console server it doesn't: the console stays logged in for whoever attaches next. Autobot never sends a logout of its own, so the breakout must do it. The breakout above does it in three parts, then leaves the console server and logs out of the jump host:
 
 1. `control: c` clears the line, in case the script failed in the middle of a command. The `delay_before` lets the device read what was sent before, because Ctrl-C discards unread input.
 2. `line: logout` logs out. Use `line`, not `cmd`: a `cmd` would wait for a shell prompt, and the login prompt would be answered with the credentials again.
-3. The next step waits for the login prompt with `after`. End the pattern with `$`, so that `Last login: ...` in a banner doesn't match, and give the wait a `timeout`.
+3. The next step waits for the login prompt with `after`. End the pattern with `$`, so that `Last login: ...` in a banner doesn't match, and give the wait a `timeout`. When the logout is the breakout's last step, a block with only a name carries the wait: `- block: {name: logged out}` with the same `after` and `timeout`.
 
-If the login prompt doesn't come, the breakout fails and the run reports `Session may be left logged in`. A run that answered a `sendEach` prompt and finished no breakout after it logs a `>> no logout` warning. See [SPEC.md](SPEC.md#logging-out).
+The last `logout` closes the connection, so nothing waits after it.
+
+If the login prompt doesn't come, the breakout fails and the run reports `Session may be left logged in`. A breakout that runs before the login was done types `logout` at the login or password prompt, which the device logs as a failed login; that matters where failed logins lock an account. A run that answered a `sendEach` prompt and finished no breakout after it logs a `>> no logout` warning. See [SPEC.md](SPEC.md#logging-out).
 
 ### `prepare` as an rc script
 
@@ -217,7 +220,7 @@ attach:
   spawn: ssh -J {{ env.JUMP_HOST }} admin@{{ args.host }}
 ```
 
-- A script with no shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh`, with no argument or with `set` options such as `-eu`, is sourced by that shell. Any other script runs as a program and sets nothing.
+- A script with no shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh`, directly or through `env`, alone or with `set` options such as `-eu`, is sourced by that shell. A script for another interpreter, such as `python3`, runs as a program and sets nothing.
 - The spawned command gets Autobot's own environment, then `TERM=dumb` and `NO_COLOR=1`, then what `prepare` changed. The defaults of the `env` section are for templates only and are not passed on.
 - The rendered `spawn` line is printed (`>> attach: ...`). Leave a secret in the environment for the command to inherit; don't put it in the line with a template.
 
@@ -240,7 +243,7 @@ prompts:
 
 Start the regex with `^` and end it at the prompt character. An unanchored regex also matches command output that only looks like a prompt, and a regex that stops short leaves the rest of the prompt in the next command's output. See [Prompt Handling](SPEC.md#prompt-handling-get_prompt).
 
-**An interactive prompt** has `send`, and Autobot answers it whenever it appears. A string is one fixed answer:
+**An interactive prompt** has `send`, and Autobot answers it whenever it appears while a `cmd` waits for a shell prompt. An `after` wait, a `sleep` and a `line` answer nothing. See [Response selection](SPEC.md#response-selection). A string is one fixed answer:
 
 ```yaml
   - name: confirm
@@ -303,7 +306,7 @@ Without `fields`, each item is a string or number, sent in answer to the prompt'
 | `ignore_error` | `true` logs a command failure and goes on |
 | `register` | Stores the output, stripped of surrounding whitespace, as `{{ vars.<name> }}` |
 
-After the last line, the step checks the result. With `assert`, the output must match. Otherwise the exit code is read with `echo $?` and must be 0, unless top-level `errors` patterns are defined (see [Error handling](#error-handling)).
+After the last line, the step checks the result. With `assert`, the output must match. Otherwise the exit code of the last line is read with `echo $?` and must be 0, unless top-level `errors` patterns are defined (see [Error handling](#error-handling)). The exact rules are in [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
 
 The output is what the command printed: the echo of the command, the prompt and ANSI escape sequences are removed. Text printed without a final newline shares a line with the prompt and is not captured. See [Captured output](SPEC.md#captured-output).
 
@@ -323,7 +326,7 @@ Several commands, as a list or as a multiline string:
     shutdown
 ```
 
-**Embedded scripts.** A `cmd` string that starts with `#!` is uploaded to a temp file on the remote, run with the interpreter of its shebang, and removed afterwards. The remote shell must be POSIX-compatible and have `base64 -d`, `tee` and `wc`.
+**Embedded scripts.** A `cmd` string that starts with `#!` is uploaded to a temp file on the remote, run with the interpreter of its shebang, and removed afterwards, except after some abnormal endings. The remote shell must be POSIX-compatible and have `base64 -d`, `tee` and `wc`.
 
 ```yaml
 - cmd: |
@@ -381,7 +384,7 @@ Every step type except `sleep` takes these optional fields:
 
 | Field          | Description |
 |----------------|-------------|
-| `after`        | Regex to wait for in the output before the step runs. Sets `session.before` and `session.match` |
+| `after`        | Regex to wait for in the output before the step runs. Sets `session.before` and `session.match`. A `cmd` still waits for a shell prompt after the match; to answer something that isn't a shell prompt, use `line` |
 | `when`         | Template. The step is skipped if it renders to an empty string, `false`, `0` or `none` (in any letter case) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after`  | Duration to wait after the step |
@@ -393,11 +396,11 @@ On a `call` or `block`, `timeout` bounds only the `after` wait; the steps inside
 
 ## Durations
 
-A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`, `30s`, `2m`, `1h`.
+A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`, `30s`, `2m`, `1h`. See [Duration Format](SPEC.md#duration-format).
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn`, `attach.prepare` and `env` values. Other values, such as `expect` and `errors`, are used as written.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn`, `attach.prepare` and `env` values. Other values, such as `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:
@@ -453,11 +456,11 @@ script:
   - cmd: show bogus    # fails: the output matches '% .*'
 ```
 
-The patterns are matched against each command's output, never against the echoed command.
+The patterns are matched against each command's output, never against the echoed command. See [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
 
 ## Functions
 
-Define a sequence of steps once in `fn` and run it with `call`. A `call` to a function that isn't defined is a validation error.
+Define a sequence of steps once in `fn` and run it with `call`. A `call` to a function that isn't defined is a validation error. See [`fn`](SPEC.md#fn).
 
 ```yaml
 fn:
