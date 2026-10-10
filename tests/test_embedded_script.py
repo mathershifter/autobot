@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import BASH, SentLog, Timeline, steps
+from conftest import BASH, RC_PROBE, SentLog, Timeline, steps
 from conftest import run_vars as run
 
 import autobot.steps
 from autobot.session import CommandError, Session
+from autobot.steps import StepFailure
 
 GENERIC = r"[>#\$] ?$"
 
@@ -278,6 +279,57 @@ def test_p2_15_embedded_errors_patterns_apply(tmp_path_hex: Path):
     """SPEC.md:101, 162: top-level errors apply to embedded script output."""
     with pytest.raises(CommandError, match="command error: % bad"):
         run([{"cmd": "#!/bin/sh\necho '% bad'\n"}], errors=["% .*"])
+    assert_removed(tmp_path_hex)
+
+
+def test_p2_25_errors_do_not_replace_the_exit_code_check(tmp_path_hex: Path, sent: SentLog):
+    """SPEC "cmd": an embedded script runs in a POSIX shell, so with top-level `errors` its exit code is
+    still checked. The step fails and the next one isn't sent."""
+    with pytest.raises(StepFailure, match="^command returned exit code 3$"):
+        run([{"cmd": "#!/bin/sh\necho fine\nexit 3\n"}, {"cmd": "echo next"}], errors=["% .*"])
+    assert sent.lines().count(RC_PROBE) == 1
+    assert "echo next" not in sent.lines()
+    assert_removed(tmp_path_hex)
+
+
+def test_p2_25_errors_and_exit_code_0_pass(tmp_path_hex: Path, sent: SentLog):
+    """No pattern matches and the script exits with 0: the step passes, and the run goes on."""
+    out = run(
+        [{"cmd": "#!/bin/sh\necho fine\n", "register": "out"}, {"cmd": "echo next", "register": "next"}],
+        errors=["% .*"],
+    )
+    assert (out["out"], out["next"]) == ("fine", "next")
+    # the script's exit code is checked; the command line's isn't, with `errors` defined
+    assert sent.lines().count(RC_PROBE) == 1
+    assert_removed(tmp_path_hex)
+
+
+def test_p2_25_errors_match_comes_before_the_exit_code(tmp_path_hex: Path, sent: SentLog):
+    """A pattern that matches fails the step as before, whatever the exit code, and no `$?` check is made."""
+    for code in (0, 3):
+        with pytest.raises(CommandError, match="^command error: % bad$"):
+            run([{"cmd": f"#!/bin/sh\necho '% bad'\nexit {code}\n"}, {"cmd": "echo next"}], errors=["% .*"])
+    assert RC_PROBE not in sent.lines()
+    assert "echo next" not in sent.lines()
+    assert_removed(tmp_path_hex)
+
+
+def test_p2_25_assert_replaces_the_exit_code_check_with_errors(tmp_path_hex: Path, sent: SentLog):
+    """`assert` is the way to opt out of the exit code check, with `errors` defined too."""
+    run([{"cmd": "#!/bin/sh\necho fine\nexit 3\n", "assert": "fine"}], errors=["% .*"])
+    assert RC_PROBE not in sent.lines()
+    assert_removed(tmp_path_hex)
+
+
+def test_p2_25_ignore_error_covers_the_exit_code_with_errors(tmp_path_hex: Path):
+    out = run(
+        [
+            {"cmd": "#!/bin/sh\necho fine\nexit 3\n", "ignore_error": True, "register": "out"},
+            {"cmd": "echo next", "register": "next"},
+        ],
+        errors=["% .*"],
+    )
+    assert (out["out"], out["next"]) == ("fine", "next")
     assert_removed(tmp_path_hex)
 
 
