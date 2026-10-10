@@ -1159,6 +1159,73 @@ def test_p4_44_cmd_with_after_at_a_redrawn_prompt_waits_for_the_real_one(tmp_pat
     assert sent.lines() == ["x", "x", "x"]
 
 
+# -- P4-46: a prompt handed on by `after`, and prompts that change before the prompt wait
+
+
+def test_p4_46_held_prompt_is_judged_again_when_the_handlers_change(raw_device: Callable[..., Session]):
+    """A block step with `after` and `prompts`: the `after` wait hands the prompt on, the block swaps the
+    prompts, and the block's first prompt wait takes the prompt. It is a prompt of the new handlers, and
+    the handler the session is at is one of them."""
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    old = PromptHandler("sh", [UNANCHORED], [], True, posix=True)
+    new = PromptHandler("sh", [UNANCHORED], [], True)
+    s.restore_handlers([old])
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", old)
+    s.restore_handlers([new])
+    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", new)
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
+    assert GRACE[0] < time.monotonic() - started < GRACE[1]
+    assert s._shell() is new and s._shell() in s._handlers
+    assert s.posix is False
+
+
+def test_p4_46_held_prompt_that_the_new_handlers_hold_for_no_echo(raw_device: Callable[..., Session]):
+    """The new regex takes the `x` for part of the prompt, so nothing of an echo comes before it. It is
+    handed on all the same: a change of the handlers doesn't put the session at a prompt."""
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    new = PromptHandler("blk", [r"^xPROMPT\$ $"], [], True, posix=True)
+    s.restore_handlers([new])
+    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", new) and not s._at_prompt
+    assert s.posix is False
+    started = time.monotonic()
+    assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
+    assert GRACE[0] < time.monotonic() - started < GRACE[1]
+    assert s._shell() is new and s.posix is True
+
+
+def test_p4_46_held_prompt_that_is_no_prompt_of_the_new_handlers_is_dropped(
+    raw_device: Callable[..., Session], sent: SentLog
+):
+    """Like a prompt the session is at (P4-33): it counts only if the new prompts take it for one."""
+    s = raw_device("xPROMPT$ ", regex=UNANCHORED)
+    s.expect([r"PROMPT\$ $"], timeout=3)
+    s.restore_handlers([PromptHandler("blk", [r"BLK\$ $"], [], True, posix=True)])
+    assert s._held is None and not s._at_prompt
+    with pytest.raises(TimeoutError):
+        s.get_prompt(timeout=2, capture=False, solicit=False)
+    assert s.posix is False
+    assert sent.lines() == ["x"]  # the fixture's line: no Return was pressed
+
+
+def test_p4_46_block_with_after_and_prompts_on_a_device_that_prompts_on_the_echo_line(tmp_path: Path, sent: SentLog):
+    """The run of it: the block's first command is sent one poll after the `after` match, with no Return
+    pressed and no timeout."""
+    prompt = {"name": "sh", "expect": [r"PROMPT\$ $"], "return": True}
+    block = {"name": "b", "prompts": [prompt], "script": [{"cmd": "echo hi", "register": "out"}]}
+    started = time.monotonic()
+    run_script(
+        [{"cmd": "true"}, {"line": "x"}, {"block": block, "after": r"xPROMPT\$ $"}],
+        spawn=raw_spawn(tmp_path, "xPROMPT$ "),
+        prompts=[prompt],
+        errors=["NOPE"],
+    )
+    assert sent.lines() == ["true", "x", "echo hi"]
+    assert GRACE[0] < time.monotonic() - started < GRACE[1] + 1
+
+
 def test_p4_44_output_without_an_echo_is_not_held(raw_device: Callable[..., Session]):
     """No echo, and output that is not the start of the line: the prompt ends the wait at once."""
     started = time.monotonic()

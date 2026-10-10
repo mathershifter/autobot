@@ -1,4 +1,4 @@
-"""P1-24..27, P1-29..31: a shell prompt with `posix: true` (SPEC "prompts", "cmd"): with top-level `errors`, a command
+"""P1-24..27, P1-29..33: a shell prompt with `posix: true` (SPEC "prompts", "cmd"): with top-level `errors`, a command
 line that ends at it has its return code checked as well."""
 
 from __future__ import annotations
@@ -415,3 +415,74 @@ def test_p1_32_block_prompt_swap_at_an_unchanged_prompt(sent: SentLog):
     block = {"block": {"name": "sh", "prompts": POSIX, "script": [{"cmd": "true"}, {"cmd": "true"}]}}
     run_vars([{"cmd": "false"}, block, {"cmd": "false"}, {"cmd": "false"}], errors=PCT_ERR)
     assert sent.lines().count(RC_PROBE) == 2
+
+
+# -- P1-33: the prompt entry when the prompts change ---------------------------------
+
+
+def bash_then_cli() -> list[PromptHandler]:
+    return [
+        PromptHandler("bash", [r"^[\w\-]+[#\$]$"], [], True, posix=True),
+        PromptHandler("cli", [r"^switch#"], [], True),
+    ]
+
+
+def test_p1_33_swap_to_other_handlers_reads_the_prompt_with_the_rest_of_its_line(fake_device: FakeDevice):
+    """The CLI's prompt of P1-32, `switch# `, and prompts that are swapped for equal ones, as a block's are
+    on entry and the script's after it: the kept handler isn't among them. The blank after the `#` is still
+    unread, and with it the posix regex doesn't match the line now either."""
+    spawn, _ = fake_device("--order", "none", "--then", "editor", "--prompt", "'switch# '", "--cols", "80", "--wrap", "0a")
+    s = Session(bash_then_cli())
+    s.attach(spawn, env=dict(SHELL_ENV), timeout=5)
+    try:
+        s.get_prompt(timeout=5)
+        assert (s._prompt, s._cld.buffer) == ("switch#", " ")  # type: ignore[union-attr]
+        for _ in range(2):  # into a block, and out of it
+            assert (s._shell(), s.posix) == (s._handlers[1], False)
+            s.restore_handlers(bash_then_cli())
+        assert (s._shell(), s.posix) == (s._handlers[1], False)
+        assert s.get_prompt(timeout=5) == ""  # at the prompt still
+        # what comes after the prompt's line is not read with it
+        s._cld.buffer += "\r\nswitch#"  # type: ignore[union-attr]
+        s.restore_handlers(bash_then_cli())
+        assert (s._shell(), s.posix) == (s._handlers[1], False)
+    finally:
+        s.detach()
+
+
+def test_p1_33_swap_with_nothing_unread_reads_the_prompt_text():
+    """Nothing is left of the prompt's line: the text the session keeps is all of it."""
+    s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+    s.attach(BASH, env=dict(SHELL_ENV), timeout=5)
+    try:
+        s.get_prompt(timeout=5)
+        assert s._cld is not None and not s._cld.buffer
+        s.restore_handlers([PromptHandler("sh", [r"^PROMPT\$ $"], [], True, posix=True)])
+        assert (s._shell(), s.posix) == (s._handlers[0], True)
+        # a regex that the rest of the line keeps from matching: the text alone decides, as for the prompt state
+        s._cld.buffer = "\x1b[K"
+        s.restore_handlers([PromptHandler("sh", [r"^PROMPT\$ $"], [], True, posix=True)])
+        assert (s._shell(), s.posix) == (s._handlers[0], True)
+    finally:
+        s.detach()
+
+
+def test_p1_33_handler_that_is_among_the_new_ones_is_kept():
+    """The line of P1-32, which ends with the prompt of `last` and holds one of `inner` before it. The same
+    handlers given again stay as they are: read again, the line's first prompt would be taken, `inner`."""
+    inner = PromptHandler("inner", [r"X> "], [], True, posix=True)
+    last = PromptHandler("last", [r"Y> $"], [], True)
+    s = Session([inner, last])
+    s.attach("""bash --norc --noprofile -c "stty -echo; echo ready; read x; printf 'abX> zzzY> '; sleep 30\"""", timeout=5)
+    try:
+        s.expect([r"ready\r\n"], timeout=5)
+        s.sendline("abc", solicit=True, timeout=5)
+        s.expect([r"Y> $"], timeout=5)
+        assert s._shell() is last
+        for handlers in ([inner, last], [last, inner], [last]):
+            s.restore_handlers(handlers)
+            assert (s._shell(), s.posix) == (last, False)
+        s.restore_handlers([inner])  # gone: read again
+        assert (s._shell(), s.posix) == (inner, True)
+    finally:
+        s.detach()

@@ -209,9 +209,21 @@ class Session:
         self._at_prompt = self._at_prompt and at_prompt
         if not any(h is self._at for h in handlers):
             # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
-            # is read from the prompt's text. That text ends where its match ended, so a regex that ends
-            # with `$` may match it where it did not match the output
-            self._at = found if at_prompt else None
+            # is the one a wait would stop at in the prompt's line. The prompt's text ends where its match
+            # ended, so a regex that ends with `$` may match it where it does not match the output: it is
+            # read with the rest of the line, which is unread. Only when nothing matches that is the text
+            # read alone, as it is for `_at_prompt`
+            rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
+            line = self._scan(self._prompt + rest, False, None)[2] if rest else None
+            self._at = (line or found) if at_prompt else None
+        if self._held:
+            # a prompt an `after` wait handed on was judged by the old handlers, and is judged again as it
+            # was, against the line sent before it: it stays held, for its new handler, if the text still
+            # ends with a shell prompt. A change of the handlers never puts the session at a prompt
+            was, text, match, _ = self._held
+            at_prompt, read, h = self._scan(text, True, self._sent)
+            ends = at_prompt or read is not None
+            self._held = (was if read is None else read, text, match, h) if h and ends else None
 
     @property
     def posix(self) -> bool:
