@@ -271,7 +271,7 @@ class Runner:
         send = prompt.send
         expect = [e for e in prompt.expect or [] if isinstance(e, str)]  # grouped entries are rejected
         if send is None:  # a shell prompt (a return prompt can't have send)
-            return PromptHandler(prompt.name, expect, [], True)
+            return PromptHandler(prompt.name, expect, [], True, posix=prompt.posix)
         if isinstance(send, str):
             # a literal send is a template, rendered each time it is sent
             try:

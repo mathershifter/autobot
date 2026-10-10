@@ -1095,11 +1095,13 @@ def test_p4_44_after_that_ends_at_a_held_prompt_hands_it_to_the_prompt_wait(raw_
     s = raw_device("xPROMPT$ ", regex=UNANCHORED)
     s.expect([r"PROMPT\$ $"], timeout=3)
     assert not s._at_prompt
-    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ")
+    [handler] = s._handlers
+    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", handler)
     started = time.monotonic()
     assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
     assert GRACE[0] < time.monotonic() - started < GRACE[1]
     assert s._at_prompt and s._held is None
+    assert s._shell() is handler  # the held prompt's handler is the one the session is at
 
 
 def test_p4_44_after_that_ends_at_a_redrawn_prompt_reads_on(raw_device: Callable[..., Session]):
