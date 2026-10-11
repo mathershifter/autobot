@@ -51,7 +51,7 @@ def test_p8_09_line_list_sends_each_without_waiting(timeline: Timeline):
 
 
 def test_p8_10_line_and_after_are_rendered(sent: SentLog, timeline: Timeline):
-    """README "Templating": line and after are templates (see decision #9)."""
+    """SPEC "Jinja2 Templating": line and after are templates (see decision #9)."""
     run_script(
         [
             {"line": "echo {{ vars.x }}"},
