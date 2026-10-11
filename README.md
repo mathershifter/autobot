@@ -148,7 +148,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | `env`     | no       | Defaults for environment variables, read as `{{ env.KEY }}`. A variable that the environment sets keeps its value |
 | `vars`    | no       | Any data, read as `{{ vars.KEY }}` |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
-| `errors`  | no       | Regex patterns for CLI error detection (e.g. `% .*`). When defined, they replace the `$?` exit code check of command lines, except at a `posix` shell prompt; an embedded script's exit code is still checked. See [Error handling](#error-handling) |
+| `errors`  | no       | Regex patterns for CLI error detection (e.g. `^% .*`). They replace the `$?` exit code check of command lines, except at a `posix` shell prompt. See [Error handling](#error-handling) |
 | `fn`      | no       | Named functions, run with `call`. See [Functions](#functions) |
 | `attach`  | yes      | How to connect and disconnect. See [Attach](#attach) |
 | `script`  | yes      | The steps to run. See [Steps](#steps) |
@@ -243,7 +243,7 @@ prompts:
 
 Start the regex with `^` and end it at the prompt character. An unanchored regex also matches command output that only looks like a prompt, and a regex that stops short leaves the rest of the prompt in the next command's output. See [Prompt Handling](SPEC.md#prompt-handling-get_prompt).
 
-`posix: true` marks a shell prompt as the prompt of a POSIX shell, which has `$?`. It matters only with top-level `errors`: see [Error handling](#error-handling). Next to `send` it is a validation error.
+`posix: true` marks a shell prompt as that of a POSIX shell, which has `$?`. For `cmd` it matters only with top-level `errors`: see [Error handling](#error-handling). Next to `send` it is a validation error.
 
 **An interactive prompt** has `send`, and Autobot answers it whenever it appears while a `cmd` waits for a shell prompt. An `after` wait, a `sleep` and a `line` answer nothing. See [Response selection](SPEC.md#response-selection). A string is one fixed answer:
 
@@ -308,7 +308,7 @@ Without `fields`, each item is a string or number, sent in answer to the prompt'
 | `ignore_error` | `true` logs a command failure and goes on |
 | `register` | Stores the output, stripped of surrounding whitespace, as `{{ vars.<name> }}` |
 
-After the last line, the step checks the result. With `assert`, the output must match. Otherwise the exit code of the last line is read with `echo $?` and must be 0. With top-level `errors` defined, each line's output is checked against the patterns, and the exit code is checked after them only when the last line ends at a `posix` shell prompt (see [Error handling](#error-handling)). The exact rules are in [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
+After the last line, the step checks the result. With `assert`, the output must match. Otherwise the exit code of the last line is read with `echo $?` and must be 0. With top-level `errors`, the patterns stand in for the exit code check, except at a `posix` shell prompt (see [Error handling](#error-handling)). The exact rules are in [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
 
 The output is what the command printed: the echo of the command, the prompt and ANSI escape sequences are removed. Text printed without a final newline shares a line with the prompt and is not captured. See [Captured output](SPEC.md#captured-output).
 
@@ -328,7 +328,7 @@ Several commands, as a list or as a multiline string:
     shutdown
 ```
 
-**Embedded scripts.** A `cmd` string that starts with `#!` is uploaded to a temp file on the remote, run with the interpreter of its shebang, and removed afterwards, except after some abnormal endings. The remote shell must be POSIX-compatible and have `base64 -d`, `tee` and `wc`. Without `assert`, the script's exit code is always checked, also with `errors` defined.
+**Embedded scripts.** A `cmd` string that starts with `#!` is uploaded to a temp file on the remote, run with the interpreter of its shebang, and removed afterwards, except after some abnormal endings. The remote shell must be POSIX-compatible and have `base64 -d`, `tee` and `wc`. Without `assert`, the script's exit code is always checked, also with `errors`.
 
 ```yaml
 - cmd: |
@@ -437,7 +437,7 @@ See [SPEC.md](SPEC.md#jinja2-templating).
 
 ## Error handling
 
-By default, a `cmd` step reads the exit code with `echo $?` and fails on non-zero.
+By default, a `cmd` step fails on a non-zero exit code.
 
 **Per step:** `ignore_error: true` logs the failure and goes on.
 
@@ -448,9 +448,7 @@ By default, a `cmd` step reads the exit code with `echo $?` and fails on non-zer
 
 It covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match and an embedded-script upload mismatch. A timeout, a closed connection or a template error always ends the script.
 
-**Global error patterns:** top-level `errors` detects errors by output pattern, for CLIs that have no exit codes (e.g. Arista EOS). The patterns are matched against each command's output, never against the echoed command, and they replace the exit code check of command lines.
-
-Where the device also has a shell, give the shell's prompt its own entry with `posix: true`. A `cmd` whose last line ends at that prompt gets both checks: the patterns first, then the exit code.
+**Global error patterns:** top-level `errors` detects errors by output pattern, for CLIs without exit codes (e.g. Arista EOS). The patterns are matched against each command line's output, not the echoed command. They replace the exit code check of command lines, except at a prompt with `posix: true`: give the device's shell prompt its own entry with it, and a `cmd` whose last line ends there gets both checks, the patterns first, then the exit code.
 
 ```yaml
 prompts:
@@ -460,21 +458,22 @@ prompts:
       - '^\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'
     posix: true
   - name: cli
-    expect: '^[\w\-\.]+[>#] ?$'
+    expect: '^[\w\-\.]+[>#] ?$'   # not 'switch(config)#': see examples/eos-bootstrap.autobot.yaml
 
 errors:
-  - '% .*'
+  - '^% .*'
 
 script:
   - cmd: show version        # ends at 'switch#': the patterns only
-  - cmd: bash                # ends at '[admin@switch ~]$': the patterns, and then $?
+  - cmd: bash                # ends at '[admin@switch ~]$': the patterns, then $?
   - cmd: test -f /mnt/flash/startup-config
-  - cmd: exit                # ends at 'switch#': the patterns only
+  - cmd: exit                # back at 'switch#': the patterns only
 ```
 
-- What counts is the prompt that the last line of the `cmd` ends at, which is where `echo $?` is sent.
+- What counts is the prompt the last line of the `cmd` ends at, where `echo $?` is sent, so keep a shell command last in its `cmd`.
+- The patterns apply in the shell too, so anchor them: unanchored, `% .*` matches `Use% Mounted on` from `df -h`.
 - A `posix` regex must not match the CLI's prompt: the check would be typed into the CLI, and the step would time out. Where the CLI's regex also matches the shell's prompt, define the `posix` entry first: of two regexes that match at the same place, the first one is taken.
-- At a `posix` prompt too, `assert` replaces the exit code check, and `ignore_error` covers a non-zero exit code.
+- At a `posix` prompt too, `assert` replaces the exit code check, and `ignore_error` covers a non-zero code.
 
 See [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell) for the rest, such as an `exit` from one `posix` shell to another.
 
