@@ -131,7 +131,7 @@ def test_no_trailing_newline_output_dropped():
         ("\r<9 word10\nout\n", "echo word9 word10", "out\n"),
         ("real\n", "printf 'real\\n'", "real\n"),
         ("hi\n", "", "hi\n"),
-        # P8-05 (SPEC.md:112): echo wrapped mid-word
+        # P8-05 (SPEC "The echo of a sent line"): echo wrapped mid-word
         ("echo ab\ncd\nout\n", "echo abcd", "out\n"),
         # P8-05: a mismatched echo leaves the output unchanged
         ("echo xyz\nout\n", "echo abc", "echo xyz\nout\n"),
@@ -146,7 +146,7 @@ def test_no_trailing_newline_output_dropped():
     ],
 )
 def test_strip_echo(text: str, sent: str, expected: str):
-    """SPEC.md:112 (P8-05 extends the table)."""
+    """SPEC "Captured output", "The echo of a sent line" (P8-05 extends the table)."""
     assert strip_echo(text, sent) == expected
 
 

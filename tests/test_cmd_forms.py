@@ -1,4 +1,4 @@
-"""P2-01..06, P2-22..24: ``cmd`` forms (SPEC.md:99, 162, 278, 317)."""
+"""P2-01..06, P2-22..24: ``cmd`` forms (SPEC "cmd", "Embedded scripts", "Common Step Properties", "Jinja2 Templating")."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from autobot.steps import CmdExecutor
 
 
 def test_p2_01_multiline_skips_blank_lines(sent: SentLog):
-    """SPEC.md:99: a multiline string is split on newlines; blank lines skipped."""
+    """SPEC "cmd": a multiline string is split on newlines; blank lines skipped."""
     run_vars([{"cmd": "echo a\n\n   \necho b\n"}])
     assert sent.commands() == ["echo a", "echo b"]
 
 
 def test_p2_02_each_line_waits_for_prompt(timeline: Timeline):
-    """SPEC.md:99: each line waits for a prompt before sending."""
+    """SPEC "cmd": each line waits for a prompt before sending."""
     run_vars([{"cmd": ["echo a", "echo b"]}])
     assert timeline.has_subsequence(
         [
@@ -36,7 +36,7 @@ def test_p2_02_each_line_waits_for_prompt(timeline: Timeline):
 
 
 def test_p2_03_list_with_shebang_first_item_sent_verbatim(sent: SentLog):
-    """SPEC.md:162: only a string starting with #! is an embedded script."""
+    """SPEC "Embedded scripts": only a string starting with #! is an embedded script."""
     out = run_vars([{"cmd": ["#!/bin/false", "echo x"], "register": "out"}])
     assert out["out"] == "x"
     assert "#!/bin/false" in sent.lines()
@@ -198,7 +198,7 @@ def test_p2_24_match_ends_at_a_shell_prompt(text: str, expected: bool):
 
 
 def test_p2_05_multiline_lines_rendered_individually():
-    """SPEC.md:99, 317: every line of a multiline cmd is rendered."""
+    """SPEC "cmd", "Jinja2 Templating": every line of a multiline cmd is rendered."""
     out = run_vars(
         [{"cmd": "echo {{ vars.a }}\necho {{ vars.b }}", "register": "out"}],
         vars={"a": 1, "b": 2},
@@ -207,7 +207,7 @@ def test_p2_05_multiline_lines_rendered_individually():
 
 
 def test_p2_06_multiline_jinja_block_spanning_lines():
-    """SPEC.md:99, 317: a Jinja block may span lines of a multiline cmd."""
+    """SPEC "cmd", "Jinja2 Templating": a Jinja block may span lines of a multiline cmd."""
     out = run_vars(
         [{"cmd": "{% for i in range(2) %}\necho n{{ i }}\n{% endfor %}", "register": "out"}]
     )

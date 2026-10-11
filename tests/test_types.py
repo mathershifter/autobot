@@ -1,4 +1,4 @@
-"""P8-01..04: type helpers (SPEC.md:292, 307-334)."""
+"""P8-01..04: type helpers (SPEC "Conditional execution with `when`", "Duration Format", "Jinja2 Templating", "Custom Filters")."""
 
 from __future__ import annotations
 
@@ -28,13 +28,13 @@ from autobot.types import (
     ],
 )
 def test_p8_01_parse_duration(value: Any, seconds: float):
-    """SPEC.md:307-313: duration parsing."""
+    """SPEC "Duration Format": duration parsing."""
     assert parse_duration(value) == seconds
 
 
 @pytest.mark.parametrize("value", ["5", "5x", "", "ms", "-1s", "1.5.5s", None])
 def test_p8_01_parse_duration_invalid(value: str | None):
-    """SPEC.md:307-313: strings without a valid unit, and null, are rejected."""
+    """SPEC "Duration Format": strings without a valid unit, and null, are rejected."""
     with pytest.raises(ValueError, match="invalid duration"):
         parse_duration(value)
 
@@ -52,7 +52,7 @@ def test_p8_02_ensure_list():
 
 
 def test_p8_03_render_passthrough_and_filters():
-    """SPEC.md:315-334: non-strings pass through; custom filters are registered."""
+    """SPEC "Jinja2 Templating", "Custom Filters": non-strings pass through; custom filters are registered."""
     assert render(5, {}) == 5
     assert render(None, {}) is None
     assert render(["{{ x }}"], {}) == ["{{ x }}"]
@@ -60,7 +60,7 @@ def test_p8_03_render_passthrough_and_filters():
 
 
 def test_p8_04_render_trailing_newline_dropped():
-    """SPEC.md:292: Jinja drops one trailing newline, so ``"false\\n"`` is falsy."""
+    """SPEC "Conditional execution with `when`": Jinja drops one trailing newline, so ``"false\\n"`` is falsy."""
     assert render("x\n", {}) == "x"
 
 

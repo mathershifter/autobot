@@ -1,4 +1,4 @@
-"""P6-01..09: pydantic model validation (SPEC.md:12-53, 87-270, 307-313)."""
+"""P6-01..09: pydantic model validation (SPEC "Architecture", "YAML Script Structure", "Top-level fields", "prompts", "Step Types", "Duration Format")."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def error_types(doc: dict[str, Any]) -> set[str]:
 
 
 def test_p6_01_yaml_aliases():
-    """SPEC.md:38, 104, 125, 258: YAML keys map to their Python fields."""
+    """SPEC "prompts" (`return`), "cmd" (`assert`), "Capturing output with `register`", "return": YAML keys map to their Python fields."""
     cfg = Config.model_validate(
         {
             **BASE,
@@ -65,7 +65,7 @@ def test_p6_01_yaml_aliases():
 
 @pytest.mark.parametrize("key", ["assert_", "register_"])
 def test_p6_02_python_field_names_rejected(key: str):
-    """SPEC.md:18: only the YAML names are accepted."""
+    """SPEC "YAML Script Structure": only the YAML names are accepted."""
     assert "extra_forbidden" in error_types(with_("script", [{"cmd": "x", key: "y"}]))
 
 
@@ -90,7 +90,7 @@ EXTRA_CASES = {
 
 @pytest.mark.parametrize("doc", list(EXTRA_CASES.values()), ids=list(EXTRA_CASES))
 def test_p6_03_extra_keys_forbidden_everywhere(doc: dict[str, Any]):
-    """SPEC.md:18: unknown keys are rejected at every level."""
+    """SPEC "YAML Script Structure": unknown keys are rejected at every level."""
     assert "extra_forbidden" in error_types(doc)
 
 
@@ -107,7 +107,7 @@ MISSING_CASES = {
 
 @pytest.mark.parametrize("doc", list(MISSING_CASES.values()), ids=list(MISSING_CASES))
 def test_p6_04_required_fields(doc: dict[str, Any]):
-    """SPEC.md:22-31, 70-73, 190-192: required fields."""
+    """SPEC "Top-level fields", "prompts", "attach", "block": required fields."""
     assert "missing" in error_types(doc)
 
 
@@ -142,7 +142,7 @@ def test_p6_05_old_version_names_the_version_to_use():
 
 
 def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plugin):
-    """SPEC.md:87-270: each step key selects its model; plugins get PluginStep."""
+    """SPEC "Step Types", "YAML Script Structure" (step keys): each step key selects its model; plugins get PluginStep."""
     register_plugin(ProbeExecutor())
     cases = [
         ({"cmd": "x"}, CmdStep),
@@ -259,14 +259,14 @@ def test_p6_52_removed_prompt_forms_rejected(doc: dict[str, Any], loc: tuple, ty
     [(5, 5.0), ("5s", 5.0), ("500ms", 0.5), ("2m", 120.0), ("1h", 3600.0), ("1.5s", 1.5), (1.5, 1.5)],
 )
 def test_p6_09_duration_values_accepted(value: Any, seconds: float):
-    """SPEC.md:307-313: bare numbers and unit-suffixed strings."""
+    """SPEC "Duration Format": bare numbers and unit-suffixed strings."""
     cfg = Config.model_validate(with_("script", [{"sleep": value}]))
     assert cfg.script[0].sleep == seconds  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("value", ["5", "5x", "", "ms", "1 s", "-1s"])
 def test_p6_09_duration_values_rejected(value: str):
-    """SPEC.md:307-313: other strings are not durations."""
+    """SPEC "Duration Format": other strings are not durations."""
     with pytest.raises(pydantic.ValidationError, match="invalid duration"):
         Config.model_validate(with_("script", [{"sleep": value}]))
 

@@ -1,4 +1,4 @@
-"""Attach and block lifecycles (SPEC.md:68-85, 186-204).
+"""Attach and block lifecycles (SPEC "attach", "block").
 
 Tests prefixed ``test_p5_NN_`` map to test plan rows P5-NN.
 """
@@ -574,13 +574,13 @@ def test_p5_34_spawn_failure_cli_exit_status(case: str, tmp_path: Path, fake_dev
     assert leaked == []
 
 
-# -- P5: attach lifecycle (SPEC.md:68-85) -----------------------------------
+# -- P5: attach lifecycle (SPEC "attach") -----------------------------------
 
 
 def test_p5_01_attach_lifecycle_order(
     tmp_path: Path, timeline: Timeline, children, monkeypatch: pytest.MonkeyPatch
 ):
-    """SPEC.md:79-85: prepare -> spawn -> attach.script -> script -> breakout -> close."""
+    """SPEC "attach" (the attach lifecycle): prepare -> spawn -> attach.script -> script -> breakout -> close."""
     log = tmp_path / "log"
     at_attach: list[str] = []
     recorded_attach = Session.attach
@@ -604,7 +604,7 @@ def test_p5_01_attach_lifecycle_order(
 
 
 def test_p5_02_prepare_nonzero_aborts_before_spawn(timeline: Timeline, children):
-    """SPEC.md:72, 80: prepare failing aborts before spawn."""
+    """SPEC "attach" (`prepare`, lifecycle step 1): prepare failing aborts before spawn."""
     r = make_runner([{"cmd": "true"}], prepare="#!/bin/sh\nexit 3\n")
     with pytest.raises(RuntimeError, match="prepare script failed with exit code 3"):
         r.run()
@@ -614,7 +614,7 @@ def test_p5_02_prepare_nonzero_aborts_before_spawn(timeline: Timeline, children)
 
 @pytest.mark.parametrize("rc", [0, 3], ids=["success", "failure"])
 def test_p5_03_prepare_temp_file_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int):
-    """SPEC.md:72: the local prepare script leaves no temp file behind."""
+    """SPEC "attach" (`prepare`): the local prepare script leaves no temp file behind."""
     import tempfile
 
     tdir = tmp_path / "tmp"
@@ -842,7 +842,7 @@ def test_p5_05_prepare_bash_array_length_needs_raw(
 
 
 def test_p5_06_attach_breakout_runs_after_script_failure(tmp_path: Path):
-    """SPEC.md:77, 84: breakout runs in finally after the main script fails."""
+    """SPEC "attach" (the attach lifecycle): breakout runs in finally after the main script fails."""
     bo = tmp_path / "bo"
     with pytest.raises(RuntimeError, match="exit code 1"):
         run_script([{"cmd": "false"}], breakout=[{"cmd": f"touch {bo}", "timeout": "5s"}])
@@ -850,7 +850,7 @@ def test_p5_06_attach_breakout_runs_after_script_failure(tmp_path: Path):
 
 
 def test_p5_07_attach_breakout_runs_after_attach_script_failure(tmp_path: Path, sent: SentLog):
-    """SPEC.md:76-84: attach.script failure skips the main script, runs breakout."""
+    """SPEC "attach" (the attach lifecycle): attach.script failure skips the main script, runs breakout."""
     bo = tmp_path / "bo"
     with pytest.raises(RuntimeError, match="exit code 1"):
         run_script(
@@ -863,7 +863,7 @@ def test_p5_07_attach_breakout_runs_after_attach_script_failure(tmp_path: Path, 
 
 
 def test_p5_08_attach_breakout_resets_handlers_first(timeline: Timeline):
-    """SPEC.md:84: handlers are reset before the attach breakout runs."""
+    """SPEC "Prompt state across a swap" (the breakouts' handler reset): handlers are reset before the attach breakout runs."""
     run_script([{"cmd": "echo main"}], breakout=[{"cmd": "echo bo", "timeout": "5s"}])
     main = timeline.index_of(("sendline", "echo main"))
     reset = timeline.index_of(("reset_handlers",), main)
@@ -871,17 +871,17 @@ def test_p5_08_attach_breakout_resets_handlers_first(timeline: Timeline):
 
 
 def test_p5_09_attach_breakout_error_logged(capsys):
-    """SPEC.md:84: breakout is best-effort; errors are logged to stderr."""
+    """SPEC "attach" (lifecycle step 5): breakout is best-effort; errors are logged to stderr."""
     with pytest.raises(BreakoutError):
         run_script([{"cmd": "true"}], breakout=[{"cmd": "false", "timeout": "5s"}])
     assert "breakout error (StepFailure)" in capsys.readouterr().err
 
 
-# -- P5: block lifecycle (SPEC.md:186-204) ----------------------------------
+# -- P5: block lifecycle (SPEC "block") ----------------------------------
 
 
 def test_p5_10_block_prompts_active_inside_block(probe: ProbeExecutor):
-    """SPEC.md:193, 199: block prompts replace top-level prompts inside the block."""
+    """SPEC "block" (`prompts`, lifecycle step 1): block prompts replace top-level prompts inside the block."""
     runner = run_script(
         [
             {
@@ -911,7 +911,7 @@ def test_p5_10_block_prompts_active_inside_block(probe: ProbeExecutor):
 @pytest.mark.parametrize("with_breakout", [False, True], ids=["no-breakout", "breakout"])
 @pytest.mark.parametrize("phase", ["enter", "script"])
 def test_p5_11_block_prompts_restored_on_failure(attached, phase: str, with_breakout: bool):
-    """SPEC.md:203, README:304: previous handlers restored on every failure path."""
+    """SPEC "block" (the block lifecycle): previous handlers restored on every failure path."""
     blk: dict[str, Any] = {"name": "b", "prompts": BLOCK_PROMPTS}
     fail = [{"cmd": "false", "timeout": "5s"}]
     if phase == "enter":
@@ -929,7 +929,7 @@ def test_p5_11_block_prompts_restored_on_failure(attached, phase: str, with_brea
 
 @pytest.mark.parametrize("inner_fails", [False, True], ids=["ok", "inner-fails"])
 def test_p5_12_nested_block_restore(probe: ProbeExecutor, inner_fails: bool):
-    """SPEC.md:193, 203: nested blocks restore their parent's handlers."""
+    """SPEC "block" (`prompts`, lifecycle step 5): nested blocks restore their parent's handlers."""
     shell = [r"PROMPT\$ "]
     inner_script: list[dict[str, Any]] = [{"probe": "in_inner"}]
     if inner_fails:
@@ -970,14 +970,14 @@ def test_p5_12_nested_block_restore(probe: ProbeExecutor, inner_fails: bool):
 def test_p5_13_block_without_prompts_leaves_handlers_untouched(
     probe: ProbeExecutor, timeline: Timeline
 ):
-    """SPEC.md:199, 203: without prompts the block never swaps handlers."""
+    """SPEC "block" (the block lifecycle), "Prompt state across a swap": without prompts the block never swaps handlers."""
     run_script([{"probe": "top"}, {"block": {"name": "b", "script": [{"probe": "inner"}]}}])
     assert probe.by_name("inner")["handlers_id"] == probe.by_name("top")["handlers_id"]
     assert "restore_handlers" not in [e[0] for e in timeline.since("attach")]
 
 
 def test_p5_14_block_breakout_resets_handlers_first(timeline: Timeline):
-    """SPEC.md:202: handlers are reset before the block breakout runs."""
+    """SPEC "Prompt state across a swap" (the breakouts' handler reset): handlers are reset before the block breakout runs."""
     run_script(
         [
             {
@@ -995,7 +995,7 @@ def test_p5_14_block_breakout_resets_handlers_first(timeline: Timeline):
 
 
 def test_p5_15_block_step_order(tmp_path: Path):
-    """SPEC.md:198-203: enter -> script -> breakout."""
+    """SPEC "block" (the block lifecycle): enter -> script -> breakout."""
     log = tmp_path / "log"
 
     def tag(t: str) -> dict:
@@ -1030,7 +1030,7 @@ def test_p5_60_breakout_without_steps_is_no_breakout(sent: SentLog, capsys, brea
 
 
 def test_p5_16_block_breakout_error_does_not_restore_early(attached, capsys):
-    """SPEC.md:203, README:304: a failing block breakout is logged; handlers restored."""
+    """SPEC "block" (the block lifecycle): a failing block breakout is logged; handlers restored."""
     r = attached()
     try:
         r.run_steps(
@@ -1243,7 +1243,7 @@ def test_p5_41_restore_after_error_keeps_recognized_prompt(sent: SentLog):
 
 @pytest.mark.parametrize(("value", "expected"), [("500ms", 0.5), ("1.5s", 1.5)])
 def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected: float):
-    """SPEC.md:74, 307-313: attach.timeout is a duration and is not truncated."""
+    """SPEC "attach" (`timeout`), "Duration Format": attach.timeout is a duration and is not truncated."""
     timeline.stop_attach = True
     with pytest.raises(AttachRecorded):
         make_runner([], timeout=value).run()
@@ -1327,7 +1327,7 @@ def test_p5_57_rendered_quotes_behind_whitespace_still_stop_the_run(timeline: Ti
 def test_p5_24_attach_timeout_default_and_spawn_templated(
     timeline: Timeline, monkeypatch: pytest.MonkeyPatch
 ):
-    """SPEC.md:73-74, 317: spawn is rendered; omitted timeout uses the 300s default."""
+    """SPEC "attach" (`spawn`, lifecycle step 2), "Jinja2 Templating": spawn is rendered; omitted timeout uses the 300s default."""
     monkeypatch.delenv("AB_SPAWN_SH", raising=False)
     timeline.stop_attach = True
     runner = make_runner(

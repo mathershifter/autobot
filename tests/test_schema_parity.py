@@ -1,6 +1,6 @@
 """P6-10..18, P6-41..44, P6-49, P6-51, P6-53, P6-58, P6-60..66, P6-68..73, P6-75, P6-82: the pydantic models and schemas/autobot.2026-10.json agree.
 
-SPEC.md:12 and 18 say the models validate against the JSON schema, so the
+SPEC "Architecture" and "YAML Script Structure" say the models validate against the JSON schema, so the
 same document must be accepted or rejected by both.
 """
 
@@ -144,19 +144,19 @@ REJECT = {
 
 
 def test_p6_10_schema_is_valid_draft_2020_12(schema_validator: Any, schema: dict[str, Any]):
-    """SPEC.md:12: the schema itself is a valid 2020-12 schema."""
+    """SPEC "YAML Script Structure": the schema itself is a valid 2020-12 schema."""
     type(schema_validator).check_schema(schema)
 
 
 @pytest.mark.parametrize("doc", list(ACCEPT.values()), ids=list(ACCEPT))
 def test_p6_11_parity_accept_corpus(both_validate: Callable, doc: dict[str, Any]):
-    """SPEC.md:12: valid documents are accepted by both."""
+    """SPEC "YAML Script Structure": valid documents are accepted by both."""
     assert both_validate(doc) == (True, True)
 
 
 @pytest.mark.parametrize("doc", list(REJECT.values()), ids=list(REJECT))
 def test_p6_12_parity_reject_corpus(both_validate: Callable, doc: dict[str, Any]):
-    """SPEC.md:12: invalid documents are rejected by both."""
+    """SPEC "YAML Script Structure": invalid documents are rejected by both."""
     assert both_validate(doc) == (False, False)
 
 
