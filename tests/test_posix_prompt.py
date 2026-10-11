@@ -1,4 +1,4 @@
-"""P1-24..27, P1-29..33: a shell prompt with `posix: true` (SPEC "prompts", "cmd"): with top-level `errors`, a command
+"""P1-24..27, P1-29..34: a shell prompt with `posix: true` (SPEC "prompts", "cmd"): with top-level `errors`, a command
 line that ends at it has its return code checked as well."""
 
 from __future__ import annotations
@@ -9,7 +9,8 @@ from typing import Any
 
 import pydantic
 import pytest
-from conftest import BASH, RC_PROBE, SHELL_ENV, SHELL_PROMPT, FakeDevice, SentLog, run_vars
+import yaml
+from conftest import BASH, RC_PROBE, ROOT, SHELL_ENV, SHELL_PROMPT, FakeDevice, SentLog, run_vars
 
 from autobot import models
 from autobot.models import Config
@@ -486,3 +487,44 @@ def test_p1_33_handler_that_is_among_the_new_ones_is_kept():
         assert (s._shell(), s.posix) == (inner, True)
     finally:
         s.detach()
+
+
+# -- P1-34: an errors pattern anchored to the CLI's error line ----------------------
+
+# the header and a line of `df -h`, as the shell prints them
+DF = "printf '%s\\n' 'Filesystem      Size  Used Avail Use% Mounted on' '/dev/sda1        10G  1.0G  9.0G  10% /'"
+ANCHORED = {
+    "spec": ["^% .*"],
+    "eos-example": yaml.safe_load((ROOT / "examples" / "eos-bootstrap.autobot.yaml").read_text())["errors"],
+}
+
+
+@pytest.mark.parametrize("errors", list(ANCHORED.values()), ids=list(ANCHORED))
+def test_p1_34_anchored_pattern_passes_shell_output_with_the_text_inside_a_line(sent: SentLog, errors: list[str]):
+    """SPEC "cmd": the patterns are checked at a posix prompt too. `Use% Mounted on` starts no line with `% `."""
+    out = run_vars([{"cmd": DF, "register": "out"}, {"cmd": "echo next", "register": "next"}], prompts=POSIX, errors=errors)
+    assert out["out"].splitlines()[0].endswith("Use% Mounted on")
+    assert out["next"] == "next"
+    assert sent.lines().count(RC_PROBE) == 2
+
+
+@pytest.mark.parametrize("errors", list(ANCHORED.values()), ids=list(ANCHORED))
+@pytest.mark.parametrize(
+    "cmd",
+    ["echo '% Invalid input'", "echo ok; echo '% Invalid input'; echo more"],
+    ids=["first-line", "after-a-line"],
+)
+def test_p1_34_anchored_pattern_fails_a_line_that_starts_with_the_text(sent: SentLog, cmd: str, errors: list[str]):
+    """`^` is the start of each line of the output: of its first line, and of one after a line break."""
+    with pytest.raises(CommandError, match="^command error: % Invalid input$"):
+        run_vars([{"cmd": cmd}, {"cmd": "echo next"}], prompts=POSIX, errors=errors)
+    assert RC_PROBE not in sent.lines()
+    assert "echo next" not in sent.lines()
+
+
+def test_p1_34_unanchored_pattern_matches_the_df_header(sent: SentLog):
+    """What the `^` is for: without it the pattern is found inside a line, and `df -h` fails the step."""
+    with pytest.raises(CommandError, match="^command error: % Mounted on$"):
+        run_vars([{"cmd": DF}, {"cmd": "echo next"}], prompts=POSIX, errors=PCT_ERR)
+    assert RC_PROBE not in sent.lines()
+    assert "echo next" not in sent.lines()

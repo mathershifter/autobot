@@ -70,8 +70,11 @@ attach:
     - line: logout
 
 errors:
-  - '% .*'
-  - '! .*'
+  # EOS starts an error line with '% ' and a warning line with '! '. Each regex starts with ^, so
+  # only a line that begins so is one: the patterns are checked in bash too, where '% .*' would
+  # match the header of 'df -h' ('Use% Mounted on').
+  - '^% .*'
+  - '^! .*'
 
 script:
   - cmd: |
