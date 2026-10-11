@@ -429,25 +429,31 @@ A shell has one, and a prompt with `posix: true` says where a shell is. When the
 
 A regex of a `posix` prompt must not match the CLI's prompt. If it does, and its entry is defined first, the check is typed into the CLI, which prints no exit code, and the step waits out its timeout. That `TimeoutError` names the prompt: `timed out after <timeout>s waiting for the exit code of the command (echo $?) at prompt '<name>' (posix: true): is it a POSIX shell?`.
 
+The other way round is allowed: a CLI's regex may also match a prompt of the shell. The `posix` entry is then defined first, because of two regexes that match at the same place the one defined first is taken (see [Prompt Handling](#prompt-handling-get_prompt)). Defined after the CLI's entry, it would lose that prompt to the CLI's regex, and a command that ends there would get no `$?` check.
+
 So a script may mix the two on one device:
 
 ```yaml
 prompts:
-  - name: bash
-    expect: '^\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'
+  - name: bash               # defined first: the cli regex below also matches 'bash-5.1#'
+    expect:
+      - '^\-?bash(?:\-\d+\.\d+)?[#\$] ?$'               # 'bash-5.1# ', '-bash-4.2$ '
+      - '^\[[\w\-\.]+@[\w\-\.]+ [^\]\r\n]*\][#\$] ?$'   # '[admin@switch ~]$ '
     posix: true
-  - name: cli
-    expect: '^[\w\-\.]+[>#] ?$'
+  - name: cli                # 'switch>', 'switch#', 'switch(config-if-Et1)#'
+    expect: '^[\w+\-\.:\/\[\]]+(?:\([^)\r\n]+\)){,3}(?:>|#) ?$'
 
 errors:
   - '^% .*'
 
 script:
-  - cmd: show version        # at 'switch#': the errors patterns only
-  - cmd: bash
-  - cmd: test -f /mnt/flash/startup-config   # at '[admin@switch ~]$': the patterns, and then $?
-  - cmd: exit
+  - cmd: show version        # ends at 'switch#': the errors patterns only
+  - cmd: bash                # ends at '[admin@switch ~]$': the patterns, and then $?
+  - cmd: test -f /mnt/flash/startup-config   # the same
+  - cmd: exit                # back at 'switch#': the patterns only
 ```
+
+`examples/eos-bootstrap.autobot.yaml` is a complete script with these prompts.
 
 At a shell prompt that isn't marked, a command line that fails without printing a matching line doesn't fail the step.
 
@@ -470,7 +476,7 @@ The captured output of a command line is the text the session prints between sen
 - Stray carriage returns, NULs and BELs removed where they come first in the unread output, i.e. at the start of a line or right after an escape sequence, and something other than a line break follows them (see [Prompt Handling](#prompt-handling-get_prompt)): `\rtwo\rthree` is captured as `two\rthree`. Everywhere else NULs and BELs are kept, and so are carriage returns, with one exception: carriage returns right before a line break are dropped with it, so `out\r\r` and a line break is captured as `out\n`, while `\x00` and a line break is `\x00\n`.
 - The trailing partial line before the prompt match (the prompt prefix) dropped. Output that doesn't end with a newline is therefore not captured.
 
-`errors` patterns are matched with `re.MULTILINE` against the captured output after the shell prompt returns, so they never match the echoed command, and the session is left at the prompt when the error is raised. An error that is printed without a prompt returning results in a timeout rather than an error match.
+`errors` patterns are matched against the captured output of a command line, after its shell prompt returns, so the session is left at the prompt when the error is raised ([`cmd`](#cmd--send-commands-to-the-shell) says how they are matched). The captured output has the echo of the sent line removed where the echo is recognized, and there a pattern doesn't match the echoed command. Where it isn't recognized, the echo stays in the captured output and a pattern can match it: see [The echo of a sent line](#the-echo-of-a-sent-line) for those forms. An error that is printed without a prompt returning results in a timeout rather than an error match.
 
 #### The echo of a sent line
 
@@ -653,7 +659,7 @@ Upload mechanism:
 - The remote must be a POSIX shell with `base64 -d`, `tee`, and `wc`.
 
 Cleanup:
-- The script and its `.b64` staging file are always removed: on success, on script failure, on upload failure and on timeout (as far as the interrupt below allows).
+- The script and its `.b64` staging file are removed once cleanup has the session at a shell prompt: at once after success or a command failure, and after any other error when the interrupt below brings the prompt back. They stay on the remote when cleanup doesn't get to a prompt (below), and when no cleanup is sent at all, in a run that ends without its breakouts (see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts)).
 - After success or a command failure (exit code, `assert`, `errors` match, upload mismatch) the session is already at a shell prompt, and cleanup just sends `rm -f <file> <file>.b64` and waits for the prompt.
 - After any other error, the session may not be at a prompt: a timeout (while the script runs, during an upload line, or in the `$?` check) leaves that command in the foreground. Cleanup then first sends a single Ctrl-C (`^C`, logged as `>> script: interrupt sent: ^C`) with no newline, waits for the shell prompt, and then sends the `rm`. The same applies to a closed connection, a prompt-response failure, or an operator interrupt.
 - The interrupt and the cleanup never change the step's outcome: the original error propagates and aborts the script, also with `ignore_error: true` (timeouts are never ignorable). Cleanup doesn't change `session.before` or `session.match`.
@@ -1317,7 +1323,7 @@ In these no breakout runs and no cleanup is sent: not `attach.breakout`, not a b
 So, in practice:
 
 - **To stop a run and have it log out, use Ctrl-C**, or send the interrupt: `kill -INT <pid>`, `timeout -s INT 10m autobot ...`. A plain `kill` or `timeout` sends `SIGTERM`, which ends the run where it is. (A run that a script started in the background, `autobot ... &`, has `SIGINT` ignored by the shell that started it, and an interrupt doesn't stop it.)
-- **Don't pipe the output into something that may exit before the run does** (`| head`, `| grep -m1`, a pager that is quit). Redirect it to a file, or use a reader that reads to the end (`| tee log`). Note that Ctrl-C on `autobot script | tee log` ends `tee` as well, so the breakout's first write of the session's output fails and the run ends there, without the rest of the breakout.
+- **Don't pipe the output into something that may exit before the run does** (`| head`, `| grep -m1`, a pager that is quit). Redirect it to a file (`autobot script > log`), and follow the file from another terminal to watch the run (`tail -f log`): Ctrl-C then reaches no reader, and the breakouts run. A reader that reads to the end (`| tee log`) is safe only as long as the run isn't interrupted from the keyboard. Ctrl-C goes to every process of the pipeline, so on `autobot script | tee log` it ends `tee` as well: the breakout's first write of the session's output fails, and the run ends there, without the rest of the breakout. To stop a run that is piped into `tee`, send the interrupt to the `autobot` process alone (`kill -INT <pid>`): `tee` lives on, and the breakouts run.
 - **Run a long job where a closed terminal doesn't reach it**, e.g. in `tmux` or `screen`. Under `nohup`, `SIGHUP` is ignored when `autobot` starts and stays ignored, and `nohup` sends the output to `nohup.out` when it would have gone to the terminal: the run goes on after the terminal is closed, and its breakouts run when it ends.
 
 **`SIGTERM` and `SIGHUP`.** While the session is open, from the spawn until it is closed, either signal ends the process at once: the CLI writes one line to stderr, restores the signal's default action and sends itself the signal. A shell reports that as status 143 for `SIGTERM` and 129 for `SIGHUP`, and a parent that reads the wait status sees a process killed by the signal. (The one exception is a process that is PID 1 of a PID namespace, the entry point of a container: the system doesn't end it from a signal with the default action, so after the line the CLI exits with the status itself, 143 or 129.) The line is:

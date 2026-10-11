@@ -136,7 +136,7 @@ The `at` line is the step's path in the script: here, the second step of the blo
 | 130 | Interrupted with Ctrl-C, after the breakouts ran |
 | 143, 129 | Ended by `SIGTERM` or `SIGHUP`, without the breakouts |
 
-To stop a run and have it log out, use Ctrl-C or `kill -INT <pid>`. Three endings run no breakout: `SIGTERM` (a plain `kill` or `timeout`), `SIGHUP` (a closed terminal), and output that can't be written (`autobot script.yaml | head -1`). After them the device may be left logged in, with a command still running or an embedded script's temp file left on it. Run a long job in `tmux` or under `nohup`, and send the output to a file. Ctrl-C on a pipeline into `tee` ends `tee` too, and the run then ends at the breakout's first output, without the rest of the breakout.
+To stop a run and have it log out, use Ctrl-C or `kill -INT <pid>`. Three endings run no breakout: `SIGTERM` (a plain `kill` or `timeout`), `SIGHUP` (a closed terminal), and output that can't be written (`autobot script.yaml | head -1`). After them the device may be left logged in, with a command still running or an embedded script's temp file left on it. Run a long job in `tmux` or under `nohup`, and send the output to a file. Ctrl-C on a pipeline into `tee` ends `tee` too, and the run then ends at the breakout's first output, without the rest of the breakout; stop such a run with `kill -INT <pid>` to the `autobot` process alone.
 
 See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A run that ends without its breakouts](SPEC.md#a-run-that-ends-without-its-breakouts).
 
