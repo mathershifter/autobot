@@ -172,7 +172,7 @@ def test_timeout_not_masked_and_cleanup_bounded(
         Path(f"{tmp_path_hex}.b64").unlink(missing_ok=True)
 
 
-# -- P2-07..20: embedded scripts (SPEC.md:140-172) ---------------------------
+# -- P2-07..20: embedded scripts (SPEC "Embedded scripts") ---------------------------
 
 
 UPLOAD_PREFIX = "(umask 077; printf %s "
@@ -200,7 +200,7 @@ def fake_wc(tmp_path: Path) -> str:
 
 
 def test_p2_07_upload_chunks_at_most_512(sent: SentLog):
-    """SPEC.md:165: base64 is sent in single-line chunks of at most 512 chars."""
+    """SPEC "Embedded scripts" (upload mechanism): base64 is sent in single-line chunks of at most 512 chars."""
     script = "#!/bin/sh\n# " + "abcdefgh" * 200 + "\necho ok\n"
     b64 = base64.b64encode(script.encode()).decode()
     assert len(b64) > 3 * 512
@@ -216,7 +216,7 @@ def test_p2_07_upload_chunks_at_most_512(sent: SentLog):
     "script", ["#!/bin/sh\necho ok\n", "#!/bin/sh\necho ok"], ids=["newline", "no-newline"]
 )
 def test_p2_08_upload_trailing_newline_preserved_once(sent: SentLog, script: str):
-    """SPEC.md:165: the rendered script is uploaded with one trailing newline."""
+    """SPEC "Embedded scripts" (upload mechanism): the rendered script is uploaded with one trailing newline."""
     run([{"cmd": script}])
     data = base64.b64decode("".join(uploaded_chunks(sent))).decode()
     assert data.endswith("\n")
@@ -224,33 +224,33 @@ def test_p2_08_upload_trailing_newline_preserved_once(sent: SentLog, script: str
 
 
 def test_p2_09_script_mode_700_and_staging_umask_077():
-    """SPEC.md:166: files created under umask 077; the script is mode 700."""
+    """SPEC "Embedded scripts" (upload mechanism): files created under umask 077; the script is mode 700."""
     out = run([{"cmd": '#!/bin/sh\nstat -c %a "$0" "$0.b64"\n', "register": "out"}])
     assert out["out"] == "700\n600"
 
 
 def test_p2_10_embedded_script_is_rendered():
-    """SPEC.md:162: embedded scripts are Jinja2 templates."""
+    """SPEC "Embedded scripts": embedded scripts are Jinja2 templates."""
     out = run([{"cmd": "#!/bin/sh\necho {{ vars.x }}\n", "register": "out"}], vars={"x": "hi"})
     assert out["out"] == "hi"
 
 
 def test_p2_11_embedded_assert_failure_cleans_up(tmp_path_hex: Path):
-    """SPEC.md:162, 171: assert works; files removed when it fails."""
+    """SPEC "Embedded scripts" (and its cleanup): assert works; files removed when it fails."""
     with pytest.raises(RuntimeError, match="assertion failed"):
         run([{"cmd": "#!/bin/sh\necho hi\n", "assert": "nomatch"}])
     assert_removed(tmp_path_hex)
 
 
 def test_p2_12_byte_count_mismatch_fails_step(tmp_path_hex: Path, tmp_path: Path):
-    """SPEC.md:167: a byte-count mismatch is a step failure."""
+    """SPEC "Embedded scripts" (upload mechanism): a byte-count mismatch is a step failure."""
     with pytest.raises(RuntimeError, match="script upload .* failed"):
         run([{"cmd": "#!/bin/sh\necho hi\n"}], spawn=fake_wc(tmp_path))
     assert_removed(tmp_path_hex)
 
 
 def test_p2_13_byte_count_mismatch_ignorable(tmp_path_hex: Path, tmp_path: Path):
-    """SPEC.md:167: ignore_error swallows a byte-count mismatch."""
+    """SPEC "Embedded scripts" (upload mechanism): ignore_error swallows a byte-count mismatch."""
     out = run(
         [
             {"cmd": "#!/bin/sh\necho hi\n", "ignore_error": True},
@@ -263,7 +263,7 @@ def test_p2_13_byte_count_mismatch_ignorable(tmp_path_hex: Path, tmp_path: Path)
 
 
 def test_p2_14_cleanup_timeout_uses_shorter_step_timeout(tmp_path_hex: Path):
-    """SPEC.md:172: cleanup waits at most min(10s, step timeout), even if ^C is ignored."""
+    """SPEC "Embedded scripts" (cleanup): cleanup waits at most min(10s, step timeout), even if ^C is ignored."""
     start = time.monotonic()
     try:
         with pytest.raises(TimeoutError):
@@ -276,7 +276,7 @@ def test_p2_14_cleanup_timeout_uses_shorter_step_timeout(tmp_path_hex: Path):
 
 
 def test_p2_15_embedded_errors_patterns_apply(tmp_path_hex: Path):
-    """SPEC.md:101, 162: top-level errors apply to embedded script output."""
+    """SPEC "cmd", "Embedded scripts": top-level errors apply to embedded script output."""
     with pytest.raises(CommandError, match="command error: % bad"):
         run([{"cmd": "#!/bin/sh\necho '% bad'\n"}], errors=["% .*"])
     assert_removed(tmp_path_hex)

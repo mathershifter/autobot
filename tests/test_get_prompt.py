@@ -1,6 +1,6 @@
 """P4: ``get_prompt``, prompt forms and credential cycling.
 
-SPEC.md:33-53 and 336-346. Session-level tests build handlers through
+SPEC "prompts" and "Prompt Handling". Session-level tests build handlers through
 ``Runner.build_handler`` (via ``make_runner``) so prompt models go through
 the real path. The device side is ``tests/fakes/device.py`` (fixture F2).
 """
@@ -71,7 +71,7 @@ def log_of(path: Path) -> list[str]:
 
 
 def test_p4_01_get_prompt_never_sends_command(shell_session: Session, sent: SentLog):
-    """SPEC.md:338 (and 294): get_prompt only waits; it sends nothing itself."""
+    """SPEC "Prompt Handling" (and "Jinja2 Templating" for `session.match`): get_prompt only waits; it sends nothing itself."""
     shell_session.get_prompt(timeout=5)
     shell_session.sendline("echo hi")
     sent.clear()
@@ -89,7 +89,7 @@ def test_p4_01_get_prompt_never_sends_command(shell_session: Session, sent: Sent
     ids=["return-true", "no-send"],
 )
 def test_p4_02_shell_prompt_forms(device, sent: SentLog, prompt: dict[str, Any]):
-    """SPEC.md:38, 341: return: true, or no send, marks a shell prompt."""
+    """SPEC "prompts" (`return`), "Prompt Handling" (step 1): return: true, or no send, marks a shell prompt."""
     r, log = device([prompt], "--wait-enter", "--order", "none", "--then", "prompt")
     sent.clear()
     r.session.get_prompt(timeout=5)
@@ -99,7 +99,7 @@ def test_p4_02_shell_prompt_forms(device, sent: SentLog, prompt: dict[str, Any])
 
 @pytest.mark.slow
 def test_p4_04_solicit_newline_after_idle(device, sent: SentLog):
-    """SPEC.md:343: after 5s idle, one empty newline solicits the prompt."""
+    """SPEC "Prompt Handling" (step 3): after 5s idle, one empty newline solicits the prompt."""
     r, _ = device([SHELL_PROMPT], "--wait-enter", "--order", "none", "--then", "prompt", kick=False)
     start = time.monotonic()
     r.session.get_prompt(timeout=15)
@@ -109,7 +109,7 @@ def test_p4_04_solicit_newline_after_idle(device, sent: SentLog):
 
 @pytest.mark.slow
 def test_p4_05_solicit_newline_only_once(device, sent: SentLog):
-    """SPEC.md:343: the solicit newline is sent once only."""
+    """SPEC "Prompt Handling" (step 3): the solicit newline is sent once only."""
     r, _ = device([SHELL_PROMPT], "--silent", kick=False)
     with pytest.raises(TimeoutError):
         r.session.get_prompt(timeout=11)
@@ -118,7 +118,7 @@ def test_p4_05_solicit_newline_only_once(device, sent: SentLog):
 
 @pytest.mark.slow
 def test_p4_06_no_solicit_after_handler_fired(device, sent: SentLog):
-    """SPEC.md:343: no solicit newline once a handler has been activated."""
+    """SPEC "Prompt Handling" (step 3): no solicit newline once a handler has been activated."""
     login = {"name": "login", "expect": ["login:"], "send": "admin"}
     r, log = device(
         [SHELL_PROMPT, login],
@@ -132,7 +132,7 @@ def test_p4_06_no_solicit_after_handler_fired(device, sent: SentLog):
 
 
 def test_p4_07_timeout_error_at_deadline(device):
-    """SPEC.md:344: the overall timeout raises TimeoutError."""
+    """SPEC "Prompt Handling" (step 4): the overall timeout raises TimeoutError."""
     r, _ = device([SHELL_PROMPT], "--silent", kick=False)
     start = time.monotonic()
     with pytest.raises(TimeoutError, match=r"^timed out after 1s waiting for a shell prompt \('sh'\)$"):
@@ -141,14 +141,14 @@ def test_p4_07_timeout_error_at_deadline(device):
 
 
 def test_p4_08_eof_error_on_child_exit(device):
-    """SPEC.md:336: the child exiting raises EOFError."""
+    """SPEC "Prompt Handling" (step 5): the child exiting raises EOFError."""
     r, _ = device([SHELL_PROMPT], "--wait-enter", "--exit-after-banner")
     with pytest.raises(EOFError):
         r.session.get_prompt(timeout=10)
 
 
 def test_p4_09_eof_is_not_timeout(device):
-    """SPEC.md:336: EOF is reported as soon as it happens, not at a poll timeout."""
+    """SPEC "Prompt Handling" (step 5): EOF is reported as soon as it happens, not at a poll timeout."""
     r, _ = device([SHELL_PROMPT], "--wait-enter", "--exit-after-banner")
     start = time.monotonic()
     with pytest.raises(EOFError):
@@ -169,7 +169,7 @@ def test_p4_12_send_each_with_fields(device):
 
 
 def test_p4_13_send_each_without_fields_stringifies(device):
-    """SPEC.md:53: without fields, each item is converted to a string."""
+    """SPEC "sendEach": without fields, each item is converted to a string."""
     pin = {"name": "pin", "expect": ["Password:"], "send": {"each": "vars.pins"}}
     r, log = device([SHELL_PROMPT, pin], "--wait-enter", "--order", "password",
                     "--accept", ":1234", vars={"pins": [1111, 1234]})
@@ -381,7 +381,7 @@ def test_p4_25_send_each_without_fields_patterns_share_one_state(device):
 
 
 def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
-    """SPEC.md:81, 341: a login prompt that arrives with the banner is answered."""
+    """SPEC "attach" (lifecycle step 2), "Prompt Handling": a login prompt that arrives with the banner is answered."""
     r, log = device([SHELL_PROMPT, LOGIN_EACH], "--same-chunk", "--order", "login,password",
                     "--accept", "admin:secret", vars=ADMIN, kick=False)
     r.session.get_prompt(timeout=5)
@@ -390,7 +390,7 @@ def test_p4_18_login_prompt_in_same_chunk_as_banner(device, sent: SentLog):
 
 
 def test_p4_19_shell_prompt_in_same_chunk_as_banner(device):
-    """SPEC.md:81, 341: a shell prompt that arrives with the banner is detected."""
+    """SPEC "attach" (lifecycle step 2), "Prompt Handling": a shell prompt that arrives with the banner is detected."""
     r, _ = device([SHELL_PROMPT], "--same-chunk", "--order", "none", "--then", "prompt", kick=False)
     try:
         r.session.get_prompt(timeout=3)

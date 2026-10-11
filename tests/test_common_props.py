@@ -1,4 +1,4 @@
-"""P3: common step properties and the templating context (SPEC.md:272-334)."""
+"""P3: common step properties and the templating context (SPEC "Common Step Properties", "Conditional execution with `when`", "Jinja2 Templating", "Custom Filters")."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def doc(step: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_p3_01_evaluation_order(timeline: Timeline):
-    """SPEC.md:288: after -> when -> delay_before -> execute -> delay_after."""
+    """SPEC "Common Step Properties" (order of evaluation): after -> when -> delay_before -> execute -> delay_after."""
     run_script(
         [
             {"line": "printf 'pre%s\\n' READY"},
@@ -49,7 +49,7 @@ def test_p3_01_evaluation_order(timeline: Timeline):
 
 
 def test_p3_02_when_false_skips_delays_and_execution(timeline: Timeline, sent: SentLog):
-    """SPEC.md:288, 292: a skipped step runs neither delays nor the step."""
+    """SPEC "Common Step Properties" (order of evaluation), "Conditional execution with `when`": a skipped step runs neither delays nor the step."""
     run_script([{"line": "echo x", "when": "false", "delay_before": "1s", "delay_after": "1s"}])
     assert timeline.sleeps() == []
     assert "echo x" not in sent.lines()
@@ -60,14 +60,14 @@ def test_p3_02_when_false_skips_delays_and_execution(timeline: Timeline, sent: S
     ids=["empty", "false", "False", "0", "none", "rendered-empty", "false-newline"],
 )
 def test_p3_03_when_falsy_values(sent: SentLog, when: str):
-    """SPEC.md:279, 292: the listed falsy strings skip the step."""
+    """SPEC "Conditional execution with `when`": the listed falsy strings skip the step."""
     run_script([{"line": "echo x", "when": when}])
     assert "echo x" not in sent.lines()
 
 
 @pytest.mark.parametrize("when", ["true", "True", "1", "yes", "no", "{{ 1 == 1 }}"])
 def test_p3_04_when_truthy_values(sent: SentLog, when: str):
-    """SPEC.md:292: anything not in the falsy list runs the step."""
+    """SPEC "Conditional execution with `when`": anything not in the falsy list runs the step."""
     run_script([{"line": "echo x", "when": when}])
     assert "echo x" in sent.lines()
 
@@ -105,7 +105,7 @@ def test_p3_05_when_surrounding_whitespace_and_case(sent: SentLog, when: str, ru
 
 
 def test_p3_06_filter_contains():
-    """SPEC.md:333: contains filter."""
+    """SPEC "Custom Filters": contains filter."""
     r = make_runner([])
     assert r.render("{{ 'abc' | contains('b') }}", condition=True) == "True"
     assert r.render("{{ 'abc' | contains('x') }}", condition=True) == "False"
@@ -114,20 +114,20 @@ def test_p3_06_filter_contains():
 
 
 def test_p3_07_filter_search():
-    """SPEC.md:334: search filter."""
+    """SPEC "Custom Filters": search filter."""
     r = make_runner([])
     assert r.render("{{ 'v1.2' | search('\\\\d+\\\\.\\\\d+') }}", condition=True) == "True"
     assert r.render("{{ 'vX' | search('\\\\d') }}", condition=True) == "False"
 
 
 def test_p3_08_range_global():
-    """SPEC.md:327: range is a template global."""
+    """SPEC "Jinja2 Templating": range is a template global."""
     out = run_vars([{"cmd": "echo {{ range(3) | list | length }}", "register": "out"}])
     assert out["out"] == "3"
 
 
 def test_p3_09_after_sets_session_before_and_match(probe: ProbeExecutor):
-    """SPEC.md:278, 324-325: after fills session.before/match before when."""
+    """SPEC "Common Step Properties" (`after`), "Jinja2 Templating" (`session.before`, `session.match`): after fills session.before/match before when."""
     run_script(
         [
             # the echoed command contains neither 'Version' nor V<digits>
@@ -141,7 +141,7 @@ def test_p3_09_after_sets_session_before_and_match(probe: ProbeExecutor):
 
 
 def test_p3_10_template_context_env_vars_args(monkeypatch: pytest.MonkeyPatch):
-    """SPEC.md:319-323: env, vars and args are in the template context."""
+    """SPEC "Jinja2 Templating" (available context): env, vars and args are in the template context."""
     monkeypatch.delenv("AB_TPL_A", raising=False)
     out = run_vars(
         [{"cmd": "echo {{ env.AB_TPL_A }}-{{ vars.b }}-{{ args.c }}", "register": "out"}],
@@ -157,13 +157,13 @@ def test_p3_10_template_context_env_vars_args(monkeypatch: pytest.MonkeyPatch):
     ids=lambda p: next(iter(p)),
 )
 def test_p3_11_sleep_rejects_common_props(both_validate: Callable, prop: dict[str, Any]):
-    """SPEC.md:274: sleep supports none of the common properties."""
+    """SPEC "Common Step Properties": sleep supports none of the common properties."""
     assert both_validate(doc({"sleep": 1, **prop})) == (False, False)
 
 
 @pytest.mark.parametrize("step", [{"line": "x"}, {"return": 1}], ids=["line", "return"])
 def test_p3_12_line_and_return_reject_timeout(both_validate: Callable, step: dict[str, Any]):
-    """SPEC.md:284: line and return do not support timeout."""
+    """SPEC "Common Step Properties": line and return do not support timeout."""
     assert both_validate(doc({**step, "timeout": 1})) == (False, False)
 
 
@@ -182,13 +182,13 @@ def test_p3_12_line_and_return_reject_timeout(both_validate: Callable, step: dic
 def test_p3_13_non_sleep_steps_accept_common_props(
     both_validate: Callable, step: dict[str, Any], timeout: bool
 ):
-    """SPEC.md:274-282: every other step accepts the common properties."""
+    """SPEC "Common Step Properties": every other step accepts the common properties."""
     props = {**COMMON, **({"timeout": "5s"} if timeout else {})}
     assert both_validate(doc({**step, **props})) == (True, True)
 
 
 def test_p3_14_step_timeout_overrides_default():
-    """SPEC.md:282: timeout overrides the default for the step."""
+    """SPEC "Common Step Properties" (`timeout`): timeout overrides the default for the step."""
     start = time.monotonic()
     with pytest.raises(TimeoutError):
         run_script([{"cmd": "sleep 3", "timeout": 1}])
@@ -196,7 +196,7 @@ def test_p3_14_step_timeout_overrides_default():
 
 
 def test_p3_15_call_honors_when_and_delays(timeline: Timeline):
-    """SPEC.md:274: call supports when and delays."""
+    """SPEC "Common Step Properties": call supports when and delays."""
     fn = {"f": {"script": [{"cmd": "echo inf", "register": "r", "timeout": "5s"}]}}
     out = run_vars([{"call": "f", "when": "false"}], fn=fn)
     assert "r" not in out
@@ -207,7 +207,7 @@ def test_p3_15_call_honors_when_and_delays(timeline: Timeline):
 
 
 def test_p3_16_block_when_false_skips_prompt_swap(timeline: Timeline, sent: SentLog):
-    """SPEC.md:274: a skipped block neither swaps prompts nor runs enter."""
+    """SPEC "Common Step Properties", "Conditional execution with `when`": a skipped block neither swaps prompts nor runs enter."""
     run_script(
         [
             {
@@ -225,7 +225,7 @@ def test_p3_16_block_when_false_skips_prompt_swap(timeline: Timeline, sent: Sent
 
 
 def test_p3_17_after_timeout_uses_step_timeout():
-    """SPEC.md:278, 282: the after wait is bounded by the step timeout."""
+    """SPEC "Common Step Properties" (`after`, `timeout`): the after wait is bounded by the step timeout."""
     start = time.monotonic()
     with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for the after pattern 'NEVER'$"):
         run_script([{"cmd": "true", "after": "NEVER", "timeout": 1}])

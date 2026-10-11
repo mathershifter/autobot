@@ -1,4 +1,4 @@
-"""P7-01..06, P7-13, P7-16..19, P7-24, P7-25: step registry and plugin execution (SPEC.md:286)."""
+"""P7-01..06, P7-13, P7-16..19, P7-24, P7-25: step registry and plugin execution (SPEC "Common Step Properties")."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def test_p7_01_builtins_registered_and_not_plugins(isolated_registry: StepRegist
 
 
 def test_p7_02_builtin_only_config_does_not_discover(isolated_registry: StepRegistry):
-    """SPEC.md:286: plugin discovery is lazy; builtin-only configs never trigger it."""
+    """SPEC "Common Step Properties" (when plugins are discovered): plugin discovery is lazy; builtin-only configs never trigger it."""
     Config.model_validate(
         {
             "autobot": "2026-10",
@@ -73,7 +73,7 @@ def test_p7_03_unknown_key_raises(isolated_registry: StepRegistry):
 
 
 def test_p7_04_plugin_model_receives_only_plugin_fields(probe: ProbeExecutor, timeline: Timeline):
-    """SPEC.md:286: common properties go to the runner, not the plugin model."""
+    """SPEC "Common Step Properties" (plugin steps): common properties go to the runner, not the plugin model."""
     run_script(
         [
             {"line": "printf 'MA%s\\n' RK"},
@@ -921,7 +921,7 @@ def _prepend(monkeypatch: pytest.MonkeyPatch, roots: list[Path]) -> None:
 def test_p7_20_failed_discovery_raises_again(
     isolated_registry: StepRegistry, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """SPEC.md:495: a broken entry point fails every discovery, not only the first, without loading it again."""
+    """SPEC "Common Step Properties" (a plugin that fails to load): a broken entry point fails every discovery, not only the first, without loading it again."""
     _prepend(monkeypatch, _install(tmp_path, BAD_PLUGINS["import"][0]))
     reg = isolated_registry
     with pytest.raises(PluginError) as first:

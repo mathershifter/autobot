@@ -1,4 +1,4 @@
-"""P8-06..13: line, return, control, sleep and call steps (SPEC.md:55-66, 174-270)."""
+"""P8-06..13: line, return, control, sleep and call steps (SPEC "fn", "sleep", "call", "line", "return", "control")."""
 
 from __future__ import annotations
 
@@ -18,13 +18,13 @@ from autobot.runner import Runner
 
 
 def test_p8_06_control_sends_in_order(sent: SentLog):
-    """SPEC.md:265-270: control characters are sent in list order."""
+    """SPEC "control": control characters are sent in list order."""
     run_script([{"control": ["a", "x"]}])
     assert sent.controls() == ["a", "x"]
 
 
 def test_p8_07_control_bracket_is_ctrl_bracket(fake_device: FakeDevice):
-    """SPEC.md:268: control "]" sends Ctrl+] (0x1d)."""
+    """SPEC "control": control "]" sends Ctrl+] (0x1d)."""
     spawn, log = fake_device("--wait-enter", "--rawdump", "1", "--order", "none", "--then", "prompt")
     run_script(
         [
@@ -39,19 +39,19 @@ def test_p8_07_control_bracket_is_ctrl_bracket(fake_device: FakeDevice):
 
 
 def test_p8_08_return_sends_n_newlines(sent: SentLog):
-    """SPEC.md:258-263: return: N sends N empty lines."""
+    """SPEC "return": return: N sends N empty lines."""
     run_script([{"return": 3}], attach_script=[])
     assert sent.lines() == ["", "", ""]
 
 
 def test_p8_09_line_list_sends_each_without_waiting(timeline: Timeline):
-    """SPEC.md:252-256: line sends raw, without waiting for a prompt."""
+    """SPEC "line": line sends raw, without waiting for a prompt."""
     run_script([{"line": ["echo a", "echo b"]}], attach_script=[])
     assert timeline.since("attach") == [("sendline", "echo a"), ("sendline", "echo b")]
 
 
 def test_p8_10_line_and_after_are_rendered(sent: SentLog, timeline: Timeline):
-    """README "Templating": line and after are templates (see decision #9)."""
+    """SPEC "Jinja2 Templating": line and after are templates (see decision #9)."""
     run_script(
         [
             {"line": "echo {{ vars.x }}"},
@@ -65,13 +65,13 @@ def test_p8_10_line_and_after_are_rendered(sent: SentLog, timeline: Timeline):
 
 
 def test_p8_11_sleep_step(timeline: Timeline):
-    """SPEC.md:174-178: sleep pauses for the duration."""
+    """SPEC "sleep": sleep pauses for the duration."""
     run_script([{"sleep": "2s"}])
     assert timeline.sleeps() == [2.0]
 
 
 def test_p8_11_sleep_step_real(attached_runner: Callable[..., Runner]):
-    """SPEC.md:174-178: a real 500ms sleep."""
+    """SPEC "sleep": a real 500ms sleep."""
     r = attached_runner()
     start = time.monotonic()
     r.run_steps(steps([{"sleep": "500ms"}]))
@@ -79,7 +79,7 @@ def test_p8_11_sleep_step_real(attached_runner: Callable[..., Runner]):
 
 
 def test_p8_12_call_runs_function_steps():
-    """SPEC.md:55-66, 180-184: call runs the function's steps."""
+    """SPEC "fn", "call": call runs the function's steps."""
     fn = {
         "f": {
             "script": [
@@ -94,7 +94,7 @@ def test_p8_12_call_runs_function_steps():
 
 
 def test_p8_13_call_steps_see_registered_vars():
-    """SPEC.md:322: function steps see vars registered earlier."""
+    """SPEC "Jinja2 Templating" (`vars`): function steps see vars registered earlier."""
     fn = {"f": {"script": [{"cmd": "echo got-{{ vars.v }}", "register": "g", "timeout": "5s"}]}}
     out = run_vars([{"cmd": "echo v", "register": "v"}, {"call": "f"}], fn=fn)
     assert out["g"] == "got-v"
