@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 import math
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -151,8 +150,7 @@ _TYPES = {bool: "a boolean", int: "an integer", float: "a number"}
 
 
 def _typed(key: str, value: str, default: Any, source: str) -> Any:
-    """Text from `source` (`--env`, `prepare` or the environment) as a value of the type of the default
-    of the variable `key`."""
+    """Text from `source` (`--env` or the environment) as a value of the type of the default of `key`."""
     try:
         if isinstance(default, bool):
             return _TRUTH[value.strip().lower()]
@@ -172,11 +170,11 @@ def _typed(key: str, value: str, default: Any, source: str) -> Any:
 
 class Runner:
     def __init__(self, config: Config, given: dict[str, str]):
-        """`given`: the `--env` values, which come before those of `prepare` and of the environment."""
+        """`given`: the `--env` values, which come before those of the environment."""
         registry.discover()
         self._config = config
         self._default_timeout = 300
-        # the environment of `prepare` and of the spawned process: autobot's own, on a plain terminal
+        # the environment of `prepare`, of the spawned process and of `env` without a `prepare`: autobot's own, plain
         self._environ = run_environ()
         for key in given:
             if key not in config.env:
@@ -245,10 +243,11 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self, printed: dict[str, str]) -> dict[str, Any]:
+    def _resolve_env(self, environ: dict[str, str]) -> dict[str, Any]:
         """`env` in templates: the variables the `env` section declares, and nothing else. Each has the
-        value of `--env`, else the one `prepare` printed, else the environment's, as the type of its
-        default, else its default: a template, which reads `vars` and the variables declared above it."""
+        value of `--env`, else the one of `environ` (the environment `prepare` left, or the run's), as
+        the type of its default, else its default: a template, which reads `vars` and the variables
+        declared above it."""
         declared = self._config.env
 
         class Env(dict):  # holds its keys and nothing else: a template reads attributes too
@@ -261,13 +260,11 @@ class Runner:
                 return StrictUndefined(hint=why)
 
         env = Env()
-        sources = {"prepare": printed, "the environment": os.environ}
         for key, default in declared.items():
-            source = next((s for s, values in sources.items() if key in values), None)
             if key in self._typed:
                 env[key] = self._typed[key]
-            elif source:
-                env[key] = _typed(key, sources[source][key], default, source)
+            elif key in environ:
+                env[key] = _typed(key, environ[key], default, "the environment")
             elif default is None:
                 raise ScriptError(f"env.{key} is required: give it with --env {key}=VALUE or in the environment")
             else:
@@ -318,12 +315,12 @@ class Runner:
         attach = self._config.attach
         check_template(attach.spawn)  # a syntax error stops the run before `prepare`
         timeout = self._get_timeout(attach)
-        printed: dict[str, str] = {}
+        environ = self._environ
         if self._config.prepare:
             # as written, not rendered: `env` has no values yet. It sees the `--env` values, as given
             given = {k: v for k, v in self._given.items() if k}  # no process can be started with an empty name
-            printed = self._run_prepare(self._config.prepare, {**self._environ, **given}, self._config.env)
-        self._env = self._resolve_env(printed)
+            environ = self._run_prepare(self._config.prepare, {**environ, **given})
+        self._env = self._resolve_env(environ)
         spawn = self._spawn_command()
 
         if self.before_attach:

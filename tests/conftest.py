@@ -116,7 +116,7 @@ def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = 
     """
     runner = Runner(make_config(script, **kw), given or {})
     if runner.config.prepare is None:
-        runner._env = runner._resolve_env({})
+        runner._env = runner._resolve_env(runner._environ)
     return runner
 
 

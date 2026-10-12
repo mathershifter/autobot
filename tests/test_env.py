@@ -157,10 +157,10 @@ def test_p5_61_variable_the_section_does_not_declare_is_not_in_env(environ: dict
 
 def test_p5_61_declared_key_reads_the_environment(environ: dict[str, str]):
     """SPEC "Top-level fields" (`env`): a declared name takes whatever the environment has under it, and a
-    default reads it like any key above: the environment as Autobot was started with, not the spawned
-    process's `TERM=dumb`."""
+    default reads it like any key above: the environment of the run, Autobot's own with `TERM=dumb`, the
+    one a `prepare` is given."""
     r = make_runner([], env={"HOME": None, "TERM": "none", "AB_OS": "dflt", "AB_URL": "http://{{ env.AB_OS }}{{ env.HOME }}"})
-    assert r.render("{{ env.HOME }} {{ env.TERM }} {{ env.AB_URL }}") == "/home/ab xterm http://o/home/ab"
+    assert r.render("{{ env.HOME }} {{ env.TERM }} {{ env.AB_URL }}") == "/home/ab dumb http://o/home/ab"
 
 
 def test_p5_62_variable_that_is_set_empty_is_set(environ: dict[str, str]):

@@ -1,4 +1,4 @@
-"""`prepare`: run the local script, and read the variables it prints."""
+"""`prepare`: source the local script in a shell, and read the environment that shell leaves."""
 
 from __future__ import annotations
 
@@ -7,14 +7,32 @@ import os
 import signal
 import subprocess
 import tempfile
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 
 from . import log
-from .types import RunError, ScriptError
+from .types import RunError
 
-# Stripped before looking for a shebang: whitespace and line breaks, a BOM,
-# and the zero-width characters that copy and paste leave behind.
+# Stripped before looking for a shebang: whitespace, a BOM, and the zero-width characters of copy and paste.
 _JUNK = " \t\r\n﻿​⁠"
+SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
+# The script's stdout is the shell's stderr; what it assigns is exported; the environment is written when the
+# shell exits, wherever the script ends, to the shell's own stdout, kept as descriptor 9: zsh, and bash for an
+# `exit` in a function, run the trap with the redirections of the command that was running.
+_WRAPPER = 'exec 9>&1 >&2; set -a; trap "env -0 >&9 || :" EXIT; . "$0"'
+
+
+def shell(script: str) -> list[str]:
+    """The command of the shell a `prepare` script is for: the words of its shebang, `/bin/sh` without one.
+    A shebang that names anything but a shell, behind `env` as its first word that is no option, is a ValueError."""
+    script = script.lstrip(_JUNK)
+    if not script.startswith("#!"):
+        return ["/bin/sh"]
+    words = script.partition("\n")[0][2:].split()
+    rest = words[1:] if words and os.path.basename(words[0]) == "env" else words[:1]
+    name = next((w for w in rest if not w.startswith("-")), "")
+    if os.path.basename(name) not in SHELLS:
+        raise ValueError(f"prepare is a shell script: its shebang names {name!r}")
+    return words
 
 
 class _Terminated(BaseException):
@@ -49,51 +67,34 @@ def _terminable() -> Iterator[None]:
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
-def run(script: str, environ: dict[str, str], declared: Collection[str]) -> dict[str, str]:
-    """Run the `prepare` script in `environ`, as its shebang says or under `/bin/sh`, and give the variables
-    it sets: its standard output when it exits, lines of `NAME=value`, each for a name of `declared`."""
+def run(script: str, environ: dict[str, str]) -> dict[str, str]:
+    """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves;
+    `environ` itself when it left none to read."""
+    command = shell(script)
     script = script.lstrip(_JUNK)
-    first, nl, rest = script.partition("\n")
-    if script.startswith("#!"):
-        first = first.removesuffix("\r")
-        script = first + nl + rest
-        shell = []
-        log.say("prepare: running local script")
-    else:
-        shell = ["/bin/sh"]
-        log.say("prepare: running local script (no shebang, using /bin/sh)")
+    log.say("prepare: running local script" + ("" if script.startswith("#!") else " (no shebang, using /bin/sh)"))
     # stdout is a file, not a pipe: a process the script leaves running would keep a pipe open
     with _terminable(), tempfile.TemporaryFile() as out:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         try:  # the temp file is removed, whatever fails
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
-            os.chmod(f.name, 0o700)
             try:
-                result = subprocess.run([*shell, f.name], check=False, env=environ, stdout=out)
+                result = subprocess.run([*command, "-c", _WRAPPER, f.name], check=False, env=environ, stdout=out)
             except OSError as e:
+                first = script.partition("\n")[0].rstrip()
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
         finally:
             with contextlib.suppress(FileNotFoundError):  # the script may remove itself
                 os.unlink(f.name)
-        # what is there when the script exits, read at its own offset: the file's is shared with such a process
+        # read at its own offset: the file's is shared with a process the script left running
         data = os.pread(out.fileno(), os.fstat(out.fileno()).st_size, 0)
     if result.returncode != 0:
         raise RunError(f"prepare script failed with exit code {result.returncode}")
-    printed: dict[str, str] = {}
-    # read as UTF-8, and a byte that isn't is kept as `os.environ` keeps one
-    output = data.decode("utf-8", "surrogateescape").replace("\r\n", "\n")
-    for n, line in enumerate(output.split("\n"), 1):
-        if not line:
-            continue
-        name, eq, value = line.partition("=")
-        # reported by its number alone: any part of the line may be a secret, what stands before a `=` too
-        if not eq:
-            raise ScriptError(f"prepare: line {n} of its output is not NAME=value")
-        if name not in declared:
-            raise ScriptError(f"prepare: line {n} of its output sets a variable the script's env section doesn't declare")
-        printed[name] = value
-    if printed:
-        log.say(f"prepare: {len(printed)} set")
+    if data.endswith(b"\0"):
+        # decoded as `os.environ` is; a name is the text before the first `=`
+        environ = dict(entry.partition("=")[::2] for entry in os.fsdecode(data).split("\0")[:-1])
+    else:  # the script replaced the shell or its EXIT trap, or left no `env` to run
+        log.say("prepare: its environment could not be read", "warn")
     log.say("prepare: done", "ok")
-    return printed
+    return environ

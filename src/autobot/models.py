@@ -8,6 +8,7 @@ import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
+from .prepare import shell
 from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
 VERSION = "2026-10"
@@ -463,7 +464,8 @@ class Config(pydantic.BaseModel):
         if not isinstance(v, str) or v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
-    prepare: Omittable[str] = None
+    # a shell script: a shebang that names no shell is a ValueError
+    prepare: Omittable[Annotated[str, pydantic.AfterValidator(lambda v: shell(v) and v)]] = None
     env: NotNull[dict[str, EnvValue]] = {}
     vars: NotNull[dict[str, Any]] = {}
     prompts: NotNull[list[Prompt]] = []

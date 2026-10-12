@@ -660,19 +660,21 @@ def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
 def test_p5_55_run_prepare_removes_the_file_when_the_write_fails(prep_tmp: Path):
     """The audit's reproduction: `Runner._run_prepare("echo \\ud800")` left `_autobot_*.sh` in the temp dir."""
     with pytest.raises(UnicodeEncodeError):
-        Runner._run_prepare("echo \ud800", dict(os.environ), ())
+        Runner._run_prepare("echo \ud800", dict(os.environ))
     assert list(prep_tmp.iterdir()) == []
 
 
-def test_p5_55_prepare_temp_file_removed_when_chmod_fails(prep_tmp: Path, monkeypatch: pytest.MonkeyPatch):
+def test_p5_55_prepare_temp_file_removed_when_the_shell_is_not_run(prep_tmp: Path, monkeypatch: pytest.MonkeyPatch):
     """Every later failure removes it too."""
+    import subprocess
 
-    def chmod(path: Any, mode: int) -> None:
-        raise PermissionError(1, "Operation not permitted", str(path))
+    def run(command: list[str], **kw: Any) -> None:
+        assert [f.name for f in prep_tmp.iterdir()] == [os.path.basename(command[-1])]
+        raise MemoryError
 
-    monkeypatch.setattr(os, "chmod", chmod)
-    with pytest.raises(PermissionError):
-        Runner._run_prepare("#!/bin/sh\ntrue\n", dict(os.environ), ())
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(MemoryError):
+        Runner._run_prepare("#!/bin/sh\ntrue\n", dict(os.environ))
     assert list(prep_tmp.iterdir()) == []
 
 
@@ -697,11 +699,11 @@ JUNK = {
     "bom": "\ufeff",
     "mixed": "\ufeff\n \u200b\t\u2060\n",
 }
-PY_ONLY = "import pathlib; pathlib.Path({out!r}).write_text(str(sum(range(4))))\n"
+BASH_ONLY = "[[ a == a ]] && echo $((1+2+3)) > {out}\n"
 
 
 @pytest.mark.parametrize("junk", JUNK.values(), ids=JUNK.keys())
-@pytest.mark.parametrize("interp", ["sh", "python3"])
+@pytest.mark.parametrize("interp", ["sh", "bash"])
 def test_p5_42_prepare_shebang_after_leading_junk(
     junk: str, interp: str, tmp_path: Path, prep_tmp: Path, capsys
 ):
@@ -711,8 +713,8 @@ def test_p5_42_prepare_shebang_after_leading_junk(
         body = f"#!/bin/sh\necho sh > {out}\n"
         want = "sh\n"
     else:
-        body = "#!/usr/bin/env python3\n" + PY_ONLY.format(out=str(out))
-        want = "6"
+        body = "#!/usr/bin/env bash\n" + BASH_ONLY.format(out=out)
+        want = "6\n"
     make_runner([], prepare=junk + body).run()
     assert out.read_text() == want
     assert ">> prepare: running local script" in progress(capsys.readouterr().err)
@@ -745,12 +747,12 @@ def test_p5_44_prepare_fallback_nonzero_aborts(
 def test_p5_45_prepare_interpreter_cannot_run(
     case: str, tmp_path: Path, prep_tmp: Path, timeline: Timeline, children
 ):
-    """SPEC "prepare": an interpreter that can't run is a ``RuntimeError`` naming the shebang."""
+    """SPEC "prepare": a shell that can't run is a ``RuntimeError`` naming the shebang."""
     if case == "missing":
-        interp = tmp_path / "no_such_interp"
+        interp = tmp_path / "missing" / "sh"
         exc, err = FileNotFoundError, "[Errno 2] No such file or directory"
     else:
-        interp = tmp_path / "interp"
+        interp = tmp_path / "sh"
         interp.write_text("not a program\n")
         interp.chmod(0o600)
         exc, err = PermissionError, "[Errno 13] Permission denied"

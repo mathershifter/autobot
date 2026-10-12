@@ -103,8 +103,8 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
     ),
     "prepare-cannot-run": (
         [{"cmd": "true"}],
-        {"prepare": "#!/autobot/no/such/interpreter\n"},
-        "prepare script could not run ('#!/autobot/no/such/interpreter'): [Errno 2] No such file or directory",
+        {"prepare": "#!/autobot/no/such/sh\n"},
+        "prepare script could not run ('#!/autobot/no/such/sh'): [Errno 2] No such file or directory",
         None,
     ),
     "spawn-not-found": (

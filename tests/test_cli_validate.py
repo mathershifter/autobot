@@ -240,8 +240,8 @@ ENV_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = 
         "Run failed in {path}: env.H is required: give it with --env H=VALUE or in the environment\n",
     ),
     "env-not-of-its-type": (
-        lambda m: m.write("s", env={"N": 3}, prepare=f"touch {m.prepared}\necho N=three\n"), (),
-        "Run failed in {path}: env.N: the value from prepare is not an integer\n",
+        lambda m: m.write("s", env={"N": 3}, prepare=f"touch {m.prepared}\nN=three\n"), (),
+        "Run failed in {path}: env.N: the value from the environment is not an integer\n",
     ),
 }
 
@@ -331,8 +331,8 @@ def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str,
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", ENV_ERRORS)
 def test_p6_109_what_depends_on_a_value_fails_the_run_after_prepare(m: Markers, case: str, flags: tuple):
-    """SPEC "What a valid script may still do", "The order of a run": a variable without a value, text from
-    `prepare` that isn't of its type and a default that can't be rendered are found once `prepare` has run. `validate` finds
+    """SPEC "What a valid script may still do", "The order of a run": a variable without a value, text that
+    `prepare` set and that isn't of its type, and a default that can't be rendered are found once `prepare` has run. `validate` finds
     the script valid; `run` fails with status 3, and nothing is spawned."""
     make, args, head = ENV_ERRORS[case]
     path = make(m)

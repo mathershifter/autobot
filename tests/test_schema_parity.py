@@ -1398,6 +1398,19 @@ def test_p6_117_parity_prepare_that_is_not_a_string(both_validate: Callable, val
     assert err["loc"] == ("prepare",) and err["type"] == ("null_value" if value is None else "string_type")
 
 
+@pytest.mark.parametrize(
+    "value", ["#!/usr/bin/env python3\nprint(1)\n", " \n\ufeff#!/usr/bin/perl -w\r\n", "#!\ntrue\n"], ids=["env-python", "junk-perl", "no-interpreter"]
+)
+def test_p6_117_prepare_whose_shebang_names_no_shell_is_rejected_by_the_models_alone(both_validate: Callable, value: str):
+    """SPEC "YAML Script Structure" (a sixth case), "prepare": `prepare` is a shell script. A schema pattern
+    can't read a shebang as the models do (the words of the line, the interpreter behind `env` and its
+    options), so the schema takes any string and only the models reject it, as a `value_error`."""
+    assert both_validate(d(prepare=value)) == (False, True)
+    [err] = model_errors(d(prepare=value))
+    assert (err["loc"], err["type"]) == (("prepare",), "value_error")
+    assert err["msg"].startswith("Value error, prepare is a shell script: its shebang names ")
+
+
 @pytest.mark.parametrize("value", ["true", {}, None], ids=["string", "mapping", "null"])
 def test_p6_117_parity_prepare_under_attach_is_an_unknown_key(both_validate: Callable, value: Any):
     """SPEC "attach": `attach` has no `prepare`: both reject it like any other unknown key."""
