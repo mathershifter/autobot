@@ -457,7 +457,7 @@ def _runner(args: argparse.Namespace, config: Config) -> Runner:
     given = {}
     for item in args.env:
         if "=" not in item:
-            log.error("--env requires KEY=VALUE format, got", item)
+            log.error("--env requires KEY=VALUE format")  # without the argument, which may be a value
             raise LoadError
         key, value = item.split("=", 1)
         given[key] = value

@@ -49,9 +49,9 @@ def _terminable() -> Iterator[None]:
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
-def run(script: str, environ: dict[str, str] | None = None, declared: Collection[str] = ()) -> dict[str, str]:
+def run(script: str, environ: dict[str, str], declared: Collection[str]) -> dict[str, str]:
     """Run the `prepare` script in `environ`, as its shebang says or under `/bin/sh`, and give the variables
-    it sets: its standard output, lines of `NAME=value`, each for a name of `declared`."""
+    it sets: its standard output when it exits, lines of `NAME=value`, each for a name of `declared`."""
     script = script.lstrip(_JUNK)
     first, nl, rest = script.partition("\n")
     if script.startswith("#!"):
@@ -62,32 +62,36 @@ def run(script: str, environ: dict[str, str] | None = None, declared: Collection
     else:
         shell = ["/bin/sh"]
         log.say("prepare: running local script (no shebang, using /bin/sh)")
-    with _terminable():
+    # stdout is a file, not a pipe: a process the script leaves running would keep a pipe open
+    with _terminable(), tempfile.TemporaryFile() as out:
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         try:  # the temp file is removed, whatever fails
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
             os.chmod(f.name, 0o700)
             try:
-                result = subprocess.run([*shell, f.name], check=False, env=environ, stdout=subprocess.PIPE)
+                result = subprocess.run([*shell, f.name], check=False, env=environ, stdout=out)
             except OSError as e:
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
         finally:
             with contextlib.suppress(FileNotFoundError):  # the script may remove itself
                 os.unlink(f.name)
+        # what is there when the script exits, read at its own offset: the file's is shared with such a process
+        data = os.pread(out.fileno(), os.fstat(out.fileno()).st_size, 0)
     if result.returncode != 0:
         raise RunError(f"prepare script failed with exit code {result.returncode}")
     printed: dict[str, str] = {}
     # read as UTF-8, and a byte that isn't is kept as `os.environ` keeps one
-    output = result.stdout.decode("utf-8", "surrogateescape").replace("\r\n", "\n")
+    output = data.decode("utf-8", "surrogateescape").replace("\r\n", "\n")
     for n, line in enumerate(output.split("\n"), 1):
         if not line:
             continue
         name, eq, value = line.partition("=")
-        if not eq:  # reported without the line, and below without the value: either may be a secret
+        # reported by its number alone: any part of the line may be a secret, what stands before a `=` too
+        if not eq:
             raise ScriptError(f"prepare: line {n} of its output is not NAME=value")
         if name not in declared:
-            raise ScriptError(f"prepare: line {n} of its output sets {name!r}, which the script's env section doesn't declare")
+            raise ScriptError(f"prepare: line {n} of its output sets a variable the script's env section doesn't declare")
         printed[name] = value
     if printed:
         log.say(f"prepare: {len(printed)} set")

@@ -150,18 +150,23 @@ _TRUTH = {"1": True, "true": True, "yes": True, "on": True, "0": False, "false":
 _TYPES = {bool: "a boolean", int: "an integer", float: "a number"}
 
 
-def _typed(value: str, default: Any) -> Any:
-    """Text from `--env`, `prepare` or the environment as a value of the type of the variable's default."""
-    if isinstance(default, bool):
-        return _TRUTH[value.strip().lower()]
-    if isinstance(default, int):
-        if not re.fullmatch(r"[+-]?[0-9]+", value.strip()):
-            raise ValueError
-        return int(value)
-    if isinstance(default, float):
-        if not math.isfinite(number := float(value)):
-            raise ValueError
-        return number
+def _typed(key: str, value: str, default: Any, source: str) -> Any:
+    """Text from `source` (`--env`, `prepare` or the environment) as a value of the type of the default
+    of the variable `key`."""
+    try:
+        if isinstance(default, bool):
+            return _TRUTH[value.strip().lower()]
+        if isinstance(default, int):
+            if not re.fullmatch(r"[+-]?[0-9]+", value.strip()):
+                raise ValueError
+            return int(value)
+        if isinstance(default, float):
+            if not math.isfinite(number := float(value)):
+                raise ValueError
+            return number
+    except (KeyError, ValueError):
+        # without the value, which may be a secret, and without the exception that holds it
+        raise ScriptError(f"env.{key}: the value from {source} is not {_TYPES[type(default)]}") from None
     return value
 
 
@@ -176,6 +181,8 @@ class Runner:
         for key in given:
             if key not in config.env:
                 raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
+        # an `--env` value depends on nothing `prepare` does, so it gets its type before anything runs
+        self._typed = {key: _typed(key, value, config.env[key], "--env") for key, value in given.items()}
         for key, default in config.env.items():
             if isinstance(default, str):  # a template: its syntax depends on no value
                 try:
@@ -254,15 +261,13 @@ class Runner:
                 return StrictUndefined(hint=why)
 
         env = Env()
-        sources = {"--env": self._given, "prepare": printed, "the environment": os.environ}
+        sources = {"prepare": printed, "the environment": os.environ}
         for key, default in declared.items():
             source = next((s for s, values in sources.items() if key in values), None)
-            if source:
-                try:
-                    env[key] = _typed(sources[source][key], default)
-                except (KeyError, ValueError):
-                    # without the value, which may be a secret, and without the exception that holds it
-                    raise ScriptError(f"env.{key}: the value from {source} is not {_TYPES[type(default)]}") from None
+            if key in self._typed:
+                env[key] = self._typed[key]
+            elif source:
+                env[key] = _typed(key, sources[source][key], default, source)
             elif default is None:
                 raise ScriptError(f"env.{key} is required: give it with --env {key}=VALUE or in the environment")
             else:

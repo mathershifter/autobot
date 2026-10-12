@@ -660,7 +660,7 @@ def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
 def test_p5_55_run_prepare_removes_the_file_when_the_write_fails(prep_tmp: Path):
     """The audit's reproduction: `Runner._run_prepare("echo \\ud800")` left `_autobot_*.sh` in the temp dir."""
     with pytest.raises(UnicodeEncodeError):
-        Runner._run_prepare("echo \ud800")
+        Runner._run_prepare("echo \ud800", dict(os.environ), ())
     assert list(prep_tmp.iterdir()) == []
 
 
@@ -672,7 +672,7 @@ def test_p5_55_prepare_temp_file_removed_when_chmod_fails(prep_tmp: Path, monkey
 
     monkeypatch.setattr(os, "chmod", chmod)
     with pytest.raises(PermissionError):
-        Runner._run_prepare("#!/bin/sh\ntrue\n")
+        Runner._run_prepare("#!/bin/sh\ntrue\n", dict(os.environ), ())
     assert list(prep_tmp.iterdir()) == []
 
 

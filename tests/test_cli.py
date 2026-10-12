@@ -36,18 +36,19 @@ def test_p6_22_cli_env_option_value_may_contain_equals(tmp_path: Path):
 
 
 def test_p6_23_cli_env_option_without_equals_is_clean_error(tmp_path: Path):
-    """SPEC "CLI" (load errors): a malformed --env is reported without a traceback."""
-    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "bad")
+    """SPEC "CLI" (load errors): a malformed --env is reported without a traceback, and without the
+    argument, which may be a value given without its key."""
+    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "hunter2SECRET", "--traceback")
     assert res.returncode == 1
-    assert "--env requires KEY=VALUE" in res.stderr
-    assert "Traceback" not in res.stderr
+    assert res.stderr.splitlines()[-1] == "--env requires KEY=VALUE format"
+    assert "Traceback" not in res.stderr and "hunter2SECRET" not in res.stderr
 
 
-def test_p6_23_cli_empty_env_option_is_reported_with_its_colon(tmp_path: Path):
-    """The message keeps its `: ` when the argument it shows is empty."""
+def test_p6_23_cli_empty_env_option_is_the_same_error(tmp_path: Path):
+    """The message is the same when the argument is empty."""
     res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "")
     assert res.returncode == 1
-    assert res.stderr.splitlines()[-1] == "--env requires KEY=VALUE format, got: "
+    assert res.stderr.splitlines()[-1] == "--env requires KEY=VALUE format"
 
 
 @pytest.mark.parametrize("raw", ["", "- a\n- b\n"], ids=["empty-file", "top-level-list"])
@@ -171,7 +172,7 @@ def test_p6_28_cli_utf16_with_bom_loads(tmp_path: Path):
 def test_p6_29_cli_errors_print_markup_like_text_verbatim(tmp_path: Path):
     """Error text is printed literally: `[/x]` is not rich markup and doesn't crash."""
     res = run_cli(make_doc([GOT]), tmp_path, "--env", "[/x]")
-    assert _load_error(res) == "--env requires KEY=VALUE format, got: [/x]"
+    assert _load_error(res) == "--env requires KEY=VALUE format"
 
     res = run_cli(None, tmp_path, raw='autobot: 2026-10\nscript: "[/x]"\n')
     assert _load_error(res) == "Validation errors:"

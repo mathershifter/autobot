@@ -198,8 +198,8 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
 # What `run` checks after the validation stage, before it runs anything: `validate` finds these scripts valid,
 # and `run` stops with status 1 and this line
 SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = {
-    "env-option-without-equals": (lambda m: m.write("s"), ("-e", "bogus"), "--env requires KEY=VALUE format, got: bogus\n"),
-    "env-option-empty": (lambda m: m.write("s"), ("-e", "k=v", "--env", ""), "--env requires KEY=VALUE format, got: \n"),
+    "env-option-without-equals": (lambda m: m.write("s"), ("-e", "bogus"), "--env requires KEY=VALUE format\n"),
+    "env-option-empty": (lambda m: m.write("s"), ("-e", "k=v", "--env", ""), "--env requires KEY=VALUE format\n"),
     "env-option-undeclared": (
         lambda m: m.write("s", env={"A": "a"}), ("-e", "A=x", "-e", "B=y"),
         "Script error in {path}: --env B: the script's env section declares no variable 'B'\n",
@@ -210,6 +210,10 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
         "Script error in {path}: prompt 'p': template error: unexpected end of template",
+    ),
+    "env-option-not-of-its-type": (
+        lambda m: m.write("s", env={"N": 3}), ("-e", "N=three"),
+        "Script error in {path}: env.N: the value from --env is not an integer\n",
     ),
     "send-each-unresolved": (
         lambda m: m.write("s", vars={"creds": [{"username": "a"}]}, prompts=[{"name": "login", "send": EACH}]), (),
@@ -236,8 +240,8 @@ ENV_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = 
         "Run failed in {path}: env.H is required: give it with --env H=VALUE or in the environment\n",
     ),
     "env-not-of-its-type": (
-        lambda m: m.write("s", env={"N": 3}), ("-e", "N=three"),
-        "Run failed in {path}: env.N: the value from --env is not an integer\n",
+        lambda m: m.write("s", env={"N": 3}, prepare=f"touch {m.prepared}\necho N=three\n"), (),
+        "Run failed in {path}: env.N: the value from prepare is not an integer\n",
     ),
 }
 
@@ -309,8 +313,9 @@ def test_p6_105_quoted_values_and_ordinary_nesting_still_load(m: Markers):
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", SCRIPT_ERRORS)
 def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str, flags: tuple):
-    """SPEC "What a valid script may still do": a malformed or undeclared `--env`, an `env` default that is no
-    template and a prompt whose `send` or `sendEach` can't be loaded are not part of the validation stage.
+    """SPEC "What a valid script may still do": a malformed or undeclared `--env`, one whose value isn't of its
+    type, an `env` default that is no template and a prompt whose `send` or `sendEach` can't be loaded are not
+    part of the validation stage.
     `validate` finds the script valid; `run` stops with status 1, before anything runs."""
     make, args, head = SCRIPT_ERRORS[case]
     path = make(m)
@@ -326,8 +331,8 @@ def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str,
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", ENV_ERRORS)
 def test_p6_109_what_depends_on_a_value_fails_the_run_after_prepare(m: Markers, case: str, flags: tuple):
-    """SPEC "What a valid script may still do", "The order of a run": a variable without a value, text that
-    isn't of its type and a default that can't be rendered are found once `prepare` has run. `validate` finds
+    """SPEC "What a valid script may still do", "The order of a run": a variable without a value, text from
+    `prepare` that isn't of its type and a default that can't be rendered are found once `prepare` has run. `validate` finds
     the script valid; `run` fails with status 3, and nothing is spawned."""
     make, args, head = ENV_ERRORS[case]
     path = make(m)
@@ -505,8 +510,8 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 def test_p6_108_runner_raises_the_first_script_error():
     """`Runner(config, given)` takes the configuration and the `--env` values, and raises the first script
-    error that depends on no value: an `--env` key, the syntax of the `env` defaults, top to bottom, then the
-    prompts in their order. What a default renders to is the run's."""
+    error that depends on no value: an `--env` key, the type of an `--env` value, the syntax of the `env`
+    defaults, top to bottom, then the prompts in their order. What a default renders to is the run's."""
     import inspect
 
     from autobot.models import Config
@@ -515,6 +520,11 @@ def test_p6_108_runner_raises_the_first_script_error():
     assert list(inspect.signature(Runner).parameters) == ["config", "given"]
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
         Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {"C": "{{ 1/", "A": "{% if %}"}}))), {"NOPE": "x"})
+    typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3}}
+    with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
+        Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three", "NOPE": "x"})
+    with pytest.raises(ScriptError, match="^env.N: the value from --env is not an integer$"):
+        Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three"})
     with pytest.raises(ScriptError, match="^env.C: template error: unexpected 'end of template'"):
         Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {"C": "{{ 1/", "A": "{% if %}"}}))), {})
     with pytest.raises(ScriptError, match="^prompt 'confirm': template error: "):

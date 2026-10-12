@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SpawnLog, SpawnRecorded, make_doc, make_runner, run_cli, run_script
+from conftest import SpawnLog, SpawnRecorded, make_config, make_doc, make_runner, run_cli, run_script
+
+from autobot.runner import Runner
 
 NESTED = {"AB_A": "a", "AB_B": "{{ env.AB_A }}-b", "AB_C": "{{ env.AB_B }}-c"}
 SECRET = "S3CRET-value"
@@ -256,15 +258,18 @@ REJECTED = {
 @pytest.mark.parametrize("what", REJECTED)
 @pytest.mark.parametrize("source", ["environment", "option"])
 def test_p5_94_text_that_is_not_of_the_type_is_an_error_without_the_value(monkeypatch, what: str, source: str):
-    """SPEC "Top-level fields" (`env`): a value that can't be converted is an error when the run starts, which
-    names the variable, the type and the source, and never shows the value."""
+    """SPEC "Top-level fields" (`env`): a value that can't be converted is an error, of `--env` when the
+    runner is built and of the environment when `env` is resolved, which names the variable, the type and the
+    source, and never shows the value."""
     default, texts = REJECTED[what]
     where = "the environment" if source == "environment" else "--env"
     for text in texts:
         if source == "environment":
             monkeypatch.setenv("AB_A", text)
         with pytest.raises(ValueError) as ei:
-            make_runner([], env={"AB_A": default}, given={"AB_A": text} if source == "option" else {})
+            if source == "option":  # found without a run
+                Runner(make_config([], env={"AB_A": default}), {"AB_A": text})
+            make_runner([], env={"AB_A": default})
         assert str(ei.value) == f"env.AB_A: the value from {where} is not {what}", text
         # nothing that holds the value is chained to the error, so a traceback doesn't show it either
         assert ei.value.__cause__ is None and ei.value.__suppress_context__
@@ -279,19 +284,20 @@ def test_p5_94_default_is_not_converted():
 
 
 def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """SPEC "CLI": the report of a value that can't be converted, with `--traceback` too, has no value in it.
-    It is a failed run, status 3: `env` is resolved once `prepare` has run."""
+    """SPEC "CLI", "The order of a run": the report of a value that can't be converted, with `--traceback`
+    too, has no value in it. Of `--env` it is a script error, status 1, and `prepare` hasn't run; of the
+    environment a failed run, status 3: `env` is resolved once `prepare` has run."""
     monkeypatch.setenv("AB_B", SECRET)
     marker = tmp_path / "prepared"
     doc = make_doc([], env={"AB_A": 1, "AB_B": False}, prepare=f"touch {marker}\n")
-    for argv, line in [
-        (("-e", f"AB_A={SECRET}"), "env.AB_A: the value from --env is not an integer"),
-        (("-e", "AB_A=5"), "env.AB_B: the value from the environment is not a boolean"),
+    for argv, status, line in [
+        (("-e", f"AB_A={SECRET}"), 1, "Script error in {}: env.AB_A: the value from --env is not an integer"),
+        (("-e", "AB_A=5"), 3, "Run failed in {}: env.AB_B: the value from the environment is not a boolean"),
     ]:
         res = run_cli(doc, tmp_path, *argv, "--traceback")
-        assert res.returncode == 3 and res.stdout == ""
-        assert report(res)[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {line}"
-        assert SECRET not in res.stderr and marker.exists()
+        assert res.returncode == status and res.stdout == ""
+        assert report(res)[-1] == line.format(tmp_path / "script.autobot.yaml")
+        assert SECRET not in res.stderr and marker.exists() == (status == 3)
 
 
 # -- P5-95: a required variable -------------------------------------------------
@@ -355,7 +361,7 @@ def test_p5_96_env_option_sets_a_declared_variable(tmp_path: Path, monkeypatch: 
 @pytest.mark.parametrize("item", ["AB_B", "", "AB_B:x"])
 def test_p5_96_env_option_without_an_equals_sign(tmp_path: Path, item: str):
     """SPEC "CLI": a load error, status 1, before anything runs."""
-    assert cli(tmp_path, "-e", "AB_B=x", "--env", item) == (1, "", f"--env requires KEY=VALUE format, got: {item}\n")
+    assert cli(tmp_path, "-e", "AB_B=x", "--env", item) == (1, "", "--env requires KEY=VALUE format\n")
 
 
 @pytest.mark.parametrize("key", ["AB_NOPE", "ab_b", "AB_B ", "", "HOME"])

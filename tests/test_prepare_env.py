@@ -660,25 +660,31 @@ def test_p5_100_carriage_return_inside_a_line_is_part_of_the_value(prepared):
     assert r._env == {"AB_A": "a\rb\r", "AB_B": "x\r"}
 
 
+UNDECLARED = "prepare: line {} of its output sets a variable the script's env section doesn't declare"
 BAD_OUTPUT = {
     "no-equals": ([SECRET], "prepare: line 1 of its output is not NAME=value"),
     "no-equals-later": (["AB_A=a", "", f"token {SECRET}"], "prepare: line 3 of its output is not NAME=value"),
     "blank": (["AB_A=a", "   "], "prepare: line 2 of its output is not NAME=value"),
-    "undeclared": ([f"AB_NOPE={SECRET}"], "prepare: line 1 of its output sets 'AB_NOPE', which the script's env section doesn't declare"),
-    "undeclared-later": (
-        ["AB_A=a", f"AB_B={SECRET}", f"ab_a={SECRET}"],
-        "prepare: line 3 of its output sets 'ab_a', which the script's env section doesn't declare",
-    ),
-    "spaced-name": ([f"AB_A ={SECRET}"], "prepare: line 1 of its output sets 'AB_A ', which the script's env section doesn't declare"),
-    "exported": ([f"export AB_A={SECRET}"], "prepare: line 1 of its output sets 'export AB_A', which the script's env section doesn't declare"),
-    "no-name": ([f"={SECRET}"], "prepare: line 1 of its output sets '', which the script's env section doesn't declare"),
+    "undeclared": ([f"AB_NOPE={SECRET}"], UNDECLARED.format(1)),
+    "undeclared-later": (["AB_A=a", f"AB_B={SECRET}", f"ab_a={SECRET}"], UNDECLARED.format(3)),
+    "spaced-name": ([f"AB_A ={SECRET}"], UNDECLARED.format(1)),
+    "exported": ([f"export AB_A={SECRET}"], UNDECLARED.format(1)),
+    "no-name": ([f"={SECRET}"], UNDECLARED.format(1)),
+    # what stands before the `=` is no name, and the secret: a base64 token with its padding, a line of a log
+    "token": ([f"{SECRET}=="], UNDECLARED.format(1)),
+    "log-line": (["AB_A=a", f"password: {SECRET} url=http://x"], UNDECLARED.format(2)),
 }
+
+
+def texts(out: list[str]) -> set[str]:
+    """What an error about the lines `out` must not show: the secret, and what a bad line has before its `=`."""
+    return {SECRET} | {line.partition("=")[0] for line in out if line.strip() and not line.startswith(("AB_A=", "AB_B="))}
 
 
 @pytest.mark.parametrize(("out", "message"), BAD_OUTPUT.values(), ids=BAD_OUTPUT.keys())
 def test_p5_101_bad_line_fails_the_run_and_spawns_nothing(timeline: Timeline, prep_tmp: Path, capfd, out: list[str], message: str):
     """SPEC "The output of `prepare`": a line without `=`, or for a name the `env` section doesn't declare,
-    is an error with the number of the line, and the name where there is one; nothing is spawned."""
+    is an error with the number of the line and no text of the line; nothing is spawned."""
     with pytest.raises(ValueError) as ei:
         make_runner([], prepare=lines(*out), env={"AB_A": "a", "AB_B": None}).run()
     assert str(ei.value) == message
@@ -686,13 +692,13 @@ def test_p5_101_bad_line_fails_the_run_and_spawns_nothing(timeline: Timeline, pr
     assert list(prep_tmp.iterdir()) == []
     out_, err = capfd.readouterr()
     assert progress(err) == [">> prepare: running local script (no shebang, using /bin/sh)"]
-    assert SECRET not in out_ + err
+    assert not [text for text in texts(out) if text and text in out_ + err]
 
 
 @pytest.mark.parametrize(("out", "message"), BAD_OUTPUT.values(), ids=BAD_OUTPUT.keys())
 def test_p5_101_cli_reports_a_bad_line_without_its_text(tmp_path: Path, out: list[str], message: str):
     """SPEC "The output of `prepare`", "CLI": a failed run, status 3; neither the report nor the traceback
-    of `--traceback` holds the line or a value."""
+    of `--traceback` holds any text of the line, what stands before its `=` included."""
     spawned = tmp_path / "spawned"
     doc = make_doc([], prepare=lines(*out), env={"AB_A": "a", "AB_B": None}, spawn=f"touch {spawned}")
     for flags in ((), ("--traceback",)):
@@ -700,7 +706,7 @@ def test_p5_101_cli_reports_a_bad_line_without_its_text(tmp_path: Path, out: lis
         assert res.returncode == 3 and res.stdout == ""
         assert res.stderr.splitlines()[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}"
         assert ("Traceback" in res.stderr) == bool(flags)
-        assert SECRET not in res.stderr
+        assert not [text for text in texts(out) if text and text in res.stderr]
         assert not spawned.exists()
 
 
@@ -783,9 +789,19 @@ def test_p5_103_script_in_another_language_sets_variables(prepared):
     assert r._env == {"AB_A": "FROM-CLI", "AB_B": "from-cli", "AB_N": 42}
 
 
-def test_p5_103_process_left_running_does_not_hold_the_run_when_its_output_is_redirected(prepared):
-    """SPEC "The output of `prepare`": the output is read to its end, so a process the script leaves
-    running gets another stdout; then the run goes on at once."""
+def test_p5_103_process_left_running_does_not_hold_the_run(prepared, tmp_path: Path):
+    """SPEC "The output of `prepare`": the output is read when the script exits, so a process it leaves
+    running with the script's stdout doesn't hold up the run, and what that process prints later isn't read."""
+    pid, late = tmp_path / "pid", tmp_path / "late"
     began = time.monotonic()
-    r = prepared("sleep 5 > /dev/null 2>&1 &\necho AB_A=a\n", env={"AB_A": None})
-    assert time.monotonic() - began < 2 and r._env == {"AB_A": "a"}
+    try:
+        r = prepared(
+            f"sh -c 'sleep 1; echo AB_B=late; echo AB_NOPE=late; touch {late}; exec sleep 60' &\necho $! > {pid}\necho AB_A=a\n",
+            env={"AB_A": None, "AB_B": "dflt"},
+        )
+        assert time.monotonic() - began < 5 and r._env == {"AB_A": "a", "AB_B": "dflt"}
+        while not late.exists():  # the process had the script's stdout, and wrote to it: it is the sleeper by then
+            assert time.monotonic() - began < 15
+            time.sleep(0.05)
+    finally:
+        os.kill(int(pid.read_text()), signal.SIGKILL)
