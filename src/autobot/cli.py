@@ -451,20 +451,20 @@ def _config(script: str) -> Config:
 
 
 def _runner(args: argparse.Namespace, config: Config) -> Runner:
-    """What `run` adds to the validation stage before it runs anything: the `--arg` values checked, `env`
+    """What `run` adds to the validation stage before it runs anything: the `--env` values checked, `env`
     and `prompts` resolved. This renders the script's templates. An error is reported, and raised as
     `LoadError`."""
-    cli_args = {}
-    for item in args.arg:
+    given = {}
+    for item in args.env:
         if "=" not in item:
-            log.error("--arg requires KEY=VALUE format, got", item)
+            log.error("--env requires KEY=VALUE format, got", item)
             raise LoadError
         key, value = item.split("=", 1)
-        cli_args[key] = value
+        given[key] = value
 
     try:
-        return Runner(config, cli_args)
-    except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        return Runner(config, given)
+    except ScriptError as e:  # the env variables and prompt send templates, checked before prepare/spawn
         _traceback(args, e)
         log.error(f"Script error in {_visible(args.script)}", str(e))
         raise LoadError from None
@@ -629,12 +629,12 @@ def _main():
     )
     validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
     run_parser.add_argument(
-        "-a",
-        "--arg",
+        "-e",
+        "--env",
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+        help="Set a variable that the script's env section declares (e.g. --env CONSOLE_HOST=10.0.0.1)",
     )
     validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 

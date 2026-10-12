@@ -640,16 +640,16 @@ def prep_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tdir
 
 
-@pytest.mark.parametrize("text", ["\ud800", "\udcff"], ids=["lone-surrogate", "non-utf8-arg"])
+@pytest.mark.parametrize("text", ["\ud800", "\udcff"], ids=["lone-surrogate", "non-utf8-byte"])
 def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
     timeline: Timeline, prep_tmp: Path, capsys: pytest.CaptureFixture[str], text: str
 ):
     """SPEC "attach": the temp file is removed in every case, also when the script can't be written.
 
-    A byte of an `--arg` that isn't UTF-8 reaches the script as a lone surrogate (`\\udcff`),
+    A byte of a variable's value that isn't UTF-8 reaches the script as a lone surrogate (`\\udcff`),
     which UTF-8 can't encode; the file used to be left behind.
     """
-    r = make_runner([], prepare="#!/bin/sh\necho {{ args.x }}\n", args={"x": text})
+    r = make_runner([], prepare="#!/bin/sh\necho {{ env.X }}\n", env={"X": None}, given={"X": text})
     with pytest.raises(UnicodeEncodeError):
         r.run()
     assert list(prep_tmp.iterdir()) == []
@@ -798,13 +798,13 @@ def test_p5_05_prepare_is_templated(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("AUTOBOT_T_X", "from-os")
     run_script(
         [],
-        env={"AUTOBOT_T_X": "default", "Y": "{{ env.AUTOBOT_T_X }}-y"},
+        env={"AUTOBOT_T_X": "default", "Y": "{{ env.AUTOBOT_T_X }}-y", "A": None},
         vars={"v": "V"},
-        args={"a": "A"},
         prepare=(
             "#!/bin/sh\n"
-            f"echo '{{{{ env.Y }}}} {{{{ vars.v }}}} {{{{ args.a }}}}' > {out}\n"
+            f"echo '{{{{ env.Y }}}} {{{{ vars.v }}}} {{{{ env.A }}}}' > {out}\n"
         ),
+        given={"A": "A"},
     )
     assert out.read_text() == "from-os-y V A\n"
 
@@ -1255,8 +1255,8 @@ def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected
 def test_p5_53_spawn_rendering_empty_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
     """SPEC "attach": a spawn that renders to nothing is a ValueError; prepare doesn't run and nothing is spawned."""
     prepared = tmp_path / "prepared"
-    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
-    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+    runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ vars\.cmd \}\}'$"):
         runner.run()
     assert not prepared.exists()
     assert "attach" not in timeline.names()
@@ -1272,8 +1272,8 @@ def test_p5_54_spawn_rendering_to_quotes_stops_before_prepare(timeline: Timeline
     `pexpect.spawn("''")` raised `IndexError: list index out of range`, after `prepare` had run.
     """
     prepared = tmp_path / "prepared"
-    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
-    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+    runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ vars\.cmd \}\}'$"):
         runner.run()
     assert not prepared.exists()
     assert "attach" not in timeline.names()
@@ -1282,31 +1282,31 @@ def test_p5_54_spawn_rendering_to_quotes_stops_before_prepare(timeline: Timeline
 @pytest.mark.parametrize("value", ["'true'", '"true"', "tr''ue", "\\true", "'/bin/true' ''"])
 def test_p5_54_quoted_command_still_spawns(value: str):
     """A command that is quoted or escaped is still a command: it gets as far as the spawn wait."""
-    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
+    runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value})
     with pytest.raises(EOFError, match=r"^connection closed before any output from .* \(exit status 0\)$"):
         runner.run()
 
 
 @pytest.mark.parametrize(
-    ("spawn", "args"),
+    ("spawn", "given"),
     [
         (f" {BASH}", {}),
         (f"\t \n{BASH}", {}),
-        ("{{ args.wrapper | default('') }} " + BASH, {}),
-        ("{{ args.wrapper | default('') }} bash --norc --noprofile -i", {"wrapper": "env"}),
+        ("{{ env.WRAPPER }} " + BASH, {}),
+        ("{{ env.WRAPPER }} bash --norc --noprofile -i", {"WRAPPER": "env"}),
     ],
     ids=["space", "tab-newline", "empty-wrapper", "wrapper"],
 )
-def test_p5_57_spawn_with_leading_whitespace_runs(timeline: Timeline, spawn: str, args: dict[str, str]):
+def test_p5_57_spawn_with_leading_whitespace_runs(timeline: Timeline, spawn: str, given: dict[str, str]):
     """SPEC "attach": leading whitespace is removed from the command line before it is spawned.
 
     `pexpect.spawn(' bash')` looks up an empty command name (`The command was not found or was not
     executable`), and a wrapper template that renders to nothing leaves exactly that space.
     """
-    r = run_script([{"cmd": "echo hi", "register": "out"}], spawn=spawn, args=args)
+    r = run_script([{"cmd": "echo hi", "register": "out"}], spawn=spawn, env={"WRAPPER": ""}, given=given)
     assert r.config.vars["out"] == "hi"
     [(_, call, _)] = [c for c in timeline.calls if c[0] == "attach"]
-    assert call[0] == ("env " if args else "") + BASH
+    assert call[0] == ("env " if given else "") + BASH
 
 
 def test_p5_57_messages_name_the_command_without_the_whitespace():
@@ -1318,8 +1318,8 @@ def test_p5_57_messages_name_the_command_without_the_whitespace():
 @pytest.mark.parametrize("value", [" ''", "  '' ls", " \\"])
 def test_p5_57_rendered_quotes_behind_whitespace_still_stop_the_run(timeline: Timeline, value: str):
     """A rendered `spawn` that is whitespace and then quotes still names no command."""
-    runner = make_runner([], spawn="{{ args.cmd }}", args={"cmd": value})
-    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ args\.cmd \}\}'$"):
+    runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value})
+    with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ vars\.cmd \}\}'$"):
         runner.run()
     assert "attach" not in timeline.names()
 

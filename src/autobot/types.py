@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from typing import Annotated, Any
 
 import jinja2
-import jinja2.meta
 import pydantic
 from pydantic_core import PydanticCustomError
 
@@ -55,10 +54,6 @@ class ScriptError(ValueError):
 class RunError(RuntimeError):
     """A failure of the run that the device or the environment explains: a failed command, a prompt out of
     responses, a failed `prepare`. The CLI reports it without a traceback."""
-
-
-class EnvError(ScriptError):
-    """An `env` reference cycle or nesting limit, found while a default is rendered; not a template error."""
 
 
 def _search(s: Any, pattern: str) -> bool:
@@ -117,8 +112,7 @@ def render(template: Any, ctx: dict, *, condition: bool = False) -> Any:
     except jinja2.TemplateError as e:
         raise ScriptError(f"template error: {e}") from e
     except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
-        # already reported: by a render inside this one (an env default), or by a filter
-        if isinstance(e, ScriptError):
+        if isinstance(e, ScriptError):  # already reported, by a filter
             raise
         why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
         raise ScriptError(f"template error: {why}") from e
@@ -128,14 +122,6 @@ def check_template(template: str) -> None:
     """Report a template syntax error now rather than when the template is rendered."""
     try:
         _jinja_env.parse(template)
-    except jinja2.TemplateError as e:
-        raise ScriptError(f"template error: {e}") from e
-
-
-def template_names(template: str) -> set[str]:
-    """The context variables a template reads, e.g. `env` or `vars`."""
-    try:
-        return jinja2.meta.find_undeclared_variables(_jinja_env.parse(template))
     except jinja2.TemplateError as e:
         raise ScriptError(f"template error: {e}") from e
 

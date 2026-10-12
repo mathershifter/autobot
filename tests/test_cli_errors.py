@@ -22,7 +22,7 @@ from autobot.registry import PluginError
 from autobot.runner import Runner, StepRef, trail
 from autobot.session import CommandError
 from autobot.steps import CmdExecutor, StepFailure
-from autobot.types import EnvError, RunError, ScriptError
+from autobot.types import RunError, ScriptError
 
 PIN = {"name": "pin", "expect": ["PIN:"], "send": {"each": "vars.pins"}}
 BOOLEAN = (
@@ -202,7 +202,6 @@ EXPECTED_ERRORS: list[tuple[BaseException, str, bool]] = [
     (CommandError("command error: % bad", "out"), "command error: % bad", False),
     (RunError("prompt 'p': no response available"), "prompt 'p': no response available", False),
     (ScriptError("template error: boom"), "template error: boom", False),
-    (EnvError("env cycle: A -> A"), "env cycle: A -> A", False),
     (TimeoutError("timed out after 5s waiting for x"), "timed out after 5s waiting for x", False),
     (EOFError("connection closed while waiting for x"), "connection closed while waiting for x", False),
     (EOFError(), "EOFError", False),
@@ -324,7 +323,7 @@ def test_p6_84_system_exit_is_not_caught(monkeypatch: pytest.MonkeyPatch, capsys
 def test_p6_84_expected_classes_keep_their_base_classes():
     """The engine's own classes add nothing to what an `except` clause catches: they are still a `ValueError`
     or a `RuntimeError`, and the CLI's set of expected failures holds neither of those."""
-    assert issubclass(ScriptError, ValueError) and issubclass(EnvError, ScriptError)
+    assert issubclass(ScriptError, ValueError)
     assert issubclass(RunError, RuntimeError)
     assert issubclass(StepFailure, RunError) and issubclass(CommandError, RunError)
     assert ValueError not in cli.EXPECTED and RuntimeError not in cli.EXPECTED and Exception not in cli.EXPECTED

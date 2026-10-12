@@ -1,8 +1,17 @@
+# Upgrade a SONiC switch through its console.
+#
+#   autobot run -e DUT=<name> examples/sonic.autobot.yaml
+#   autobot run -e DUT=<name> -e SONIC_VERSION=202505 examples/sonic.autobot.yaml
+#
+# A variable of the env section takes its value from -e or from the environment
+# (DUT=<name> autobot run ...); one with an empty value here must get it there.
 autobot: 2026-10
 
 env:
+  DUT:
   ARTIFACTORY: https://ci.corp.io
   SONIC_VERSION: "202511"
+  # a default reads the keys declared above it
   SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/{{ env.SONIC_VERSION }}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
   NAMESERVER: 172.22.22.10
 
@@ -43,7 +52,7 @@ attach:
   spawn: ssh jmather-home
   # script to run after spawning the session, before running any steps
   script:
-    - line: a dut attach {{ args.dut }}
+    - line: a dut attach {{ env.DUT }}
     - return: 1
       after: "attached to"
     - control: c

@@ -39,10 +39,10 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 @pytest.fixture(autouse=True)
 def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The spawned shell inherits the suite's environment, and `env` in templates holds all of it: drop
-    what would change how bash behaves, the suite's own `AB_*` names, and names of mapping methods, and
+    """The spawned shell inherits the suite's environment, and a variable the `env` section declares takes
+    its value from it: drop what would change how bash behaves and the suite's own `AB_*` names, and
     give the shell the prompt that `SHELL_PROMPT` matches."""
-    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *dir({}), *(k for k in os.environ if k.startswith("AB_"))):
+    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *(k for k in os.environ if k.startswith("AB_"))):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PS1", PS1)
 
@@ -64,7 +64,7 @@ def make_doc(
     prompts: Any = _DEFAULT,
     errors: list[str] | None = None,
     vars: dict[str, Any] | None = None,
-    env: dict[str, str] | None = None,
+    env: dict[str, Any] | None = None,
     fn: dict[str, Any] | None = None,
     spawn: str = BASH,
     attach_script: list[dict[str, Any]] | None = None,
@@ -109,16 +109,17 @@ def make_config(script: list[dict[str, Any]], **kw: Any) -> Config:
     return Config.model_validate(make_doc(script, **kw))
 
 
-def make_runner(script: list[dict[str, Any]], *, args: dict[str, str] | None = None, **kw: Any) -> Runner:
-    return Runner(make_config(script, **kw), args or {})
+def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
+    """``given``: the ``--env`` values; ``env``: the script's ``env`` section."""
+    return Runner(make_config(script, **kw), given or {})
 
 
-def run_script(script: list[dict[str, Any]], *, args: dict[str, str] | None = None, **kw: Any) -> Runner:
+def run_script(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
     """Build a config, run it end to end, and return the runner.
 
     Registered values are in ``runner.config.vars``.
     """
-    runner = make_runner(script, args=args, **kw)
+    runner = make_runner(script, given=given, **kw)
     runner.run()
     return runner
 

@@ -98,7 +98,7 @@ def test_p6_93_nothing_runs_and_no_file_is_created(m: Markers, tmp_path: Path):
     as they were."""
     tmp = tmp_path / "tmp"
     tmp.mkdir()
-    path = m.write("ok.autobot.yaml", env={"A": "{{ args.a }}", "B": "{{ env.A }}-{{ env.NOT_SET_YET }}"})
+    path = m.write("ok.autobot.yaml", env={"A": None, "B": "{{ env.A }}-{{ env.NOT_DECLARED }}"}, spawn="{{ env.A }}")
     before = sorted(p.name for p in tmp_path.iterdir())
     res = _cli("validate", path, TMPDIR=str(tmp))
     assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
@@ -106,7 +106,9 @@ def test_p6_93_nothing_runs_and_no_file_is_created(m: Markers, tmp_path: Path):
     assert list(tmp.iterdir()) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == before
     # the same script does run them
-    assert _cli(path, "-a", "a=1", TMPDIR=str(tmp)).returncode == 3
+    assert _cli(path, "-e", "A=1", TMPDIR=str(tmp)).returncode == 1
+    path = m.write("ok.autobot.yaml", env={"A": None}, spawn="{{ env.A }}")
+    assert _cli(path, "-e", "A=no-such-command-ab", TMPDIR=str(tmp)).returncode == 3
     assert m.prepared.exists()
 
 
@@ -120,7 +122,7 @@ def test_p6_93_validate_reaches_no_spawn_no_prepare_and_no_subprocess(
 
     for owner, name in (
         (pexpect, "spawn"), (subprocess, "Popen"), (prepare, "run"), (Runner, "_run_prepare"), (Runner, "run"),
-        (prepare.tempfile, "NamedTemporaryFile"), (prepare.tempfile, "TemporaryFile"), (os, "fork"), (os, "forkpty"),
+        (prepare.tempfile, "NamedTemporaryFile"), (os, "fork"), (os, "forkpty"),
     ):
         monkeypatch.setattr(owner, name, never)
     path = m.write("ok.autobot.yaml")
@@ -183,15 +185,21 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     ),
     "masked-line": (lambda m: m.write("s", script=[{"line": {SECRET: 1}}]), (), "Validation errors:\n  script.0."),
     "masked-env": (lambda m: m.write("s", env={"PW": [SECRET]}), (), "Validation errors:\n  env.PW: "),
-    "validation-before-arg": (
-        lambda m: m.write("s", script=[{"cmdd": "true"}]), ("-a", "bogus"), "Validation errors:\n  script.0: "
+    "env-value-list": (lambda m: m.write("s", env={"A": "a", "L": ["x"]}), (), "Validation errors:\n  env.L: "),
+    "env-value-mapping": (lambda m: m.write("s", env={"M": {"k": "v"}}), (), "Validation errors:\n  env.M: "),
+    "validation-before-env-option": (
+        lambda m: m.write("s", script=[{"cmdd": "true"}]), ("-e", "bogus"), "Validation errors:\n  script.0: "
     ),
 }
 # What `run` checks after the validation stage, before it runs anything: `validate` finds these scripts valid,
 # and `run` stops with status 1 and this line
 SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = {
-    "arg-without-equals": (lambda m: m.write("s"), ("-a", "bogus"), "--arg requires KEY=VALUE format, got: bogus\n"),
-    "arg-empty": (lambda m: m.write("s"), ("-a", "k=v", "--arg", ""), "--arg requires KEY=VALUE format, got: \n"),
+    "env-option-without-equals": (lambda m: m.write("s"), ("-e", "bogus"), "--env requires KEY=VALUE format, got: bogus\n"),
+    "env-option-empty": (lambda m: m.write("s"), ("-e", "k=v", "--env", ""), "--env requires KEY=VALUE format, got: \n"),
+    "env-option-undeclared": (
+        lambda m: m.write("s", env={"A": "a"}), ("-e", "A=x", "-e", "B=y"),
+        "Script error in {path}: --env B: the script's env section declares no variable 'B'\n",
+    ),
     "env-template-syntax": (
         lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: env.A: template error: unexpected '}'"
     ),
@@ -199,17 +207,22 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
         lambda m: m.write("s", env={"A": "{{ 1/0 }}"}), (),
         "Script error in {path}: env.A: template error: ZeroDivisionError: division by zero\n",
     ),
-    "env-cycle": (
+    "env-reads-a-key-below": (
         lambda m: m.write("s", env={"A": "{{ env.B }}", "B": "{{ env.A }}"}), (),
-        "Script error in {path}: env cycle: A -> B -> A\n",
+        "Script error in {path}: env.A: template error: env.B has no value yet: a default reads only the keys declared above it\n",
     ),
-    "env-unset-without-prepare": (
-        lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}, prepare=None), (),
-        "Script error in {path}: env.A: template error: env has no key 'AB_VALIDATE_NOT_SET'\n",
+    "env-reads-an-undeclared-key": (
+        lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}), (),
+        "Script error in {path}: env.A: template error: env has no key 'AB_VALIDATE_NOT_SET': the script's env section "
+        "doesn't declare it\n",
     ),
-    "env-missing-arg": (
-        lambda m: m.write("s", env={"H": "{{ args.host }}"}), ("-a", "other=1"),
-        "Script error in {path}: env.H: template error: args has no key 'host'; pass it with --arg host=VALUE\n",
+    "env-required": (
+        lambda m: m.write("s", env={"H": None, "O": "o"}), ("-e", "O=1"),
+        "Script error in {path}: env.H is required: give it with --env H=VALUE or in the environment\n",
+    ),
+    "env-not-of-its-type": (
+        lambda m: m.write("s", env={"N": 3}), ("-e", "N=three"),
+        "Script error in {path}: env.N: the value from --env is not an integer\n",
     ),
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
@@ -227,7 +240,7 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
 def test_p6_94_invalid_script_gets_the_report_of_run_and_an_invalid_line(m: Markers, case: str, flags: tuple):
     """For every error of the validation stage the report is `run`'s, character for character, then
     `<path>: invalid`; both commands exit with status 1 and neither runs anything. `validate` takes no
-    `--arg`: the stage comes before `run` looks at its arguments."""
+    `--env`: the stage comes before `run` looks at its arguments."""
     make, args, head = LOAD_ERRORS[case]
     path = make(m)
     run = _cli("run", path, *args, *flags)
@@ -289,7 +302,7 @@ def test_p6_105_quoted_values_and_ordinary_nesting_still_load(m: Markers):
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", SCRIPT_ERRORS)
 def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str, flags: tuple):
-    """SPEC "What a valid script may still do": a malformed `--arg`, an `env` default that can't be resolved
+    """SPEC "What a valid script may still do": a malformed or undeclared `--env`, an `env` variable that can't be resolved
     and a prompt whose `send` or `sendEach` can't be loaded are not part of the validation stage. `validate`
     finds the script valid; `run` stops with status 1, before anything runs."""
     make, args, head = SCRIPT_ERRORS[case]
@@ -319,10 +332,10 @@ def test_p6_109_a_template_is_not_rendered_or_parsed(m: Markers):
     assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
 
 
-@pytest.mark.parametrize("argv", [("-a", "k=v"), ("--arg", "k=v"), ("-a",), ("--arg=k=v",)], ids=["short", "long", "bare", "equals"])
-def test_p6_110_validate_takes_no_arg_option(m: Markers, argv: tuple):
-    """A script's validity doesn't depend on arguments: `--arg` is an unknown option here, before or after
-    the scripts, and no script is checked."""
+@pytest.mark.parametrize("argv", [("-e", "k=v"), ("--env", "k=v"), ("-e",), ("--env=k=v",)], ids=["short", "long", "bare", "equals"])
+def test_p6_110_validate_takes_no_env_option(m: Markers, argv: tuple):
+    """A script's validity doesn't depend on its variables: `--env` is an unknown option here, before or
+    after the scripts, and no script is checked."""
     ok = m.write("ok")
     for line in ((*argv, ok), (ok, *argv)):
         res = _cli("validate", *line)
@@ -346,7 +359,7 @@ def test_p6_110_options_may_come_between_the_scripts(m: Markers):
     res = _cli("validate", a, "--", "-q.yaml", cwd=m.root)
     assert (res.returncode, res.stderr) == (0, f"{a}: valid\n-q.yaml: valid\n") and dash.exists()
     # `run` still takes its options anywhere and exactly one script
-    assert _cli("run", bad, "-a", "k=v", "--traceback").stderr == _cli("-a", "k=v", bad).stderr
+    assert _cli("run", bad, "-e", "k=v", "--traceback").stderr == _cli("-e", "k=v", bad).stderr
 
 
 # -- several scripts, --quiet ---------------------------------------------------------
@@ -357,7 +370,7 @@ def _mixed(m: Markers) -> tuple[list[Path], str]:
     typo = m.write("typo.autobot.yaml", script=[{"cmdd": "true"}])
     missing = m.root / "missing.autobot.yaml"
     broken = m.write("broken.autobot.yaml", raw="a: [1\n")
-    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ env.A }}"})  # for `run` to find, not `validate`
+    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ env.A }}", "R": None})  # for `run` to find, not `validate`
     ok2 = m.write("ok2.autobot.yaml", prepare=None)
     report = (
         f"{ok}: valid\n"
@@ -411,7 +424,7 @@ def test_p6_96_quiet_prints_only_the_invalid_scripts(m: Markers, flag: str):
 # -- a prompt's error names the prompt (in `run`) ---------------------------------------
 
 SEVERAL = {
-    "env": {"A": "{{ env.B }}", "B": "{{ env.A }}", "C": "{{ 1/0 }}"},
+    "env": {"A": "{{ env.B }}", "B": None, "C": "{{ 1/0 }}"},
     "vars": {"creds": [{"username": "a"}], "pins": "1234"},
     "prompts": [
         {"name": "sh", "expect": [r"\$ "], "return": True},
@@ -466,16 +479,18 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 
 def test_p6_108_runner_raises_the_first_script_error():
-    """`Runner(config, args)` takes the configuration and the arguments, and raises the first script error:
-    `env` before the prompts, the prompts in their order."""
+    """`Runner(config, given)` takes the configuration and the `--env` values, and raises the first script
+    error: `env`, top to bottom, before the prompts, the prompts in their order."""
     import inspect
 
     from autobot.models import Config
     from autobot.types import ScriptError
 
-    assert list(inspect.signature(Runner).parameters) == ["config", "cli_args"]
-    with pytest.raises(ScriptError, match="^env cycle: A -> B -> A$"):
+    assert list(inspect.signature(Runner).parameters) == ["config", "given"]
+    with pytest.raises(ScriptError, match="^env.A: template error: env.B has no value yet: "):
         Runner(Config.model_validate(make_doc([STEP], **SEVERAL)), {})
+    with pytest.raises(ScriptError, match="^env.C: template error: ZeroDivisionError: "):
+        Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {"C": "{{ 1/0 }}", "A": "{{ env.B }}"}}))), {})
     with pytest.raises(ScriptError, match="^prompt 'confirm': template error: "):
         Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {}}))), {})
 
@@ -718,10 +733,10 @@ def test_p6_101_examples_validate_together_by_relative_path():
 LOADS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...]]] = {
     "plain": (lambda m: m.write("s"), ()),
     "no-prepare": (lambda m: m.write("s", prepare=None), ()),
-    "env-with-arg": (lambda m: m.write("s", env={"H": "{{ args.host }}"}), ("-a", "host=h")),
-    "env-default-waits-for-prepare": (lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}), ()),
+    "env-required-and-given": (lambda m: m.write("s", env={"H": None, "N": 3, "U": "{{ env.H }}/{{ env.N }}"}), ("-e", "H=h", "-e", "N=4")),
     "step-template-error": (lambda m: m.write("s", script=[{"cmd": "echo {{ nope( }}"}]), ()),
-    "step-reads-a-missing-arg": (lambda m: m.write("s", script=[{"cmd": "echo {{ args.msg }}"}]), ()),
+    "step-reads-an-undeclared-key": (lambda m: m.write("s", script=[{"cmd": "echo {{ env.HOME }}"}]), ()),
+    "spawn-reads-an-undeclared-key": (lambda m: m.write("s", m.doc() | {"attach": {"spawn": "ssh {{ env.HOME }}"}}), ()),
     "spawn-renders-to-nothing": (lambda m: m.write("s", m.doc() | {"attach": {"spawn": "{{ '' }}"}}), ()),
     "spawn-not-found": (lambda m: m.write("s", m.doc() | {"attach": {"spawn": "no-such-command-ab"}}), ()),
     "block-send-each-unresolved": (
@@ -782,7 +797,10 @@ def test_p6_102_validate_exits_0_exactly_when_run_gets_past_validation(
 def test_p6_102_a_valid_script_can_still_fail_once_it_runs(m: Markers):
     """After the validation stage `run` can stop with a `Script error` (status 1, P6-109) or fail once the
     script runs (status 3). Neither is a `Validation errors` report."""
-    for case in ("step-template-error", "step-reads-a-missing-arg", "spawn-renders-to-nothing", "spawn-not-found"):
+    for case in (
+        "step-template-error", "step-reads-an-undeclared-key", "spawn-reads-an-undeclared-key", "spawn-renders-to-nothing",
+        "spawn-not-found",
+    ):
         make, args = LOADS[case]
         path = make(m)
         assert _cli("validate", path).returncode == 0, case
@@ -795,10 +813,10 @@ def test_p6_102_a_valid_script_can_still_fail_once_it_runs(m: Markers):
 
 
 def test_p6_111_result_does_not_depend_on_the_environment(m: Markers, monkeypatch: pytest.MonkeyPatch):
-    """A variable of the environment replaces an `env` default in `run`, so `run` loads the script with it
-    and stops without it. `validate` reads neither: its output is the same in both."""
-    path = m.write("s", env={"AB_VALIDATE_URL": "{{ 1/0 }}", "AB_B": "{{ env.AB_VALIDATE_HOST }}"}, prepare=None, spawn="true")
-    bad = m.write("bad", env={"AB_VALIDATE_URL": 5})
+    """A variable of the environment is the value of a declared key in `run`, so `run` loads the script with
+    it and stops without it. `validate` reads neither: its output is the same in both."""
+    path = m.write("s", env={"AB_VALIDATE_HOST": None, "AB_VALIDATE_URL": "{{ 1/0 }}"}, prepare=None, spawn="true")
+    bad = m.write("bad", env={"AB_VALIDATE_URL": [5]})
     outputs = set()
     for extra in ({}, {"AB_VALIDATE_URL": "u"}, {"AB_VALIDATE_URL": "u", "AB_VALIDATE_HOST": "h"}, {"HOME": "/nonexistent", "TERM": "dumb"}):
         res = _cli("validate", path, bad, **extra)
@@ -807,7 +825,10 @@ def test_p6_111_result_does_not_depend_on_the_environment(m: Markers, monkeypatc
     code, _, err = outputs.pop()
     assert code == 1 and err.splitlines()[0] == f"{path}: valid" and err.splitlines()[-1] == f"{bad}: invalid"
     # `run` does read it: a load error without the variables, a run with them
-    assert _cli("run", path).stderr == f"Script error in {path}: env.AB_B: template error: env has no key 'AB_VALIDATE_HOST'\n"
+    assert _cli("run", path).stderr == (
+        f"Script error in {path}: env.AB_VALIDATE_HOST is required: give it with --env AB_VALIDATE_HOST=VALUE or in "
+        "the environment\n"
+    )
     assert _cli("run", path, AB_VALIDATE_HOST="h").stderr == (
         f"Script error in {path}: env.AB_VALIDATE_URL: template error: ZeroDivisionError: division by zero\n"
     )
@@ -973,7 +994,7 @@ NAMED = {
     "yaml-reader": (b"a: \xff\xfe\n", "YAML error in {path}, position 3: ", 1),
     "yaml-value": ("vars: {d: 2001-99-99}\n", "YAML error in {path}, line 1, column 11: invalid timestamp", 1),
     "yaml-deep": ("[" * 3000, "YAML error in {path}: the document is nested too deeply", 1),
-    "script-error": ({"env": {"A": "{{ env.A }}"}}, "Script error in {path}: env cycle: A -> A", 1),
+    "script-error": ({"env": {"A": None}}, "Script error in {path}: env.A is required: ", 1),
     "run-failed": ({"spawn": "no-such-command-ab", "prepare": None}, "Run failed in {path}: ", 3),
 }
 
@@ -1046,7 +1067,7 @@ def test_p6_103_help_describes_the_command():
         assert "Exit with status 1 if any script is invalid" in text
         for option in ("-q, --quiet", "--traceback"):
             assert option in text
-        assert "--arg" not in text
+        assert "--env" not in text
 
 
 def test_p6_103_run_stays_the_default_and_takes_one_script(m: Markers):

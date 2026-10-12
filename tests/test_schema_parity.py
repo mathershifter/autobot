@@ -774,7 +774,6 @@ FN = {"f": {"script": []}}
 # every place a script holds a string: doc(value) -> a document with `value` there
 STRING_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "autobot": lambda v: d(autobot=v),
-    "env-value": lambda v: d(env={"A": v}),
     "errors-item": lambda v: d(errors=[v]),
     "prompt-name": lambda v: d(prompts=[{"name": v, "expect": "x"}]),
     "prompt-expect": lambda v: d(prompts=[{"name": "p", "expect": v}]),
@@ -826,7 +825,7 @@ def test_p6_70_parity_binary_is_not_a_string(both_validate: Callable, field: str
     assert both_validate(STRING_FIELDS[field](text)) == (True, True)
 
 
-@pytest.mark.parametrize("field", ["cmd", "attach-spawn", "env-value", "block-name", "cmd-when"])
+@pytest.mark.parametrize("field", ["cmd", "attach-spawn", "block-name", "cmd-when"])
 def test_p6_70_binary_is_a_string_type_error(field: str):
     """The model's error is the string's own type error, at the value."""
     assert {e["type"] for e in model_errors(STRING_FIELDS[field](BINARY))} <= {"string_type", "list_type"}
@@ -1114,35 +1113,48 @@ def test_p6_75_non_string_key_is_a_validation_error_on_load(tmp_path: Any):
 
 # unquoted, YAML reads each of these as a boolean
 BOOLEAN_LITERALS = ["true", "True", "yes", "on", "false", "No", "off"]
-ENV_HINT = (
-    "an environment value is a string, and unquoted this one is a boolean ({}); "
-    "quote it to set it as written, e.g. 'true' or 'yes'"
-)
+ENV_TYPE = "an env value is a string, a boolean, a number, or empty for a required variable"
 
 
-@pytest.mark.parametrize("literal", BOOLEAN_LITERALS)
-def test_p6_78_boolean_env_value_says_to_quote_it(both_validate: Callable, literal: str):
-    """SPEC "Booleans are not text": `DEBUG: true` or `NO_COLOR: yes` is rejected by both, and the models say to quote it.
+def env_doc(value: Any) -> dict[str, Any]:
+    return d(env={"A": value})
 
-    It was always `string_type`; the message used to be only `Input should be a valid string`.
-    """
-    value = yaml.safe_load(literal)
-    assert isinstance(value, bool)
-    doc = STRING_FIELDS["env-value"](value)
+
+@pytest.mark.parametrize("literal", [*BOOLEAN_LITERALS, "1", "-7", "2.5", "1e3", "text", "'true'", "'7'", "''", "~", "null", ""])
+def test_p6_78_env_value_is_a_default_of_its_own_type(both_validate: Callable, literal: str):
+    """SPEC "Top-level fields" (`env`): a string, a boolean, an integer and a number are defaults, each of its
+    own type, and an empty value declares a required variable: both accept them, and the models keep the
+    value as YAML gives it. `DEBUG: true` is a boolean, `DEBUG: 'true'` the text."""
+    value = yaml.safe_load(f"v: {literal}")["v"]
+    doc = env_doc(value)
+    assert both_validate(doc) == (True, True)
+    kept = Config.model_validate(doc).env["A"]
+    assert kept == value and type(kept) is type(value)
+
+
+ENV_NOT_A_VALUE = {
+    "list": "[a]", "empty-list": "[]", "mapping": "{k: v}", "empty-mapping": "{}", "nested": "[{k: [1]}]",
+    "date": "2026-01-01", "binary": "!!binary aGk=", "set": "!!set {a}",
+}
+
+
+@pytest.mark.parametrize("literal", ENV_NOT_A_VALUE.values(), ids=ENV_NOT_A_VALUE.keys())
+def test_p6_78_env_value_of_any_other_type_is_rejected(both_validate: Callable, literal: str):
+    """A list, a mapping and what else YAML has are rejected by both; the models report one error, at the
+    key, that says what a value is."""
+    doc = env_doc(yaml.safe_load(f"v: {literal}")["v"])
     assert both_validate(doc) == (False, False)
     [err] = model_errors(doc)
-    assert (err["loc"], err["type"], err["msg"]) == (("env", "A"), "string_type", ENV_HINT.format(str(value).lower()))
-    # quoted, it is the text as written
-    assert both_validate(STRING_FIELDS["env-value"](literal)) == (True, True)
+    assert (err["loc"], err["type"], err["msg"]) == (("env", "A"), "env_type", ENV_TYPE)
 
 
-@pytest.mark.parametrize("value", [1, 2.5], ids=repr)
-def test_p6_78_number_env_value_keeps_its_error(both_validate: Callable, value: Any):
-    """Only booleans get the hint: a number is still the plain `string_type` it was."""
-    doc = STRING_FIELDS["env-value"](value)
-    assert both_validate(doc) == (False, False)
-    [err] = model_errors(doc)
-    assert (err["type"], err["msg"]) == ("string_type", "Input should be a valid string")
+def test_p6_78_env_section_itself_is_a_mapping(both_validate: Callable):
+    """The empty value is for a key: `env:` with no value is `null_value`, like every optional field."""
+    for value in (None, [], "A=1", True):
+        assert both_validate(d(env=value)) == (False, False)
+    [err] = model_errors(d(env=None))
+    assert (err["loc"], err["type"]) == (("env",), "null_value")
+    assert both_validate(d(env={})) == (True, True)
 
 
 @pytest.mark.parametrize("value", [True, False], ids=repr)

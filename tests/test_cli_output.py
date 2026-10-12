@@ -608,7 +608,7 @@ def test_p8_25_streams_without_a_file_descriptor_are_not_shared(capsys: pytest.C
 
 INVALID = """\
 autobot: "2026-08"
-env: {DEBUG: true}
+env: {DEBUG: [true]}
 prompts:
   - name: sh
     expect: ['^PROMPT\\$ $', '(']
@@ -637,8 +637,7 @@ script:
 REPORT = [
     "Validation errors:",
     "  autobot: autobot 2026-08 is no longer supported; use 2026-10 [unsupported_version]",
-    "  env.DEBUG: an environment value is a string, and unquoted this one is a boolean (true); quote it to set "
-    "it as written, e.g. 'true' or 'yes' [string_type]",
+    "  env.DEBUG: an env value is a string, a boolean, a number, or empty for a required variable [env_type]",
     "  prompts.0.send: a return prompt is a shell prompt and sends nothing; remove send or return [return_with_send]",
     "  prompts.0.expect.1: invalid regex '(': missing ), unterminated subpattern at position 0 [invalid_regex]",
     "  prompts.1.send: send must be a string; quote it, e.g. send: 'yes' or send: '1234' (unquoted, YAML reads yes, no, "
@@ -727,7 +726,8 @@ SECRETS = {
     "line-number": {"script": [{"line": 20240917}]},
     "line-list-item": {"script": [{"line": ["enable", 20240917]}]},
     "line-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"line": 20240917}]}}]},
-    "env-value": {"env": {"PASSWORD": 20240917}},
+    "env-value": {"env": {"PASSWORD": [20240917]}},
+    "env-mapping-value": {"env": {"PASSWORD": {"hunter2-secret": 20240917}}},
     "env-not-a-mapping": {"env": "hunter2-secret"},
 }
 
@@ -919,9 +919,9 @@ def test_p8_28_offending_value_is_shown_unless_the_message_shows_it(type_: str, 
         ),
         ({"script": [{"line": ["ok", 5]}]}, ["  script.0.line.line.1: Input should be a valid string [string_type]"]),
         # a mapping that only has keys named like the members of the union is left alone
-        ({"env": {"str": 5, "list[str]": 6}}, [
-            "  env.list[str]: Input should be a valid string [string_type]",
-            "  env.str: Input should be a valid string [string_type]",
+        ({"env": {"str": [5], "list[str]": [6]}}, [
+            "  env.list[str]: an env value is a string, a boolean, a number, or empty for a required variable [env_type]",
+            "  env.str: an env value is a string, a boolean, a number, or empty for a required variable [env_type]",
         ]),
     ],
     ids=["version", "nan", "binary", "word", "cmd", "cmd-mapping", "line", "control-assert", "expect-entry", "cmd-item", "line-item", "env-keys"],
