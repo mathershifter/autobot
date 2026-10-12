@@ -116,17 +116,13 @@ def _whole(v: Any) -> Any:
 
 
 def _env_value(v: Any) -> Any:
-    # `DEBUG: true` and `NO_COLOR: yes` look like text and are booleans: say so, rather than "not a string"
-    if isinstance(v, bool):
-        raise _custom(
-            "string_type",
-            f"an environment value is a string, and unquoted this one is a boolean ({text(v)}); "
-            "quote it to set it as written, e.g. 'true' or 'yes'",
-        )
+    # the default of a variable, whose type is the variable's; empty for a required one
+    if v is not None and type(v) not in (str, bool, int, float):
+        raise _custom("env_type", "an env value is a string, a boolean, a number, or empty for a required variable")
     return v
 
 
-EnvValue = Annotated[str, pydantic.BeforeValidator(_env_value)]
+EnvValue = Annotated[Any, pydantic.BeforeValidator(_env_value)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -263,7 +259,6 @@ class Function(pydantic.BaseModel):
 
 class Attach(pydantic.BaseModel):
     model_config = _STRICT
-    prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
     script: NotNull[list[Step]] = []
@@ -468,6 +463,7 @@ class Config(pydantic.BaseModel):
         if not isinstance(v, str) or v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
+    prepare: Omittable[str] = None
     env: NotNull[dict[str, EnvValue]] = {}
     vars: NotNull[dict[str, Any]] = {}
     prompts: NotNull[list[Prompt]] = []

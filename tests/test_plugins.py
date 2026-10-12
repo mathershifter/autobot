@@ -173,7 +173,7 @@ def cli_nothing_ran(
     assert res.returncode == 1, res.stderr
     assert "Validation errors" in res.stderr
     assert "Traceback" not in res.stderr
-    assert not prepared.exists(), "attach.prepare ran"
+    assert not prepared.exists(), "prepare ran"
     assert not spawned.exists(), "attach.spawn ran"
     return res
 

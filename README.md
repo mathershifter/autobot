@@ -19,6 +19,9 @@ Save this as `hello.autobot.yaml`:
 ```yaml
 autobot: 2026-10
 
+env:
+  SWITCH:                     # required
+
 vars:
   creds:
     - {username: admin, password: secret}
@@ -37,7 +40,7 @@ prompts:
           field: password
 
 attach:
-  spawn: ssh admin@{{ args.host }}
+  spawn: ssh admin@{{ env.SWITCH }}
   breakout:
     - line: exit              # runs when the script ends, also after a failure
 
@@ -49,7 +52,7 @@ script:
 Run it:
 
 ```
-$ autobot hello.autobot.yaml -a host=sonic
+$ autobot hello.autobot.yaml -e SWITCH=sonic
 >> attach: ssh admin@sonic
 admin@sonic's password: 
 >> prompt answered: login
@@ -69,7 +72,7 @@ Lines that start with `>>` are Autobot's own. The rest is the device's output. T
 ## Command line
 
 ```
-autobot [run] <script.yaml> [-a KEY=VALUE ...] [--traceback]
+autobot [run] <script.yaml> [-e KEY=VALUE ...] [--traceback]
 autobot validate <script.yaml> [<script.yaml> ...] [-q] [--traceback]
 autobot schema [--traceback]
 ```
@@ -82,7 +85,7 @@ autobot schema [--traceback]
 
 | Flag | Description |
 |------|-------------|
-| `-a KEY=VALUE`, `--arg KEY=VALUE` | Sets `{{ args.KEY }}` for templates. Repeat the flag for more arguments. `run` only |
+| `-e KEY=VALUE`, `--env KEY=VALUE` | Sets a variable of the script's `env` section. Repeatable. `run` only |
 | `-q`, `--quiet` | Prints nothing for a valid script. `validate` only |
 | `--traceback` | Also prints the Python traceback of an error that is reported without one |
 | `-h`, `--help` | Shows help |
@@ -145,7 +148,8 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | Field     | Required | Description |
 |-----------|----------|-------------|
 | `autobot` | yes      | Schema version: `2026-10` |
-| `env`     | no       | Defaults for environment variables, read as `{{ env.KEY }}`. A variable that the environment sets keeps its value |
+| `prepare` | no       | A local shell script that runs first and sets `env` variables. See [Prepare](#prepare) |
+| `env`     | no       | The script's variables and their defaults, read as `{{ env.KEY }}`. See [Templating](#templating) |
 | `vars`    | no       | Any data, read as `{{ vars.KEY }}` |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `^% .*`). They replace the `$?` exit code check of command lines, except at a `posix` shell prompt. See [Error handling](#error-handling) |
@@ -155,11 +159,32 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 
 A key that is repeated in a mapping is an error, not an override. See [Top-level fields](SPEC.md#top-level-fields).
 
+## Prepare
+
+`prepare` is a local shell script that Autobot sources first, e.g. to authenticate. A non-zero exit aborts the run. The variables it sets give the declared `env` variables their values:
+
+```yaml
+prepare: |
+  . ~/.config/lab/credentials.sh
+  JUMP_HOST=$(lab-inventory jump-host)
+
+env:
+  JUMP_HOST:
+  API_TOKEN:
+
+attach:
+  spawn: ssh -J {{ env.JUMP_HOST }} admin@switch
+```
+
+- A plain assignment counts, like an `export` (until a `set +a`); a name `env` doesn't declare sets nothing. What the script prints is shown, not read.
+- It is not a template, and reads each `-e KEY=VALUE` as `$KEY`. A shebang names its shell, unchecked.
+
+See [`prepare`](SPEC.md#prepare).
+
 ## Attach
 
 | Field      | Required | Description |
 |------------|----------|-------------|
-| `prepare`  | no       | Local script to run before the spawn, e.g. to authenticate. A non-zero exit aborts the run |
 | `spawn`    | yes      | The command to spawn, e.g. `ssh host` or `telnet host port` |
 | `timeout`  | no       | How long to wait for the first output of the spawned command (default 300s) |
 | `script`   | no       | Steps to run right after the spawn, before the main `script` |
@@ -167,7 +192,7 @@ A key that is repeated in a mapping is an error, not an override. See [Top-level
 
 A run goes in this order:
 
-1. `prepare` runs locally.
+1. `prepare` runs; `env` and `spawn` are resolved.
 2. `spawn` starts, and Autobot waits for its first output.
 3. `attach.script` runs.
 4. The main `script` runs.
@@ -178,9 +203,6 @@ If the spawn fails (step 2), no step runs after it, the breakout included, and n
 
 ```yaml
 attach:
-  prepare: |
-    #!/bin/sh
-    arista-ssh check-auth || arista-ssh login
   spawn: ssh jumphost
   script:
     - line: a dut attach ldp448
@@ -208,23 +230,11 @@ The last `logout` closes the connection, so nothing waits after it.
 
 If the login prompt doesn't come, the breakout fails and the run reports `Session may be left logged in`. A breakout that runs before the login was done types `logout` at the login or password prompt, which the device logs as a failed login; that matters where failed logins lock an account. A run that answered a `sendEach` prompt and finished no breakout after it logs a `>> no logout` warning. See [SPEC.md](SPEC.md#logging-out).
 
-### `prepare` as an rc script
+### The environment
 
-A `prepare` script that a shell sources works like an rc file. The variables it exports are set for the rest of the run: templates read them through `env`, and the spawned command inherits them.
+The spawned command gets Autobot's own environment, with `TERM=dumb` and `NO_COLOR=1`, and nothing else: the `env` section is for templates only. To give the spawned command a variable, export it before starting Autobot, or set it on the `spawn` line (`spawn: env LC_ALL=C ssh host`). The rendered `spawn` line is printed, so leave a secret in the environment.
 
-```yaml
-attach:
-  prepare: |
-    . ~/.config/lab/credentials.sh
-    export JUMP_HOST=$(lab-inventory jump-host)
-  spawn: ssh -J {{ env.JUMP_HOST }} admin@{{ args.host }}
-```
-
-- A script with no shebang is sourced by `/bin/sh`. One whose shebang names `sh`, `bash`, `dash`, `ksh` or `zsh`, directly or through `env`, alone or with `set` options such as `-eu`, is sourced by that shell. A script for another interpreter, such as `python3`, runs as a program and sets nothing.
-- The spawned command gets Autobot's own environment, then `TERM=dumb` and `NO_COLOR=1`, then what `prepare` changed. The defaults of the `env` section are for templates only and are not passed on.
-- The rendered `spawn` line is printed (`>> attach: ...`). Leave a secret in the environment for the command to inherit; don't put it in the line with a template.
-
-See [SPEC.md](SPEC.md#prepare-as-an-rc-script) and [The environment of the spawned process](SPEC.md#the-environment-of-the-spawned-process). The spawned command runs on a terminal of 500 rows by 80 columns; see [The window of the spawned process](SPEC.md#the-window-of-the-spawned-process).
+See [The environment of the spawned process](SPEC.md#the-environment-of-the-spawned-process). The spawned command runs on a terminal of 500 rows by 80 columns; see [The window of the spawned process](SPEC.md#the-window-of-the-spawned-process).
 
 ## Prompts
 
@@ -402,12 +412,14 @@ A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`,
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn`, `attach.prepare` and `env` values. Other values, such as `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn` and the string defaults of `env`. Other values, such as `prepare`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:
+  SWITCH:                                    # required
   BASE_URL: https://artifacts.example.com
   IMAGE: '{{ env.BASE_URL }}/sonic-broadcom.swi'
+  FORCE: false
 
 script:
   - cmd: wget -P /tmp {{ env.IMAGE }}
@@ -419,17 +431,23 @@ script:
 
 | Variable         | Value |
 |------------------|-------|
-| `env.*`          | The whole environment, as `attach.prepare` changed it, plus the `env` section's defaults for variables that aren't set |
+| `env.*`          | The variables the `env` section declares, and nothing else |
 | `vars.*`         | The `vars` section, plus what `register` stored |
-| `args.*`         | The `--arg` values |
 | `session.before` | The text before the last `after` match, or the output of the last command |
 | `session.match`  | The text that matched the last `after` pattern or shell prompt |
 
 Two filters are added to Jinja2's own: `contains('text')` and `search('regex')`.
 
+A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, the environment as `prepare` left it, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
+
+- A key with an empty value is required.
+- The default gives the type: a string, a boolean (`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off`) or a number. Any other value is an error.
+- A string default is a template that reads `vars` and the keys above it.
+- `env` has the declared keys only: `{{ env.HOME }}` needs a `HOME` key. A declared name takes whatever the environment has under it, so avoid names the shell already exports (`HOSTNAME`, `USER`, `HOME`).
+
 Things to watch for:
 
-- A variable that isn't set is a template error. `{{ env.X | default('y') }}` gives a fallback.
+- A key that isn't there is a template error. `{{ vars.x | default('y') }}` gives a fallback.
 - `{{`, `{%` and `{#` always start Jinja2 syntax, even in shell code. Bash's `${#arr[@]}` fails to render; wrap it in `{% raw %}...{% endraw %}`.
 - An expression that gives a boolean can't be sent or stored as text. Use it in `when` or `{% if %}`, or say which text you mean: `{{ 'on' if vars.debug else 'off' }}`.
 

@@ -4,7 +4,6 @@ whole prompts and nothing else, and its breakout logs out and makes sure of it."
 from __future__ import annotations
 
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -325,12 +324,12 @@ def test_example_prompt_regex_skips_command_lines(name: str):
         ("eos-bootstrap.autobot.yaml", r"\s-\v\$ "),  # bash's own default: bash-<version>$
     ],
 )
-def test_example_prompt_regex_registers_clean_output(name: str, ps1: str):
+def test_example_prompt_regex_registers_clean_output(monkeypatch: pytest.MonkeyPatch, name: str, ps1: str):
     """Against a real bash with that PS1, register sees only the command's output."""
+    monkeypatch.setenv("PS1", ps1)  # the spawned shell inherits it
     out = run_vars(
         [{"cmd": "echo hello", "register": "a"}, {"cmd": "echo again {{ vars.a }}", "register": "b"}],
         prompts=shell_prompts(name),
-        prepare=f"export PS1={shlex.quote(ps1)}\n",
     )
     assert out["a"] == "hello"
     assert out["b"] == "again hello"

@@ -39,14 +39,18 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 
 @pytest.fixture(autouse=True)
 def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The spawned shell inherits the suite's environment, and `env` in templates holds all of it: drop
-    what would change how bash behaves, the suite's own `AB_*` names, and names of mapping methods, and
-    give the shell the prompt that `SHELL_PROMPT` matches."""
-    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *dir({}), *(k for k in os.environ if k.startswith("AB_"))):
-        monkeypatch.delenv(name, raising=False)
+    """The spawned shell inherits the suite's environment, and a variable the `env` section declares takes
+    its value from it: every test runs in an environment of the names in `KEPT` and nothing else, so nothing
+    changes how bash behaves, no `AB_*` name of the suite's is set, and a test that fails can't show the
+    environment the suite was started in, whatever it captured or compares (a `prepare` writes its shell's
+    environment out). The shell gets the prompt that `SHELL_PROMPT` matches."""
+    for name in [k for k in os.environ if k not in KEPT and not k.startswith(KEPT_PREFIXES)]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("PS1", PS1)
 
 
+KEPT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE")
+KEPT_PREFIXES = ("PYTEST_", "COV_", "COVERAGE_", "UV_", "XDG_")  # of pytest, of coverage, and what `uv build` reads
 BASH = "bash --norc --noprofile -i"
 PS1 = "PROMPT$ "
 # for a `Session.attach` of its own; a run's shell inherits its `PS1` from `_plain_shell_env`
@@ -64,7 +68,7 @@ def make_doc(
     prompts: Any = _DEFAULT,
     errors: list[str] | None = None,
     vars: dict[str, Any] | None = None,
-    env: dict[str, str] | None = None,
+    env: dict[str, Any] | None = None,
     fn: dict[str, Any] | None = None,
     spawn: str = BASH,
     attach_script: list[dict[str, Any]] | None = None,
@@ -86,10 +90,9 @@ def make_doc(
         attach["script"] = copy.deepcopy(attach_script)
     if breakout is not None:
         attach["breakout"] = breakout
-    if prepare is not None:
-        attach["prepare"] = prepare
     doc: dict[str, Any] = {
         "autobot": "2026-10",
+        **({} if prepare is None else {"prepare": prepare}),
         "prompts": [SHELL_PROMPT] if prompts is _DEFAULT else prompts,
         "attach": attach,
         "script": script,
@@ -109,16 +112,24 @@ def make_config(script: list[dict[str, Any]], **kw: Any) -> Config:
     return Config.model_validate(make_doc(script, **kw))
 
 
-def make_runner(script: list[dict[str, Any]], *, args: dict[str, str] | None = None, **kw: Any) -> Runner:
-    return Runner(make_config(script, **kw), args or {})
+def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
+    """``given``: the ``--env`` values; ``env``: the script's ``env`` section.
+
+    A run resolves ``env`` once ``prepare`` has run. Without a ``prepare`` it is resolved here as well,
+    so that a test can render a template, or see an error of ``env``, without a run.
+    """
+    runner = Runner(make_config(script, **kw), given or {})
+    if runner.config.prepare is None:
+        runner._env = runner._resolve_env(runner._environ)
+    return runner
 
 
-def run_script(script: list[dict[str, Any]], *, args: dict[str, str] | None = None, **kw: Any) -> Runner:
+def run_script(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
     """Build a config, run it end to end, and return the runner.
 
     Registered values are in ``runner.config.vars``.
     """
-    runner = make_runner(script, args=args, **kw)
+    runner = make_runner(script, given=given, **kw)
     runner.run()
     return runner
 

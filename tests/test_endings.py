@@ -387,7 +387,7 @@ def test_p6_114_runner_used_as_a_library_installs_nothing(fake_device: FakeDevic
 
 @pytest.mark.parametrize("sig", SIGNALS, ids=lambda s: s.name)
 def test_p6_114_prepare_deals_with_a_signal_itself(cli_run, tmp_path: Path, sig: signal.Signals):
-    """SPEC "attach": the handler is set from the spawn on. While `attach.prepare` runs, SIGTERM kills the
+    """SPEC "prepare": the handler is set from the spawn on. While `prepare` runs, SIGTERM kills the
     script's shell and removes its temp file, and SIGHUP has its default action; neither prints the line."""
     tdir, started = tmp_path / "tmp", tmp_path / "started"
     tdir.mkdir()

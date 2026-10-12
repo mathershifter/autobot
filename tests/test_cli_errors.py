@@ -22,7 +22,7 @@ from autobot.registry import PluginError
 from autobot.runner import Runner, StepRef, trail
 from autobot.session import CommandError
 from autobot.steps import CmdExecutor, StepFailure
-from autobot.types import EnvError, RunError, ScriptError
+from autobot.types import RunError, ScriptError
 
 PIN = {"name": "pin", "expect": ["PIN:"], "send": {"each": "vars.pins"}}
 BOOLEAN = (
@@ -89,7 +89,7 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
     ),
     "spawn-renders-a-nul": (
         [{"cmd": "true"}],
-        {"vars": {"s": "a\0b"}, "spawn": "echo {{ vars.s }}", "prepare": "#!/bin/sh\nexit 9\n"},
+        {"vars": {"s": "a\0b"}, "spawn": "echo {{ vars.s }}"},
         "attach.spawn rendered to a command line with a NUL character: 'echo {{ vars.s }}'",
         None,
     ),
@@ -103,8 +103,8 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
     ),
     "prepare-cannot-run": (
         [{"cmd": "true"}],
-        {"prepare": "#!/autobot/no/such/interpreter\n"},
-        "prepare script could not run ('#!/autobot/no/such/interpreter'): [Errno 2] No such file or directory",
+        {"prepare": "#!/autobot/no/such/sh\n"},
+        "prepare script could not run ('#!/autobot/no/such/sh'): [Errno 2] No such file or directory",
         None,
     ),
     "spawn-not-found": (
@@ -202,7 +202,6 @@ EXPECTED_ERRORS: list[tuple[BaseException, str, bool]] = [
     (CommandError("command error: % bad", "out"), "command error: % bad", False),
     (RunError("prompt 'p': no response available"), "prompt 'p': no response available", False),
     (ScriptError("template error: boom"), "template error: boom", False),
-    (EnvError("env cycle: A -> A"), "env cycle: A -> A", False),
     (TimeoutError("timed out after 5s waiting for x"), "timed out after 5s waiting for x", False),
     (EOFError("connection closed while waiting for x"), "connection closed while waiting for x", False),
     (EOFError(), "EOFError", False),
@@ -324,7 +323,7 @@ def test_p6_84_system_exit_is_not_caught(monkeypatch: pytest.MonkeyPatch, capsys
 def test_p6_84_expected_classes_keep_their_base_classes():
     """The engine's own classes add nothing to what an `except` clause catches: they are still a `ValueError`
     or a `RuntimeError`, and the CLI's set of expected failures holds neither of those."""
-    assert issubclass(ScriptError, ValueError) and issubclass(EnvError, ScriptError)
+    assert issubclass(ScriptError, ValueError)
     assert issubclass(RunError, RuntimeError)
     assert issubclass(StepFailure, RunError) and issubclass(CommandError, RunError)
     assert ValueError not in cli.EXPECTED and RuntimeError not in cli.EXPECTED and Exception not in cli.EXPECTED
@@ -464,7 +463,7 @@ def test_p6_85_endless_recursion_is_a_script_problem(tmp_path: Path):
 
 
 def test_p6_83_prepare_that_removes_its_own_file_and_succeeds_runs_the_script(tmp_path: Path):
-    """SPEC "attach": the temp file of `prepare` is removed afterwards, and it is no error if the script has
+    """SPEC "prepare": the temp file of `prepare` is removed afterwards, and it is no error if the script has
     removed it already."""
     res = run_cli(make_doc([{"cmd": "echo ran-$((40+2))"}], prepare='#!/bin/sh\nrm -- "$0"\n'), tmp_path)
     assert res.returncode == 0, res.stderr
@@ -701,12 +700,19 @@ def _flag_first(tmp_path: Path) -> subprocess.CompletedProcess[str]:
 
 def test_p6_87_traceback_flag_for_a_script_error_and_a_plugin_error(tmp_path: Path):
     """The flag also covers the load errors that come from an exception: `Script error` and `Plugin error`."""
+    res = run_cli(make_doc([{"cmd": "true"}], env={"A": "{{ x "}), tmp_path, "--traceback")
+    lines = _lines(res)
+    end = "unexpected end of template, expected 'end of print statement'."
+    assert res.returncode == 1
+    assert lines[0] == "Traceback (most recent call last):" and f"jinja2.exceptions.TemplateSyntaxError: {end}" in lines
+    assert lines[-1] == f"Script error in {tmp_path / 'script.autobot.yaml'}: env.A: template error: {end}"
+    # a default that can't be rendered is found by the run: a failed run, with its traceback too
     res = run_cli(make_doc([{"cmd": "true"}], env={"A": "{{ 1/0 }}"}), tmp_path, "--traceback")
     lines = _lines(res)
-    assert res.returncode == 1
+    assert res.returncode == 3
     assert lines[0] == "Traceback (most recent call last):" and "ZeroDivisionError: division by zero" in lines
     assert lines[-1] == (
-        f"Script error in {tmp_path / 'script.autobot.yaml'}: env.A: template error: ZeroDivisionError: division by zero"
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: env.A: template error: ZeroDivisionError: division by zero"
     )
 
     root = tmp_path / "broken"
@@ -716,7 +722,7 @@ def test_p6_87_traceback_flag_for_a_script_error_and_a_plugin_error(tmp_path: Pa
         res = subprocess.run(
             [sys.executable, "-m", "autobot.cli", *argv],
             check=False, capture_output=True, text=True, timeout=120,
-            env={**os.environ, "PYTHONPATH": str(root)},
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, (str(root), os.environ.get("PYTHONPATH"))))},
         )
         lines = _lines(res)
         assert (res.returncode, res.stdout) == (1, "")

@@ -451,20 +451,20 @@ def _config(script: str) -> Config:
 
 
 def _runner(args: argparse.Namespace, config: Config) -> Runner:
-    """What `run` adds to the validation stage before it runs anything: the `--arg` values checked, `env`
-    and `prompts` resolved. This renders the script's templates. An error is reported, and raised as
-    `LoadError`."""
-    cli_args = {}
-    for item in args.arg:
+    """What `run` adds to the validation stage before it runs anything: the `--env` values checked, each
+    for its form and a key the script declares, and `prompts` resolved. An error is reported, and raised
+    as `LoadError`."""
+    given = {}
+    for item in args.env:
         if "=" not in item:
-            log.error("--arg requires KEY=VALUE format, got", item)
+            log.error("--env requires KEY=VALUE format")  # without the argument, which may be a value
             raise LoadError
         key, value = item.split("=", 1)
-        cli_args[key] = value
+        given[key] = value
 
     try:
-        return Runner(config, cli_args)
-    except ScriptError as e:  # env rendering and prompt send templates, checked before prepare/spawn
+        return Runner(config, given)
+    except ScriptError as e:  # the `--env` keys and prompt send templates, checked before prepare/spawn
         _traceback(args, e)
         log.error(f"Script error in {_visible(args.script)}", str(e))
         raise LoadError from None
@@ -483,7 +483,7 @@ def _cmd_run(args):
     runner = _runner(args, _config(args.script))
     try:
         with contextlib.ExitStack() as session:
-            # from the spawn on: until then `attach.prepare` deals with a signal itself
+            # from the spawn on: until then `prepare` deals with a signal itself
             runner.before_attach = lambda: session.enter_context(_ended_by_signal())
             runner.run()
     except log.OutputLost as e:
@@ -623,18 +623,18 @@ def _main():
         "validate",
         help="Check autobot scripts without running them",
         description="Validate each script as `run` does before anything else, and stop there: no template "
-        "is rendered, attach.prepare is not run and no session is spawned. For each script, print "
+        "is rendered, prepare is not run and no session is spawned. For each script, print "
         "`<script>: valid`, or the error `run` would report and `<script>: invalid`, on stderr. Exit with "
         "status 1 if any script is invalid.",
     )
     validate_parser.add_argument("script", nargs="+", help="Path to a YAML script file")
     run_parser.add_argument(
-        "-a",
-        "--arg",
+        "-e",
+        "--env",
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Pass arguments to the script (e.g. --arg console_host=10.0.0.1)",
+        help="Set a variable that the script's env section declares (e.g. --env CONSOLE_HOST=10.0.0.1)",
     )
     validate_parser.add_argument("-q", "--quiet", action="store_true", help="Print nothing for a valid script")
 

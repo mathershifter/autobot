@@ -1,4 +1,18 @@
+# Give an EOS switch its hostname and management interface through its console.
+#
+#   autobot run -e SWITCH_HOSTNAME=leaf1 -e MGMT_VRF=mgmt -e MGMT_IP=10.0.0.11/24 \
+#     -e MGMT_GW=10.0.0.1 examples/eos-bootstrap.autobot.yaml
+#
+# A variable of the env section takes its value from -e or from the environment; one with an
+# empty value here must get it there. MGMT_INTF has a default.
 autobot: 2026-10
+
+env:
+  SWITCH_HOSTNAME:
+  MGMT_VRF:
+  MGMT_INTF: Management1
+  MGMT_IP:
+  MGMT_GW:
 
 vars:
   creds:
@@ -80,7 +94,7 @@ script:
   - cmd: |
       enable
         configure session
-          hostname {{ args.hostname }}
+          hostname {{ env.SWITCH_HOSTNAME }}
           ! lab switches enable root backdoor and nopassword admin, bad idea IRL
           username admin privilege 15 role network-admin nopassword
           !
@@ -91,14 +105,14 @@ script:
           aaa authorization exec default local
           aaa authorization commands all default local
           !
-          vrf instance {{ args.mgmt_vrf }}
+          vrf instance {{ env.MGMT_VRF }}
           !
-          interface {{ args.mgmt_intf | default('Management1') }}
-            vrf {{ args.mgmt_vrf }}
-            ip address {{ args.mgmt_ip }}
+          interface {{ env.MGMT_INTF }}
+            vrf {{ env.MGMT_VRF }}
+            ip address {{ env.MGMT_IP }}
             exit
           !
-          ip route vrf {{ args.mgmt_vrf }} 0.0.0.0/0 {{ args.mgmt_gw }}
+          ip route vrf {{ env.MGMT_VRF }} 0.0.0.0/0 {{ env.MGMT_GW }}
           commit
         exit
 

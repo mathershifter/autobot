@@ -140,14 +140,14 @@ def test_p3_09_after_sets_session_before_and_match(probe: ProbeExecutor):
     assert "Version: " in seen["before"]
 
 
-def test_p3_10_template_context_env_vars_args(monkeypatch: pytest.MonkeyPatch):
-    """SPEC "Jinja2 Templating" (available context): env, vars and args are in the template context."""
+def test_p3_10_template_context_env_vars(monkeypatch: pytest.MonkeyPatch):
+    """SPEC "Jinja2 Templating" (available context): env and vars are in the template context."""
     monkeypatch.delenv("AB_TPL_A", raising=False)
     out = run_vars(
-        [{"cmd": "echo {{ env.AB_TPL_A }}-{{ vars.b }}-{{ args.c }}", "register": "out"}],
-        env={"AB_TPL_A": "a"},
+        [{"cmd": "echo {{ env.AB_TPL_A }}-{{ vars.b }}-{{ env.AB_TPL_C }}", "register": "out"}],
+        env={"AB_TPL_A": "a", "AB_TPL_C": None},
         vars={"b": "b"},
-        args={"c": "c"},
+        given={"AB_TPL_C": "c"},
     )
     assert out["out"] == "a-b-c"
 
@@ -409,7 +409,6 @@ TEXT_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
     "after": lambda t: {"script": [{"line": "echo ok", "after": t}]},
     "line": lambda t: {"script": [{"line": f"echo {t}"}]},
     "spawn": lambda t: {"script": [], "spawn": f"bash {t}"},
-    "prepare": lambda t: {"script": [], "prepare": f"#!/bin/sh\necho {t}\n"},
     "env": lambda t: {"script": [], "env": {"AB_FLAG": t}},
 }
 
@@ -453,8 +452,8 @@ def test_p3_19_key_named_like_a_dict_method_renders_the_key(monkeypatch: pytest.
     """SPEC "Jinja2 Templating": `vars.values` is the key `values`, not `<built-in method values of dict ...>`."""
     monkeypatch.delenv(name, raising=False)
     env = {name: "e-{{ 'x' }}", "REF": f"{{{{ env.{name} }}}}!"}
-    r = make_runner([], vars={name: "v"}, env=env, args={name: "a"})
-    assert r.render(f"{{{{ vars.{name} }}}} {{{{ env.{name} }}}} {{{{ args.{name} }}}}") == "v e-x a"
+    r = make_runner([], vars={name: "v"}, env=env)
+    assert r.render(f"{{{{ vars.{name} }}}} {{{{ env.{name} }}}}") == "v e-x"
     assert r.render(f"{{{{ vars['{name}'] }}}} {{{{ env['{name}'] }}}}") == "v e-x"
     assert r.render("{{ env.REF }}") == "e-x!"  # while env is resolved, too
     # filters and nested mappings aren't affected by the key's name
@@ -467,12 +466,12 @@ def test_p3_19_key_named_like_a_dict_method_renders_the_key(monkeypatch: pytest.
 
 def test_p3_19_dict_methods_still_work_without_such_a_key():
     """SPEC "Jinja2 Templating": with no key of that name, `vars.items()` and the like are the dict methods."""
-    r = make_runner([], vars={"a": 1, "b": {"c": 2}}, env={"E": "{{ env.get('NOPE', 'd') }}"}, args={"k": "v"})
+    r = make_runner([], vars={"a": 1, "b": {"c": 2}}, env={"E": "{{ env.get('NOPE', 'd') }}"})
     assert r.render("{% for k, v in vars.items() %}{{ k }}={{ v }};{% endfor %}") == "a=1;b={'c': 2};"
     assert r.render("{{ vars.keys() | list }} {{ vars.get('nope', 'd') }} {{ vars | length }}") == "['a', 'b'] d 2"
     assert r.render("{{ vars }} {{ vars | tojson }}") == "{'a': 1, 'b': {'c': 2}} {\"a\": 1, \"b\": {\"c\": 2}}"
     assert r.render("{{ 'a' in vars }} {{ vars == {'a': 1, 'b': {'c': 2}} }}", condition=True) == "True True"
-    assert r.render("{{ env.E }} {{ env.items() | first }} {{ args.get('k') }}") == "d ('E', 'd') v"
+    assert r.render("{{ env.E }} {{ env.items() | first }} {{ env.get('E') }}") == "d ('E', 'd') d"
     with pytest.raises(ValueError, match="^template error: "):
         r.render("{{ vars.nope }}")
 
@@ -485,49 +484,32 @@ def test_p3_19_register_under_a_dict_method_name(name: str):
     assert type(out) is dict
 
 
-# -- P3-23: a missing --arg, and an error in an `env` default ------------------------------
+# -- P3-23: a name that isn't in the context, and an error in an `env` default ---------------
 
-NO_HOST = "template error: args has no key 'host'; pass it with --arg host=VALUE"
+NO_ARGS = "template error: 'args' is undefined"
 
 
-@pytest.mark.parametrize("template", ["{{ args.host }}", "{{ args['host'] }}", "ssh {{ args.host.name }}", "{{ args.host | upper }}"])
-def test_p3_23_missing_arg_says_how_to_pass_it(template: str):
-    """SPEC "Jinja2 Templating": an argument that wasn't given is undefined, and the error names `args`, the
-    key and the option."""
-    r = make_runner([], args={"other": "1"})
+@pytest.mark.parametrize("template", ["{{ args.host }}", "{{ args['host'] }}", "ssh {{ args.host.name }}", "{{ args | upper }}"])
+def test_p3_23_name_outside_the_context_is_undefined(template: str):
+    """SPEC "Jinja2 Templating": the context is `env`, `vars` and `session`; any other name is an undefined
+    variable, as text and as a condition."""
+    r = make_runner([], env={"host": "h"})
     for condition in (False, True):
         with pytest.raises(ValueError) as ei:
             r.render(template, condition=condition)
-        assert str(ei.value) == NO_HOST
+        assert str(ei.value) == NO_ARGS
+    assert r.render("{{ args | default('d') }} {{ 'y' if args is defined else 'n' }}") == "d n"
 
 
-def test_p3_23_missing_arg_is_undefined_like_any_other():
-    """`default`, `is defined`, `in` and `args.get(...)` deal with it as on any mapping, and `args` is a
-    mapping of the arguments and nothing else."""
-    r = make_runner([], args={"k": "v", "get": "G"})
-    assert r.render("{{ args.host | default('d') }} {{ args.get }} {{ args.k }} {{ args['k'] }}") == "d G v v"
-    assert r.render("{{ 'y' if args.host is defined else 'n' }}{{ 'y' if 'host' in args else 'n' }}") == "nn"
-    assert r.render("{{ 'y' if args.k is defined else 'n' }}{{ 'y' if 'k' in args else 'n' }}") == "yy"
-    assert r.render("{{ args }} {{ args | tojson }} {{ args | length }}") == "{'k': 'v', 'get': 'G'} {\"get\": \"G\", \"k\": \"v\"} 2"
-    assert r.render("{% for k, v in args.items() %}{{ k }}={{ v }};{% endfor %}{{ args | items | list | length }}") == "k=v;get=G;2"
-    plain = make_runner([], args={"k": "v"})
-    assert plain.render("{{ args.get('host', 'd') }} {{ args.get('k') }} {{ args.keys() | list }}") == "d v ['k']"
-    with pytest.raises(ValueError, match="^template error: args has no key 1$"):
-        plain.render("{{ args[1] }}")
-
-
-def test_p3_23_missing_arg_at_load_time_and_at_run_time(sent: SentLog):
-    """In an `env` default the error comes when the script is loaded, and names the default; in a step, when
-    the step runs. With the argument both render."""
+def test_p3_23_undefined_name_at_load_time_and_at_run_time(sent: SentLog):
+    """In an `env` default the error comes when the runner is built, and names the default; in a step, when
+    the step runs, with nothing sent."""
     with pytest.raises(ValueError) as ei:
         make_runner([], env={"AB_H": "{{ args.host }}"})
-    assert str(ei.value) == f"env.AB_H: {NO_HOST}"
+    assert str(ei.value) == f"env.AB_H: {NO_ARGS}"
     with pytest.raises(ValueError) as ei:
         run_script([{"line": "echo {{ args.host }}"}])
-    assert str(ei.value) == NO_HOST and sent.lines() == []
-    r = run_script([{"line": "echo {{ args.host }}-{{ env.AB_H }}"}], env={"AB_H": "{{ args.host }}"}, args={"host": "sw1"})
-    assert "echo sw1-sw1" in sent.lines()
-    assert type(r.config.vars) is dict
+    assert str(ei.value) == NO_ARGS and sent.lines() == []
 
 
 @pytest.mark.parametrize(
@@ -536,16 +518,18 @@ def test_p3_23_missing_arg_at_load_time_and_at_run_time(sent: SentLog):
         ({"AB_A": "{{ 1/0 }}"}, "env.AB_A: template error: ZeroDivisionError: division by zero"),
         ({"AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
         ({"AB_A": "{{ vars.nope }}"}, "env.AB_A: template error: 'dict object' has no attribute 'nope'"),
-        ({"AB_A": "{{ env.AB_NOPE }}"}, "env.AB_A: template error: env has no key 'AB_NOPE'"),
-        # the default that has the error is named, once, not the ones that read it
-        ({"AB_A": "x{{ env.AB_B }}", "AB_B": "{{ env.AB_C }}", "AB_C": "{{ 1/0 }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
+        ({"AB_A": "{{ env.AB_NOPE }}"}, "env.AB_A: template error: env has no key 'AB_NOPE': the script's env section doesn't declare it"),
+        # the first default with an error is named, and the ones below it are not reached
+        ({"AB_C": "{{ 1/0 }}", "AB_B": "{{ env.AB_C }}", "AB_A": "x{{ env.AB_B }}{{ 2/0 }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
+        # the syntax of every default is checked first, whatever the defaults above it would render to
+        ({"AB_C": "{{ 1/0 }}", "AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
         ({"AB_C": "{{ 'a' | search('(') }}", "AB_A": "{{ env.AB_C }}"}, "env.AB_C: template error: search: invalid regex '(': missing ), unterminated subpattern at position 0"),
-        # a cycle and a chain that is too deep name their keys themselves
-        ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "env cycle: AB_A -> AB_B -> AB_A"),
+        # a key below, or the key itself
+        ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "env.AB_A: template error: env.AB_B has no value yet: a default reads only the keys declared above it"),
     ],
 )
 def test_p3_23_error_in_an_env_default_names_the_default(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str):
-    """SPEC "Top-level fields": `env.<KEY>: ` before the error of the default that has it."""
+    """SPEC "Top-level fields" (`env`): `env.<KEY>: ` before the error of the default that has it."""
     for key in ("AB_A", "AB_B", "AB_C", "AB_NOPE"):
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(ValueError) as ei:

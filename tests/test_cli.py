@@ -17,36 +17,38 @@ from conftest import FakeDevice, make_doc, run_cli
 from autobot import cli
 
 # the echoed command shows `$((1+1))` literally; only the output has `got-2-`
-GOT = {"cmd": 'echo "got-$((1+1))-{{ args.msg }}"'}
+GOT = {"cmd": 'echo "got-$((1+1))-{{ env.MSG }}"'}
+MSG = {"MSG": None}  # the `env` section of a script that runs GOT
 
 
-def test_p6_21_cli_arg_passed_to_templates(tmp_path: Path):
-    """SPEC "CLI" (options of `run`): --arg KEY=VALUE is available as args.KEY."""
-    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "msg=hi")
+def test_p6_21_cli_env_option_passed_to_templates(tmp_path: Path):
+    """SPEC "CLI" (options of `run`): --env KEY=VALUE is available as env.KEY."""
+    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "MSG=hi")
     assert res.returncode == 0, res.stderr
     assert "got-2-hi" in res.stdout
 
 
-def test_p6_22_cli_arg_value_may_contain_equals(tmp_path: Path):
+def test_p6_22_cli_env_option_value_may_contain_equals(tmp_path: Path):
     """SPEC "CLI" (options of `run`): only the first '=' separates key and value."""
-    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "msg=a=b")
+    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "MSG=a=b")
     assert res.returncode == 0, res.stderr
     assert "got-2-a=b" in res.stdout
 
 
-def test_p6_23_cli_arg_without_equals_is_clean_error(tmp_path: Path):
-    """SPEC "CLI" (load errors): a malformed --arg is reported without a traceback."""
-    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "bad")
+def test_p6_23_cli_env_option_without_equals_is_clean_error(tmp_path: Path):
+    """SPEC "CLI" (load errors): a malformed --env is reported without a traceback, and without the
+    argument, which may be a value given without its key."""
+    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "hunter2SECRET", "--traceback")
     assert res.returncode == 1
-    assert "--arg requires KEY=VALUE" in res.stderr
-    assert "Traceback" not in res.stderr
+    assert res.stderr.splitlines()[-1] == "--env requires KEY=VALUE format"
+    assert "Traceback" not in res.stderr and "hunter2SECRET" not in res.stderr
 
 
-def test_p6_23_cli_empty_arg_is_reported_with_its_colon(tmp_path: Path):
-    """The message keeps its `: ` when the argument it shows is empty."""
-    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "")
+def test_p6_23_cli_empty_env_option_is_the_same_error(tmp_path: Path):
+    """The message is the same when the argument is empty."""
+    res = run_cli(make_doc([GOT], env=MSG), tmp_path, "--env", "")
     assert res.returncode == 1
-    assert res.stderr.splitlines()[-1] == "--arg requires KEY=VALUE format, got: "
+    assert res.stderr.splitlines()[-1] == "--env requires KEY=VALUE format"
 
 
 @pytest.mark.parametrize("raw", ["", "- a\n- b\n"], ids=["empty-file", "top-level-list"])
@@ -161,16 +163,16 @@ def test_p6_27_cli_undecodable_script_is_clean_error(tmp_path: Path, data: bytes
 def test_p6_28_cli_utf16_with_bom_loads(tmp_path: Path):
     """SPEC.md CLI: UTF-16 with a byte order mark is accepted."""
     path = tmp_path / "script.autobot.yaml"
-    path.write_bytes(yaml.safe_dump(make_doc([GOT])).encode("utf-16"))
-    res = _cli(str(path), "--arg", "msg=hi")
+    path.write_bytes(yaml.safe_dump(make_doc([GOT], env=MSG)).encode("utf-16"))
+    res = _cli(str(path), "--env", "MSG=hi")
     assert res.returncode == 0, res.stderr
     assert "got-2-hi" in res.stdout
 
 
 def test_p6_29_cli_errors_print_markup_like_text_verbatim(tmp_path: Path):
     """Error text is printed literally: `[/x]` is not rich markup and doesn't crash."""
-    res = run_cli(make_doc([GOT]), tmp_path, "--arg", "[/x]")
-    assert _load_error(res) == "--arg requires KEY=VALUE format, got: [/x]"
+    res = run_cli(make_doc([GOT]), tmp_path, "--env", "[/x]")
+    assert _load_error(res) == "--env requires KEY=VALUE format"
 
     res = run_cli(None, tmp_path, raw='autobot: 2026-10\nscript: "[/x]"\n')
     assert _load_error(res) == "Validation errors:"
@@ -195,26 +197,23 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
 # -- Runner construction: env and prompt send templates -----------------------
 
 
+LATER = "has no value yet: a default reads only the keys declared above it"
+
+
 @pytest.mark.parametrize(
     ("env", "prompts", "message"),
     [
         ({"A": "{{ nope( }}"}, None, "env.A: template error: unexpected '}', expected ')'"),
-        ({"A": "{{ 1/0 }}"}, None, "env.A: template error: ZeroDivisionError: division by zero"),
-        ({"A": "{{ env.B }}", "B": "{{ 'a' + 1 }}"}, None, 'env.B: template error: TypeError: can only concatenate str (not "int") to str'),
+        ({"B": "b", "A": "{% if %}"}, None, "env.A: template error: Expected an expression, got 'end of statement block'"),
         (None, [{"name": "p", "expect": ["x"], "send": "{{ x "}], "prompt 'p': template error: unexpected end of template, expected 'end of print statement'."),
-        ({"A": "{{ env.A }}x"}, None, "env cycle: A -> A"),
-        ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, None, "env cycle: A -> B -> A"),
-        ({"A": "{{ env.B }}", "B": "{{ env.C }}", "C": "{{ env.A }}"}, None, "env cycle: A -> B -> C -> A"),
     ],
-    ids=[
-        "env-template", "env-zero-division", "env-nested-type-error",
-        "send-template", "env-cycle-self", "env-cycle-mutual", "env-cycle-three",
-    ],
+    ids=["env-template", "env-template-second-key", "send-template"],
 )
 def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
-    tmp_path: Path, env: dict[str, str] | None, prompts: list | None, message: str
+    tmp_path: Path, env: dict[str, Any] | None, prompts: list | None, message: str
 ):
-    """SPEC.md CLI: `env` and prompt `send` errors are `Script error in <path>: ...`, rc 1, before prepare/spawn."""
+    """SPEC.md CLI: the syntax of an `env` default and of a prompt `send` is checked before anything runs:
+    `Script error in <path>: ...`, rc 1, before prepare/spawn."""
     prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
     kwargs = {"prompts": prompts} if prompts is not None else {}
     doc = make_doc([GOT], env=env, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}", **kwargs)
@@ -222,6 +221,39 @@ def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     path = tmp_path / "script.autobot.yaml"
     assert _load_error(res) == f"Script error in {path}: {message}"
     assert not prepared.exists()
+    assert not spawned.exists()
+
+
+def test_p6_31_syntax_of_a_default_is_checked_whatever_gives_the_value(tmp_path: Path):
+    """SPEC "The environment in templates": also for a variable that `--env` sets."""
+    res = run_cli(make_doc([GOT], env={"MSG": "{{ x "}), tmp_path, "-e", "MSG=given")
+    assert _load_error(res).endswith(": env.MSG: template error: unexpected end of template, expected 'end of print statement'.")
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"A": "{{ 1/0 }}"}, "env.A: template error: ZeroDivisionError: division by zero"),
+        ({"A": "{{ 'a' + 1 }}", "B": "{{ env.A }}"}, 'env.A: template error: TypeError: can only concatenate str (not "int") to str'),
+        ({"A": "{{ env.A }}x"}, f"env.A: template error: env.A {LATER}"),
+        ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, f"env.A: template error: env.B {LATER}"),
+        ({"A": "{{ env.HOME }}"}, "env.A: template error: env has no key 'HOME': the script's env section doesn't declare it"),
+        ({"A": "a", "B": None}, "env.B is required: give it with --env B=VALUE or in the environment"),
+    ],
+    ids=[
+        "env-zero-division", "env-nested-type-error", "env-reads-itself", "env-reads-a-key-below",
+        "env-reads-an-undeclared-key", "env-required",
+    ],
+)
+def test_p6_31_cli_env_error_that_depends_on_a_value_is_a_failed_run(tmp_path: Path, env: dict[str, Any], message: str):
+    """SPEC.md CLI, "The order of a run": `env` is resolved once `prepare` has run, so a variable without a
+    value and a default that can't be rendered are `Run failed in <path>: ...`, rc 3, before the spawn."""
+    prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
+    doc = make_doc([GOT], env=env, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}")
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 3 and res.stdout == "" and "Traceback" not in res.stderr
+    assert res.stderr.splitlines()[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}"
+    assert prepared.exists()
     assert not spawned.exists()
 
 
@@ -275,8 +307,8 @@ def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
 def _marked_head(tmp_path: Path) -> str:
     """Lines 1-4 of a script whose `prepare` and `spawn` touch marker files."""
     return (
-        f"autobot: 2026-10\nattach:\n  spawn: touch {tmp_path / 'spawned'}\n"
-        f'  prepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
+        f'autobot: 2026-10\nprepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
+        f"attach:\n  spawn: touch {tmp_path / 'spawned'}\n"
     )
 
 
@@ -379,7 +411,7 @@ def _each_doc(tmp_path: Path, send: dict, **kw: Any) -> dict:
     login = {"name": "login", "send": send}
     if "fields" not in send:
         login["expect"] = ["login:", "Password:"]
-    return make_doc([GOT], vars=EACH_VARS, prompts=[SH, login], **kw)
+    return make_doc([GOT], vars=EACH_VARS, prompts=[SH, login], env={"MSG": "none"}, **kw)
 
 
 def _marked_each_doc(tmp_path: Path, send: dict) -> dict:
@@ -423,10 +455,10 @@ def test_p6_38_cli_send_each_error_is_clean_error(tmp_path: Path, each: str, fie
     assert not (tmp_path / "spawned").exists()
 
 
-@pytest.mark.parametrize("each", ["env.HOME", "args.pw", "session.before", "creds", "vars", "vars..creds", "vars.creds."])
+@pytest.mark.parametrize("each", ["env.HOME", "env.MSG", "session.before", "creds", "vars", "vars..creds", "vars.creds."])
 def test_p6_39_cli_send_each_path_outside_vars_is_validation_error(tmp_path: Path, each: str):
     """SPEC sendEach: `each` is `vars` followed by keys; anything else fails validation."""
-    res = run_cli(_marked_each_doc(tmp_path, {"each": each}), tmp_path, "--arg", "pw=secret")
+    res = run_cli(_marked_each_doc(tmp_path, {"each": each}), tmp_path, "--env", "MSG=secret")
     assert _load_error(res) == "Validation errors:"
     assert f"each must be a path under vars, like vars.creds, got: {each}" in res.stderr
     assert not (tmp_path / "prepared").exists()
@@ -440,7 +472,7 @@ def test_p6_39_cli_send_each_path_outside_vars_is_validation_error(tmp_path: Pat
 )
 def test_p6_40_cli_valid_send_each_runs(tmp_path: Path, send: dict):
     """SPEC sendEach: a resolvable collection loads, and the script runs."""
-    res = run_cli(_each_doc(tmp_path, send), tmp_path, "--arg", "msg=hi")
+    res = run_cli(_each_doc(tmp_path, send), tmp_path, "--env", "MSG=hi")
     assert res.returncode == 0, res.stderr
     assert "got-2-hi" in res.stdout
 
