@@ -17,7 +17,6 @@ from .types import RunError
 
 # Stripped before looking for a shebang: whitespace, a BOM, and the zero-width characters of copy and paste.
 _JUNK = " \t\r\n﻿​⁠"
-SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
 # What the script assigns is exported; the environment is written when the shell exits, wherever the script
 # ends, to the file of a descriptor that is the shell's for this alone, opened by its path when the trap runs:
 # the script has its own descriptors (`exec 9>lock`), and zsh, and bash for an `exit` in a function, run the
@@ -33,22 +32,6 @@ def _dump(fd: int) -> int:
     except OSError as e:
         limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
         raise RunError(f"prepare needs a file descriptor above {_FD - 1}, and the limit on open files is {limit}") from e
-
-
-def shell(script: str) -> list[str]:
-    """The command of the shell a `prepare` script is for: the words of its shebang, `/bin/sh` without one.
-    A shebang that names anything but a shell, behind `env` as its first word that is no option, is a ValueError."""
-    script = script.lstrip(_JUNK)
-    if not script.startswith("#!"):
-        return ["/bin/sh"]
-    words = script.partition("\n")[0][2:].split()
-    rest = words[1:] if words and os.path.basename(words[0]) == "env" else words[:1]
-    name = next((w for w in rest if not w.startswith("-")), "")
-    if os.path.basename(name) not in SHELLS:
-        raise ValueError(f"prepare is a shell script: its shebang names {name!r}")
-    if {"-", "--"}.intersection(words[words.index(name) + 1 :]):
-        raise ValueError("prepare is a shell script: '--' or '-' in its shebang ends the shell's options, and -c follows them")
-    return words
 
 
 class _Terminated(BaseException):
@@ -85,10 +68,11 @@ def _terminable() -> Iterator[None]:
 
 def run(script: str, environ: dict[str, str]) -> dict[str, str]:
     """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves;
-    `environ` itself when it left none to read."""
-    command = shell(script)
+    `environ` itself when it left none to read. The shell is the words of the shebang, whatever program
+    they name, and `/bin/sh` without any."""
     script = script.lstrip(_JUNK)
-    log.say("prepare: running local script" + ("" if script.startswith("#!") else " (no shebang, using /bin/sh)"))
+    command = script.partition("\n")[0][2:].split() if script.startswith("#!") else []
+    log.say("prepare: running local script" + ("" if command else " (no shebang, using /bin/sh)"))
     # a file, not a pipe: a process the script leaves running would keep a pipe open; the shell's stdout is stderr
     with _terminable(), tempfile.TemporaryFile() as tmp, open(_dump(tmp.fileno()), "rb") as out:
         fd = out.fileno()
@@ -98,7 +82,7 @@ def run(script: str, environ: dict[str, str]) -> dict[str, str]:
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
             try:
-                result = subprocess.run([*command, "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
+                result = subprocess.run([*(command or ["/bin/sh"]), "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
             except OSError as e:
                 first = script.partition("\n")[0].rstrip()
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e

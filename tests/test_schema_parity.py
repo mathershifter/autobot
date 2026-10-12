@@ -1380,10 +1380,14 @@ def test_p6_92_parity_attach_env_is_an_unknown_key(both_validate: Callable, sche
 # -- P6-117: `prepare` is a top-level key ------------------------------------------
 
 
-@pytest.mark.parametrize("value", ["#!/bin/sh\ntrue\n", "true", "", "{{ not a template", " \n"], ids=["shebang", "plain", "empty", "braces", "blank"])
+@pytest.mark.parametrize(
+    "value",
+    ["#!/bin/sh\ntrue\n", "true", "", "{{ not a template", " \n", "#!/usr/bin/env python3\nprint(1)\n", " \n﻿#!/usr/bin/perl -w\r\n", "#!/bin/sh --\ntrue\n", "#!\ntrue\n"],
+    ids=["shebang", "plain", "empty", "braces", "blank", "env-python", "junk-perl", "end-of-options", "no-program"],
+)
 def test_p6_117_parity_prepare_is_a_top_level_string(both_validate: Callable, schema: dict[str, Any], value: str):
-    """SPEC "Top-level fields" (`prepare`): any string, read as it is written; it is a property of the
-    document in the schema and a field of `Config`."""
+    """SPEC "Top-level fields" (`prepare`), "prepare": any string, read as it is written, whatever program
+    its shebang names; it is a property of the document in the schema and a field of `Config`."""
     assert both_validate(d(prepare=value)) == (True, True)
     assert models.Config.model_validate(d(prepare=value)).prepare == value
     assert "prepare" in schema["properties"] and "prepare" in models.Config.model_fields
@@ -1396,19 +1400,6 @@ def test_p6_117_parity_prepare_that_is_not_a_string(both_validate: Callable, val
     assert both_validate(d(prepare=value)) == (False, False)
     [err] = model_errors(d(prepare=value))
     assert err["loc"] == ("prepare",) and err["type"] == ("null_value" if value is None else "string_type")
-
-
-@pytest.mark.parametrize(
-    "value", ["#!/usr/bin/env python3\nprint(1)\n", " \n\ufeff#!/usr/bin/perl -w\r\n", "#!\ntrue\n"], ids=["env-python", "junk-perl", "no-interpreter"]
-)
-def test_p6_117_prepare_whose_shebang_names_no_shell_is_rejected_by_the_models_alone(both_validate: Callable, value: str):
-    """SPEC "YAML Script Structure" (a sixth case), "prepare": `prepare` is a shell script. A schema pattern
-    can't read a shebang as the models do (the words of the line, the interpreter behind `env` and its
-    options), so the schema takes any string and only the models reject it, as a `value_error`."""
-    assert both_validate(d(prepare=value)) == (False, True)
-    [err] = model_errors(d(prepare=value))
-    assert (err["loc"], err["type"]) == (("prepare",), "value_error")
-    assert err["msg"].startswith("Value error, prepare is a shell script: its shebang names ")
 
 
 @pytest.mark.parametrize("value", ["true", {}, None], ids=["string", "mapping", "null"])

@@ -1,4 +1,4 @@
-"""P5-65..77, P5-81, P5-98..108: `prepare`, a local shell script that is sourced before anything else and
+"""P5-65..77, P5-81, P5-98..109: `prepare`, a local shell script that is sourced before anything else and
 sets declared variables through the environment its shell leaves, and the environment of the spawned process
 (SPEC "prepare", "What `prepare` sets", "The order of a run", "The environment of the spawned process")."""
 
@@ -19,7 +19,6 @@ import time
 from pathlib import Path
 
 import pexpect
-import pydantic
 import pytest
 import yaml
 from conftest import (
@@ -211,7 +210,8 @@ SUCCEEDING = {
     "subshell": "(AB_A=inner; exit 0)\nAB_A=set\n",
     "python-home": "export PYTHONHOME=/nonexistent PYTHONPATH=/nonexistent AB_A=set\n",
 }
-SHEBANGS = ["", *(f"#!{path}\n" for path in map(shutil.which, prepare.SHELLS) if path)]
+SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
+SHEBANGS = ["", *(f"#!{path}\n" for path in map(shutil.which, SHELLS) if path)]
 
 
 def installed(shell: str) -> pytest.MarkDecorator:
@@ -219,7 +219,7 @@ def installed(shell: str) -> pytest.MarkDecorator:
 
 
 # no shebang and each shell: one that isn't installed is a skipped case, with the reason
-EACH_SHELL = [pytest.param("", id="none"), *(pytest.param(f"#!{shutil.which(s)}\n", id=s, marks=installed(s)) for s in prepare.SHELLS)]
+EACH_SHELL = [pytest.param("", id="none"), *(pytest.param(f"#!{shutil.which(s)}\n", id=s, marks=installed(s)) for s in SHELLS)]
 
 
 def dump_fd() -> int:
@@ -319,7 +319,7 @@ def test_p5_69_shebang_picks_the_shell(prepared, prep_tmp: Path, tmp_path: Path,
     assert progress(capsys.readouterr().err) == [">> prepare: running local script", DONE]
 
 
-@pytest.mark.parametrize("shell", [pytest.param(s, marks=installed(s)) for s in prepare.SHELLS])
+@pytest.mark.parametrize("shell", [pytest.param(s, marks=installed(s)) for s in SHELLS])
 def test_p5_69_each_shell_leaves_its_environment(prepared, tmp_path: Path, monkeypatch, shell: str):
     """SPEC "prepare": each of the shells, named by its path or through `env`, with and without options:
     a plain assignment, an `export`, a value with a line break and an `unset` are read from all of them."""
@@ -363,68 +363,58 @@ def test_p5_69_shell_that_cannot_be_started(timeline: Timeline, prep_tmp: Path):
     assert list(prep_tmp.iterdir()) == []
 
 
-# -- P5-70: a shebang that names no shell ---------------------------------------
+# -- P5-70: a shebang whose program is no shell ----------------------------------
 
-NOT_SHELLS = {
-    "#!/usr/bin/env python3": "python3",
-    f"#!{sys.executable}": sys.executable,
-    "#!/usr/bin/env -S python3 -u": "python3",
-    "#!/usr/bin/perl -w": "/usr/bin/perl",
-    "#!/usr/bin/fish": "/usr/bin/fish",
-    "#!/bin/bash5": "/bin/bash5",
-    "#! /usr/bin/env\tnode": "node",
-    " \n\ufeff#!/usr/bin/awk -f\r": "/usr/bin/awk",
-    "#!/usr/bin/env": "",
-    "#!/usr/bin/env -i": "",
-    "#!": "",
-}
+NOT_SHELLS = ["#!/usr/bin/env python3", f"#!{sys.executable}", "#!/usr/bin/env -S python3 -u", "#!/usr/bin/env false", "#!/bin/sh --", "#!/bin/sh -", "#!/usr/bin/env -S bash -eu --"]
 
 
-@pytest.mark.parametrize(("shebang", "name"), NOT_SHELLS.items())
-def test_p5_70_shebang_that_names_no_shell_is_a_validation_error(shebang: str, name: str):
-    """SPEC "prepare": the script is a shell script; a shebang that names anything else is found when the
-    script is loaded, with the interpreter it names."""
-    with pytest.raises(pydantic.ValidationError) as ei:
-        make_config([], prepare=f"{shebang}\nprint('AB_A=1')\n")
-    (error,) = ei.value.errors()
-    assert (error["loc"], error["type"]) == (("prepare",), "value_error")
-    assert error["msg"] == f"Value error, prepare is a shell script: its shebang names {name!r}"
+@pytest.mark.parametrize("shebang", NOT_SHELLS)
+def test_p5_70_program_that_is_no_shell_fails_the_run_with_its_exit_status(timeline: Timeline, prep_tmp: Path, tmp_path: Path, capfd, monkeypatch, shebang: str):
+    """SPEC "prepare" (It is a shell script): the words of the shebang are the command, whatever program they
+    name. One that can't run the commands of a `-c`, or gets them after the end of its options, fails with a
+    message of its own: the run aborts with its exit status, nothing is spawned, no temp file is left, and
+    nothing of the environment is shown."""
+    monkeypatch.setenv("AB_OS", f"{SECRET}-os")
+    marker = tmp_path / "ran"
+    with pytest.raises(RuntimeError, match=r"^prepare script failed with exit code [1-9]\d*$"):
+        make_runner([], prepare=f"{shebang}\nAB_A={SECRET}\ntouch {marker}\n", env={"AB_A": None}).run()
+    assert not marker.exists() and "attach" not in timeline.names() and list(prep_tmp.iterdir()) == []
+    out, err = capfd.readouterr()
+    assert out == "" and progress(err) == [">> prepare: running local script"]
+    assert SECRET not in err and "\0" not in err
 
 
-@pytest.mark.parametrize(
-    "shebang",
-    ["#!/bin/sh", "#!/bin/dash -e", "#!/usr/bin/env ksh", "#!/usr/local/bin/zsh", "#!/usr/bin/env -S -i zsh -f", "#!/usr/bin/env -- bash", "# !/usr/bin/python3", "true #!/usr/bin/python3"],
-)
-def test_p5_70_shebang_that_names_a_shell_is_valid(shebang: str):
-    """SPEC "prepare": `sh`, `bash`, `dash`, `ksh` and `zsh`, by the file name of the interpreter, by its
-    path or through `env`; a first line that doesn't start with `#!` is no shebang."""
-    assert make_config([], prepare=f"{shebang}\ntrue\n").prepare.startswith(shebang)
+def test_p5_70_program_that_exits_zero_without_the_script_is_the_warning(prepared, capfd, tmp_path: Path):
+    """SPEC "prepare" (It is a shell script), "What `prepare` sets": a program that exits with status 0 and
+    sources nothing leaves no environment to read: the warning, and the run goes on as without a `prepare`."""
+    marker = tmp_path / "ran"
+    r = prepared(f"#!/usr/bin/env true\nAB_A=set\ntouch {marker}\n", env={"AB_A": "dflt"})
+    assert r._env == {"AB_A": "dflt"} and not marker.exists()
+    out, err = capfd.readouterr()
+    assert out == "" and progress(err) == [">> prepare: running local script", UNREAD, DONE]
 
 
-@pytest.mark.parametrize("shebang", ["#!/bin/sh --", "#!/bin/sh -", "#!/bin/bash -eu --", "#!/usr/bin/env -S zsh -f -", "#!/usr/bin/env ksh -- -e"])
-def test_p5_70_shebang_that_ends_the_options_of_its_shell_is_a_validation_error(shebang: str):
-    """SPEC "prepare": `-c` and what follows it come after the words of the shebang, so `--` or `-` after
-    the shell is found when the script is loaded, like a shebang that names no shell."""
-    with pytest.raises(pydantic.ValidationError) as ei:
-        make_config([], prepare=f"{shebang}\nAB_A=1\n")
-    (error,) = ei.value.errors()
-    assert (error["loc"], error["type"]) == (("prepare",), "value_error")
-    assert error["msg"] == "Value error, prepare is a shell script: '--' or '-' in its shebang ends the shell's options, and -c follows them"
+@pytest.mark.parametrize("shebang", [*NOT_SHELLS, "#!/usr/bin/env true", "#!/usr/bin/perl -w", "#!/autobot/no/such/program", "#!", "# !/bin/sh"])
+def test_p5_70_program_of_a_shebang_is_not_checked_when_the_script_is_loaded(shebang: str):
+    """SPEC "prepare": Autobot doesn't check which program a shebang names: any string is a valid `prepare`."""
+    assert make_config([], prepare=f"{shebang}\ntrue\n").prepare == f"{shebang}\ntrue\n"
 
 
-def test_p5_70_cli_reports_the_shebang_before_anything_runs(tmp_path: Path):
-    """SPEC "prepare", "CLI": `run` and `validate` report it as a validation error, status 1; nothing runs."""
+def test_p5_70_cli_runs_the_program_and_validate_runs_nothing(tmp_path: Path):
+    """SPEC "prepare", "CLI": `validate` finds the script valid and runs nothing; `run` is a failed run with
+    the program's exit status, after the program's own message, and nothing is spawned."""
     marker = tmp_path / "ran"
     script = f"#!/usr/bin/env python3\nopen({str(marker)!r}, 'w')\n"
     doc = make_doc([], prepare=script, spawn=f"touch {marker}")
-    report = ["Validation errors:", "  prepare: prepare is a shell script: its shebang names 'python3' [value_error]"]
     res = run_cli(doc, tmp_path)
-    assert res.returncode == 1 and res.stdout == "" and res.stderr.splitlines()[-2:] == report
     path = tmp_path / "script.autobot.yaml"
+    assert res.returncode == 3 and res.stdout == ""
+    assert res.stderr.splitlines()[-1] == f"Run failed in {path}: prepare script failed with exit code 1"
+    assert progress(res.stderr) == [">> prepare: running local script"] and "SyntaxError" in res.stderr
     res = subprocess.run(
         [sys.executable, "-W", "ignore", "-m", "autobot.cli", "validate", str(path)], check=False, capture_output=True, text=True, timeout=120
     )
-    assert res.returncode == 1 and res.stdout == "" and res.stderr.splitlines() == [*report, f"{path}: invalid"]
+    assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
     assert not marker.exists()
 
 
@@ -1063,7 +1053,11 @@ def test_p5_105_file_of_the_environment_is_empty_once_it_is_read(sourced, tmp_pa
         env, err = sourced(f"{shebang}sleep 60 > /dev/null 2>&1 < /dev/null &\necho $! > {pid}\nAB_A={SECRET}\n")
         assert env.get("AB_A") == SECRET and env.get("AB_OS") == f"{SECRET}-os"
         fds = f"/proc/{int(pid.read_text())}/fd"
-        held = [fd for fd in os.listdir(fds) if int(fd) > 2]
+        for _ in range(100):  # the program opens files of its own while it starts (its libraries)
+            held = [fd for fd in os.listdir(fds) if int(fd) > 2]
+            if len(held) == 1:
+                break
+            time.sleep(0.02)
         assert len(held) == 1 and int(held[0]) >= prepare._FD
         assert os.stat(f"{fds}/{held[0]}").st_size == 0
     finally:
@@ -1162,3 +1156,43 @@ def test_p5_108_script_of_a_run_without_a_standard_error_writes_to_dev_null(tmp_
     res, left = cli_after(lambda: os.close(2), tmp_path)
     assert res.returncode == 0 and left == ["null", "prepared", "spawned"]
     assert res.stdout.splitlines() == ["got-set"]
+
+
+# -- P5-109: the words of a shebang are the command, whatever they are -----------------
+
+OTHER_SHELLS = ["busybox sh", "busybox ash", "mksh", "ksh93"]
+
+
+@pytest.mark.parametrize("shell", [pytest.param(s, marks=installed(s.split()[0])) for s in OTHER_SHELLS])
+def test_p5_109_shell_of_any_name_sources_the_script(prepared, capsys, monkeypatch, shell: str):
+    """SPEC "prepare" (It is a shell script): the program is any shell that runs the commands of a `-c` and
+    can source the script, by its path or through `env`, with and without options: a plain assignment, an
+    `export`, a value with a line break and an `unset` are read from it."""
+    monkeypatch.setenv("AB_OS", "os")
+    program, *words = shell.split()
+    rest = " ".join(["", *words])
+    for shebang in (f"#!{shutil.which(program)}{rest}", f"#!/usr/bin/env {shell}", f"#!{shutil.which(program)}{rest} -eu"):
+        r = prepared(f"{shebang}\nAB_A=plain\nexport AB_B='two\nlines='\nunset AB_OS\nexit 0\n", env={"AB_A": None, "AB_B": None, "AB_OS": "dflt"})
+        assert r._env == {"AB_A": "plain", "AB_B": "two\nlines=", "AB_OS": "dflt"}
+        assert progress(capsys.readouterr().err) == [">> prepare: running local script", DONE]
+
+
+def test_p5_109_words_of_a_shebang_are_the_command(prepared, tmp_path: Path):
+    """SPEC "prepare" (It is a shell script): the words of the line, split at whitespace, are the command,
+    with `-c`, the commands and the temp file after them: an assignment for `env` among them is in the
+    environment of the shell it starts."""
+    out = tmp_path / "out"
+    r = prepared(f"#!/usr/bin/env AB_B=word bash --norc\nps -o args= -p $$ > {out}\nAB_A=${{BASH_VERSION:+bash}}\n", env={"AB_A": None, "AB_B": None})
+    assert r._env == {"AB_A": "bash", "AB_B": "word"}
+    assert out.read_text().startswith("bash --norc -c set -a; trap ")
+
+
+@pytest.mark.parametrize("first", ["#!", "#! \t", "#!\r", " \n﻿#! "], ids=["alone", "blank", "cr", "after-junk"])
+def test_p5_109_shebang_without_a_word_is_no_shebang(prepared, capsys, tmp_path: Path, first: str):
+    """SPEC "prepare" (It is a shell script): a `#!` with no word after it on its line names no program:
+    `/bin/sh` sources the script, and the progress line says so."""
+    out = tmp_path / "out"
+    r = prepared(f"{first}\nps -o args= -p $$ > {out}\nAB_A=set\n", env={"AB_A": None})
+    assert out.read_text().startswith("/bin/sh -c set -a; trap ")
+    assert r._env == {"AB_A": "set"}
+    assert progress(capsys.readouterr().err) == [RUNNING, DONE]
