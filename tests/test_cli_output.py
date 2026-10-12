@@ -39,6 +39,8 @@ def _write(tmp_path: Path, script: list, **kw: Any) -> Path:
 def _env(**extra: str) -> dict[str, str]:
     """The suite's environment without the variables under test, on a terminal type that has color."""
     env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "FORCE_COLOR", "TERM")}
+    if "PYTHONPATH" in extra and env.get("PYTHONPATH"):  # before the suite's own, which is where autobot may be
+        extra["PYTHONPATH"] = os.pathsep.join([extra["PYTHONPATH"], env["PYTHONPATH"]])
     return {**env, "TERM": "xterm", **extra}
 
 

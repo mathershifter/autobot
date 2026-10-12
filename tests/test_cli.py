@@ -203,23 +203,16 @@ LATER = "has no value yet: a default reads only the keys declared above it"
     ("env", "prompts", "message"),
     [
         ({"A": "{{ nope( }}"}, None, "env.A: template error: unexpected '}', expected ')'"),
-        ({"A": "{{ 1/0 }}"}, None, "env.A: template error: ZeroDivisionError: division by zero"),
-        ({"A": "{{ 'a' + 1 }}", "B": "{{ env.A }}"}, None, 'env.A: template error: TypeError: can only concatenate str (not "int") to str'),
+        ({"B": "b", "A": "{% if %}"}, None, "env.A: template error: Expected an expression, got 'end of statement block'"),
         (None, [{"name": "p", "expect": ["x"], "send": "{{ x "}], "prompt 'p': template error: unexpected end of template, expected 'end of print statement'."),
-        ({"A": "{{ env.A }}x"}, None, f"env.A: template error: env.A {LATER}"),
-        ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, None, f"env.A: template error: env.B {LATER}"),
-        ({"A": "{{ env.HOME }}"}, None, "env.A: template error: env has no key 'HOME': the script's env section doesn't declare it"),
-        ({"A": "a", "B": None}, None, "env.B is required: give it with --env B=VALUE or in the environment"),
     ],
-    ids=[
-        "env-template", "env-zero-division", "env-nested-type-error",
-        "send-template", "env-reads-itself", "env-reads-a-key-below", "env-reads-an-undeclared-key", "env-required",
-    ],
+    ids=["env-template", "env-template-second-key", "send-template"],
 )
 def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     tmp_path: Path, env: dict[str, Any] | None, prompts: list | None, message: str
 ):
-    """SPEC.md CLI: `env` and prompt `send` errors are `Script error in <path>: ...`, rc 1, before prepare/spawn."""
+    """SPEC.md CLI: the syntax of an `env` default and of a prompt `send` is checked before anything runs:
+    `Script error in <path>: ...`, rc 1, before prepare/spawn."""
     prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
     kwargs = {"prompts": prompts} if prompts is not None else {}
     doc = make_doc([GOT], env=env, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}", **kwargs)
@@ -227,6 +220,39 @@ def test_p6_31_cli_script_error_at_runner_load_is_clean_error(
     path = tmp_path / "script.autobot.yaml"
     assert _load_error(res) == f"Script error in {path}: {message}"
     assert not prepared.exists()
+    assert not spawned.exists()
+
+
+def test_p6_31_syntax_of_a_default_is_checked_whatever_gives_the_value(tmp_path: Path):
+    """SPEC "The environment in templates": also for a variable that `--env` sets."""
+    res = run_cli(make_doc([GOT], env={"MSG": "{{ x "}), tmp_path, "-e", "MSG=given")
+    assert _load_error(res).endswith(": env.MSG: template error: unexpected end of template, expected 'end of print statement'.")
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"A": "{{ 1/0 }}"}, "env.A: template error: ZeroDivisionError: division by zero"),
+        ({"A": "{{ 'a' + 1 }}", "B": "{{ env.A }}"}, 'env.A: template error: TypeError: can only concatenate str (not "int") to str'),
+        ({"A": "{{ env.A }}x"}, f"env.A: template error: env.A {LATER}"),
+        ({"A": "{{ env.B }}", "B": "{{ env.A }}"}, f"env.A: template error: env.B {LATER}"),
+        ({"A": "{{ env.HOME }}"}, "env.A: template error: env has no key 'HOME': the script's env section doesn't declare it"),
+        ({"A": "a", "B": None}, "env.B is required: give it with --env B=VALUE or in the environment"),
+    ],
+    ids=[
+        "env-zero-division", "env-nested-type-error", "env-reads-itself", "env-reads-a-key-below",
+        "env-reads-an-undeclared-key", "env-required",
+    ],
+)
+def test_p6_31_cli_env_error_that_depends_on_a_value_is_a_failed_run(tmp_path: Path, env: dict[str, Any], message: str):
+    """SPEC.md CLI, "The order of a run": `env` is resolved once `prepare` has run, so a variable without a
+    value and a default that can't be rendered are `Run failed in <path>: ...`, rc 3, before the spawn."""
+    prepared, spawned = tmp_path / "prepared", tmp_path / "spawned"
+    doc = make_doc([GOT], env=env, prepare=f"#!/bin/sh\ntouch {prepared}\n", spawn=f"touch {spawned}")
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 3 and res.stdout == "" and "Traceback" not in res.stderr
+    assert res.stderr.splitlines()[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}"
+    assert prepared.exists()
     assert not spawned.exists()
 
 
@@ -280,8 +306,8 @@ def test_p6_32_cli_runtime_errors_are_not_caught_as_load_errors(tmp_path: Path):
 def _marked_head(tmp_path: Path) -> str:
     """Lines 1-4 of a script whose `prepare` and `spawn` touch marker files."""
     return (
-        f"autobot: 2026-10\nattach:\n  spawn: touch {tmp_path / 'spawned'}\n"
-        f'  prepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
+        f'autobot: 2026-10\nprepare: "#!/bin/sh\\ntouch {tmp_path / "prepared"}\\n"\n'
+        f"attach:\n  spawn: touch {tmp_path / 'spawned'}\n"
     )
 
 

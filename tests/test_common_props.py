@@ -409,7 +409,6 @@ TEXT_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
     "after": lambda t: {"script": [{"line": "echo ok", "after": t}]},
     "line": lambda t: {"script": [{"line": f"echo {t}"}]},
     "spawn": lambda t: {"script": [], "spawn": f"bash {t}"},
-    "prepare": lambda t: {"script": [], "prepare": f"#!/bin/sh\necho {t}\n"},
     "env": lambda t: {"script": [], "env": {"AB_FLAG": t}},
 }
 
@@ -521,7 +520,9 @@ def test_p3_23_undefined_name_at_load_time_and_at_run_time(sent: SentLog):
         ({"AB_A": "{{ vars.nope }}"}, "env.AB_A: template error: 'dict object' has no attribute 'nope'"),
         ({"AB_A": "{{ env.AB_NOPE }}"}, "env.AB_A: template error: env has no key 'AB_NOPE': the script's env section doesn't declare it"),
         # the first default with an error is named, and the ones below it are not reached
-        ({"AB_C": "{{ 1/0 }}", "AB_B": "{{ env.AB_C }}", "AB_A": "x{{ env.AB_B }}{{ nope( }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
+        ({"AB_C": "{{ 1/0 }}", "AB_B": "{{ env.AB_C }}", "AB_A": "x{{ env.AB_B }}{{ 2/0 }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
+        # the syntax of every default is checked first, whatever the defaults above it would render to
+        ({"AB_C": "{{ 1/0 }}", "AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
         ({"AB_C": "{{ 'a' | search('(') }}", "AB_A": "{{ env.AB_C }}"}, "env.AB_C: template error: search: invalid regex '(': missing ), unterminated subpattern at position 0"),
         # a key below, or the key itself
         ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "env.AB_A: template error: env.AB_B has no value yet: a default reads only the keys declared above it"),

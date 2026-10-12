@@ -49,13 +49,13 @@ FIELDS = [{"match": ["login:", "Username:"], "field": "u"}, {"match": "Password:
 ACCEPT = {
     "minimal": MIN,
     "all-top-level": d(
+        prepare="#!/bin/sh\ntrue\n",
         env={"A": "a"},
         vars={"creds": [{"u": "a", "p": "b"}], "n": 1},
         prompts=[{"name": "sh", "expect": ["\\$ "], "return": True}],
         errors=["% .*"],
         fn={"f": {"script": [{"cmd": "x"}]}},
         attach={
-            "prepare": "#!/bin/sh\ntrue\n",
             "spawn": "ssh host",
             "timeout": "30s",
             "script": [{"line": "x"}],
@@ -786,7 +786,7 @@ STRING_FIELDS: dict[str, Callable[[Any], dict[str, Any]]] = {
     ),
     "fields-field": lambda v: d(prompts=[{"name": "p", "send": {"each": "vars.c", "fields": [{"match": "x", "field": v}]}}]),
     "attach-spawn": lambda v: d(attach={"spawn": v}),
-    "attach-prepare": lambda v: d(attach={"spawn": "ssh host", "prepare": v}),
+    "prepare": lambda v: d(prepare=v),
     "cmd": lambda v: s({"cmd": v}),
     "cmd-item": lambda v: s({"cmd": ["x", v]}),
     "cmd-assert": lambda v: s({"cmd": "x", "assert": v}),
@@ -1365,13 +1365,43 @@ def test_p6_90_top_level_env_is_not_handed_to_exec(both_validate: Callable):
 
 @pytest.mark.parametrize("value", [{"A": "x"}, {}, None, "A=x"], ids=["mapping", "empty-mapping", "null", "string"])
 def test_p6_92_parity_attach_env_is_an_unknown_key(both_validate: Callable, schema: dict[str, Any], value: Any):
-    """SPEC "attach": the fields of `attach` are `prepare`, `spawn`, `timeout`, `script` and `breakout`. An
-    `env` there is rejected by both like any other unknown key, whatever its value."""
+    """SPEC "attach": the fields of `attach` are `spawn`, `timeout`, `script` and `breakout`. An `env` there
+    is rejected by both like any other unknown key, whatever its value."""
     assert both_validate(d(attach={"spawn": "ssh host", "env": value})) == (False, False)
     [err] = model_errors(d(attach={"spawn": "ssh host", "env": value}))
     [other] = model_errors(d(attach={"spawn": "ssh host", "nope": value}))
     assert (err["loc"], err["type"], err["msg"]) == (("attach", "env"), "extra_forbidden", other["msg"])
     assert (other["loc"], other["type"]) == (("attach", "nope"), "extra_forbidden")
     assert sorted(schema["$defs"]["attach"]["properties"]) == sorted(models.Attach.model_fields) == [
-        "breakout", "prepare", "script", "spawn", "timeout",
+        "breakout", "script", "spawn", "timeout",
     ]
+
+
+# -- P6-117: `prepare` is a top-level key ------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["#!/bin/sh\ntrue\n", "true", "", "{{ not a template", " \n"], ids=["shebang", "plain", "empty", "braces", "blank"])
+def test_p6_117_parity_prepare_is_a_top_level_string(both_validate: Callable, schema: dict[str, Any], value: str):
+    """SPEC "Top-level fields" (`prepare`): any string, read as it is written; it is a property of the
+    document in the schema and a field of `Config`."""
+    assert both_validate(d(prepare=value)) == (True, True)
+    assert models.Config.model_validate(d(prepare=value)).prepare == value
+    assert "prepare" in schema["properties"] and "prepare" in models.Config.model_fields
+
+
+@pytest.mark.parametrize("value", [None, 1, True, ["true"], {"sh": "true"}], ids=["null", "number", "boolean", "list", "mapping"])
+def test_p6_117_parity_prepare_that_is_not_a_string(both_validate: Callable, value: Any):
+    """SPEC "Top-level fields" (`prepare`): a string or nothing; an empty value is invalid, as for every
+    optional field."""
+    assert both_validate(d(prepare=value)) == (False, False)
+    [err] = model_errors(d(prepare=value))
+    assert err["loc"] == ("prepare",) and err["type"] == ("null_value" if value is None else "string_type")
+
+
+@pytest.mark.parametrize("value", ["true", {}, None], ids=["string", "mapping", "null"])
+def test_p6_117_parity_prepare_under_attach_is_an_unknown_key(both_validate: Callable, value: Any):
+    """SPEC "attach": `attach` has no `prepare`: both reject it like any other unknown key."""
+    doc = d(attach={"spawn": "ssh host", "prepare": value})
+    assert both_validate(doc) == (False, False)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"]) == (("attach", "prepare"), "extra_forbidden")

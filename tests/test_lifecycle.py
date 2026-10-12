@@ -580,7 +580,7 @@ def test_p5_34_spawn_failure_cli_exit_status(case: str, tmp_path: Path, fake_dev
 def test_p5_01_attach_lifecycle_order(
     tmp_path: Path, timeline: Timeline, children, monkeypatch: pytest.MonkeyPatch
 ):
-    """SPEC "attach" (the attach lifecycle): prepare -> spawn -> attach.script -> script -> breakout -> close."""
+    """SPEC "The order of a run", "attach" (the attach lifecycle): prepare -> spawn -> attach.script -> script -> breakout -> close."""
     log = tmp_path / "log"
     at_attach: list[str] = []
     recorded_attach = Session.attach
@@ -604,7 +604,7 @@ def test_p5_01_attach_lifecycle_order(
 
 
 def test_p5_02_prepare_nonzero_aborts_before_spawn(timeline: Timeline, children):
-    """SPEC "attach" (`prepare`, lifecycle step 1): prepare failing aborts before spawn."""
+    """SPEC "prepare", "The order of a run": prepare failing aborts before spawn."""
     r = make_runner([{"cmd": "true"}], prepare="#!/bin/sh\nexit 3\n")
     with pytest.raises(RuntimeError, match="prepare script failed with exit code 3"):
         r.run()
@@ -614,7 +614,7 @@ def test_p5_02_prepare_nonzero_aborts_before_spawn(timeline: Timeline, children)
 
 @pytest.mark.parametrize("rc", [0, 3], ids=["success", "failure"])
 def test_p5_03_prepare_temp_file_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int):
-    """SPEC "attach" (`prepare`): the local prepare script leaves no temp file behind."""
+    """SPEC "prepare": the local prepare script leaves no temp file behind."""
     import tempfile
 
     tdir = tmp_path / "tmp"
@@ -644,12 +644,12 @@ def prep_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
     timeline: Timeline, prep_tmp: Path, capsys: pytest.CaptureFixture[str], text: str
 ):
-    """SPEC "attach": the temp file is removed in every case, also when the script can't be written.
+    """SPEC "prepare": the temp file is removed in every case, also when the script can't be written.
 
-    A byte of a variable's value that isn't UTF-8 reaches the script as a lone surrogate (`\\udcff`),
-    which UTF-8 can't encode; the file used to be left behind.
+    A lone surrogate, which a `"\\ud800"` in a double-quoted YAML string gives, is a character UTF-8
+    can't encode; the file used to be left behind.
     """
-    r = make_runner([], prepare="#!/bin/sh\necho {{ env.X }}\n", env={"X": None}, given={"X": text})
+    r = make_runner([], prepare=f"#!/bin/sh\necho {text}\n")
     with pytest.raises(UnicodeEncodeError):
         r.run()
     assert list(prep_tmp.iterdir()) == []
@@ -679,7 +679,7 @@ def test_p5_55_prepare_temp_file_removed_when_chmod_fails(prep_tmp: Path, monkey
 def test_p5_04_prepare_without_shebang_runs_under_sh(
     tmp_path: Path, prep_tmp: Path, timeline: Timeline, capsys
 ):
-    """SPEC attach table: without a shebang, prepare runs under ``/bin/sh``."""
+    """SPEC "prepare": without a shebang, prepare runs under ``/bin/sh``."""
     out = tmp_path / "out"
     make_runner([], prepare=f"\n  echo \"sh:$0\" > {out}\n").run()
     assert out.read_text().startswith(f"sh:{prep_tmp}/_autobot_")
@@ -705,7 +705,7 @@ PY_ONLY = "import pathlib; pathlib.Path({out!r}).write_text(str(sum(range(4))))\
 def test_p5_42_prepare_shebang_after_leading_junk(
     junk: str, interp: str, tmp_path: Path, prep_tmp: Path, capsys
 ):
-    """SPEC attach table: leading blank lines, whitespace, a BOM and zero-width characters are ignored."""
+    """SPEC "prepare": leading blank lines, whitespace, a BOM and zero-width characters are ignored."""
     out = tmp_path / "out"
     if interp == "sh":
         body = f"#!/bin/sh\necho sh > {out}\n"
@@ -720,7 +720,7 @@ def test_p5_42_prepare_shebang_after_leading_junk(
 
 
 def test_p5_43_prepare_shebang_crlf(tmp_path: Path, prep_tmp: Path):
-    """SPEC attach table: a CR ending the shebang line is dropped (was ENOENT for ``/bin/sh\\r``)."""
+    """SPEC "prepare": a CR ending the shebang line is dropped (was ENOENT for ``/bin/sh\\r``)."""
     out = tmp_path / "out"
     make_runner([], prepare=f"#!/bin/sh\r\necho ok > {out}\n").run()
     assert out.read_text() == "ok\n"
@@ -733,7 +733,7 @@ def test_p5_43_prepare_shebang_crlf(tmp_path: Path, prep_tmp: Path):
 def test_p5_44_prepare_fallback_nonzero_aborts(
     prepare: str, prep_tmp: Path, timeline: Timeline, children
 ):
-    """SPEC attach table: the exit status check is the same with or without a shebang."""
+    """SPEC "prepare": the exit status check is the same with or without a shebang."""
     with pytest.raises(RuntimeError, match="^prepare script failed with exit code 4$"):
         make_runner([{"cmd": "true"}], prepare=prepare).run()
     assert list(prep_tmp.glob("_autobot_*")) == []
@@ -745,7 +745,7 @@ def test_p5_44_prepare_fallback_nonzero_aborts(
 def test_p5_45_prepare_interpreter_cannot_run(
     case: str, tmp_path: Path, prep_tmp: Path, timeline: Timeline, children
 ):
-    """SPEC attach table: an interpreter that can't run is a ``RuntimeError`` naming the shebang."""
+    """SPEC "prepare": an interpreter that can't run is a ``RuntimeError`` naming the shebang."""
     if case == "missing":
         interp = tmp_path / "no_such_interp"
         exc, err = FileNotFoundError, "[Errno 2] No such file or directory"
@@ -767,7 +767,7 @@ def test_p5_45_prepare_interpreter_cannot_run(
 def test_p5_52_prepare_written_as_utf8(
     tmp_path: Path, prep_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """SPEC attach table: the prepare script is written as UTF-8 whatever the locale's encoding."""
+    """SPEC "prepare": the prepare script is written as UTF-8 whatever the locale's encoding."""
     import tempfile
 
     real = tempfile._io
@@ -792,34 +792,29 @@ def test_p5_52_prepare_written_as_utf8(
     assert list(prep_tmp.glob("_autobot_*")) == []
 
 
-def test_p5_05_prepare_is_templated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """SPEC attach table and "Jinja2 Templating" (decision #9): prepare is rendered."""
+def test_p5_05_prepare_is_not_a_template(tmp_path: Path):
+    """SPEC "prepare" and "Jinja2 Templating": the script is written to its file as it is in the YAML, so
+    `{{ ... }}` and `{% ... %}` in it are the script's own text, whatever they name."""
     out = tmp_path / "out"
-    monkeypatch.setenv("AUTOBOT_T_X", "from-os")
     run_script(
         [],
-        env={"AUTOBOT_T_X": "default", "Y": "{{ env.AUTOBOT_T_X }}-y", "A": None},
+        env={"A": None},
         vars={"v": "V"},
         prepare=(
             "#!/bin/sh\n"
-            f"echo '{{{{ env.Y }}}} {{{{ vars.v }}}} {{{{ env.A }}}}' > {out}\n"
+            f"echo '{{{{ env.A }}}} {{{{ vars.v }}}} {{{{ nope }}}} {{% if %}} {{{{ 1/0 }}}} {{{{' > {out}\n"
         ),
         given={"A": "A"},
     )
-    assert out.read_text() == "from-os-y V A\n"
+    assert out.read_text() == "{{ env.A }} {{ vars.v }} {{ nope }} {% if %} {{ 1/0 }} {{\n"
 
 
 BASH_ARRAY = '#!/bin/bash\narr=(a b c)\n{body}\n'
 
 
-def test_p5_05_prepare_bash_array_length_needs_raw(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeline: Timeline, children
-):
-    """SPEC "Jinja2 Templating" (decision #9): ``{#`` in prepare opens a Jinja comment.
-
-    Bare ``${#arr[@]}`` fails to render before anything runs: no prepare
-    process, no spawn, no temp file. Wrapped in ``{% raw %}`` it runs.
-    """
+def test_p5_05_prepare_bash_array_length_needs_no_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "Jinja2 Templating": ``{#`` opens no Jinja comment in `prepare`, so a bare ``${#arr[@]}`` is
+    bash's. A ``{% raw %}`` around it would be a line of the script, and a syntax error of the shell."""
     import tempfile
 
     tdir = tmp_path / "tmp"
@@ -827,17 +822,13 @@ def test_p5_05_prepare_bash_array_length_needs_raw(
     monkeypatch.setattr(tempfile, "tempdir", str(tdir))
     out = tmp_path / "out"
 
-    bare = BASH_ARRAY.format(body=f'echo "${{#arr[@]}}" > {out}')
-    with pytest.raises(ValueError, match="^template error: "):
-        make_runner([], prepare=bare).run()
-    assert not out.exists()
+    run_script([], prepare=BASH_ARRAY.format(body=f'echo "${{#arr[@]}}" > {out}'))
+    assert out.read_text() == "3\n"
     assert list(tdir.glob("_autobot_*")) == []
-    assert "attach" not in timeline.names()
-    assert children == []
 
     raw = BASH_ARRAY.format(body=f'{{% raw %}}echo "${{#arr[@]}}"{{% endraw %}} > {out}')
-    run_script([], prepare=raw)
-    assert out.read_text() == "3\n"
+    with pytest.raises(RuntimeError, match="^prepare script failed with exit code "):
+        make_runner([], prepare=raw).run()
     assert list(tdir.glob("_autobot_*")) == []
 
 
@@ -1252,13 +1243,14 @@ def test_p5_23_attach_timeout_subsecond(timeline: Timeline, value: str, expected
 
 
 @pytest.mark.parametrize("value", ["", "  ", "\n"], ids=["empty", "blank", "newline"])
-def test_p5_53_spawn_rendering_empty_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
-    """SPEC "attach": a spawn that renders to nothing is a ValueError; prepare doesn't run and nothing is spawned."""
+def test_p5_53_spawn_rendering_empty_stops_the_run_after_prepare(timeline: Timeline, tmp_path: Path, value: str):
+    """SPEC "attach", "The order of a run": a spawn that renders to nothing is a ValueError and nothing is
+    spawned. `spawn` is rendered once `prepare` has run, which nothing undoes."""
     prepared = tmp_path / "prepared"
     runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
     with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ vars\.cmd \}\}'$"):
         runner.run()
-    assert not prepared.exists()
+    assert prepared.exists()
     assert "attach" not in timeline.names()
 
 
@@ -1266,16 +1258,16 @@ NO_COMMAND = ["''", '""', "\\", "'", "''\"\"", "'' ''", "'' ls", '"" --version']
 
 
 @pytest.mark.parametrize("value", NO_COMMAND)
-def test_p5_54_spawn_rendering_to_quotes_stops_before_prepare(timeline: Timeline, tmp_path: Path, value: str):
-    """SPEC "attach": a spawn that renders to quotes or a backslash names no command; nothing runs.
+def test_p5_54_spawn_rendering_to_quotes_stops_the_run_after_prepare(timeline: Timeline, tmp_path: Path, value: str):
+    """SPEC "attach": a spawn that renders to quotes or a backslash names no command; nothing is spawned.
 
-    `pexpect.spawn("''")` raised `IndexError: list index out of range`, after `prepare` had run.
+    `pexpect.spawn("''")` raised `IndexError: list index out of range`.
     """
     prepared = tmp_path / "prepared"
     runner = make_runner([], spawn="{{ vars.cmd }}", vars={"cmd": value}, prepare=f"#!/bin/sh\ntouch {prepared}\n")
     with pytest.raises(ValueError, match=r"^attach\.spawn rendered to an empty command: '\{\{ vars\.cmd \}\}'$"):
         runner.run()
-    assert not prepared.exists()
+    assert prepared.exists()
     assert "attach" not in timeline.names()
 
 

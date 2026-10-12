@@ -279,7 +279,8 @@ def test_p5_94_default_is_not_converted():
 
 
 def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """SPEC "CLI": the report of a value that can't be converted, with `--traceback` too, has no value in it."""
+    """SPEC "CLI": the report of a value that can't be converted, with `--traceback` too, has no value in it.
+    It is a failed run, status 3: `env` is resolved once `prepare` has run."""
     monkeypatch.setenv("AB_B", SECRET)
     marker = tmp_path / "prepared"
     doc = make_doc([], env={"AB_A": 1, "AB_B": False}, prepare=f"touch {marker}\n")
@@ -288,9 +289,9 @@ def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         (("-e", "AB_A=5"), "env.AB_B: the value from the environment is not a boolean"),
     ]:
         res = run_cli(doc, tmp_path, *argv, "--traceback")
-        assert res.returncode == 1 and res.stdout == ""
-        assert report(res)[-1] == f"Script error in {tmp_path / 'script.autobot.yaml'}: {line}"
-        assert SECRET not in res.stderr and not marker.exists()
+        assert res.returncode == 3 and res.stdout == ""
+        assert report(res)[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {line}"
+        assert SECRET not in res.stderr and marker.exists()
 
 
 # -- P5-95: a required variable -------------------------------------------------
@@ -299,18 +300,22 @@ def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 @pytest.mark.parametrize("empty", ["AB_A:", "AB_A: ~", "AB_A: null"])
 def test_p5_95_empty_value_declares_a_required_variable(tmp_path: Path, monkeypatch, empty: str):
     """SPEC "Top-level fields" (`env`): a key with an empty value has no default; without a value the run
-    stops before `prepare`, with status 1, and the report says how to give it."""
-    marker = tmp_path / "prepared"
+    fails once `prepare` has run, with status 3, before anything is spawned, and the report says how to
+    give it."""
+    marker, spawned = tmp_path / "prepared", tmp_path / "spawned"
     raw = (
-        f"autobot: 2026-10\nenv:\n  {empty}\nattach:\n  prepare: touch {marker}\n  spawn: echo {{{{ env.AB_A }}}}\nscript: []\n"
+        f"autobot: 2026-10\nprepare: touch {marker}\nenv:\n  {empty}\n"
+        f"attach:\n  spawn: sh -c 'touch {spawned}; echo {{{{ env.AB_A }}}}'\nscript: []\n"
     )
     res = run_cli(None, tmp_path, raw=raw)
-    assert (res.returncode, res.stdout) == (1, "")
+    assert (res.returncode, res.stdout) == (3, "")
     assert report(res) == [
-        f"Script error in {tmp_path / 'script.autobot.yaml'}: env.AB_A is required: give it with --env AB_A=VALUE "
-        "or in the environment"
+        ">> prepare: running local script (no shebang, using /bin/sh)",
+        ">> prepare: done",
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: env.AB_A is required: give it with --env AB_A=VALUE "
+        "or in the environment",
     ]
-    assert not marker.exists()
+    assert marker.exists() and not spawned.exists()
     assert "host-1" in run_cli(None, tmp_path, "-e", "AB_A=host-1", raw=raw).stdout
     monkeypatch.setenv("AB_A", "host-2")
     assert "host-2" in run_cli(None, tmp_path, raw=raw).stdout

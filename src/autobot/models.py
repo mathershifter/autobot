@@ -259,7 +259,6 @@ class Function(pydantic.BaseModel):
 
 class Attach(pydantic.BaseModel):
     model_config = _STRICT
-    prepare: Omittable[str] = None
     spawn: Annotated[str, pydantic.AfterValidator(_spawn)]
     timeout: Omittable[Duration] = None
     script: NotNull[list[Step]] = []
@@ -464,6 +463,7 @@ class Config(pydantic.BaseModel):
         if not isinstance(v, str) or v != VERSION:
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
+    prepare: Omittable[str] = None
     env: NotNull[dict[str, EnvValue]] = {}
     vars: NotNull[dict[str, Any]] = {}
     prompts: NotNull[list[Prompt]] = []

@@ -151,7 +151,7 @@ _TYPES = {bool: "a boolean", int: "an integer", float: "a number"}
 
 
 def _typed(value: str, default: Any) -> Any:
-    """Text from `--env` or the environment as a value of the type of the variable's default."""
+    """Text from `--env`, `prepare` or the environment as a value of the type of the variable's default."""
     if isinstance(default, bool):
         return _TRUTH[value.strip().lower()]
     if isinstance(default, int):
@@ -167,19 +167,29 @@ def _typed(value: str, default: Any) -> Any:
 
 class Runner:
     def __init__(self, config: Config, given: dict[str, str]):
-        """`given`: the `--env` values, which come before the environment's."""
+        """`given`: the `--env` values, which come before those of `prepare` and of the environment."""
         registry.discover()
         self._config = config
         self._default_timeout = 300
         # the environment of `prepare` and of the spawned process: autobot's own, on a plain terminal
         self._environ = run_environ()
-        self._env = self._resolve_env(given)
+        for key in given:
+            if key not in config.env:
+                raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
+        for key, default in config.env.items():
+            if isinstance(default, str):  # a template: its syntax depends on no value
+                try:
+                    check_template(default)
+                except ScriptError as e:
+                    raise ScriptError(f"env.{key}: {e}") from e
+        self._given = given
+        self._env: dict[str, Any] = {}  # resolved by `run`, once `prepare` has run
         self._session = Session([])
         handlers = [self.build_handler(p) for p in config.prompts]
         self._session.restore_handlers(handlers)
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
-        # called when `attach.prepare` has run and the process is about to be spawned, if set: the CLI's
+        # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
         self.before_attach: Callable[[], None] | None = None
         # the path of every step list of the script, by the list's identity: executors pass run_steps the list
         self._paths: dict[int, str] = {}
@@ -228,10 +238,10 @@ class Runner:
         responses = send_each_sets(prompt.name, send, self._config.vars)
         return PromptHandler(prompt.name, patterns, responses, False, slots)
 
-    def _resolve_env(self, given: dict[str, str]) -> dict[str, Any]:
+    def _resolve_env(self, printed: dict[str, str]) -> dict[str, Any]:
         """`env` in templates: the variables the `env` section declares, and nothing else. Each has the
-        value of `--env`, else of the environment, as the type of its default, else its default: a
-        template, which reads `vars` and the variables declared above it."""
+        value of `--env`, else the one `prepare` printed, else the environment's, as the type of its
+        default, else its default: a template, which reads `vars` and the variables declared above it."""
         declared = self._config.env
 
         class Env(dict):  # holds its keys and nothing else: a template reads attributes too
@@ -243,15 +253,13 @@ class Runner:
                     why = f"env.{key} has no value yet: a default reads only the keys declared above it"
                 return StrictUndefined(hint=why)
 
-        for key in given:
-            if key not in declared:
-                raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
         env = Env()
+        sources = {"--env": self._given, "prepare": printed, "the environment": os.environ}
         for key, default in declared.items():
-            source = "--env" if key in given else "the environment" if key in os.environ else None
+            source = next((s for s, values in sources.items() if key in values), None)
             if source:
                 try:
-                    env[key] = _typed(given[key] if key in given else os.environ[key], default)
+                    env[key] = _typed(sources[source][key], default)
                 except (KeyError, ValueError):
                     # without the value, which may be a secret, and without the exception that holds it
                     raise ScriptError(f"env.{key}: the value from {source} is not {_TYPES[type(default)]}") from None
@@ -303,10 +311,15 @@ class Runner:
 
     def _run(self):
         attach = self._config.attach
-        spawn = self._spawn_command()  # first: one that names no command stops the run before `prepare`
+        check_template(attach.spawn)  # a syntax error stops the run before `prepare`
         timeout = self._get_timeout(attach)
-        if attach.prepare:
-            self._run_prepare(self.render(attach.prepare), self._environ)
+        printed: dict[str, str] = {}
+        if self._config.prepare:
+            # as written, not rendered: `env` has no values yet. It sees the `--env` values, as given
+            given = {k: v for k, v in self._given.items() if k}  # no process can be started with an empty name
+            printed = self._run_prepare(self._config.prepare, {**self._environ, **given}, self._config.env)
+        self._env = self._resolve_env(printed)
+        spawn = self._spawn_command()
 
         if self.before_attach:
             self.before_attach()

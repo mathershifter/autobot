@@ -86,10 +86,9 @@ def make_doc(
         attach["script"] = copy.deepcopy(attach_script)
     if breakout is not None:
         attach["breakout"] = breakout
-    if prepare is not None:
-        attach["prepare"] = prepare
     doc: dict[str, Any] = {
         "autobot": "2026-10",
+        **({} if prepare is None else {"prepare": prepare}),
         "prompts": [SHELL_PROMPT] if prompts is _DEFAULT else prompts,
         "attach": attach,
         "script": script,
@@ -110,8 +109,15 @@ def make_config(script: list[dict[str, Any]], **kw: Any) -> Config:
 
 
 def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
-    """``given``: the ``--env`` values; ``env``: the script's ``env`` section."""
-    return Runner(make_config(script, **kw), given or {})
+    """``given``: the ``--env`` values; ``env``: the script's ``env`` section.
+
+    A run resolves ``env`` once ``prepare`` has run. Without a ``prepare`` it is resolved here as well,
+    so that a test can render a template, or see an error of ``env``, without a run.
+    """
+    runner = Runner(make_config(script, **kw), given or {})
+    if runner.config.prepare is None:
+        runner._env = runner._resolve_env({})
+    return runner
 
 
 def run_script(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
