@@ -148,6 +148,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | Field     | Required | Description |
 |-----------|----------|-------------|
 | `autobot` | yes      | Schema version: `2026-10` |
+| `prepare` | no       | A local script that runs first and sets `env` variables. See [Prepare](#prepare) |
 | `env`     | no       | The script's variables and their defaults, read as `{{ env.KEY }}`. See [Templating](#templating) |
 | `vars`    | no       | Any data, read as `{{ vars.KEY }}` |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
@@ -158,11 +159,29 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 
 A key that is repeated in a mapping is an error, not an override. See [Top-level fields](SPEC.md#top-level-fields).
 
+## Prepare
+
+`prepare` is a local script that runs first, e.g. to authenticate. A non-zero exit aborts the run. Each `NAME=value` line it prints sets a variable the `env` section declares:
+
+```yaml
+prepare: |
+  #!/bin/sh
+  arista-ssh check-auth >&2 || arista-ssh login >&2
+  echo "JUMP_HOST=$(lab-inventory jump-host)"
+
+env:
+  JUMP_HOST:
+```
+
+- Stdout is the protocol: send other output to stderr (`>&2`), or the run fails. A value is one line and is never shown.
+- It is not a template, and reads each `-e KEY=VALUE` as `$KEY`; an `export` it doesn't print sets nothing.
+
+See [`prepare`](SPEC.md#prepare).
+
 ## Attach
 
 | Field      | Required | Description |
 |------------|----------|-------------|
-| `prepare`  | no       | Local script to run before the spawn, e.g. to authenticate. A non-zero exit aborts the run |
 | `spawn`    | yes      | The command to spawn, e.g. `ssh host` or `telnet host port` |
 | `timeout`  | no       | How long to wait for the first output of the spawned command (default 300s) |
 | `script`   | no       | Steps to run right after the spawn, before the main `script` |
@@ -170,7 +189,7 @@ A key that is repeated in a mapping is an error, not an override. See [Top-level
 
 A run goes in this order:
 
-1. `prepare` runs locally.
+1. `prepare` runs; `env` and `spawn` are resolved.
 2. `spawn` starts, and Autobot waits for its first output.
 3. `attach.script` runs.
 4. The main `script` runs.
@@ -181,9 +200,6 @@ If the spawn fails (step 2), no step runs after it, the breakout included, and n
 
 ```yaml
 attach:
-  prepare: |
-    #!/bin/sh
-    arista-ssh check-auth || arista-ssh login
   spawn: ssh jumphost
   script:
     - line: a dut attach ldp448
@@ -213,7 +229,7 @@ If the login prompt doesn't come, the breakout fails and the run reports `Sessio
 
 ### The environment
 
-`prepare` and the spawned command get Autobot's own environment, with `TERM=dumb` and `NO_COLOR=1`, and nothing else: what `prepare` exports ends with it, and the `env` section is for templates only. To give the spawned command a variable, export it before starting Autobot, or set it on the `spawn` line (`spawn: env LC_ALL=C ssh host`). The rendered `spawn` line is printed, so leave a secret in the environment.
+The spawned command gets Autobot's own environment, with `TERM=dumb` and `NO_COLOR=1`, and nothing else: the `env` section is for templates only. To give the spawned command a variable, export it before starting Autobot, or set it on the `spawn` line (`spawn: env LC_ALL=C ssh host`). The rendered `spawn` line is printed, so leave a secret in the environment.
 
 See [The environment of the spawned process](SPEC.md#the-environment-of-the-spawned-process). The spawned command runs on a terminal of 500 rows by 80 columns; see [The window of the spawned process](SPEC.md#the-window-of-the-spawned-process).
 
@@ -393,7 +409,7 @@ A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`,
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn`, `attach.prepare` and the string defaults of `env`. Other values, such as `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn` and the string defaults of `env`. Other values, such as `prepare`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:
@@ -419,7 +435,7 @@ script:
 
 Two filters are added to Jinja2's own: `contains('text')` and `search('regex')`.
 
-A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, the environment Autobot was started with, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
+A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, a line `prepare` printed, the environment Autobot was started with, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
 
 - A key with an empty value is required.
 - The default gives the type: a string, a boolean (`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off`) or a number. Any other value is an error.
