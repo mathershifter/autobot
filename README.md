@@ -176,7 +176,7 @@ attach:
   spawn: ssh -J {{ env.JUMP_HOST }} admin@switch
 ```
 
-- A plain assignment counts, like an `export`; a name `env` doesn't declare sets nothing. What the script prints is shown, not read.
+- A plain assignment counts, like an `export` (until a `set +a`); a name `env` doesn't declare sets nothing. What the script prints is shown, not read.
 - It is not a template, and reads each `-e KEY=VALUE` as `$KEY`. A shebang must name a shell.
 
 See [`prepare`](SPEC.md#prepare).

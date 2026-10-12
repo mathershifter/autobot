@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import signal
 import subprocess
@@ -15,10 +16,12 @@ from .types import RunError
 # Stripped before looking for a shebang: whitespace, a BOM, and the zero-width characters of copy and paste.
 _JUNK = " \t\r\n﻿​⁠"
 SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
-# The script's stdout is the shell's stderr; what it assigns is exported; the environment is written when the
-# shell exits, wherever the script ends, to the shell's own stdout, kept as descriptor 9: zsh, and bash for an
-# `exit` in a function, run the trap with the redirections of the command that was running.
-_WRAPPER = 'exec 9>&1 >&2; set -a; trap "env -0 >&9 || :" EXIT; . "$0"'
+# What the script assigns is exported; the environment is written when the shell exits, wherever the script
+# ends, to the file of a descriptor that is the shell's for this alone, opened by its path when the trap runs:
+# the script has its own descriptors (`exec 9>lock`), and zsh, and bash for an `exit` in a function, run the
+# trap with the redirections of the command that was running.
+_WRAPPER = 'set -a; trap "env -0 >/dev/fd/%d || :" EXIT; . "$0"'
+_FD = 173  # that descriptor is this one or the next that is free: a number no script picks for its own
 
 
 def shell(script: str) -> list[str]:
@@ -32,6 +35,8 @@ def shell(script: str) -> list[str]:
     name = next((w for w in rest if not w.startswith("-")), "")
     if os.path.basename(name) not in SHELLS:
         raise ValueError(f"prepare is a shell script: its shebang names {name!r}")
+    if {"-", "--"}.intersection(words[words.index(name) + 1 :]):
+        raise ValueError("prepare is a shell script: '--' or '-' in its shebang ends the shell's options, and -c follows them")
     return words
 
 
@@ -73,22 +78,24 @@ def run(script: str, environ: dict[str, str]) -> dict[str, str]:
     command = shell(script)
     script = script.lstrip(_JUNK)
     log.say("prepare: running local script" + ("" if script.startswith("#!") else " (no shebang, using /bin/sh)"))
-    # stdout is a file, not a pipe: a process the script leaves running would keep a pipe open
-    with _terminable(), tempfile.TemporaryFile() as out:
+    # a file, not a pipe: a process the script leaves running would keep a pipe open; the shell's stdout is stderr
+    with _terminable(), tempfile.TemporaryFile() as tmp, open(fcntl.fcntl(tmp.fileno(), fcntl.F_DUPFD_CLOEXEC, _FD), "rb") as out:
+        fd = out.fileno()
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         try:  # the temp file is removed, whatever fails
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
             try:
-                result = subprocess.run([*command, "-c", _WRAPPER, f.name], check=False, env=environ, stdout=out)
+                result = subprocess.run([*command, "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=2, pass_fds=[fd])
             except OSError as e:
                 first = script.partition("\n")[0].rstrip()
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
         finally:
             with contextlib.suppress(FileNotFoundError):  # the script may remove itself
                 os.unlink(f.name)
-        # read at its own offset: the file's is shared with a process the script left running
-        data = os.pread(out.fileno(), os.fstat(out.fileno()).st_size, 0)
+        # read at its own offset, and emptied: a process the script left running has the descriptor too
+        data = os.pread(fd, os.fstat(fd).st_size, 0)
+        os.ftruncate(fd, 0)
     if result.returncode != 0:
         raise RunError(f"prepare script failed with exit code {result.returncode}")
     if data.endswith(b"\0"):

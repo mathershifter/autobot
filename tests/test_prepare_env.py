@@ -1,10 +1,12 @@
-"""P5-65..77, P5-81, P5-98..104: `prepare`, a local shell script that is sourced before anything else and
+"""P5-65..77, P5-81, P5-98..105: `prepare`, a local shell script that is sourced before anything else and
 sets declared variables through the environment its shell leaves, and the environment of the spawned process
 (SPEC "prepare", "What `prepare` sets", "The order of a run", "The environment of the spawned process")."""
 
 from __future__ import annotations
 
+import fcntl
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -209,11 +211,38 @@ SUCCEEDING = {
 SHEBANGS = ["", *(f"#!{path}\n" for path in map(shutil.which, prepare.SHELLS) if path)]
 
 
-def shell_id(shebang: str) -> str:
-    return os.path.basename(shebang.strip()) or "none"
+def installed(shell: str) -> pytest.MarkDecorator:
+    return pytest.mark.skipif(not shutil.which(shell), reason=f"{shell} is not installed")
 
 
-@pytest.mark.parametrize("shebang", SHEBANGS, ids=shell_id)
+# no shebang and each shell: one that isn't installed is a skipped case, with the reason
+EACH_SHELL = [pytest.param("", id="none"), *(pytest.param(f"#!{shutil.which(s)}\n", id=s, marks=installed(s)) for s in prepare.SHELLS)]
+
+
+def dump_fd() -> int:
+    """The descriptor the next `prepare` gives its shell for the environment."""
+    fd = fcntl.fcntl(0, fcntl.F_DUPFD, prepare._FD)
+    os.close(fd)
+    return fd
+
+
+@pytest.fixture
+def sourced(prep_tmp: Path, tmp_path: Path, capfd):
+    """`prepare.run` in an environment of its own, `PATH`, an empty `HOME` and the marker `AB_OS`; returns
+    the environment the shell left and what went to stderr. A test asserts on the markers alone, so a failure
+    shows no environment."""
+
+    def run(script: str, **extra: str) -> tuple[dict[str, str], str]:
+        env = prepare.run(script, {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "AB_OS": f"{SECRET}-os", **extra})
+        assert list(prep_tmp.iterdir()) == []
+        out, err = capfd.readouterr()
+        assert out == ""
+        return env, err
+
+    return run
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
 @pytest.mark.parametrize("script", SUCCEEDING.values(), ids=SUCCEEDING.keys())
 def test_p5_67_script_that_exits_zero_sets_its_variables_however_it_ends(prepared, capsys, script: str, shebang: str):
     """SPEC "prepare", "What `prepare` sets": however the script ends with status 0 (its last command, an
@@ -257,6 +286,15 @@ def test_p5_68_environment_the_shell_leaves_is_never_shown(prepared, capfd, monk
     assert out == "" and "S3CRET" not in err and "\0" not in err
 
 
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_68_trace_of_the_shell_shows_nothing_of_the_environment_it_leaves(sourced, shebang: str):
+    """SPEC "What `prepare` sets" (No value is shown): with `-x`, in the shebang or set by the script, the
+    shell traces its commands, the script's assignment among them, and not the environment it writes out."""
+    env, err = sourced((shebang.rstrip() + " -x\n" if shebang else "set -x\n") + "AB_A=traced\n")
+    assert env.get("AB_A") == "traced" and env.get("AB_OS") == f"{SECRET}-os"
+    assert "AB_A=traced" in err and SECRET not in err and "\0" not in err
+
+
 # -- P5-69: the shell ----------------------------------------------------------
 
 BASH_ONLY = 'arr=(x y z)\n[[ ${{#arr[@]}} == 3 ]] && echo "${{arr[*]:1}}" "$0" "$#" > {out}\nAB_A=${{arr[1]^^}}\n'
@@ -278,7 +316,7 @@ def test_p5_69_shebang_picks_the_shell(prepared, prep_tmp: Path, tmp_path: Path,
     assert progress(capsys.readouterr().err) == [">> prepare: running local script", DONE]
 
 
-@pytest.mark.parametrize("shell", [s for s in prepare.SHELLS if shutil.which(s)])
+@pytest.mark.parametrize("shell", [pytest.param(s, marks=installed(s)) for s in prepare.SHELLS])
 def test_p5_69_each_shell_leaves_its_environment(prepared, tmp_path: Path, monkeypatch, shell: str):
     """SPEC "prepare": each of the shells, named by its path or through `env`, with and without options:
     a plain assignment, an `export`, a value with a line break and an `unset` are read from all of them."""
@@ -293,12 +331,16 @@ def test_p5_69_each_shell_leaves_its_environment(prepared, tmp_path: Path, monke
 
 
 def test_p5_69_script_without_a_shebang_is_sourced_by_sh(prepared, prep_tmp: Path, tmp_path: Path):
-    """SPEC "prepare": `/bin/sh -c <wrapper> <temp file>`: `$0` is the temp file, and there are no arguments."""
+    """SPEC "prepare": `/bin/sh -c <wrapper> <temp file>`: `$0` is the temp file, and there are no arguments;
+    the wrapper names a descriptor of 173 or more, and the shell has it."""
     out = tmp_path / "out"
-    prepared(f'echo "$0" "$#" > {out}\nps -o args= -p $$ >> {out}\n')
-    script, args = out.read_text().splitlines()
+    prepared(f'echo "$0" "$#" > {out}\nps -o args= -p $$ >> {out}\nls /dev/fd/ >> {out}\n')
+    script, args, *fds = out.read_text().splitlines()
     assert script.startswith(f"{prep_tmp}/_autobot_") and script.endswith(".sh 0")
-    assert args == f"/bin/sh -c {prepare._WRAPPER} {script.removesuffix(' 0')}"
+    fd = int(re.search(r">/dev/fd/(\d+) ", args)[1])
+    assert fd >= 173 and str(fd) in fds
+    assert args == f"/bin/sh -c {prepare._WRAPPER % fd} {script.removesuffix(' 0')}"
+    assert prepare._WRAPPER % 173 == 'set -a; trap "env -0 >/dev/fd/173 || :" EXIT; . "$0"'
 
 
 def test_p5_69_options_of_the_shebang_apply_to_the_script(timeline: Timeline, prep_tmp: Path):
@@ -348,12 +390,23 @@ def test_p5_70_shebang_that_names_no_shell_is_a_validation_error(shebang: str, n
 
 @pytest.mark.parametrize(
     "shebang",
-    ["#!/bin/sh", "#!/bin/dash -e", "#!/usr/bin/env ksh", "#!/usr/local/bin/zsh", "#!/usr/bin/env -S -i zsh -f", "# !/usr/bin/python3", "true #!/usr/bin/python3"],
+    ["#!/bin/sh", "#!/bin/dash -e", "#!/usr/bin/env ksh", "#!/usr/local/bin/zsh", "#!/usr/bin/env -S -i zsh -f", "#!/usr/bin/env -- bash", "# !/usr/bin/python3", "true #!/usr/bin/python3"],
 )
 def test_p5_70_shebang_that_names_a_shell_is_valid(shebang: str):
     """SPEC "prepare": `sh`, `bash`, `dash`, `ksh` and `zsh`, by the file name of the interpreter, by its
     path or through `env`; a first line that doesn't start with `#!` is no shebang."""
     assert make_config([], prepare=f"{shebang}\ntrue\n").prepare.startswith(shebang)
+
+
+@pytest.mark.parametrize("shebang", ["#!/bin/sh --", "#!/bin/sh -", "#!/bin/bash -eu --", "#!/usr/bin/env -S zsh -f -", "#!/usr/bin/env ksh -- -e"])
+def test_p5_70_shebang_that_ends_the_options_of_its_shell_is_a_validation_error(shebang: str):
+    """SPEC "prepare": `-c` and what follows it come after the words of the shebang, so `--` or `-` after
+    the shell is found when the script is loaded, like a shebang that names no shell."""
+    with pytest.raises(pydantic.ValidationError) as ei:
+        make_config([], prepare=f"{shebang}\nAB_A=1\n")
+    (error,) = ei.value.errors()
+    assert (error["loc"], error["type"]) == (("prepare",), "value_error")
+    assert error["msg"] == "Value error, prepare is a shell script: '--' or '-' in its shebang ends the shell's options, and -c follows them"
 
 
 def test_p5_70_cli_reports_the_shebang_before_anything_runs(tmp_path: Path):
@@ -698,6 +751,26 @@ def test_p5_98_name_the_section_does_not_declare_is_not_taken(prepared, capfd):
         make_runner([], prepare="AB_HSOT=sw1\n", env={"AB_HOST": None}).run()
 
 
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_98_set_plus_a_ends_the_exporting_of_what_the_script_assigns(sourced, shebang: str):
+    """SPEC "What `prepare` sets" (A plain assignment counts): after `set +a` an assignment is the shell's own
+    and is not read, so data too large for an environment can be held; what was assigned before is still
+    exported, an `export` still counts, and commands still run."""
+    script = "AB_A=before\nset +a\nAB_BIG=$(head -c 200000 /dev/zero | tr '\\0' x)\nAB_B=after\nexport AB_C=exported\nAB_D=$(echo ran)\nexport AB_D\n"
+    env, err = sourced(shebang + script)
+    assert [env.get(name) for name in ("AB_A", "AB_B", "AB_C", "AB_D", "AB_BIG")] == ["before", None, "exported", "ran", None]
+    assert progress(err) == [">> prepare: running local script" if shebang else RUNNING, DONE]
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_98_exported_data_too_large_for_an_environment_leaves_nothing_to_read(sourced, shebang: str):
+    """SPEC "What `prepare` sets" (A plain assignment counts): a plain assignment of 3 MB is exported, and
+    no command can be started with it, the `env` of the wrapper included: the warning, and nothing is set."""
+    env, err = sourced(shebang + "AB_A=before\nAB_BIG=$(head -c 3000000 /dev/zero | tr '\\0' x)\nls / > /dev/null || AB_B=failed\n")
+    assert "AB_A" not in env and env.get("AB_OS") == f"{SECRET}-os"
+    assert UNREAD in progress(err) and SECRET not in err and "\0" not in err
+
+
 def test_p5_98_step_reads_a_variable_only_prepare_sets():
     """SPEC "The order of a run": a `spawn` and a step read it; the value is never rendered."""
     out = run_vars(
@@ -766,6 +839,30 @@ def test_p5_99_declared_variable_reads_the_environment_of_the_run_with_and_witho
     assert r._env == {"TERM": "dumb", "NO_COLOR": 1, "AB_OS": "os"}
 
 
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        (None, "os"),
+        pytest.param("#!/usr/bin/env dash\ntrue\n", "dflt", marks=installed("dash")),
+        pytest.param("#!/usr/bin/env bash\ntrue\n", "os", marks=installed("bash")),
+        pytest.param("#!/usr/bin/env zsh\ntrue\n", "os", marks=installed("zsh")),
+    ],
+    ids=["no-prepare", "dash", "bash", "zsh"],
+)
+def test_p5_99_name_that_is_no_shell_name_is_not_in_the_environment_dash_leaves(timeline, prep_tmp, monkeypatch, script, expected: str):
+    """SPEC "The environment in templates": a shell may drop the entries of its environment whose names it
+    can't have as variables. dash does, so a declared `MY.VAR` that the environment has is found without a
+    `prepare` and has its default after one that dash sources; bash and zsh pass such an entry on."""
+    for name in ("MY.VAR", "my-var", "1X"):
+        monkeypatch.setenv(name, "os")
+    timeline.stop_attach = True
+    r = make_runner([], prepare=script, env={"MY.VAR": "dflt", "my-var": "dflt", "1X": "dflt"})
+    with pytest.raises(AttachRecorded):
+        r.run()
+    assert r._env == {"MY.VAR": expected, "my-var": expected, "1X": expected}
+    assert r.render("{{ env['MY.VAR'] }}") == expected
+
+
 VALUES = {
     "line-breaks": "one\ntwo\n\nthree\n",
     "equals": "a=b==c=",
@@ -780,7 +877,7 @@ VALUES = {
 
 
 @pytest.mark.parametrize("value", VALUES.values(), ids=VALUES.keys())
-@pytest.mark.parametrize("shebang", SHEBANGS, ids=shell_id)
+@pytest.mark.parametrize("shebang", EACH_SHELL)
 def test_p5_100_value_is_taken_exactly(prepared, value: str, shebang: str):
     """SPEC "What `prepare` sets": a value is taken as the shell has it: line breaks, `=`, quotes, spaces at
     its ends; nothing in it is read as another variable, and nothing is rendered."""
@@ -855,12 +952,12 @@ def test_p5_103_env_option_for_term_reaches_prepare_and_not_the_spawned_process(
 def test_p5_103_process_left_running_does_not_hold_the_run(prepared, tmp_path: Path):
     """SPEC "What `prepare` sets": the environment is read when the shell exits, so a process the script
     leaves running doesn't hold up the run, and what that process writes later, to its stdout or to the
-    descriptor the environment was written to, isn't read."""
+    descriptor of the environment, isn't read."""
     pid, late = tmp_path / "pid", tmp_path / "late"
     began = time.monotonic()
     try:
         r = prepared(
-            f"sh -c 'sleep 1; echo AB_B=late; printf \"AB_B=late\\0\" >&9; touch {late}; exec sleep 60' &\necho $! > {pid}\nAB_A=a\n",
+            f"bash -c 'sleep 1; echo AB_B=late; printf \"AB_B=late\\0\" >&{dump_fd()}; touch {late}; exec sleep 60' &\necho $! > {pid}\nAB_A=a\n",
             env={"AB_A": None, "AB_B": "dflt"},
         )
         assert time.monotonic() - began < 5 and r._env == {"AB_A": "a", "AB_B": "dflt"}
@@ -877,16 +974,21 @@ UNREADABLE = {
     "own-exit-trap-and-exit": "AB_A=set\ntrap : EXIT\nexit 0\n",
     "no-env-on-path": "AB_A=set\nPATH=/nonexistent\n",
     "no-env-on-path-set-e": "#!/bin/sh -eu\nAB_A=set\nPATH=/nonexistent\n",
-    "descriptor-9": "AB_A=set\nexec 9>&-\n",
+    "env-function": "AB_A=set\nenv() { :; }\n",
+    "env-without-0": "AB_A=set\nmkdir @TMP@/bin\nprintf '#!/bin/sh\\n[ $# = 0 ] && echo AB_A=line\\n' > @TMP@/bin/env\nchmod +x @TMP@/bin/env\nPATH=@TMP@/bin:$PATH\n",
+    "no-exec": "#!/bin/sh -n\nAB_A=set\n",
+    "descriptor-closed": "#!/bin/bash\nAB_A=set\nexec @FD@>&-\n",
 }
 
 
 @pytest.mark.parametrize("script", UNREADABLE.values(), ids=UNREADABLE.keys())
-def test_p5_104_environment_that_cannot_be_read_sets_nothing_and_is_a_warning(prepared, monkeypatch, capfd, script: str):
+def test_p5_104_environment_that_cannot_be_read_sets_nothing_and_is_a_warning(prepared, monkeypatch, capfd, tmp_path: Path, script: str):
     """SPEC "What `prepare` sets": a script that replaces the shell, sets its own `EXIT` trap, leaves no
-    `env` on `PATH` or closes descriptor 9 exits 0 and leaves nothing to read: the run goes on, one line says
-    so, and the declared variables are looked up as without a `prepare`."""
+    `env` on `PATH` or one that isn't the command (a function, a program without `-0`), isn't executed (`-n`)
+    or closes the descriptor of the environment exits 0 and leaves nothing to read: the run goes on, one line
+    says so, and the declared variables are looked up as without a `prepare`."""
     monkeypatch.setenv("AB_B", "os")
+    script = script.replace("@TMP@", str(tmp_path)).replace("@FD@", str(dump_fd()))
     r = prepared(script, env={"AB_A": "dflt", "AB_B": "dflt", "AB_C": None}, given={"AB_C": "cli"})
     assert r._env == {"AB_A": "dflt", "AB_B": "os", "AB_C": "cli"}
     out, err = capfd.readouterr()
@@ -904,3 +1006,62 @@ def test_p5_104_required_variable_is_not_set_by_an_environment_that_cannot_be_re
         f"Run failed in {tmp_path / 'script.autobot.yaml'}: env.AB_A is required: give it with --env AB_A=VALUE or in the environment",
     ]
     assert not (tmp_path / "spawned").exists()
+
+
+# -- P5-105: where the environment is written ---------------------------------------
+
+OWN_DESCRIPTORS = {
+    "lock-file": 'exec 9>"@D@/prepare.lock"\nflock -n 9 || exit 1\nAB_A=S3CRET-v4lue\n',
+    "appended-log": 'exec 9>>"@D@/log" 3>"@D@/three"\nAB_A=S3CRET-v4lue\n',
+    "descriptor-to-stderr": "exec 9>&2\nAB_A=S3CRET-v4lue\n",
+    "exit-in-function-with-descriptor": "f() { AB_A=S3CRET-v4lue; exit 0; }\nf 9>&2\n",
+    "exit-in-function-with-stdout": "f() { AB_A=S3CRET-v4lue; exit 0; }\nf >&2\n",
+    "exit-in-group": "{ AB_A=S3CRET-v4lue; exit 0; } 9>&2\n",
+}
+
+
+@pytest.mark.skipif(not shutil.which("flock"), reason="flock is not installed")
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+@pytest.mark.parametrize("script", OWN_DESCRIPTORS.values(), ids=OWN_DESCRIPTORS.keys())
+def test_p5_105_descriptors_of_the_script_get_nothing_of_the_environment(sourced, tmp_path: Path, script: str, shebang: str):
+    """SPEC "What `prepare` sets" (No value is shown): the environment is written to the file Autobot reads
+    and nowhere else, whatever the script does with its own descriptors (a lock file on 9, a log, its
+    stderr) and with whatever redirection the command that ends it runs: the variables are read, and
+    nothing of the environment is in a file of the script's or on stderr."""
+    d = tmp_path / "own"
+    d.mkdir()
+    env, err = sourced(shebang + script.replace("@D@", str(d)))
+    assert env.get("AB_A") == SECRET and env.get("AB_OS") == f"{SECRET}-os"
+    assert [f.name for f in d.iterdir() if f.read_bytes()] == []
+    assert SECRET not in err and "\0" not in err
+    assert progress(err) == [">> prepare: running local script" if shebang else RUNNING, DONE]
+
+
+@installed("bash")
+def test_p5_105_what_a_startup_file_prints_is_shown_and_every_variable_is_read(sourced, tmp_path: Path):
+    """SPEC "prepare" (Its environment): the shell's standard output is Autobot's standard error from its
+    start, so what a `BASH_ENV` file prints before the script is shown, and is no part of what is read."""
+    rc = tmp_path / "bash_env"
+    rc.write_text("echo from-the-startup-file\n")
+    env, err = sourced(f"#!{shutil.which('bash')}\nAB_A=a\n", BASH_ENV=str(rc))
+    assert "from-the-startup-file\n" in err and SECRET not in err and "\0" not in err
+    assert [env.get(name) for name in ("AB_A", "AB_OS", "BASH_ENV", "HOME")] == ["a", f"{SECRET}-os", str(rc), str(tmp_path)]
+    assert env.get("PATH") == os.environ["PATH"] and "" not in env
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc/<pid>/fd")
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_105_file_of_the_environment_is_empty_once_it_is_read(sourced, tmp_path: Path, shebang: str):
+    """SPEC "What `prepare` sets" (No value is shown): a process the script leaves running has the
+    descriptor of the environment, and nothing else of Autobot's; the file is empty when `prepare` is done,
+    with the variables read, one assigned after the process started among them."""
+    pid = tmp_path / "pid"
+    try:
+        env, err = sourced(f"{shebang}sleep 60 > /dev/null 2>&1 < /dev/null &\necho $! > {pid}\nAB_A={SECRET}\n")
+        assert env.get("AB_A") == SECRET and env.get("AB_OS") == f"{SECRET}-os"
+        fds = f"/proc/{int(pid.read_text())}/fd"
+        held = [fd for fd in os.listdir(fds) if int(fd) > 2]
+        assert len(held) == 1 and int(held[0]) >= prepare._FD
+        assert os.stat(f"{fds}/{held[0]}").st_size == 0
+    finally:
+        os.kill(int(pid.read_text()), signal.SIGKILL)
