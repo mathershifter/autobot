@@ -148,7 +148,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | Field     | Required | Description |
 |-----------|----------|-------------|
 | `autobot` | yes      | Schema version: `2026-10` |
-| `prepare` | no       | A local script that runs first and sets `env` variables. See [Prepare](#prepare) |
+| `prepare` | no       | A local shell script that runs first and sets `env` variables. See [Prepare](#prepare) |
 | `env`     | no       | The script's variables and their defaults, read as `{{ env.KEY }}`. See [Templating](#templating) |
 | `vars`    | no       | Any data, read as `{{ vars.KEY }}` |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
@@ -161,20 +161,23 @@ A key that is repeated in a mapping is an error, not an override. See [Top-level
 
 ## Prepare
 
-`prepare` is a local script that runs first, e.g. to authenticate. A non-zero exit aborts the run. Each `NAME=value` line it prints sets a variable the `env` section declares:
+`prepare` is a local shell script that Autobot sources first, e.g. to authenticate. A non-zero exit aborts the run. The variables it sets give the declared `env` variables their values:
 
 ```yaml
 prepare: |
-  #!/bin/sh
-  arista-ssh check-auth >&2 || arista-ssh login >&2
-  echo "JUMP_HOST=$(lab-inventory jump-host)"
+  . ~/.config/lab/credentials.sh
+  JUMP_HOST=$(lab-inventory jump-host)
 
 env:
   JUMP_HOST:
+  API_TOKEN:
+
+attach:
+  spawn: ssh -J {{ env.JUMP_HOST }} admin@switch
 ```
 
-- Stdout is the protocol: send other output to stderr (`>&2`), or the run fails. A value is one line and is never shown.
-- It is not a template, and reads each `-e KEY=VALUE` as `$KEY`; an `export` it doesn't print sets nothing.
+- A plain assignment counts, like an `export`; a name `env` doesn't declare sets nothing. What the script prints is shown, not read.
+- It is not a template, and reads each `-e KEY=VALUE` as `$KEY`. A shebang must name a shell.
 
 See [`prepare`](SPEC.md#prepare).
 
@@ -435,7 +438,7 @@ script:
 
 Two filters are added to Jinja2's own: `contains('text')` and `search('regex')`.
 
-A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, a line `prepare` printed, the environment Autobot was started with, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
+A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, the environment as `prepare` left it, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
 
 - A key with an empty value is required.
 - The default gives the type: a string, a boolean (`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off`) or a number. Any other value is an error.
