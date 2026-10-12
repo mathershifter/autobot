@@ -40,13 +40,17 @@ DEVICE = Path(__file__).resolve().parent / "fakes" / "device.py"
 @pytest.fixture(autouse=True)
 def _plain_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The spawned shell inherits the suite's environment, and a variable the `env` section declares takes
-    its value from it: drop what would change how bash behaves and the suite's own `AB_*` names, and
-    give the shell the prompt that `SHELL_PROMPT` matches."""
-    for name in ("PROMPT_COMMAND", "BASH_ENV", "ENV", "PS0", *(k for k in os.environ if k.startswith("AB_"))):
-        monkeypatch.delenv(name, raising=False)
+    its value from it: every test runs in an environment of the names in `KEPT` and nothing else, so nothing
+    changes how bash behaves, no `AB_*` name of the suite's is set, and a test that fails can't show the
+    environment the suite was started in, whatever it captured or compares (a `prepare` writes its shell's
+    environment out). The shell gets the prompt that `SHELL_PROMPT` matches."""
+    for name in [k for k in os.environ if k not in KEPT and not k.startswith(KEPT_PREFIXES)]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv("PS1", PS1)
 
 
+KEPT = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE")
+KEPT_PREFIXES = ("PYTEST_", "COV_", "COVERAGE_", "UV_", "XDG_")  # of pytest, of coverage, and what `uv build` reads
 BASH = "bash --norc --noprofile -i"
 PS1 = "PROMPT$ "
 # for a `Session.attach` of its own; a run's shell inherits its `PS1` from `_plain_shell_env`

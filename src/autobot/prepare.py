@@ -5,8 +5,10 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import resource
 import signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterator
 
@@ -19,9 +21,18 @@ SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
 # What the script assigns is exported; the environment is written when the shell exits, wherever the script
 # ends, to the file of a descriptor that is the shell's for this alone, opened by its path when the trap runs:
 # the script has its own descriptors (`exec 9>lock`), and zsh, and bash for an `exit` in a function, run the
-# trap with the redirections of the command that was running.
-_WRAPPER = 'set -a; trap "env -0 >/dev/fd/%d || :" EXIT; . "$0"'
+# trap with the redirections of the command that was running. `>|`: the script may set noclobber (`set -C`).
+_WRAPPER = 'set -a; trap "env -0 >|/dev/fd/%d || :" EXIT; . "$0"'
 _FD = 173  # that descriptor is this one or the next that is free: a number no script picks for its own
+
+
+def _dump(fd: int) -> int:
+    """A descriptor of the file of `fd` for the shell's environment, `_FD` or above: a lower one is a script's own."""
+    try:
+        return fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, _FD)
+    except OSError as e:
+        limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        raise RunError(f"prepare needs a file descriptor above {_FD - 1}, and the limit on open files is {limit}") from e
 
 
 def shell(script: str) -> list[str]:
@@ -79,14 +90,15 @@ def run(script: str, environ: dict[str, str]) -> dict[str, str]:
     script = script.lstrip(_JUNK)
     log.say("prepare: running local script" + ("" if script.startswith("#!") else " (no shebang, using /bin/sh)"))
     # a file, not a pipe: a process the script leaves running would keep a pipe open; the shell's stdout is stderr
-    with _terminable(), tempfile.TemporaryFile() as tmp, open(fcntl.fcntl(tmp.fileno(), fcntl.F_DUPFD_CLOEXEC, _FD), "rb") as out:
+    with _terminable(), tempfile.TemporaryFile() as tmp, open(_dump(tmp.fileno()), "rb") as out:
         fd = out.fileno()
+        shown = subprocess.DEVNULL if sys.stderr is None else 2  # no descriptor 2: it is closed, or some other file by now
         f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
         try:  # the temp file is removed, whatever fails
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
             try:
-                result = subprocess.run([*command, "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=2, pass_fds=[fd])
+                result = subprocess.run([*command, "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
             except OSError as e:
                 first = script.partition("\n")[0].rstrip()
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e

@@ -1,4 +1,4 @@
-"""P5-65..77, P5-81, P5-98..105: `prepare`, a local shell script that is sourced before anything else and
+"""P5-65..77, P5-81, P5-98..108: `prepare`, a local shell script that is sourced before anything else and
 sets declared variables through the environment its shell leaves, and the environment of the spawned process
 (SPEC "prepare", "What `prepare` sets", "The order of a run", "The environment of the spawned process")."""
 
@@ -7,6 +7,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import resource
 import shlex
 import shutil
 import signal
@@ -21,7 +22,9 @@ import pexpect
 import pydantic
 import pytest
 import yaml
-from conftest import BASH, PS1, AttachRecorded, SpawnRecorded, Timeline, make_config, make_doc, make_runner, run_cli, run_vars
+from conftest import (
+    BASH, PS1, AttachRecorded, SpawnRecorded, Timeline, default_signals, make_config, make_doc, make_runner, run_cli, run_vars,
+)
 
 from autobot import prepare
 from autobot.runner import Runner
@@ -337,10 +340,10 @@ def test_p5_69_script_without_a_shebang_is_sourced_by_sh(prepared, prep_tmp: Pat
     prepared(f'echo "$0" "$#" > {out}\nps -o args= -p $$ >> {out}\nls /dev/fd/ >> {out}\n')
     script, args, *fds = out.read_text().splitlines()
     assert script.startswith(f"{prep_tmp}/_autobot_") and script.endswith(".sh 0")
-    fd = int(re.search(r">/dev/fd/(\d+) ", args)[1])
+    fd = int(re.search(r">\|/dev/fd/(\d+) ", args)[1])
     assert fd >= 173 and str(fd) in fds
     assert args == f"/bin/sh -c {prepare._WRAPPER % fd} {script.removesuffix(' 0')}"
-    assert prepare._WRAPPER % 173 == 'set -a; trap "env -0 >/dev/fd/173 || :" EXIT; . "$0"'
+    assert prepare._WRAPPER % 173 == 'set -a; trap "env -0 >|/dev/fd/173 || :" EXIT; . "$0"'
 
 
 def test_p5_69_options_of_the_shebang_apply_to_the_script(timeline: Timeline, prep_tmp: Path):
@@ -1065,3 +1068,97 @@ def test_p5_105_file_of_the_environment_is_empty_once_it_is_read(sourced, tmp_pa
         assert os.stat(f"{fds}/{held[0]}").st_size == 0
     finally:
         os.kill(int(pid.read_text()), signal.SIGKILL)
+
+
+# -- P5-106: noclobber ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+@pytest.mark.parametrize("where", ["set", "shebang"])
+def test_p5_106_script_with_noclobber_has_its_environment_read(sourced, tmp_path: Path, shebang: str, where: str):
+    """SPEC "prepare" (It is a shell script): the shell writes its environment with `>|`, so noclobber, from
+    `set -C` in the script or `-C` in its shebang, doesn't keep it from the file: the variables are read, and
+    there is no warning. The option is on: the script's own `>` to a file that exists fails."""
+    there = tmp_path / "there"
+    there.write_text("kept")
+    first = shebang + "set -euC\n" if where == "set" else (shebang.rstrip() or "#!/bin/sh") + " -C\n"
+    env, err = sourced(f"{first}AB_A=set\n(echo over > {there}) 2> /dev/null && AB_B=clobbered\nAB_C=end\n")
+    assert [env.get(name) for name in ("AB_A", "AB_B", "AB_C", "AB_OS")] == ["set", None, "end", f"{SECRET}-os"]
+    assert there.read_text() == "kept"
+    assert progress(err) == [">> prepare: running local script" if first.startswith("#!") else RUNNING, DONE]
+
+
+# -- P5-107: the number of the descriptor ---------------------------------------------
+
+
+def test_p5_107_descriptor_that_is_taken_gives_the_next_one(sourced, tmp_path: Path):
+    """SPEC "prepare" (It is a shell script): `<N>` is 173 or the next descriptor that is free: with that one
+    open in Autobot, the wrapper names the next, the shell has it and not the other, and the variables are read."""
+    out = tmp_path / "out"
+    taken = fcntl.fcntl(0, fcntl.F_DUPFD_CLOEXEC, prepare._FD)
+    try:
+        fd = dump_fd()
+        env, _ = sourced(f"ps -o args= -p $$ > {out}\nls /dev/fd/ >> {out}\nAB_A=set\n")
+    finally:
+        os.close(taken)
+    args, *fds = out.read_text().splitlines()
+    assert fd > taken >= 173 and f">|/dev/fd/{fd} " in args and str(fd) in fds and str(taken) not in fds
+    assert (env.get("AB_A"), env.get("AB_OS")) == ("set", f"{SECRET}-os")
+
+
+def cli_after(setup, tmp_path: Path, **kw) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """The CLI as a subprocess that runs `setup` first, on a script whose `prepare` and `spawn` each leave a
+    marker and whose `spawn` prints the variable `prepare` sets; with the result, the names of what is left
+    in `tmp_path`: the markers, and the temp dir if it isn't empty."""
+    tdir = tmp_path / "tmp"
+    tdir.mkdir()
+    spawn = f"sh -c 'touch {tmp_path}/spawned; echo got-{{{{ env.AB_A }}}}'"
+    doc = make_doc([], prepare=PROBE.format(d=tmp_path), env={"AB_A": None}, spawn=spawn, prompts=[])
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(doc))
+
+    def pre() -> None:
+        default_signals()
+        setup()
+
+    res = subprocess.run(
+        [sys.executable, "-m", "autobot.cli", str(path)], check=False, stdout=subprocess.PIPE, text=True,
+        env={**os.environ, "TMPDIR": str(tdir)}, timeout=120, preexec_fn=pre, **kw,
+    )
+    return res, sorted(f.name for f in tmp_path.iterdir() if f != path and (f != tdir or list(tdir.iterdir())))
+
+
+# what the script prints, a marker when both of its output streams are /dev/null, and its variable
+PROBE = "touch {d}/prepared\necho chatter\necho chatter >&2\n[ /dev/fd/1 -ef /dev/null ] && [ /dev/fd/2 -ef /dev/null ] && touch {d}/null\nAB_A=set\n"
+
+
+@pytest.mark.parametrize("limit", [173, 64])
+def test_p5_107_limit_on_open_files_without_such_a_descriptor_is_a_failed_run(tmp_path: Path, limit: int):
+    """SPEC "prepare" (A script that fails stops the run), "Errors while the script runs": with a limit on
+    open files of 173 or lower there is no descriptor of 173 or above, and no lower one is used in its
+    place: the run fails with the limit in its message; no shell ran, nothing is spawned, no temp file is left."""
+    res, left = cli_after(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit)), tmp_path, stderr=subprocess.PIPE)
+    assert res.returncode == 3 and res.stdout == "" and left == []
+    assert res.stderr.splitlines()[-2:] == [
+        RUNNING,
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: prepare needs a file descriptor above 172, and the limit on open files is {limit}",
+    ]
+
+
+def test_p5_107_limit_on_open_files_of_one_more_is_enough(tmp_path: Path):
+    """SPEC "prepare": a limit of 174 leaves descriptor 173, and the run completes with the variable read."""
+    res, left = cli_after(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (174, 174)), tmp_path, stderr=subprocess.PIPE)
+    assert res.returncode == 0 and "got-set" in res.stdout and left == ["prepared", "spawned"]
+    assert progress(res.stderr) == [RUNNING, DONE, ">> run completed"]
+
+
+# -- P5-108: a closed standard error --------------------------------------------------
+
+
+def test_p5_108_script_of_a_run_without_a_standard_error_writes_to_dev_null(tmp_path: Path):
+    """SPEC "prepare" (Its environment): with Autobot's standard error closed (`2>&-`), descriptor 2 is no
+    stream of the operator's, and may be any file Autobot has opened since: the script's standard output and
+    standard error are `/dev/null`, the variables are read, and the run completes."""
+    res, left = cli_after(lambda: os.close(2), tmp_path)
+    assert res.returncode == 0 and left == ["null", "prepared", "spawned"]
+    assert res.stdout.splitlines() == ["got-set"]
