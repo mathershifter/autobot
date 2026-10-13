@@ -1113,7 +1113,7 @@ def test_p6_75_non_string_key_is_a_validation_error_on_load(tmp_path: Any):
 
 # unquoted, YAML reads each of these as a boolean
 BOOLEAN_LITERALS = ["true", "True", "yes", "on", "false", "No", "off"]
-ENV_TYPE = "an env value is a string, a boolean, a number, or empty for a required variable"
+ENV_TYPE = "an env value is a string, a boolean, a finite number, or empty for a required variable"
 
 
 def env_doc(value: Any) -> dict[str, Any]:
@@ -1146,6 +1146,35 @@ def test_p6_78_env_value_of_any_other_type_is_rejected(both_validate: Callable, 
     assert both_validate(doc) == (False, False)
     [err] = model_errors(doc)
     assert (err["loc"], err["type"], err["msg"]) == (("env", "A"), "env_type", ENV_TYPE)
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [".inf", "-.inf", ".nan", "1.0e+400", "0x" + "f" * 4000, "0b1" + "0" * 14285, "-0b1" + "0" * 14285],
+    ids=["inf", "-inf", "nan", "overflow", "hex-4000", "4301-digits", "-4301-digits"],
+)
+def test_p6_78_env_number_that_its_text_does_not_give_back_is_model_only(both_validate: Callable, literal: str):
+    """SPEC "YAML Script Structure" (numbers that JSON doesn't have), "Top-level fields" (`env`): `prepare` is
+    given a default as text, and the text is read back, so a default is a finite number, and an integer one
+    that Python writes out (up to 4300 digits). An `env` value has no bounds in the schema, where an integer
+    of any size is a number: only the models reject these, with the error of any other value."""
+    doc = env_doc(yaml.safe_load(f"v: {literal}")["v"])
+    assert both_validate(doc) == (False, True)
+    [err] = model_errors(doc)
+    assert (err["loc"], err["type"], err["msg"]) == (("env", "A"), "env_type", ENV_TYPE)
+
+
+@pytest.mark.parametrize(
+    "literal",
+    ["1.7976931348623157e+308", "-1.7976931348623157e+308", "5.0e-324", "-0.0", "1" + "0" * 400, "9" * 4300, "-" + "9" * 4300, "0x" + "f" * 3000],
+    ids=["max", "-max", "min", "-0.0", "400-digits", "4300-digits", "-4300-digits", "hex-3000"],
+)
+def test_p6_78_env_number_of_any_size_that_is_finite_is_a_default(both_validate: Callable, literal: str):
+    """The largest and smallest doubles and an integer beyond any double are defaults for both."""
+    doc = env_doc(yaml.safe_load(f"v: {literal}")["v"])
+    assert both_validate(doc) == (True, True)
+    kept = Config.model_validate(doc).env["A"]
+    assert kept == doc["env"]["A"] and type(kept) is type(doc["env"]["A"])
 
 
 def test_p6_78_env_section_itself_is_a_mapping(both_validate: Callable):

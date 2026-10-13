@@ -2,18 +2,23 @@
 #
 #   autobot run -e DUT=<name> examples/sonic.autobot.yaml
 #   autobot run -e DUT=<name> -e SONIC_VERSION=202505 examples/sonic.autobot.yaml
+#   autobot run -e DUT=<name> -e SONIC_IMAGE=https://host/sonic.swi examples/sonic.autobot.yaml
 #
 # A variable of the env section takes its value from -e or from the environment
-# (DUT=<name> autobot run ...); one with an empty value here must get it there.
+# (DUT=<name> autobot run ...); one with an empty value here must get it there,
+# or from prepare, which builds SONIC_IMAGE unless it is given.
 autobot: 2026-10
 
 env:
   DUT:
   ARTIFACTORY: https://ci.corp.io
   SONIC_VERSION: "202511"
-  # a default reads the keys declared above it
-  SONIC_IMAGE: '{{ env.ARTIFACTORY }}/artifactory/sonic-nightly/{{ env.SONIC_VERSION }}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi'
+  SONIC_IMAGE:
   NAMESERVER: 172.22.22.10
+
+# a local shell script: it reads the variables above, and what it assigns is their value
+prepare: |
+  : "${SONIC_IMAGE:=$ARTIFACTORY/artifactory/sonic-nightly/$SONIC_VERSION/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi}"
 
 vars:
   creds:

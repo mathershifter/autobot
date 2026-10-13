@@ -100,7 +100,7 @@ def test_p6_93_nothing_runs_and_no_file_is_created(m: Markers, tmp_path: Path):
     as they were."""
     tmp = tmp_path / "tmp"
     tmp.mkdir()
-    path = m.write("ok.autobot.yaml", env={"A": None, "B": "{{ env.A }}-{{ env.NOT_DECLARED }}"}, spawn="{{ env.A }}")
+    path = m.write("ok.autobot.yaml", env={"A": None, "B": "{{ nope( }}"}, spawn="{{ env.A }}-{{ env.NOT_DECLARED }}")
     before = sorted(p.name for p in tmp_path.iterdir())
     res = _cli("validate", path, TMPDIR=str(tmp))
     assert (res.returncode, res.stdout, res.stderr) == (0, "", f"{path}: valid\n")
@@ -204,9 +204,6 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
         lambda m: m.write("s", env={"A": "a"}), ("-e", "A=x", "-e", "B=y"),
         "Script error in {path}: --env B: the script's env section declares no variable 'B'\n",
     ),
-    "env-template-syntax": (
-        lambda m: m.write("s", env={"A": "{{ nope( }}"}), (), "Script error in {path}: env.A: template error: unexpected '}'"
-    ),
     "send-template-syntax": (
         lambda m: m.write("s", prompts=[{"name": "p", "expect": ["x"], "send": "{{ x "}]), (),
         "Script error in {path}: prompt 'p': template error: unexpected end of template",
@@ -220,19 +217,11 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
         "Script error in {path}: prompt 'login': sendEach 'vars.creds': item 0 has no field 'password'\n",
     ),
 }
-# What depends on a value: `env` is resolved once `prepare` has run, so `run` fails with status 3 and this line
+# What depends on a value: `env` has its values once `prepare` has run, so `run` fails with status 3 and this line
 ENV_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = {
-    "env-zero-division": (
-        lambda m: m.write("s", env={"A": "{{ 1/0 }}"}), (),
-        "Run failed in {path}: env.A: template error: ZeroDivisionError: division by zero\n",
-    ),
-    "env-reads-a-key-below": (
-        lambda m: m.write("s", env={"A": "{{ env.B }}", "B": "{{ env.A }}"}), (),
-        "Run failed in {path}: env.A: template error: env.B has no value yet: a default reads only the keys declared above it\n",
-    ),
-    "env-reads-an-undeclared-key": (
-        lambda m: m.write("s", env={"A": "{{ env.AB_VALIDATE_NOT_SET }}"}), (),
-        "Run failed in {path}: env.A: template error: env has no key 'AB_VALIDATE_NOT_SET': the script's env section "
+    "undeclared-key-in-spawn": (
+        lambda m: m.write("s", env={"A": "a"}, spawn="{{ env.AB_VALIDATE_NOT_SET }}"), (),
+        "Run failed in {path}: template error: env has no key 'AB_VALIDATE_NOT_SET': the script's env section "
         "doesn't declare it\n",
     ),
     "env-required": (
@@ -400,7 +389,7 @@ def _mixed(m: Markers) -> tuple[list[Path], str]:
     typo = m.write("typo.autobot.yaml", script=[{"cmdd": "true"}])
     missing = m.root / "missing.autobot.yaml"
     broken = m.write("broken.autobot.yaml", raw="a: [1\n")
-    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ env.A }}", "R": None})  # for `run` to find, not `validate`
+    cycle = m.write("cycle.autobot.yaml", env={"A": "{{ nope( }}", "R": None})  # `R` is for `run` to find, not `validate`
     ok2 = m.write("ok2.autobot.yaml", prepare=None)
     report = (
         f"{ok}: valid\n"
@@ -454,7 +443,6 @@ def test_p6_96_quiet_prints_only_the_invalid_scripts(m: Markers, flag: str):
 # -- a prompt's error names the prompt (in `run`) ---------------------------------------
 
 SEVERAL = {
-    "env": {"A": "{{ env.B }}", "B": None, "C": "{{ 1/0 }}"},
     "vars": {"creds": [{"username": "a"}], "pins": "1234"},
     "prompts": [
         {"name": "sh", "expect": [r"\$ "], "return": True},
@@ -510,27 +498,23 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 def test_p6_108_runner_raises_the_first_script_error():
     """`Runner(config, given)` takes the configuration and the `--env` values, and raises the first script
-    error that depends on no value: an `--env` key, the type of an `--env` value, the syntax of the `env`
-    defaults, top to bottom, then the prompts in their order. What a default renders to is the run's."""
+    error that depends on no value: an `--env` key, the type of an `--env` value, then the prompts in their
+    order. An `env` default is no template and is not checked; a variable without a value is the run's."""
     import inspect
 
     from autobot.models import Config
     from autobot.types import ScriptError
 
     assert list(inspect.signature(Runner).parameters) == ["config", "given"]
-    with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
-        Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {"C": "{{ 1/", "A": "{% if %}"}}))), {"NOPE": "x"})
-    typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3}}
+    typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
         Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three", "NOPE": "x"})
     with pytest.raises(ScriptError, match="^env.N: the value from --env is not an integer$"):
         Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three"})
-    with pytest.raises(ScriptError, match="^env.C: template error: unexpected 'end of template'"):
-        Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"env": {"C": "{{ 1/", "A": "{% if %}"}}))), {})
     with pytest.raises(ScriptError, match="^prompt 'confirm': template error: "):
-        Runner(Config.model_validate(make_doc([STEP], **SEVERAL)), {})
-    runner = Runner(Config.model_validate(make_doc([STEP], **(SEVERAL | {"prompts": SEVERAL["prompts"][:1]}))), {})
-    with pytest.raises(ScriptError, match="^env.A: template error: env.B has no value yet: "):
+        Runner(Config.model_validate(make_doc([STEP], **typed)), {})
+    runner = Runner(Config.model_validate(make_doc([STEP], **(typed | {"prompts": SEVERAL["prompts"][:1]}))), {})
+    with pytest.raises(ScriptError, match="^env.B is required: "):
         runner.run()
 
 
@@ -772,7 +756,7 @@ def test_p6_101_examples_validate_together_by_relative_path():
 LOADS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...]]] = {
     "plain": (lambda m: m.write("s"), ()),
     "no-prepare": (lambda m: m.write("s", prepare=None), ()),
-    "env-required-and-given": (lambda m: m.write("s", env={"H": None, "N": 3, "U": "{{ env.H }}/{{ env.N }}"}), ("-e", "H=h", "-e", "N=4")),
+    "env-required-and-given": (lambda m: m.write("s", env={"H": None, "N": 3, "U": "{{ nope( }}"}), ("-e", "H=h", "-e", "N=4")),
     "step-template-error": (lambda m: m.write("s", script=[{"cmd": "echo {{ nope( }}"}]), ()),
     "step-reads-an-undeclared-key": (lambda m: m.write("s", script=[{"cmd": "echo {{ env.HOME }}"}]), ()),
     "spawn-reads-an-undeclared-key": (lambda m: m.write("s", m.doc() | {"attach": {"spawn": "ssh {{ env.HOME }}"}}), ()),
@@ -782,7 +766,7 @@ LOADS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...]]] = {
         lambda m: m.write("s", script=[{"block": {"name": "b", "prompts": [{"name": "l", "send": EACH}], "script": [STEP]}}]),
         (),
     ),
-    "send-each": (lambda m: m.write("s", **(SEVERAL | {"env": {}, "prompts": SEVERAL["prompts"][:1]})), ()),
+    "send-each": (lambda m: m.write("s", **(SEVERAL | {"prompts": SEVERAL["prompts"][:1]})), ()),
 }
 # name -> (how the file is made, the arguments of `run`, whether it passes the validation stage)
 CORPUS = {
@@ -854,10 +838,10 @@ def test_p6_102_a_valid_script_can_still_fail_once_it_runs(m: Markers):
 def test_p6_111_result_does_not_depend_on_the_environment(m: Markers, monkeypatch: pytest.MonkeyPatch):
     """A variable of the environment is the value of a declared key in `run`, so `run` loads the script with
     it and stops without it. `validate` reads neither: its output is the same in both."""
-    path = m.write("s", env={"AB_VALIDATE_HOST": None, "AB_VALIDATE_URL": "{{ 1/0 }}"}, prepare=None, spawn="true")
-    bad = m.write("bad", env={"AB_VALIDATE_URL": [5]})
+    path = m.write("s", env={"AB_VALIDATE_HOST": None, "AB_VALIDATE_N": 3}, prepare=None, spawn="true")
+    bad = m.write("bad", env={"AB_VALIDATE_N": [5]})
     outputs = set()
-    for extra in ({}, {"AB_VALIDATE_URL": "u"}, {"AB_VALIDATE_URL": "u", "AB_VALIDATE_HOST": "h"}, {"HOME": "/nonexistent", "TERM": "dumb"}):
+    for extra in ({}, {"AB_VALIDATE_N": "u"}, {"AB_VALIDATE_N": "4", "AB_VALIDATE_HOST": "h"}, {"HOME": "/nonexistent", "TERM": "dumb"}):
         res = _cli("validate", path, bad, **extra)
         outputs.add((res.returncode, res.stdout, res.stderr))
     assert len(outputs) == 1
@@ -868,10 +852,10 @@ def test_p6_111_result_does_not_depend_on_the_environment(m: Markers, monkeypatc
         f"Run failed in {path}: env.AB_VALIDATE_HOST is required: give it with --env AB_VALIDATE_HOST=VALUE or in "
         "the environment\n"
     )
-    assert _cli("run", path, AB_VALIDATE_HOST="h").stderr == (
-        f"Run failed in {path}: env.AB_VALIDATE_URL: template error: ZeroDivisionError: division by zero\n"
+    assert _cli("run", path, AB_VALIDATE_HOST="h", AB_VALIDATE_N="u").stderr == (
+        f"Run failed in {path}: env.AB_VALIDATE_N: the value from the environment is not an integer\n"
     )
-    assert _cli("run", path, AB_VALIDATE_URL="u", AB_VALIDATE_HOST="h").stderr == (
+    assert _cli("run", path, AB_VALIDATE_N="4", AB_VALIDATE_HOST="h").stderr == (
         f">> attach: true\nRun failed in {path}: connection closed before any output from 'true' (exit status 0)\n"
     )
 
@@ -1035,7 +1019,7 @@ NAMED = {
     "yaml-reader": (b"a: \xff\xfe\n", "YAML error in {path}, position 3: ", 1),
     "yaml-value": ("vars: {d: 2001-99-99}\n", "YAML error in {path}, line 1, column 11: invalid timestamp", 1),
     "yaml-deep": ("[" * 3000, "YAML error in {path}: the document is nested too deeply", 1),
-    "script-error": ({"env": {"A": "{{ x "}}, "Script error in {path}: env.A: template error: ", 1),
+    "script-error": ({"prompts": [{"name": "p", "expect": ["x"], "send": "{{ x "}]}, "Script error in {path}: prompt 'p': template error: ", 1),
     "run-failed": ({"spawn": "no-such-command-ab", "prepare": None}, "Run failed in {path}: ", 3),
 }
 
