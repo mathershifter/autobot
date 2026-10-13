@@ -7,6 +7,7 @@ import fcntl
 import math
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -1142,12 +1143,18 @@ def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
 # -- P8-52: a pty that takes little at a time ---------------------------------------------------------
 
 
-def _small_pty(monkeypatch: pytest.MonkeyPatch, take: int, refuse_every: int) -> dict[str, list]:
+def _small_pty(monkeypatch: pytest.MonkeyPatch, take: int, refuse_every: int, echoed: bool = False) -> dict[str, list]:
     """Make the session's pty take at most `take` bytes per write and nothing at every `refuse_every`th,
     as a pty with a small buffer does (macOS: about 1 kB, where Linux has about 10 kB). What was written
-    and read during sends is recorded."""
+    and read during sends is recorded: a write that took nothing as None, and a read as the characters it
+    added to the buffer.
+
+    `echoed`: a write is refused once there is something to read, as a pty refuses one because the far
+    side has stopped reading with its echo unread. Without it the echo of a few short pieces, which
+    arrives some 0.1 ms after the write returns, may not be there at any refused write, and the send,
+    finding the real pty writable, rightly reads nothing. Only for a far side that echoes every piece."""
     seen: dict[str, list] = {"writes": [], "reads": []}
-    write, put_line = os.write, Session._put_line
+    write, put_line, select_ = os.write, Session._put_line, select.select
     fds: set[int] = set()
 
     def os_write(fd, data):
@@ -1155,6 +1162,8 @@ def _small_pty(monkeypatch: pytest.MonkeyPatch, take: int, refuse_every: int) ->
             return write(fd, data)
         seen["writes"].append(None)
         if len(seen["writes"]) % refuse_every == 0:
+            if echoed:
+                select_([fd], [], [], 5)
             raise BlockingIOError(11, "Resource temporarily unavailable")
         n = write(fd, bytes(data)[:take])
         seen["writes"][-1] = bytes(data)[:n]
@@ -1204,9 +1213,9 @@ def test_p8_52_line_written_in_small_pieces_arrives_whole(monkeypatch: pytest.Mo
     """A line with two-byte and three-byte characters, written `take` bytes at a time, with every third
     write taking nothing: the pieces end inside characters, the line arrives as it is, its echo is still
     recognized, and the capture is the output alone. To readline, 2 kB; to a shell without an editor,
-    where the terminal echoes each piece at once and the echo is read between the pieces, under 1 kB,
-    which the terminal of any platform takes."""
-    seen = _small_pty(monkeypatch, take, 3)
+    where the terminal echoes each piece and a write is refused once some of the echo is there, under
+    1 kB, which the terminal of any platform takes: the send reads at every write that is refused."""
+    seen = _small_pty(monkeypatch, take, 3, echoed=not editor)
     words = " ".join(f"é{i:03d}€" for i in range(260 if editor else 90))
     line = f"echo {words}"
     data = line.encode() + b"\n"
@@ -1226,19 +1235,21 @@ def test_p8_52_line_written_in_small_pieces_arrives_whole(monkeypatch: pytest.Mo
     if take < 3:
         assert any(w[:1] in (b"\xa9", b"\x82", b"\xac") for w in wrote)  # a piece that starts inside a character
     if not editor:
+        assert len(seen["reads"]) == seen["writes"].count(None), "a refused write with the echo there, and no read"
         assert sum(seen["reads"]) > 0, "nothing was read while the line was sent"
     assert out == words + "\n"
 
 
 @pytest.mark.parametrize("gain", [1, 3])
 def test_p8_52_output_read_between_small_pieces_is_read_once_and_in_order(attach, monkeypatch: pytest.MonkeyPatch, capsys, gain: int):
-    """P8-37 on a pty that takes 11 bytes at a time: a line of 3 kB, and every byte of its echo."""
-    seen = _small_pty(monkeypatch, 11, 4)
+    """P8-37 on a pty that takes 11 bytes at a time, and nothing at every fourth write, once some of the
+    echo is there: a line of 3 kB, a read at each of those writes, and every byte of its echo."""
+    seen = _small_pty(monkeypatch, 11, 4, echoed=True)
     s = attach(typed("--gain", gain))
     line = "".join(f"{i:04d}," for i in range(600))
     capsys.readouterr()
     s.sendline(line, timeout=60)
-    assert sum(seen["reads"]) > 0
+    assert len(seen["reads"]) == seen["writes"].count(None) > 0 and all(seen["reads"])
     s.expect([r"\r\nDONE (\d+)\r\n"], timeout=30)
     assert s.ctx["before"] == "".join("\x1b[1m" + ch * gain for ch in line)
     s.detach()
