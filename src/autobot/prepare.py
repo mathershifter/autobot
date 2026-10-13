@@ -53,17 +53,15 @@ def _terminable() -> Iterator[None]:
             raise _Terminated
 
     try:
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            if signal.getsignal(sig) is signal.SIG_DFL:
-                signal.signal(sig, unwind)
-    except ValueError:  # not the main thread
-        pass
-    try:
+        with contextlib.suppress(ValueError):  # not the main thread
+            for sig in (signal.SIGTERM, signal.SIGHUP):
+                if signal.getsignal(sig) is signal.SIG_DFL:
+                    signal.signal(sig, unwind)
         yield
     except _Terminated:
         signal.signal(got[0], signal.SIG_DFL)
         os.kill(os.getpid(), got[0])
-        raise
+        sys.exit(128 + got[0])  # the signal didn't end the process: it is PID 1
     finally:
         for sig in (signal.SIGTERM, signal.SIGHUP):
             if signal.getsignal(sig) is unwind:
