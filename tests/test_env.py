@@ -1,4 +1,4 @@
-"""P5-18..22, P5-27..31, P5-61..64, P5-94..97: the `env` section and `--env` (SPEC "Top-level fields",
+"""P5-18..20, P5-31, P5-61..64, P5-94..97: the `env` section and `--env` (SPEC "Top-level fields",
 "The environment in templates", "CLI")."""
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from conftest import SpawnLog, SpawnRecorded, make_config, make_doc, make_runner
 
 from autobot.runner import Runner
 
-NESTED = {"AB_A": "a", "AB_B": "{{ env.AB_A }}-b", "AB_C": "{{ env.AB_B }}-c"}
 SECRET = "S3CRET-value"
 REQUIRED = "^env.AB_A is required: give it with --env AB_A=VALUE or in the environment$"
 
@@ -21,10 +20,6 @@ REQUIRED = "^env.AB_A is required: give it with --env AB_A=VALUE or in the envir
 def report(res) -> list[str]:
     """The CLI's stderr, without the line `python -m` prints about the package's own import."""
     return [line for line in res.stderr.splitlines() if "RuntimeWarning" not in line]
-
-
-def later(key: str) -> str:
-    return f"template error: env.{key} has no value yet: a default reads only the keys declared above it"
 
 
 def undeclared(key: str) -> str:
@@ -50,84 +45,34 @@ def test_p5_19_value_comes_from_env_option_then_the_environment_then_the_default
     assert r.render("{{ env.AB_X }} {{ env.AB_Y }} {{ env.AB_A }} {{ env.AB_B }}") == "cli os cli yaml"
 
 
-def test_p5_20_default_reads_the_keys_above_it():
-    """SPEC "Top-level fields" (`env`): a default reads the keys declared above it."""
-    r = make_runner([], env=NESTED)
-    assert r.render("{{ env.AB_C }}") == "a-b-c"
+LITERALS = [
+    "{{ env.AB_A }}-b", "{{ vars.v }}", "{{ env.AB_NOPE }}", "{{ nope }}", "{{ 1/0 }}", "{{", "{% if %}", "{% raw %}{{ x }}{% endraw %}",
+    "{# never closed", "${#arr[@]}", "{{ env.AB_B }}",
+]
 
 
-def test_p5_21_default_reads_the_value_a_key_above_was_given(monkeypatch: pytest.MonkeyPatch):
-    """SPEC "Top-level fields" (`env`): what a default reads is the variable's value, wherever it came from."""
-    monkeypatch.setenv("AB_A", "os")
-    assert make_runner([], env=NESTED).render("{{ env.AB_C }}") == "os-b-c"
-    assert make_runner([], env=NESTED, given={"AB_A": "cli"}).render("{{ env.AB_C }}") == "cli-b-c"
-
-
-@pytest.mark.parametrize(
-    ("env", "key", "read"),
-    [
-        ({"AB_A": "{{ env.AB_A }}x"}, "AB_A", "AB_A"),
-        ({"AB_A": "{{ env.AB_B }}", "AB_B": "b"}, "AB_A", "AB_B"),
-        ({"AB_A": "a", "AB_B": "{{ env['AB_C'] | upper }}", "AB_C": "{{ env.AB_A }}"}, "AB_B", "AB_C"),
-        ({"AB_A": "{{ env.AB_C.x }}", "AB_C": "c"}, "AB_A", "AB_C"),
-    ],
-    ids=["itself", "below", "below-item-filter", "below-attribute"],
-)
-def test_p5_22_default_that_reads_itself_or_a_key_below_is_an_error(env: dict[str, str], key: str, read: str):
-    """SPEC "Top-level fields" (`env`): the section is resolved top to bottom, once: a key below, or the key
-    itself, has no value yet, and the message says which keys a default reads."""
-    with pytest.raises(ValueError) as ei:
-        make_runner([], env=env)
-    assert str(ei.value) == f"env.{key}: {later(read)}"
-
-
-def test_p5_27_default_forms():
-    """SPEC "Top-level fields" (`env`): `env['X']`, `env.get`, `in`, `default`, filters and `vars` in a default."""
-    env = {
-        "AB_A": "{{ vars.v }}",
-        "AB_B": "{{ env.get('AB_A') }}-b",
-        "AB_C": "{{ env['AB_B'] | upper }}-c",
-        "AB_X": "{{ env.AB_NOPE | default('dflt') }}-{{ 'in' if 'AB_A' in env else 'out' }}-{{ 'in' if 'AB_Y' in env else 'out' }}",
-        "AB_Y": "{{ env.get('AB_Z', 'none') }}",
-        "AB_Z": "z",
-    }
-    r = make_runner([], env=env, vars={"v": "a"})
-    assert r.render("{{ env.AB_C }} {{ env.AB_X }} {{ env.AB_Y }}") == "A-B-c dflt-in-out none"
-
-
-def test_p5_28_default_of_a_given_variable_is_not_rendered(monkeypatch: pytest.MonkeyPatch):
-    """SPEC "Top-level fields" (`env`): a variable that is given a value doesn't use its default, whatever
-    the default reads."""
-    monkeypatch.setenv("AB_A", "os")
-    r = make_runner([], env={"AB_A": "{{ env.AB_B }}", "AB_B": "{{ 1/0 }}", "AB_C": "{{ env.AB_A }}-c"}, given={"AB_B": "cli"})
-    assert r.render("{{ env.AB_A }} {{ env.AB_B }} {{ env.AB_C }}") == "os cli os-c"
-
-
-def test_p5_29_env_value_rendered_once():
-    """SPEC "Top-level fields" (`env`): a default is rendered once; the text it renders to is not rendered again."""
-    r = make_runner([], env={"AB_A": "{% raw %}{{ lit }}{% endraw %}", "AB_B": "{{ env.AB_A }}"})
-    assert r.render("{{ env.AB_B }}") == "{{ lit }}"
-
-
-def test_p5_30_default_that_reads_an_undeclared_key_and_a_long_chain():
-    """SPEC "Top-level fields" (`env`): a default that reads a key the section doesn't declare names it; a
-    chain of defaults has no limit of its own."""
-    with pytest.raises(ValueError) as ei:
-        make_runner([], env={"AB_A": "{{ env.AB_NOPE }}"})
-    assert str(ei.value) == f"env.AB_A: {undeclared('AB_NOPE')}"
-    chain = {"AB_K0": "end"} | {f"AB_K{i}": f"{{{{ env.AB_K{i - 1} }}}}" for i in range(1, 200)}
-    assert make_runner([], env=chain).render("{{ env.AB_K199 }}") == "end"
+@pytest.mark.parametrize("default", LITERALS)
+def test_p5_20_string_default_is_a_literal(default: str):
+    """SPEC "Top-level fields" (`env`), "The environment in templates" (No value is a template): a string
+    default is the text as written: it reads no key and no `vars`, and what would be a template syntax
+    error, an undefined name or a failing expression is plain text; a template that writes it out doesn't
+    render it either."""
+    Runner(make_config([], env={"AB_A": "a", "AB_B": default}, vars={"v": "V"}), {})  # no default is checked
+    r = make_runner([], env={"AB_A": "a", "AB_B": default}, vars={"v": "V"})
+    assert r._env == {"AB_A": "a", "AB_B": default}
+    assert r.render("[{{ env.AB_B }}]") == f"[{default}]"
 
 
 @pytest.mark.parametrize("source", ["environment", "option"])
 def test_p5_31_given_value_is_verbatim(monkeypatch: pytest.MonkeyPatch, source: str):
-    """SPEC "Top-level fields" (`env`): a value of the environment or of `--env` is never rendered."""
+    """SPEC "The environment in templates" (No value is a template): a value of the environment or of `--env`
+    is never rendered."""
     value = "p{{w}}d{% x %}{{ env.AB_B }}"
     given = {"AB_A": value} if source == "option" else {}
     if source == "environment":
         monkeypatch.setenv("AB_A", value)
-    r = make_runner([], env={"AB_A": "default", "AB_B": "{{ env.AB_A }}-b"}, given=given)
-    assert r.render("{{ env.AB_A }}|{{ env.AB_B }}") == f"{value}|{value}-b"
+    r = make_runner([], env={"AB_A": "default", "AB_B": "b"}, given=given)
+    assert r.render("{{ env.AB_A }}|{{ env.AB_B }}") == f"{value}|b"
 
 
 @pytest.fixture
@@ -156,17 +101,16 @@ def test_p5_61_variable_the_section_does_not_declare_is_not_in_env(environ: dict
 
 
 def test_p5_61_declared_key_reads_the_environment(environ: dict[str, str]):
-    """SPEC "Top-level fields" (`env`): a declared name takes whatever the environment has under it, and a
-    default reads it like any key above: the environment of the run, Autobot's own with `TERM=dumb`, the
-    one a `prepare` is given."""
-    r = make_runner([], env={"HOME": None, "TERM": "none", "AB_OS": "dflt", "AB_URL": "http://{{ env.AB_OS }}{{ env.HOME }}"})
-    assert r.render("{{ env.HOME }} {{ env.TERM }} {{ env.AB_URL }}") == "/home/ab dumb http://o/home/ab"
+    """SPEC "Top-level fields" (`env`): a declared name takes whatever the environment has under it: the
+    environment of the run, Autobot's own with `TERM=dumb`, the one a `prepare` is given."""
+    r = make_runner([], env={"HOME": None, "TERM": "none", "AB_OS": "dflt"})
+    assert r.render("{{ env.HOME }} {{ env.TERM }} http://{{ env.AB_OS }}{{ env.HOME }}") == "/home/ab dumb http://o/home/ab"
 
 
 def test_p5_62_variable_that_is_set_empty_is_set(environ: dict[str, str]):
     """SPEC "Top-level fields" (`env`): an empty value is a value, from the environment and from `--env`: the
     default isn't used, and a required variable has what it needs. The environment is read once."""
-    env = {"AB_B": "{{ 1/0 }}", "AB_EMPTY": "{{ env.AB_NOPE }}", "AB_Y": "dflt", "AB_A": None, "AB_C": "dflt"}
+    env = {"AB_B": "dflt", "AB_EMPTY": "dflt", "AB_Y": "dflt", "AB_A": None, "AB_C": "dflt"}
     r = make_runner([], env=env, given={"AB_A": "", "AB_C": ""})
     assert r.render("[{{ env.AB_B }}][{{ env.AB_EMPTY }}][{{ env.AB_Y }}][{{ env.AB_A }}][{{ env.AB_C }}]") == "[os-b][][dflt][][]"
     environ["AB_Y"] = "late"
@@ -195,7 +139,7 @@ def test_p5_63_undeclared_key_in_a_step_fails_the_step_and_sends_nothing(sent):
 
 def test_p5_64_mapping_holds_the_declared_keys_in_the_order_written(environ: dict[str, str]):
     """SPEC "The environment in templates": one mapping of the declared variables, typed, in the section's order."""
-    r = make_runner([], env={"AB_Y": "{{ vars.v }}y", "AB_B": "unused", "AB_N": 3, "AB_F": True, "AB_R": 0.5}, vars={"v": "o"})
+    r = make_runner([], env={"AB_Y": "oy", "AB_B": "unused", "AB_N": 3, "AB_F": True, "AB_R": 0.5})
     values = {"AB_Y": "oy", "AB_B": "os-b", "AB_N": 3, "AB_F": True, "AB_R": 0.5}
     assert r._env == values and list(r._env) == list(values)
     assert r.render("{{ env | length }} {{ env.keys() | join(',') }}") == "5 " + ",".join(values)
@@ -207,8 +151,8 @@ def test_p5_64_mapping_holds_the_declared_keys_in_the_order_written(environ: dic
 @pytest.mark.parametrize("name", ["items", "keys", "get", "values"])
 def test_p5_64_key_named_like_a_method_wins(name: str):
     """SPEC "Jinja2 Templating": a declared key named like a mapping method is the key."""
-    r = make_runner([], env={name: "declared", "AB_REF": f"{{{{ env.{name} }}}}!"})
-    assert r.render(f"{{{{ env.{name} }}}} {{{{ env['{name}'] }}}} {{{{ env.AB_REF }}}}") == "declared declared declared!"
+    r = make_runner([], env={name: "declared"})
+    assert r.render(f"{{{{ env.{name} }}}} {{{{ env['{name}'] }}}}") == "declared declared"
 
 
 @pytest.mark.parametrize("name", ["declared", "_config", "why", "given", "__dict__"])
@@ -276,11 +220,11 @@ def test_p5_94_text_that_is_not_of_the_type_is_an_error_without_the_value(monkey
 
 
 def test_p5_94_default_is_not_converted():
-    """SPEC "Top-level fields" (`env`): a default has the type YAML gave it: a quoted number is a string, a
-    boolean is not an integer, and only a string is a template."""
-    r = make_runner([], env={"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True, "AB_R": "{{ 3 + 4 }}"})
-    assert r._env == {"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True, "AB_R": "7"}
-    assert [type(v) for v in r._env.values()] == [str, str, int, float, bool, str]
+    """SPEC "Top-level fields" (`env`): a default has the type YAML gave it: a quoted number is a string, and
+    a boolean is not an integer."""
+    r = make_runner([], env={"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True})
+    assert r._env == {"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True}
+    assert [type(v) for v in r._env.values()] == [str, str, int, float, bool]
 
 
 def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -329,9 +273,9 @@ def test_p5_95_empty_value_declares_a_required_variable(tmp_path: Path, monkeypa
 
 def test_p5_95_required_variable_is_a_string_and_is_checked_in_order(monkeypatch: pytest.MonkeyPatch):
     """SPEC "Top-level fields" (`env`): the value is taken as text; the first variable without one is named,
-    also when no template reads it and when a default above it has read `vars`."""
+    also when no template reads it."""
     with pytest.raises(ValueError, match=REQUIRED):
-        make_runner([], env={"AB_Y": "{{ vars.v }}", "AB_A": None, "AB_B": None}, vars={"v": 1})
+        make_runner([], env={"AB_Y": "y", "AB_A": None, "AB_B": None})
     with pytest.raises(ValueError, match=REQUIRED.replace("AB_A", "AB_B")):
         make_runner([], env={"AB_A": None, "AB_B": None}, given={"AB_A": "x"})
     monkeypatch.setenv("AB_B", " 0 ")
@@ -409,15 +353,6 @@ def test_p5_97_boolean_variable_is_a_condition_and_not_text(sent, monkeypatch, t
         run_script(script, env={"AB_DEBUG": False})
     assert str(ei.value) == BOOLEAN.format(str(value).lower())
     assert sent.lines() == [("echo debug" if value else "echo quiet"), f"echo {'on true' if value else 'off false'}"]
-
-
-def test_p5_97_boolean_variable_written_out_in_a_default():
-    """SPEC "Booleans are not text": in a default, too, and the error names the default."""
-    with pytest.raises(ValueError) as ei:
-        make_runner([], env={"AB_DEBUG": True, "AB_FLAG": "--debug={{ env.AB_DEBUG }}"})
-    assert str(ei.value) == "env.AB_FLAG: " + BOOLEAN.format("true")
-    r = make_runner([], env={"AB_DEBUG": True, "AB_FLAG": "{{ '--debug' if env.AB_DEBUG else '' }}"})
-    assert r.render("[{{ env.AB_FLAG }}]") == "[--debug]"
 
 
 def test_p5_97_number_is_a_number_in_an_expression_and_its_digits_as_text(monkeypatch: pytest.MonkeyPatch):

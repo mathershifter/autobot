@@ -700,20 +700,19 @@ def _flag_first(tmp_path: Path) -> subprocess.CompletedProcess[str]:
 
 def test_p6_87_traceback_flag_for_a_script_error_and_a_plugin_error(tmp_path: Path):
     """The flag also covers the load errors that come from an exception: `Script error` and `Plugin error`."""
-    res = run_cli(make_doc([{"cmd": "true"}], env={"A": "{{ x "}), tmp_path, "--traceback")
+    prompts = [{"name": "p", "expect": ["x"], "send": "{{ x "}]
+    res = run_cli(make_doc([{"cmd": "true"}], prompts=prompts), tmp_path, "--traceback")
     lines = _lines(res)
     end = "unexpected end of template, expected 'end of print statement'."
     assert res.returncode == 1
     assert lines[0] == "Traceback (most recent call last):" and f"jinja2.exceptions.TemplateSyntaxError: {end}" in lines
-    assert lines[-1] == f"Script error in {tmp_path / 'script.autobot.yaml'}: env.A: template error: {end}"
-    # a default that can't be rendered is found by the run: a failed run, with its traceback too
-    res = run_cli(make_doc([{"cmd": "true"}], env={"A": "{{ 1/0 }}"}), tmp_path, "--traceback")
+    assert lines[-1] == f"Script error in {tmp_path / 'script.autobot.yaml'}: prompt 'p': template error: {end}"
+    # a `spawn` that can't be rendered is found by the run: a failed run, with its traceback too
+    res = run_cli(make_doc([{"cmd": "true"}], spawn="{{ 1/0 }}"), tmp_path, "--traceback")
     lines = _lines(res)
     assert res.returncode == 3
     assert lines[0] == "Traceback (most recent call last):" and "ZeroDivisionError: division by zero" in lines
-    assert lines[-1] == (
-        f"Run failed in {tmp_path / 'script.autobot.yaml'}: env.A: template error: ZeroDivisionError: division by zero"
-    )
+    assert lines[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: template error: ZeroDivisionError: division by zero"
 
     root = tmp_path / "broken"
     root.mkdir()

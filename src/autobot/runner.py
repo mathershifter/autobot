@@ -168,25 +168,26 @@ def _typed(key: str, value: str, default: Any, source: str) -> Any:
     return value
 
 
+class _Env(dict):  # holds its keys and nothing else: a template reads attributes too
+    __slots__ = ()
+
+    def __missing__(self, key: Any) -> Any:
+        return StrictUndefined(hint=f"env has no key {key!r}: the script's env section doesn't declare it")
+
+
 class Runner:
     def __init__(self, config: Config, given: dict[str, str]):
         """`given`: the `--env` values, which come before those of the environment."""
         registry.discover()
         self._config = config
         self._default_timeout = 300
-        # the environment of `prepare`, of the spawned process and of `env` without a `prepare`: autobot's own, plain
+        # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ()
         for key in given:
             if key not in config.env:
                 raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
         # an `--env` value depends on nothing `prepare` does, so it gets its type before anything runs
         self._typed = {key: _typed(key, value, config.env[key], "--env") for key, value in given.items()}
-        for key, default in config.env.items():
-            if isinstance(default, str):  # a template: its syntax depends on no value
-                try:
-                    check_template(default)
-                except ScriptError as e:
-                    raise ScriptError(f"env.{key}: {e}") from e
         self._given = given
         self._env: dict[str, Any] = {}  # resolved by `run`, once `prepare` has run
         self._session = Session([])
@@ -245,22 +246,10 @@ class Runner:
 
     def _resolve_env(self, environ: dict[str, str]) -> dict[str, Any]:
         """`env` in templates: the variables the `env` section declares, and nothing else. Each has the
-        value of `--env`, else the one of `environ` (the environment `prepare` left, or the run's), as
-        the type of its default, else its default: a template, which reads `vars` and the variables
-        declared above it."""
-        declared = self._config.env
-
-        class Env(dict):  # holds its keys and nothing else: a template reads attributes too
-            __slots__ = ()
-
-            def __missing__(self, key: Any) -> Any:
-                why = f"env has no key {key!r}: the script's env section doesn't declare it"
-                if key in declared:
-                    why = f"env.{key} has no value yet: a default reads only the keys declared above it"
-                return StrictUndefined(hint=why)
-
-        env = Env()
-        for key, default in declared.items():
+        value of `--env`, else the one of `environ` (the environment `prepare` left, or the one it would
+        have been given), as the type of its default, else its default."""
+        env = _Env()
+        for key, default in self._config.env.items():
             if key in self._typed:
                 env[key] = self._typed[key]
             elif key in environ:
@@ -268,10 +257,7 @@ class Runner:
             elif default is None:
                 raise ScriptError(f"env.{key} is required: give it with --env {key}=VALUE or in the environment")
             else:
-                try:
-                    env[key] = render_template(default, {"vars": self._config.vars, "env": env})
-                except ScriptError as e:
-                    raise ScriptError(f"env.{key}: {e}") from e
+                env[key] = default
         return env
 
     @property
@@ -315,11 +301,13 @@ class Runner:
         attach = self._config.attach
         check_template(attach.spawn)  # a syntax error stops the run before `prepare`
         timeout = self._get_timeout(attach)
-        environ = self._environ
+        # what each declared variable starts with, as text: its default, the run's environment over it, `--env` over both
+        defaults = {k: text(v) for k, v in self._config.env.items() if v is not None}
+        environ = {**defaults, **self._environ, **self._given}
         if self._config.prepare:
-            # as written, not rendered: `env` has no values yet. It sees the `--env` values, as given
-            given = {k: v for k, v in self._given.items() if k}  # no process can be started with an empty name
-            environ = self._run_prepare(self._config.prepare, {**environ, **given})
+            # as written, not rendered. No process can be started with an empty name, a `=` in a name or a NUL
+            fit = {k: v for k, v in environ.items() if k and "=" not in k and "\0" not in k + v}
+            environ = self._run_prepare(self._config.prepare, fit)
         self._env = self._resolve_env(environ)
         spawn = self._spawn_command()
 

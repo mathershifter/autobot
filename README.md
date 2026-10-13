@@ -161,23 +161,20 @@ A key that is repeated in a mapping is an error, not an override. See [Top-level
 
 ## Prepare
 
-`prepare` is a local shell script that Autobot sources first, e.g. to authenticate. A non-zero exit aborts the run. The variables it sets give the declared `env` variables their values:
+`prepare` is a local shell script that Autobot sources first, e.g. to authenticate. A non-zero exit aborts the run. It reads the declared `env` variables, and what it assigns is their value:
 
 ```yaml
-prepare: |
-  . ~/.config/lab/credentials.sh
-  JUMP_HOST=$(lab-inventory jump-host)
-
 env:
-  JUMP_HOST:
-  API_TOKEN:
+  ARTIFACTORY: https://artifactory.example.com
+  SONIC_VERSION: "202511"
+  SONIC_IMAGE:
 
-attach:
-  spawn: ssh -J {{ env.JUMP_HOST }} admin@switch
+prepare: |
+  SONIC_IMAGE="$ARTIFACTORY/sonic/$SONIC_VERSION/sonic.swi"
 ```
 
 - A plain assignment counts, like an `export` (until a `set +a`); a name `env` doesn't declare sets nothing. What the script prints is shown, not read.
-- It is not a template, and reads each `-e KEY=VALUE` as `$KEY`. A shebang names its shell, unchecked.
+- It is not a template, and reads each variable that has a value as `$KEY`. A shebang names its shell, unchecked.
 
 See [`prepare`](SPEC.md#prepare).
 
@@ -412,17 +409,16 @@ A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`,
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string, `attach.spawn` and the string defaults of `env`. Other values, such as `prepare`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string and `attach.spawn`. Other values, such as `prepare`, the `env` defaults, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:
   SWITCH:                                    # required
   BASE_URL: https://artifacts.example.com
-  IMAGE: '{{ env.BASE_URL }}/sonic-broadcom.swi'
   FORCE: false
 
 script:
-  - cmd: wget -P /tmp {{ env.IMAGE }}
+  - cmd: wget -P /tmp {{ env.BASE_URL }}/sonic-broadcom.swi
   - cmd: show version
     register: version
   - cmd: sonic-installer install -y /tmp/sonic-broadcom.swi
@@ -438,11 +434,11 @@ script:
 
 Two filters are added to Jinja2's own: `contains('text')` and `search('regex')`.
 
-A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, the environment as `prepare` left it, and its default: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
+A variable of the `env` section takes its value from the first of `-e KEY=VALUE`, the environment and its default, before `prepare` for the script to read and again after it: `autobot upgrade.autobot.yaml -e SWITCH=sonic -e FORCE=yes`.
 
 - A key with an empty value is required.
 - The default gives the type: a string, a boolean (`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off`) or a number. Any other value is an error.
-- A string default is a template that reads `vars` and the keys above it.
+- A default is a literal, not a template; compose a value in `prepare`.
 - `env` has the declared keys only: `{{ env.HOME }}` needs a `HOME` key. A declared name takes whatever the environment has under it, so avoid names the shell already exports (`HOSTNAME`, `USER`, `HOME`).
 
 Things to watch for:

@@ -115,10 +115,14 @@ def _whole(v: Any) -> Any:
     return int(v) if isinstance(v, float) and v.is_integer() else v
 
 
+_ENV_MAX = 10**4300
+
+
 def _env_value(v: Any) -> Any:
-    # the default of a variable, whose type is the variable's; empty for a required one
-    if v is not None and type(v) not in (str, bool, int, float):
-        raise _custom("env_type", "an env value is a string, a boolean, a number, or empty for a required variable")
+    # the default of a variable, whose type is the variable's; empty for a required one. `prepare` is given its
+    # text, which is read back: a number is finite (no NaN either), and has the 4300 digits Python writes out at most
+    if v is not None and (type(v) not in (str, bool, int, float) or type(v) is not str and not -_ENV_MAX < v < _ENV_MAX):
+        raise _custom("env_type", "an env value is a string, a boolean, a finite number, or empty for a required variable")
     return v
 
 

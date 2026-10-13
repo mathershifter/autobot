@@ -409,17 +409,14 @@ TEXT_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
     "after": lambda t: {"script": [{"line": "echo ok", "after": t}]},
     "line": lambda t: {"script": [{"line": f"echo {t}"}]},
     "spawn": lambda t: {"script": [], "spawn": f"bash {t}"},
-    "env": lambda t: {"script": [], "env": {"AB_FLAG": t}},
 }
 
 
 @pytest.mark.parametrize("field", list(TEXT_FIELDS))
-def test_p3_22_boolean_in_every_templated_text_is_refused(sent: SentLog, monkeypatch: pytest.MonkeyPatch, field: str):
+def test_p3_22_boolean_in_every_templated_text_is_refused(sent: SentLog, field: str):
     """Every templated value that becomes text follows the rule, and what it would have sent is never sent."""
-    monkeypatch.delenv("AB_FLAG", raising=False)
     kw = TEXT_FIELDS[field]("{{ vars.debug }}")
-    named = "env.AB_FLAG: " if field == "env" else ""  # an error in a default names the default
-    with pytest.raises(ValueError, match=rf"^{named}template error: an expression gave a boolean \(true\), "):
+    with pytest.raises(ValueError, match=r"^template error: an expression gave a boolean \(true\), "):
         run_script(kw.pop("script"), vars={"debug": True}, **kw)
     assert not any("True" in line or "true" in line for line in sent.lines())
 
@@ -451,11 +448,9 @@ DICT_METHODS = ["values", "items", "keys", "get", "copy", "update", "pop", "clea
 def test_p3_19_key_named_like_a_dict_method_renders_the_key(monkeypatch: pytest.MonkeyPatch, name: str):
     """SPEC "Jinja2 Templating": `vars.values` is the key `values`, not `<built-in method values of dict ...>`."""
     monkeypatch.delenv(name, raising=False)
-    env = {name: "e-{{ 'x' }}", "REF": f"{{{{ env.{name} }}}}!"}
-    r = make_runner([], vars={name: "v"}, env=env)
+    r = make_runner([], vars={name: "v"}, env={name: "e-x"})
     assert r.render(f"{{{{ vars.{name} }}}} {{{{ env.{name} }}}}") == "v e-x"
     assert r.render(f"{{{{ vars['{name}'] }}}} {{{{ env['{name}'] }}}}") == "v e-x"
-    assert r.render("{{ env.REF }}") == "e-x!"  # while env is resolved, too
     # filters and nested mappings aren't affected by the key's name
     assert r.render("{{ vars | items | list }} {{ vars | tojson }} {{ vars | length }}") == (
         f"[('{name}', 'v')] {{\"{name}\": \"v\"}} 1"
@@ -466,7 +461,7 @@ def test_p3_19_key_named_like_a_dict_method_renders_the_key(monkeypatch: pytest.
 
 def test_p3_19_dict_methods_still_work_without_such_a_key():
     """SPEC "Jinja2 Templating": with no key of that name, `vars.items()` and the like are the dict methods."""
-    r = make_runner([], vars={"a": 1, "b": {"c": 2}}, env={"E": "{{ env.get('NOPE', 'd') }}"})
+    r = make_runner([], vars={"a": 1, "b": {"c": 2}}, env={"E": "d"})
     assert r.render("{% for k, v in vars.items() %}{{ k }}={{ v }};{% endfor %}") == "a=1;b={'c': 2};"
     assert r.render("{{ vars.keys() | list }} {{ vars.get('nope', 'd') }} {{ vars | length }}") == "['a', 'b'] d 2"
     assert r.render("{{ vars }} {{ vars | tojson }}") == "{'a': 1, 'b': {'c': 2}} {\"a\": 1, \"b\": {\"c\": 2}}"
@@ -484,7 +479,7 @@ def test_p3_19_register_under_a_dict_method_name(name: str):
     assert type(out) is dict
 
 
-# -- P3-23: a name that isn't in the context, and an error in an `env` default ---------------
+# -- P3-23: a name that isn't in the context --------------------------------------------------
 
 NO_ARGS = "template error: 'args' is undefined"
 
@@ -501,37 +496,10 @@ def test_p3_23_name_outside_the_context_is_undefined(template: str):
     assert r.render("{{ args | default('d') }} {{ 'y' if args is defined else 'n' }}") == "d n"
 
 
-def test_p3_23_undefined_name_at_load_time_and_at_run_time(sent: SentLog):
-    """In an `env` default the error comes when the runner is built, and names the default; in a step, when
-    the step runs, with nothing sent."""
-    with pytest.raises(ValueError) as ei:
-        make_runner([], env={"AB_H": "{{ args.host }}"})
-    assert str(ei.value) == f"env.AB_H: {NO_ARGS}"
+def test_p3_23_undefined_name_in_a_step_and_in_an_env_default(sent: SentLog):
+    """In a step the error comes when the step runs, with nothing sent; an `env` default is no template,
+    so the name is its text."""
+    assert make_runner([], env={"AB_H": "{{ args.host }}"})._env == {"AB_H": "{{ args.host }}"}
     with pytest.raises(ValueError) as ei:
         run_script([{"line": "echo {{ args.host }}"}])
     assert str(ei.value) == NO_ARGS and sent.lines() == []
-
-
-@pytest.mark.parametrize(
-    ("env", "message"),
-    [
-        ({"AB_A": "{{ 1/0 }}"}, "env.AB_A: template error: ZeroDivisionError: division by zero"),
-        ({"AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
-        ({"AB_A": "{{ vars.nope }}"}, "env.AB_A: template error: 'dict object' has no attribute 'nope'"),
-        ({"AB_A": "{{ env.AB_NOPE }}"}, "env.AB_A: template error: env has no key 'AB_NOPE': the script's env section doesn't declare it"),
-        # the first default with an error is named, and the ones below it are not reached
-        ({"AB_C": "{{ 1/0 }}", "AB_B": "{{ env.AB_C }}", "AB_A": "x{{ env.AB_B }}{{ 2/0 }}"}, "env.AB_C: template error: ZeroDivisionError: division by zero"),
-        # the syntax of every default is checked first, whatever the defaults above it would render to
-        ({"AB_C": "{{ 1/0 }}", "AB_A": "{{ nope( }}"}, "env.AB_A: template error: unexpected '}', expected ')'"),
-        ({"AB_C": "{{ 'a' | search('(') }}", "AB_A": "{{ env.AB_C }}"}, "env.AB_C: template error: search: invalid regex '(': missing ), unterminated subpattern at position 0"),
-        # a key below, or the key itself
-        ({"AB_A": "{{ env.AB_B }}", "AB_B": "{{ env.AB_A }}"}, "env.AB_A: template error: env.AB_B has no value yet: a default reads only the keys declared above it"),
-    ],
-)
-def test_p3_23_error_in_an_env_default_names_the_default(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], message: str):
-    """SPEC "Top-level fields" (`env`): `env.<KEY>: ` before the error of the default that has it."""
-    for key in ("AB_A", "AB_B", "AB_C", "AB_NOPE"):
-        monkeypatch.delenv(key, raising=False)
-    with pytest.raises(ValueError) as ei:
-        make_runner([], env=env)
-    assert str(ei.value) == message

@@ -1,10 +1,12 @@
-"""P5-65..77, P5-81, P5-98..109: `prepare`, a local shell script that is sourced before anything else and
-sets declared variables through the environment its shell leaves, and the environment of the spawned process
+"""P5-65..77, P5-81, P5-98..114: `prepare`, a local shell script that is sourced before anything else, with
+the declared variables in its environment, and sets them through the environment its shell leaves, and the
+environment of the spawned process
 (SPEC "prepare", "What `prepare` sets", "The order of a run", "The environment of the spawned process")."""
 
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import resource
@@ -26,6 +28,7 @@ from conftest import (
 )
 
 from autobot import prepare
+from autobot.models import Config
 from autobot.runner import Runner
 
 NAMES = ("AB_A", "AB_B", "AB_C", "AB_OS", "AB_GONE", "AB_NEW", "AB_HOST", "AB_SHELL")
@@ -96,9 +99,9 @@ def test_p5_65_what_prepare_sets_reaches_a_template_under_a_declared_name_alone(
     monkeypatch.setenv("AB_OS", "os")
     r = prepared(
         "export AB_OS=prep AB_NEW=new\nAB_A=prep\nAB_PLAIN=plain\ncd /\n",
-        env={"AB_OS": "dflt", "AB_A": "dflt", "AB_B": "dflt-b", "AB_C": "{{ env.AB_A }}-c"},
+        env={"AB_OS": "dflt", "AB_A": "dflt", "AB_B": "dflt-b", "AB_C": "dflt-c"},
     )
-    assert r.render("{{ env.AB_OS }} {{ env.AB_A }} {{ env.AB_B }} {{ env.AB_C }}") == "prep prep dflt-b prep-c"
+    assert r.render("{{ env.AB_OS }} {{ env.AB_A }} {{ env.AB_B }} {{ env.AB_C }}") == "prep prep dflt-b dflt-c"
     assert list(r._env) == ["AB_OS", "AB_A", "AB_B", "AB_C"]
     for name in ("AB_NEW", "AB_PLAIN", "PWD", "PATH"):
         with pytest.raises(ValueError, match=f"^template error: env has no key '{name}': the script's env section doesn't declare it$"):
@@ -496,17 +499,17 @@ def test_p5_72_temp_path_is_never_read_as_shell_code(timeline: Timeline, tmp_pat
 
 
 def test_p5_73_spawn_is_rendered_once_prepare_has_run(timeline: Timeline, prep_tmp: Path, monkeypatch, capsys):
-    """SPEC "The order of a run": `prepare` runs first, `env` is resolved with what it set, and `spawn`
-    is rendered after that: it reads a variable that only `prepare` sets."""
+    """SPEC "The order of a run": `prepare` runs first, the variables get the values it left, and `spawn`
+    is rendered after that: it reads a variable that only `prepare` sets, and one it made of a default."""
     monkeypatch.setenv("AB_SHELL", "from-os")
     timeline.stop_attach = True
     r = make_runner(
-        [], prepare="AB_HOST=sw1\nAB_SHELL=ssh\n", spawn="{{ env.AB_SHELL }} admin@{{ env.AB_HOST }} {{ env.AB_C }}",
-        env={"AB_SHELL": "telnet", "AB_HOST": None, "AB_C": "-p {{ env.AB_HOST }}"},
+        [], prepare='AB_HOST=sw1\nAB_SHELL=ssh\nAB_C="$AB_C $AB_HOST"\n', spawn="{{ env.AB_SHELL }} admin@{{ env.AB_HOST }} {{ env.AB_C }}",
+        env={"AB_SHELL": "telnet", "AB_HOST": None, "AB_C": "-J"},
     )
-    with pytest.raises(AttachRecorded, match="^ssh admin@sw1 -p sw1$"):
+    with pytest.raises(AttachRecorded, match="^ssh admin@sw1 -J sw1$"):
         r.run()
-    assert capsys.readouterr().err.splitlines()[-2:] == [DONE, ">> attach: ssh admin@sw1 -p sw1"]
+    assert capsys.readouterr().err.splitlines()[-2:] == [DONE, ">> attach: ssh admin@sw1 -J sw1"]
 
 
 def test_p5_73_env_has_no_value_before_the_run():
@@ -720,9 +723,10 @@ def test_p5_98_assignment_sets_a_declared_variable_of_each_type(prepared, form: 
     values = {"AB_S": "text", "AB_B": "yes", "AB_I": "' -7 '", "AB_F": "2.5", "AB_R": "req"}
     r = prepared(
         "".join(form.format(name, value) + "\n" for name, value in values.items()),
-        env={"AB_S": "s", "AB_B": False, "AB_I": 1, "AB_F": 0.5, "AB_R": None, "AB_D": "{{ env.AB_S }}-{{ env.AB_I + 1 }}"},
+        env={"AB_S": "s", "AB_B": False, "AB_I": 1, "AB_F": 0.5, "AB_R": None},
     )
-    assert r._env == {"AB_S": "text", "AB_B": True, "AB_I": -7, "AB_F": 2.5, "AB_R": "req", "AB_D": "text--6"}
+    assert r._env == {"AB_S": "text", "AB_B": True, "AB_I": -7, "AB_F": 2.5, "AB_R": "req"}
+    assert [type(v) for v in r._env.values()] == [str, bool, int, float, str]
 
 
 def test_p5_98_variables_of_a_sourced_file_and_of_a_command_substitution_count(prepared, tmp_path: Path):
@@ -796,8 +800,8 @@ def test_p5_99_value_comes_from_env_option_then_the_environment_prepare_left_the
     default."""
     if environ:
         monkeypatch.setenv("AB_A", "os")
-    r = prepared(script + "true\n", env={"AB_A": "dflt", "AB_B": "{{ env.AB_A }}!"}, given={"AB_A": "cli"} if given else {})
-    assert r._env == {"AB_A": expected, "AB_B": f"{expected}!"}
+    r = prepared(script + "true\n", env={"AB_A": "dflt"}, given={"AB_A": "cli"} if given else {})
+    assert r._env == {"AB_A": expected}
 
 
 def test_p5_99_required_variable_the_script_unsets_has_no_value(timeline: Timeline, monkeypatch):
@@ -815,6 +819,37 @@ def test_p5_99_empty_value_from_prepare_is_set(prepared, monkeypatch):
     monkeypatch.setenv("AB_A", "os")
     r = prepared("AB_A=\nAB_B=''\nexport AB_C=\n", env={"AB_A": "dflt", "AB_B": None, "AB_C": True})
     assert r._env == {"AB_A": "", "AB_B": "", "AB_C": False}
+
+
+@pytest.mark.parametrize(("default", "kind"), [(3, "an integer"), (0.5, "a number")], ids=["integer", "number"])
+def test_p5_99_empty_value_from_prepare_is_no_integer_and_no_number(timeline: Timeline, default: float, kind: str):
+    """SPEC "The environment in templates" (Types): the empty string is a value, and no integer and no
+    number: a script that sets such a variable to it fails the run, where a boolean is false and a string empty."""
+    with pytest.raises(ValueError) as ei:
+        make_runner([], prepare="AB_A=\n", env={"AB_A": default}).run()
+    assert str(ei.value) == f"env.AB_A: the value from the environment is not {kind}"
+    assert "attach" not in timeline.names()
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_99_name_the_shell_sets_for_itself_has_the_shells_value_after_a_prepare(timeline, prep_tmp, monkeypatch, shebang: str):
+    """SPEC "The environment in templates": a declared name that the shell sets for itself has the shell's
+    value after a `prepare`, whatever the environment and the default: `PWD` is the working directory in
+    each shell. Without a `prepare` it is the environment's value or the default, and an `--env` value is
+    the variable's either way. Which other names a shell sets (`SHLVL`, `_`) depends on the shell."""
+    timeline.stop_attach = True
+
+    def pwd(script: str | None, **given: str) -> str:
+        r = make_runner([], prepare=script, env={"PWD": "dflt"}, given=given)
+        with pytest.raises(AttachRecorded):
+            r.run()
+        return r._env["PWD"]
+
+    monkeypatch.delenv("PWD", raising=False)
+    assert (pwd(None), pwd(f"{shebang}true\n")) == ("dflt", os.getcwd())
+    monkeypatch.setenv("PWD", "os")
+    assert (pwd(None), pwd(f"{shebang}true\n")) == ("os", os.getcwd())
+    assert (pwd(None, PWD="cli"), pwd(f"{shebang}true\n", PWD="cli")) == ("cli", "cli")
 
 
 @pytest.mark.parametrize("script", [None, "true\n", "exec true\n", "#!/bin/bash\ntrue\n"], ids=["no-prepare", "prepare", "unread", "bash"])
@@ -918,20 +953,29 @@ def test_p5_102_required_variable_nothing_gives_fails_after_prepare(tmp_path: Pa
     assert marker.exists() and not spawned.exists()
 
 
-def test_p5_103_prepare_sees_the_env_options_and_not_the_defaults(prepared, monkeypatch, tmp_path: Path):
-    """SPEC "prepare": each `--env KEY=VALUE` is a variable of the script's environment, with the text as
-    given, over the environment's; a default is not in it, and neither is anything rendered. The `--env`
-    value stays the variable's, whatever the script does with it."""
+def test_p5_103_prepare_sees_each_declared_variable_that_has_a_value(prepared, monkeypatch, tmp_path: Path):
+    """SPEC "prepare" (Its environment): the script has each declared variable in its environment, as text:
+    the `--env` value as given, else the environment's, unchecked, else the default: a string as written, a
+    boolean as `true` or `false`, a number as its digits, as a template writes it. A required variable that
+    nothing gave is not set. Nothing is rendered."""
     monkeypatch.setenv("AB_OS", "os")
-    monkeypatch.setenv("AB_B", "os-b")
+    monkeypatch.setenv("AB_BOTH", "os-both")
+    monkeypatch.setenv("AB_BAD", "word")
     seen = tmp_path / "seen"
+    names = ("AB_S", "AB_T", "AB_F", "AB_I", "AB_NEG", "AB_R", "AB_R3", "AB_E", "AB_REQ", "AB_CLI", "AB_OS", "AB_BOTH", "AB_BAD", "TERM")
+    env = {
+        "AB_S": "a {{ env.AB_I }} {% b", "AB_T": True, "AB_F": False, "AB_I": 3, "AB_NEG": -7, "AB_R": 0.5, "AB_R3": 3.0, "AB_E": 1e22,
+        "AB_REQ": None, "AB_CLI": 1, "AB_OS": "dflt", "AB_BOTH": "dflt", "AB_BAD": 3,
+    }
     r = prepared(
-        f'echo "[${{AB_A-unset}}][$AB_B][$AB_C][${{AB_D-unset}}][$AB_OS][$TERM]" > {seen}\nAB_D="$AB_C!"\nAB_B=prep\nunset AB_C\n',
-        env={"AB_A": "dflt", "AB_B": "dflt", "AB_C": 1, "AB_D": "{{ env.AB_A }}", "AB_OS": "dflt"},
-        given={"AB_B": "cli {{ x }}", "AB_C": " 7 "},
+        "echo \"" + "".join(f"[${{{name}-unset}}]" for name in names) + f"\" > {seen}\nAB_REQ=req\nAB_BAD=4\n",
+        env=env, given={"AB_CLI": " 7 ", "AB_BOTH": "cli {{ x }}"},
     )
-    assert seen.read_text() == "[unset][cli {{ x }}][ 7 ][unset][os][dumb]\n"
-    assert r._env == {"AB_A": "dflt", "AB_B": "cli {{ x }}", "AB_C": 7, "AB_D": " 7 !", "AB_OS": "os"}
+    assert seen.read_text() == "[a {{ env.AB_I }} {% b][true][false][3][-7][0.5][3.0][1e+22][unset][ 7 ][os][cli {{ x }}][word][dumb]\n"
+    assert r._env == env | {"AB_REQ": "req", "AB_CLI": 7, "AB_OS": "os", "AB_BOTH": "cli {{ x }}", "AB_BAD": 4}
+    assert [type(v) for v in r._env.values()] == [str, bool, bool, int, int, float, float, float, str, int, str, str, int]
+    # the spelling of a number is the one a template writes
+    assert r.render("[{{ env.AB_I }}][{{ env.AB_NEG }}][{{ env.AB_R }}][{{ env.AB_R3 }}][{{ env.AB_E }}]") == "[3][-7][0.5][3.0][1e+22]"
 
 
 def test_p5_103_env_option_for_term_reaches_prepare_and_not_the_spawned_process(spawn_env, tmp_path: Path):
@@ -1196,3 +1240,209 @@ def test_p5_109_shebang_without_a_word_is_no_shebang(prepared, capsys, tmp_path:
     assert out.read_text().startswith("/bin/sh -c set -a; trap ")
     assert r._env == {"AB_A": "set"}
     assert progress(capsys.readouterr().err) == [RUNNING, DONE]
+
+
+# -- P5-110..114: the declared variables have their values before prepare runs ------------
+
+
+def test_p5_110_script_changes_unsets_and_sets_declared_variables(prepared, monkeypatch):
+    """SPEC "The environment in templates" (Where a value comes from): the script reads a variable wherever
+    its value came from; what it assigns is the value, of the variable's type; one it unsets has its default,
+    a value of the environment included; it sets a required one, here from two others; and an `--env` value
+    is the variable's whatever the script does with it."""
+    monkeypatch.setenv("AB_U", "os")
+    monkeypatch.setenv("AB_BASE", "https://os.example")
+    script = (
+        'AB_I=$((AB_I + 39))\nAB_T=off\nAB_R="${AB_R}5"\nAB_S="$AB_S/more"\nunset AB_U AB_V\n'
+        ': "${AB_IMAGE:=$AB_BASE/$AB_VERSION/sonic.swi}"\n: "${AB_KEPT:=composed}"\nAB_G=script\nunset AB_H\n'
+    )
+    env = {
+        "AB_I": 3, "AB_T": True, "AB_R": 0.5, "AB_S": "s", "AB_U": "dflt", "AB_V": 5, "AB_BASE": "https://dflt.example",
+        "AB_VERSION": "202511", "AB_IMAGE": None, "AB_KEPT": None, "AB_G": "g", "AB_H": 1,
+    }
+    r = prepared(script, env=env, given={"AB_VERSION": "202505", "AB_KEPT": "given", "AB_G": "cli", "AB_H": "8"})
+    assert r._env == {
+        "AB_I": 42, "AB_T": False, "AB_R": 0.55, "AB_S": "s/more", "AB_U": "dflt", "AB_V": 5, "AB_BASE": "https://os.example",
+        "AB_VERSION": "202505", "AB_IMAGE": "https://os.example/202505/sonic.swi", "AB_KEPT": "given", "AB_G": "cli", "AB_H": 8,
+    }
+    assert [type(v) for v in r._env.values()] == [int, bool, float, str, str, int, str, str, str, str, str, int]
+
+
+def test_p5_110_sonic_example_composes_its_image_unless_it_is_given(timeline, prep_tmp, monkeypatch):
+    """`examples/sonic.autobot.yaml`: its `prepare` makes `SONIC_IMAGE` of `ARTIFACTORY` and `SONIC_VERSION`,
+    defaults or given, and a `SONIC_IMAGE` from `--env` or the environment is the one used. An empty one of
+    `--env` stays empty, and an empty one of the environment is composed, as `:=` reads it."""
+    config = Config.model_validate(yaml.safe_load((Path(__file__).parent.parent / "examples" / "sonic.autobot.yaml").read_text()))
+    url = "{}/artifactory/sonic-nightly/{}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi"
+    timeline.stop_attach = True
+
+    def image(**given: str) -> str:
+        r = Runner(config, {"DUT": "sw1", **given})
+        with pytest.raises(AttachRecorded):
+            r.run()
+        return r._env["SONIC_IMAGE"]
+
+    assert image() == url.format("https://ci.corp.io", "202511")
+    assert image(SONIC_VERSION="202505") == url.format("https://ci.corp.io", "202505")
+    assert image(SONIC_IMAGE="https://host/x.swi") == "https://host/x.swi"
+    monkeypatch.setenv("ARTIFACTORY", "https://mirror.example")
+    assert image(SONIC_VERSION="202505") == url.format("https://mirror.example", "202505")
+    monkeypatch.setenv("SONIC_IMAGE", "https://os/x.swi")
+    assert image() == "https://os/x.swi"
+    # an empty one: `--env` is the value whatever the script composes, and `:=` composes over an empty value of the environment
+    assert image(SONIC_IMAGE="") == ""
+    monkeypatch.setenv("SONIC_IMAGE", "")
+    assert image() == url.format("https://mirror.example", "202511")
+
+
+ROUND_TRIP = {
+    "AB_S": "a {{ env.AB_I }} {% b {#", "AB_LINES": "one\ntwo\n\n", "AB_Q": " it's \"q\" $HOME `x` \\ = ", "AB_EMPTY": "", "AB_U8": "café ☃",
+    "AB_WORD": "true", "AB_DIGITS": "007", "AB_T": True, "AB_F": False, "AB_I": 3, "AB_ZERO": 0, "AB_NEG": -7,
+    "AB_BIG": int("9" * 60), "AB_HUGE": -int("9" * 4300), "AB_R": 0.5, "AB_R3": 3.0, "AB_E": 1e22, "AB_SMALL": 1e-7, "AB_THIRD": 1 / 3,
+    "AB_MAX": sys.float_info.max, "AB_MIN": 5e-324, "AB_NZ": -0.0,
+}
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_111_default_comes_back_as_it_is_from_a_script_that_leaves_it_alone(prepared, shebang: str):
+    """SPEC "The environment in templates" (Types): the text of a default in the script's environment
+    converts back to the same value of the same type: a string exactly, a boolean, an integer of any size
+    (4300 digits is what Python writes), a number with its zero fraction, its exponent and its sign."""
+    r = prepared(f"{shebang}true\n", env=ROUND_TRIP)
+    assert r._env == ROUND_TRIP and list(r._env) == list(ROUND_TRIP)
+    assert [type(v) for v in r._env.values()] == [type(v) for v in ROUND_TRIP.values()]
+    assert math.copysign(1, r._env["AB_NZ"]) == -1
+
+
+@pytest.mark.parametrize("given", [{}, {"AB_A": "cli", "AB_N": " 9 ", "AB_REQ": ""}], ids=["none", "options"])
+@pytest.mark.parametrize("environ", [{}, {"AB_A": "os", "AB_N": "8", "AB_T": "no", "AB_REQ": "os-req"}], ids=["unset", "set"])
+def test_p5_112_values_without_a_prepare_are_those_of_a_script_that_does_nothing(timeline, prep_tmp, monkeypatch, given, environ):
+    """SPEC "The environment in templates" (Where a value comes from): without a `prepare`, and after one
+    whose environment could not be read, the starting values are the values: what a run without a `prepare`
+    has is what a script that does nothing leaves, value and type, and the same error for a required
+    variable that nothing gives."""
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
+    timeline.stop_attach = True
+    env = {**ROUND_TRIP, "AB_A": "dflt", "AB_N": 3, "AB_REQ": None, "TERM": "none"}
+    results = []
+    for script in (None, "true\n", "exec true\n"):
+        r = Runner(make_config([], prepare=script, env=env), given)  # `env` gets its values in the run
+        try:
+            r.run()
+        except AttachRecorded:
+            results.append([(k, v, type(v)) for k, v in r._env.items()])
+        except ValueError as e:
+            results.append(str(e))
+    assert results[0] == results[1] == results[2]
+    if not given and not environ:
+        assert results[0] == "env.AB_REQ is required: give it with --env AB_REQ=VALUE or in the environment"
+    else:
+        assert dict((k, v) for k, v, _ in results[0])["TERM"] == "dumb"
+
+
+ODD_NAMES = {"MY.VAR": "dflt", "my-var": None, "1X": 7, "A=B": "x", "": "y", "AB_NUL": "a\0b", "AB\0N": "z", "AB_OK": "ok"}
+
+
+@pytest.mark.parametrize(
+    "script",
+    [None, "{}\n", pytest.param("#!/usr/bin/env dash\n{}\n", marks=installed("dash")), pytest.param("#!/usr/bin/env bash\n{}\n", marks=installed("bash"))],
+    ids=["no-prepare", "sh", "dash", "bash"],
+)
+def test_p5_113_declared_name_that_a_shell_or_an_environment_cannot_hold(timeline, prep_tmp, tmp_path: Path, script):
+    """SPEC "prepare" (Its environment), "The environment in templates": a declared variable that no
+    environment can hold (an empty name, a `=` in the name, a NUL) is left out of the script's, and a shell
+    may drop a name it can't have as a variable (`MY.VAR`, `my-var`, `1X`; dash does). Nothing fails: such a
+    variable has its default, its `--env` value counts with every shell, and the script has the others."""
+    seen = tmp_path / "seen"
+    timeline.stop_attach = True
+    for given in ({"my-var": "cli"}, {"MY.VAR": "c1", "my-var": "c2", "1X": " 8 ", "A=B": "c4", "": "c5", "AB_NUL": "c6", "AB\0N": "c7"}):
+        r = make_runner([], prepare=script and script.format(f'echo "$AB_OK" > {seen}'), env=ODD_NAMES, given=given)
+        with pytest.raises(AttachRecorded):
+            r.run()
+        assert r._env == ODD_NAMES | given | ({"1X": 8} if "1X" in given else {})
+        assert script is None or seen.read_text() == "ok\n"
+        assert r.render("{{ env['MY.VAR'] }} {{ env['A=B'] }} {{ env[''] }}") == " ".join(r._env[k] for k in ("MY.VAR", "A=B", ""))
+
+
+def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timeline, prep_tmp):
+    """SPEC "prepare" (The temp file): a lone surrogate in a default, other than U+DC80 to U+DCFF, can't be
+    in the script's environment: the `UnicodeEncodeError` of one in the script, with no temp file left and
+    nothing spawned; a run without a `prepare` has the value."""
+    env = {"AB_A": "a\ud800b"}
+    with pytest.raises(UnicodeEncodeError):
+        make_runner([], prepare="true\n", env=env).run()
+    assert list(prep_tmp.iterdir()) == [] and "attach" not in timeline.names()
+    timeline.stop_attach = True
+    r = make_runner([], env=env)
+    with pytest.raises(AttachRecorded):
+        r.run()
+    assert r._env == env
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_113_default_with_a_surrogate_of_a_byte_comes_back_as_it_is(prepared, shebang: str):
+    """SPEC "prepare" (The temp file), "The environment in templates": U+DC80 to U+DCFF stand for the bytes
+    of a value that isn't UTF-8, so a default with one is in the script's environment as that byte, and
+    comes back unchanged."""
+    env = {"AB_A": "a\udcffb", "AB_B": "\udc80"}
+    assert prepared(f"{shebang}true\n", env=env)._env == env
+
+
+def test_p5_113_cli_reports_a_default_that_utf8_cannot_encode_as_a_failed_run(prep_tmp: Path, tmp_path: Path, monkeypatch):
+    """SPEC "Errors while the script runs": the surrogate of such a default is a failed run, status 3, with
+    the codec's message and the hint of `--traceback`; the script hasn't run, nothing is spawned and no temp
+    file is left."""
+    monkeypatch.setenv("TMPDIR", str(prep_tmp))
+    doc = make_doc([], prepare=f"touch {tmp_path}/prepared\n", env={"AB_A": "MARK"}, spawn=f"touch {tmp_path}/spawned")
+    res = run_cli(None, tmp_path, raw=yaml.safe_dump(doc).replace("MARK", '"a\\ud800"'))
+    assert res.returncode == 3 and res.stdout == ""
+    assert res.stderr.splitlines()[-2:] == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: 'utf-8' codec can't encode character '\\ud800' in position 1: surrogates not allowed",
+        "  (run with --traceback for details)",
+    ]
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["script.autobot.yaml", "tmp"] and list(prep_tmp.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the limit on one string of an environment, 32 pages, is Linux's")
+def test_p5_113_default_too_large_for_an_environment_fails_a_run_with_a_prepare(timeline, prep_tmp, tmp_path: Path, capfd, monkeypatch):
+    """SPEC "prepare" (A script that fails stops the run): Linux takes 32 pages for `NAME=value` and its NUL,
+    128 KiB with pages of 4 KiB. With a default of that size the shell can't be started: the run fails with
+    the reason and without the value, nothing is spawned and no temp file is left, through the CLI too. A
+    default that just fits comes back whole, and a run without a `prepare` has the large one."""
+    limit = 32 * resource.getpagesize()
+    large = (SECRET * (limit // len(SECRET) + 1))[:limit]
+    message = "prepare script could not run ('true'): [Errno 7] Argument list too long"
+    with pytest.raises(RuntimeError) as ei:
+        make_runner([], prepare="true\n", env={"AB_A": large}).run()
+    assert str(ei.value) == message and isinstance(ei.value.__cause__, OSError)
+    assert SECRET not in capfd.readouterr().err
+    assert list(prep_tmp.iterdir()) == [] and "attach" not in timeline.names()
+
+    monkeypatch.setenv("TMPDIR", str(prep_tmp))
+    doc = make_doc([], prepare="true\n", env={"AB_A": large}, spawn=f"touch {tmp_path}/spawned")
+    res = run_cli(doc, tmp_path, "--traceback")
+    assert res.returncode == 3 and res.stdout == "" and SECRET not in res.stderr
+    assert res.stderr.splitlines()[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}"
+    assert not (tmp_path / "spawned").exists() and list(prep_tmp.iterdir()) == []
+
+    timeline.stop_attach = True
+    for script, value in (("true\n", large[: limit - len("AB_A=") - 1]), (None, large)):
+        r = make_runner([], prepare=script, env={"AB_A": value})
+        with pytest.raises(AttachRecorded):
+            r.run()
+        assert r._env["AB_A"] == value
+
+
+@pytest.mark.parametrize("script", [None, "AB_NEW=new\nAB_A=changed\nexport AB_OTHER=o\n"], ids=["no-prepare", "prepare"])
+def test_p5_114_spawned_process_gets_none_of_the_declared_values(spawn_env, monkeypatch, script):
+    """SPEC "The environment of the spawned process": the values the declared variables have, before
+    `prepare` and after it, are for templates and for the script: the process gets Autobot's own environment
+    with the plain terminal, in which a declared name has what that environment had."""
+    monkeypatch.setenv("AB_OS", "os")
+    env = spawn_env(
+        prepare=script, env={"AB_A": "dflt", "AB_B": 3, "AB_C": None, "AB_NEW": "dflt-new", "AB_OS": "dflt", "TERM": "none"},
+        given={"AB_C": "cli", "TERM": "vt100"},
+    )
+    assert {k: v for k, v in env.items() if k.startswith("AB_")} == {"AB_OS": "os"}
+    assert env == {**os.environ, "TERM": "dumb", "NO_COLOR": "1"}
