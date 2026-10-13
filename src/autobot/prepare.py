@@ -35,12 +35,12 @@ def _dump(fd: int) -> int:
 
 
 class _Terminated(BaseException):
-    """SIGTERM or SIGHUP, its argument, arrived while the script ran."""
+    """SIGTERM or SIGHUP arrived while the script ran."""
 
 
 @contextlib.contextmanager
 def _terminable() -> Iterator[None]:
-    """While `prepare` runs, SIGTERM and SIGHUP unwind like an interrupt, so what the script runs is ended
+    """While `prepare` runs, SIGTERM and SIGHUP unwind like an interrupt, so the script's process is killed
     and its temp file removed; then autobot ends by the signal, as it would have without this.
 
     Only a signal that has its default action, and where a handler can be set: in the main thread.
@@ -50,7 +50,7 @@ def _terminable() -> Iterator[None]:
     def unwind(signum: int, frame: object) -> None:
         if not got:  # the first one ends the run: a second would unwind the cleanup
             got.append(signum)
-            raise _Terminated(signum)
+            raise _Terminated
 
     try:
         for sig in (signal.SIGTERM, signal.SIGHUP):
@@ -70,17 +70,6 @@ def _terminable() -> Iterator[None]:
                 signal.signal(sig, signal.SIG_DFL)
 
 
-def _started(pid: int) -> list[int]:
-    """The processes that descend from the shell `pid`, a parent before its children, as `ps` lists them;
-    none if it can't. Read while the shell lives: the children of a dead one are another process's."""
-    found = [pid]
-    with contextlib.suppress(OSError, ValueError):
-        table = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], check=False, capture_output=True).stdout.split()
-        for parent in found:  # grows as it is read
-            found += [int(child) for child, of in zip(table[::2], table[1::2], strict=True) if int(of) == parent]
-    return found[1:]
-
-
 def run(script: str, environ: dict[str, str]) -> dict[str, str]:
     """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves;
     `environ` itself when it left none to read. The shell is the words of the shebang, whatever program
@@ -97,30 +86,18 @@ def run(script: str, environ: dict[str, str]) -> dict[str, str]:
             with f:
                 f.write(script)  # may fail: a lone surrogate can't be encoded
             try:
-                shell = subprocess.Popen([*(command or ["/bin/sh"]), "-c", _WRAPPER % fd, f.name], env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
+                result = subprocess.run([*(command or ["/bin/sh"]), "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
             except OSError as e:
                 first = script.partition("\n")[0].rstrip()
                 raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
-            with shell:
-                try:
-                    shell.wait()
-                except BaseException as e:
-                    # an interrupt or a signal: the shell is killed, so it starts nothing more, and what it
-                    # started gets the signal, which a shell doesn't pass on to the command it waits for
-                    started = _started(shell.pid) if shell.returncode is None else []
-                    shell.kill()
-                    for pid in started:
-                        with contextlib.suppress(OSError):  # it has ended, or is another user's (`sudo`)
-                            os.kill(pid, e.args[0] if isinstance(e, _Terminated) else signal.SIGINT)
-                    raise
         finally:
             with contextlib.suppress(FileNotFoundError):  # the script may remove itself
                 os.unlink(f.name)
         # read at its own offset, and emptied: a process the script left running has the descriptor too
         data = os.pread(fd, os.fstat(fd).st_size, 0)
         os.ftruncate(fd, 0)
-    if shell.returncode != 0:
-        raise RunError(f"prepare script failed with exit code {shell.returncode}")
+    if result.returncode != 0:
+        raise RunError(f"prepare script failed with exit code {result.returncode}")
     if data.endswith(b"\0"):
         # decoded as `os.environ` is; a name is the text before the first `=`
         environ = dict(entry.partition("=")[::2] for entry in os.fsdecode(data).split("\0")[:-1])

@@ -530,53 +530,29 @@ def test_p5_72_signal_while_prepare_runs(tmp_path: Path, sig: signal.Signals):
             assert err.splitlines()[1:] == (["Interrupted"] if sig == signal.SIGINT else [])
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGINT], ids=lambda s: s.name)
-def test_p5_72_signal_ends_what_the_script_is_running(tmp_path: Path, sig: signal.Signals):
-    """SPEC "prepare" (A signal while it runs): the signal that only Autobot got goes to what the shell
-    started and still has: both commands of the pipeline it waits for and the command of a shell under it,
-    and a background process, which an interrupt leaves, started with SIGINT ignored. A process that left the
-    shell is left running. The shell is killed and runs nothing more of the script."""
-    script = (
-        "sleep 60 > /dev/null 2>&1 &\necho $! > {pids}/background\n"
-        "(sleep 60 > /dev/null 2>&1 & echo $! > {pids}/detached)\n"
-        f"sh -c \"{(SLEEP % 'nested').replace('$', chr(92) + '$')}; true\" | {SLEEP % 'piped'}\n"
-        "touch {went_on}\n"
-    )
-    with Signalled(tmp_path, script) as run:
-        pids = {name: run.pid(name) for name in ("background", "detached", "nested", "piped")}
-        assert not gone(pids["detached"], 0.3)  # and by now it is no child of the subshell that started it
-        err = run.end(sig)
-        assert run.proc.returncode == -sig, err
-        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists()
-        assert progress(err) == [RUNNING] and "Traceback" not in err and "S3CRET" not in err and run.out == ""
-        assert err.splitlines()[1:] == (["Interrupted"] if sig == signal.SIGINT else [])
-        assert gone(pids["nested"]) and gone(pids["piped"])
-        assert gone(pids["background"], 5 if sig != signal.SIGINT else 0.3) == (sig != signal.SIGINT)
-        assert not gone(pids["detached"], 0.3)
-
-
-def test_p5_72_second_signal_does_not_undo_the_first(tmp_path: Path):
-    """SPEC "prepare" (A signal while it runs): once SIGTERM or SIGHUP has arrived both are ignored, so the
-    two together end the run once: by one of them, with the script's command ended and the file removed."""
-    with Signalled(tmp_path, SLEEP % "command" + "\ntouch {went_on}\n") as run:
-        command = run.pid("command")
-        err = run.end(signal.SIGTERM, signal.SIGHUP, signal.SIGTERM)
-        assert run.proc.returncode in (-signal.SIGTERM, -signal.SIGHUP), err
-        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists() and gone(command)
-        assert err.splitlines() == [RUNNING]
-
-
-def test_p5_72_without_ps_the_shell_alone_is_ended(tmp_path: Path):
-    """SPEC "prepare" (A signal while it runs): where `ps` can't be run, the signal ends the shell, the file
-    is removed and Autobot ends from the signal; the command the shell was waiting for is not found."""
-    (tmp_path / "bin").mkdir()
-    script = "/bin/sh -c 'echo $$ > {pids}/command; exec /bin/sleep 60 > /dev/null 2>&1'\n: > {went_on}\n"
-    with Signalled(tmp_path, "echo $$ > {pids}/shell\n" + script, PATH=str(tmp_path / "bin")) as run:
+def test_p5_72_signal_does_not_end_what_the_shell_started(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): after a SIGTERM that only Autobot got, the shell is gone, the
+    file is removed and Autobot has ended from the signal; the command the shell was waiting for is not
+    signalled, and is still running."""
+    with Signalled(tmp_path, "echo $$ > {pids}/shell\n" + SLEEP % "command" + "\ntouch {went_on}\n") as run:
         shell, command = run.pid("shell"), run.pid("command")
         err = run.end(signal.SIGTERM)
         assert run.proc.returncode == -signal.SIGTERM, err
-        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists() and err.splitlines() == [RUNNING]
+        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists()
+        assert err.splitlines() == [RUNNING] and run.out == ""
         assert gone(shell) and not gone(command, 0.3)
+
+
+def test_p5_72_second_signal_does_not_undo_the_first(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): once SIGTERM or SIGHUP has arrived another of either does
+    nothing, so the three together end the run once: by one of them, with the shell gone and the file removed."""
+    with Signalled(tmp_path, "echo $$ > {pids}/shell\n" + SLEEP % "command" + "\ntouch {went_on}\n") as run:
+        shell = run.pid("shell")
+        run.pid("command")
+        err = run.end(signal.SIGTERM, signal.SIGHUP, signal.SIGTERM)
+        assert run.proc.returncode in (-signal.SIGTERM, -signal.SIGHUP), err
+        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists() and gone(shell)
+        assert err.splitlines() == [RUNNING]
 
 
 def test_p5_72_ignored_signal_stays_ignored(tmp_path: Path):
@@ -611,8 +587,8 @@ def test_p5_72_ignored_signal_stays_ignored(tmp_path: Path):
 
 
 def test_p5_72_completed_prepare_ends_nothing(tmp_path: Path):
-    """SPEC "prepare" (A signal while it runs): what a `prepare` that completes left running, in the
-    background and detached, is running when the run has ended, and the run didn't wait for it."""
+    """SPEC "prepare" (What it does to its shell ends with the shell): what a `prepare` that completes left
+    running, in the background and detached, is running when the run has ended, and the run didn't wait for it."""
     script = "sleep 60 > /dev/null 2>&1 &\necho $! > {pids}/background\n(sleep 60 > /dev/null 2>&1 & echo $! > {pids}/detached)\n"
     with Signalled(tmp_path, script, [{"cmd": "echo ran-step"}]) as run:
         start = time.monotonic()
@@ -625,8 +601,8 @@ def test_p5_72_completed_prepare_ends_nothing(tmp_path: Path):
 
 def test_p5_72_script_reads_the_terminal_and_ctrl_c_ends_it(tmp_path: Path):
     """SPEC "prepare" (A signal while it runs): the shell has Autobot's terminal. A script reads `/dev/tty`
-    and its standard input from it; Ctrl-C there ends the command it is waiting for, and the CLI reports the
-    interrupt and ends from SIGINT."""
+    and its standard input from it; Ctrl-C there reaches the command it is waiting for by itself, and the CLI
+    reports the interrupt and ends from SIGINT."""
     tdir, pid, answers, went_on = tmp_path / "tmp", tmp_path / "pid", tmp_path / "answers", tmp_path / "went_on"
     tdir.mkdir()
     path = tmp_path / "script.autobot.yaml"
