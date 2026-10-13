@@ -181,7 +181,7 @@ class Runner:
         registry.discover()
         self._config = config
         self._default_timeout = 300
-        # the environment of `prepare`, of the spawned process and of `env` without a `prepare`: autobot's own, plain
+        # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ()
         for key in given:
             if key not in config.env:

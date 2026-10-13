@@ -821,6 +821,37 @@ def test_p5_99_empty_value_from_prepare_is_set(prepared, monkeypatch):
     assert r._env == {"AB_A": "", "AB_B": "", "AB_C": False}
 
 
+@pytest.mark.parametrize(("default", "kind"), [(3, "an integer"), (0.5, "a number")], ids=["integer", "number"])
+def test_p5_99_empty_value_from_prepare_is_no_integer_and_no_number(timeline: Timeline, default: float, kind: str):
+    """SPEC "The environment in templates" (Types): the empty string is a value, and no integer and no
+    number: a script that sets such a variable to it fails the run, where a boolean is false and a string empty."""
+    with pytest.raises(ValueError) as ei:
+        make_runner([], prepare="AB_A=\n", env={"AB_A": default}).run()
+    assert str(ei.value) == f"env.AB_A: the value from the environment is not {kind}"
+    assert "attach" not in timeline.names()
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_99_name_the_shell_sets_for_itself_has_the_shells_value_after_a_prepare(timeline, prep_tmp, monkeypatch, shebang: str):
+    """SPEC "The environment in templates": a declared name that the shell sets for itself has the shell's
+    value after a `prepare`, whatever the environment and the default: `PWD` is the working directory in
+    each shell. Without a `prepare` it is the environment's value or the default, and an `--env` value is
+    the variable's either way. Which other names a shell sets (`SHLVL`, `_`) depends on the shell."""
+    timeline.stop_attach = True
+
+    def pwd(script: str | None, **given: str) -> str:
+        r = make_runner([], prepare=script, env={"PWD": "dflt"}, given=given)
+        with pytest.raises(AttachRecorded):
+            r.run()
+        return r._env["PWD"]
+
+    monkeypatch.delenv("PWD", raising=False)
+    assert (pwd(None), pwd(f"{shebang}true\n")) == ("dflt", os.getcwd())
+    monkeypatch.setenv("PWD", "os")
+    assert (pwd(None), pwd(f"{shebang}true\n")) == ("os", os.getcwd())
+    assert (pwd(None, PWD="cli"), pwd(f"{shebang}true\n", PWD="cli")) == ("cli", "cli")
+
+
 @pytest.mark.parametrize("script", [None, "true\n", "exec true\n", "#!/bin/bash\ntrue\n"], ids=["no-prepare", "prepare", "unread", "bash"])
 def test_p5_99_declared_variable_reads_the_environment_of_the_run_with_and_without_a_prepare(timeline, prep_tmp, monkeypatch, script):
     """SPEC "The environment in templates": without a `prepare`, and with one whose environment can't be
@@ -1239,7 +1270,8 @@ def test_p5_110_script_changes_unsets_and_sets_declared_variables(prepared, monk
 
 def test_p5_110_sonic_example_composes_its_image_unless_it_is_given(timeline, prep_tmp, monkeypatch):
     """`examples/sonic.autobot.yaml`: its `prepare` makes `SONIC_IMAGE` of `ARTIFACTORY` and `SONIC_VERSION`,
-    defaults or given, and a `SONIC_IMAGE` from `--env` or the environment is the one used."""
+    defaults or given, and a `SONIC_IMAGE` from `--env` or the environment is the one used. An empty one of
+    `--env` stays empty, and an empty one of the environment is composed, as `:=` reads it."""
     config = Config.model_validate(yaml.safe_load((Path(__file__).parent.parent / "examples" / "sonic.autobot.yaml").read_text()))
     url = "{}/artifactory/sonic-nightly/{}/sonic-aboot-broadcom/latest/sonic-aboot-broadcom.swi"
     timeline.stop_attach = True
@@ -1257,6 +1289,10 @@ def test_p5_110_sonic_example_composes_its_image_unless_it_is_given(timeline, pr
     assert image(SONIC_VERSION="202505") == url.format("https://mirror.example", "202505")
     monkeypatch.setenv("SONIC_IMAGE", "https://os/x.swi")
     assert image() == "https://os/x.swi"
+    # an empty one: `--env` is the value whatever the script composes, and `:=` composes over an empty value of the environment
+    assert image(SONIC_IMAGE="") == ""
+    monkeypatch.setenv("SONIC_IMAGE", "")
+    assert image() == url.format("https://mirror.example", "202511")
 
 
 ROUND_TRIP = {
@@ -1330,9 +1366,9 @@ def test_p5_113_declared_name_that_a_shell_or_an_environment_cannot_hold(timelin
 
 
 def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timeline, prep_tmp):
-    """SPEC "prepare" (The temp file): a lone surrogate in a default can't be in the script's environment:
-    the `UnicodeEncodeError` of one in the script, with no temp file left and nothing spawned; a run without
-    a `prepare` has the value."""
+    """SPEC "prepare" (The temp file): a lone surrogate in a default, other than U+DC80 to U+DCFF, can't be
+    in the script's environment: the `UnicodeEncodeError` of one in the script, with no temp file left and
+    nothing spawned; a run without a `prepare` has the value."""
     env = {"AB_A": "a\ud800b"}
     with pytest.raises(UnicodeEncodeError):
         make_runner([], prepare="true\n", env=env).run()
@@ -1342,6 +1378,60 @@ def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timel
     with pytest.raises(AttachRecorded):
         r.run()
     assert r._env == env
+
+
+@pytest.mark.parametrize("shebang", EACH_SHELL)
+def test_p5_113_default_with_a_surrogate_of_a_byte_comes_back_as_it_is(prepared, shebang: str):
+    """SPEC "prepare" (The temp file), "The environment in templates": U+DC80 to U+DCFF stand for the bytes
+    of a value that isn't UTF-8, so a default with one is in the script's environment as that byte, and
+    comes back unchanged."""
+    env = {"AB_A": "a\udcffb", "AB_B": "\udc80"}
+    assert prepared(f"{shebang}true\n", env=env)._env == env
+
+
+def test_p5_113_cli_reports_a_default_that_utf8_cannot_encode_as_a_failed_run(prep_tmp: Path, tmp_path: Path, monkeypatch):
+    """SPEC "Errors while the script runs": the surrogate of such a default is a failed run, status 3, with
+    the codec's message and the hint of `--traceback`; the script hasn't run, nothing is spawned and no temp
+    file is left."""
+    monkeypatch.setenv("TMPDIR", str(prep_tmp))
+    doc = make_doc([], prepare=f"touch {tmp_path}/prepared\n", env={"AB_A": "MARK"}, spawn=f"touch {tmp_path}/spawned")
+    res = run_cli(None, tmp_path, raw=yaml.safe_dump(doc).replace("MARK", '"a\\ud800"'))
+    assert res.returncode == 3 and res.stdout == ""
+    assert res.stderr.splitlines()[-2:] == [
+        f"Run failed in {tmp_path / 'script.autobot.yaml'}: 'utf-8' codec can't encode character '\\ud800' in position 1: surrogates not allowed",
+        "  (run with --traceback for details)",
+    ]
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["script.autobot.yaml", "tmp"] and list(prep_tmp.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the limit on one string of an environment, 32 pages, is Linux's")
+def test_p5_113_default_too_large_for_an_environment_fails_a_run_with_a_prepare(timeline, prep_tmp, tmp_path: Path, capfd, monkeypatch):
+    """SPEC "prepare" (A script that fails stops the run): Linux takes 32 pages for `NAME=value` and its NUL,
+    128 KiB with pages of 4 KiB. With a default of that size the shell can't be started: the run fails with
+    the reason and without the value, nothing is spawned and no temp file is left, through the CLI too. A
+    default that just fits comes back whole, and a run without a `prepare` has the large one."""
+    limit = 32 * resource.getpagesize()
+    large = (SECRET * (limit // len(SECRET) + 1))[:limit]
+    message = "prepare script could not run ('true'): [Errno 7] Argument list too long"
+    with pytest.raises(RuntimeError) as ei:
+        make_runner([], prepare="true\n", env={"AB_A": large}).run()
+    assert str(ei.value) == message and isinstance(ei.value.__cause__, OSError)
+    assert SECRET not in capfd.readouterr().err
+    assert list(prep_tmp.iterdir()) == [] and "attach" not in timeline.names()
+
+    monkeypatch.setenv("TMPDIR", str(prep_tmp))
+    doc = make_doc([], prepare="true\n", env={"AB_A": large}, spawn=f"touch {tmp_path}/spawned")
+    res = run_cli(doc, tmp_path, "--traceback")
+    assert res.returncode == 3 and res.stdout == "" and SECRET not in res.stderr
+    assert res.stderr.splitlines()[-1] == f"Run failed in {tmp_path / 'script.autobot.yaml'}: {message}"
+    assert not (tmp_path / "spawned").exists() and list(prep_tmp.iterdir()) == []
+
+    timeline.stop_attach = True
+    for script, value in (("true\n", large[: limit - len("AB_A=") - 1]), (None, large)):
+        r = make_runner([], prepare=script, env={"AB_A": value})
+        with pytest.raises(AttachRecorded):
+            r.run()
+        assert r._env["AB_A"] == value
 
 
 @pytest.mark.parametrize("script", [None, "AB_NEW=new\nAB_A=changed\nexport AB_OTHER=o\n"], ids=["no-prepare", "prepare"])

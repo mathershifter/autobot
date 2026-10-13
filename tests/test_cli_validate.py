@@ -303,8 +303,8 @@ def test_p6_105_quoted_values_and_ordinary_nesting_still_load(m: Markers):
 @pytest.mark.parametrize("case", SCRIPT_ERRORS)
 def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str, flags: tuple):
     """SPEC "What a valid script may still do": a malformed or undeclared `--env`, one whose value isn't of its
-    type, an `env` default that is no template and a prompt whose `send` or `sendEach` can't be loaded are not
-    part of the validation stage.
+    type, and a prompt whose `send` is no template or whose `sendEach` can't be loaded are not part of the
+    validation stage.
     `validate` finds the script valid; `run` stops with status 1, before anything runs."""
     make, args, head = SCRIPT_ERRORS[case]
     path = make(m)
@@ -320,9 +320,10 @@ def test_p6_109_what_run_checks_after_validation_is_valid(m: Markers, case: str,
 @pytest.mark.parametrize("flags", [(), ("--traceback",)], ids=["plain", "traceback"])
 @pytest.mark.parametrize("case", ENV_ERRORS)
 def test_p6_109_what_depends_on_a_value_fails_the_run_after_prepare(m: Markers, case: str, flags: tuple):
-    """SPEC "What a valid script may still do", "The order of a run": a variable without a value, text that
-    `prepare` set and that isn't of its type, and a default that can't be rendered are found once `prepare` has run. `validate` finds
-    the script valid; `run` fails with status 3, and nothing is spawned."""
+    """SPEC "What a valid script may still do", "The order of a run": a required variable without a value, text
+    that `prepare` set and that isn't of its type, and a `spawn` that reads a key the `env` section doesn't declare
+    are found once `prepare` has run. `validate` finds the script valid; `run` fails with status 3, and nothing
+    is spawned."""
     make, args, head = ENV_ERRORS[case]
     path = make(m)
     val = _cli("validate", path, *flags)
