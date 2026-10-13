@@ -5,6 +5,7 @@ environment of the spawned process
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import math
 import os
@@ -443,39 +444,221 @@ def test_p5_72_no_descriptor_is_left_open(prepared):
     assert sorted(os.listdir(fds)) == before
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGKILL], ids=lambda s: s.name)
+def gone(pid: int, within: float = 5) -> bool:
+    """Whether the process has ended, `within` seconds from now at the latest: one that ended is reaped by
+    whatever inherited it, and until then it is still there."""
+    deadline = time.monotonic() + within
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+
+
+class Signalled:
+    """A CLI run of a `prepare` in a session of its own, so that a signal reaches Autobot alone, and with its
+    stderr in a file, which a process the script leaves running doesn't hold open for the test. The script
+    writes the pids of what it starts to files in `pids`, and all of them are killed when the test ends."""
+
+    def __init__(self, tmp_path: Path, script: str, steps: list[dict] | None = None, **env: str) -> None:
+        self.tmp, self.pids, self.went_on = tmp_path / "tmp", tmp_path / "pids", tmp_path / "went_on"
+        self.tmp.mkdir()
+        self.pids.mkdir()
+        path = tmp_path / "script.autobot.yaml"
+        path.write_text(yaml.safe_dump(make_doc(steps or [], prepare=script.format(pids=self.pids, went_on=self.went_on))))
+        self.err = tmp_path / "stderr"
+        with self.err.open("wb") as err:
+            self.proc = subprocess.Popen(
+                [sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)],
+                env={**os.environ, "TMPDIR": str(self.tmp), "AB_OS": "S3CRET-os", **env},
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err, text=True, start_new_session=True, preexec_fn=default_signals,
+            )
+
+    def pid(self, name: str) -> int:
+        """The pid the script wrote to the file `name`, once it is there."""
+        deadline = time.monotonic() + 20
+        while True:
+            text = (self.pids / name).read_text() if (self.pids / name).exists() else ""
+            if text.endswith("\n"):
+                return int(text)
+            assert self.proc.poll() is None and time.monotonic() < deadline, self.err.read_text()
+            time.sleep(0.05)
+
+    def end(self, *sigs: signal.Signals) -> str:
+        """Send the signals, if any, and wait for the end: Autobot's stderr."""
+        for sig in sigs:
+            self.proc.send_signal(sig)
+        self.out = self.proc.communicate(timeout=30)[0]
+        return self.err.read_text()
+
+    def __enter__(self) -> Signalled:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.proc.kill()
+        self.proc.wait()
+        for f in self.pids.iterdir():
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(f.read_text()), signal.SIGKILL)
+
+
+# a command of the script that tells its pid: `sleep`, with the pid of the shell that became it
+SLEEP = "sh -c 'echo $$ > {pids}/%s; exec sleep 60 > /dev/null 2>&1'"
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGKILL], ids=lambda s: s.name)
 def test_p5_72_signal_while_prepare_runs(tmp_path: Path, sig: signal.Signals):
-    """SPEC "prepare": SIGTERM and an interrupt remove the script's temp file; SIGKILL leaves it, and nothing
+    """SPEC "prepare" (The temp file, A signal while it runs): SIGTERM, SIGHUP and an interrupt end the shell
+    and remove the script's temp file, and Autobot ends from the signal; SIGKILL leaves the file, and nothing
     that holds a value of the environment."""
-    tdir, started = tmp_path / "tmp", tmp_path / "started"
-    tdir.mkdir()
-    path = tmp_path / "script.autobot.yaml"
-    path.write_text(yaml.safe_dump(make_doc([], prepare=f"touch {started}\nexec sleep 20 > /dev/null 2>&1\n")))
+    with Signalled(tmp_path, "echo $$ > {pids}/shell\nexec sleep 20 > /dev/null 2>&1\n") as run:
+        shell = run.pid("shell")
+        err = run.end(sig)
+        left = list(run.tmp.iterdir())
+        assert run.proc.returncode == -sig, err  # after Ctrl-C, too, the CLI ends from the signal
+        if sig == signal.SIGKILL:
+            assert [f.suffix for f in left] == [".sh"]
+            assert b"S3CRET" not in left[0].read_bytes()
+            assert not gone(shell, 0.3)
+        else:
+            assert left == []
+            assert gone(shell)
+            assert progress(err) == [RUNNING] and "Traceback" not in err and run.out == ""
+            assert err.splitlines()[1:] == (["Interrupted"] if sig == signal.SIGINT else [])
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGINT], ids=lambda s: s.name)
+def test_p5_72_signal_ends_what_the_script_is_running(tmp_path: Path, sig: signal.Signals):
+    """SPEC "prepare" (A signal while it runs): the signal that only Autobot got goes to what the shell
+    started and still has: both commands of the pipeline it waits for and the command of a shell under it,
+    and a background process, which an interrupt leaves, started with SIGINT ignored. A process that left the
+    shell is left running. The shell is killed and runs nothing more of the script."""
+    script = (
+        "sleep 60 > /dev/null 2>&1 &\necho $! > {pids}/background\n"
+        "(sleep 60 > /dev/null 2>&1 & echo $! > {pids}/detached)\n"
+        f"sh -c \"{(SLEEP % 'nested').replace('$', chr(92) + '$')}; true\" | {SLEEP % 'piped'}\n"
+        "touch {went_on}\n"
+    )
+    with Signalled(tmp_path, script) as run:
+        pids = {name: run.pid(name) for name in ("background", "detached", "nested", "piped")}
+        assert not gone(pids["detached"], 0.3)  # and by now it is no child of the subshell that started it
+        err = run.end(sig)
+        assert run.proc.returncode == -sig, err
+        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists()
+        assert progress(err) == [RUNNING] and "Traceback" not in err and "S3CRET" not in err and run.out == ""
+        assert err.splitlines()[1:] == (["Interrupted"] if sig == signal.SIGINT else [])
+        assert gone(pids["nested"]) and gone(pids["piped"])
+        assert gone(pids["background"], 5 if sig != signal.SIGINT else 0.3) == (sig != signal.SIGINT)
+        assert not gone(pids["detached"], 0.3)
+
+
+def test_p5_72_second_signal_does_not_undo_the_first(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): once SIGTERM or SIGHUP has arrived both are ignored, so the
+    two together end the run once: by one of them, with the script's command ended and the file removed."""
+    with Signalled(tmp_path, SLEEP % "command" + "\ntouch {went_on}\n") as run:
+        command = run.pid("command")
+        err = run.end(signal.SIGTERM, signal.SIGHUP, signal.SIGTERM)
+        assert run.proc.returncode in (-signal.SIGTERM, -signal.SIGHUP), err
+        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists() and gone(command)
+        assert err.splitlines() == [RUNNING]
+
+
+def test_p5_72_without_ps_the_shell_alone_is_ended(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): where `ps` can't be run, the signal ends the shell, the file
+    is removed and Autobot ends from the signal; the command the shell was waiting for is not found."""
+    (tmp_path / "bin").mkdir()
+    script = "/bin/sh -c 'echo $$ > {pids}/command; exec /bin/sleep 60 > /dev/null 2>&1'\n: > {went_on}\n"
+    with Signalled(tmp_path, "echo $$ > {pids}/shell\n" + script, PATH=str(tmp_path / "bin")) as run:
+        shell, command = run.pid("shell"), run.pid("command")
+        err = run.end(signal.SIGTERM)
+        assert run.proc.returncode == -signal.SIGTERM, err
+        assert list(run.tmp.iterdir()) == [] and not run.went_on.exists() and err.splitlines() == [RUNNING]
+        assert gone(shell) and not gone(command, 0.3)
+
+
+def test_p5_72_ignored_signal_stays_ignored(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): only a default action is replaced. With SIGHUP ignored, as
+    under `nohup`, `prepare` goes on, and the run with it."""
+    script = "trap '' HUP\nexec " + sys.executable + " -m autobot.cli \"$1\"\n"
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text(script)
+    path = tmp_path / "inner.autobot.yaml"
+    go = tmp_path / "go"
+    prep = f"echo $$ > {tmp_path}/shell\nwhile [ ! -e {go} ]; do sleep 0.1; done\n"
+    path.write_text(yaml.safe_dump(make_doc([{"cmd": "echo ran-step"}], prepare=prep)))
     proc = subprocess.Popen(
-        [sys.executable, "-m", "autobot.cli", str(path)],
-        env={**os.environ, "TMPDIR": str(tdir), "AB_OS": "S3CRET-os"},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
+        ["/bin/sh", str(wrapper), str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True, preexec_fn=default_signals,
     )
     try:
         deadline = time.monotonic() + 20
-        while not started.exists():
-            assert proc.poll() is None and time.monotonic() < deadline, proc.stderr.read()
+        while not (tmp_path / "shell").exists():
+            assert proc.poll() is None and time.monotonic() < deadline
             time.sleep(0.05)
-        proc.send_signal(sig)
-        err = proc.communicate(timeout=20)[1]
+        proc.send_signal(signal.SIGHUP)
+        time.sleep(0.3)
+        assert proc.poll() is None
+        go.touch()
+        out, err = proc.communicate(timeout=30)
     finally:
         proc.kill()
-    left = list(tdir.iterdir())
-    if sig == signal.SIGKILL:
-        assert proc.returncode == -signal.SIGKILL
-        assert [f.suffix for f in left] == [".sh"]
-        assert b"S3CRET" not in left[0].read_bytes()
-    else:
-        assert left == []
-        assert proc.returncode == -sig, err  # after Ctrl-C, too, the CLI ends from the signal
-        assert "Traceback" not in err
+        proc.wait()
+    assert proc.returncode == 0, err
+    assert "ran-step" in out and err.splitlines()[-1] == ">> run completed"
+
+
+def test_p5_72_completed_prepare_ends_nothing(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): what a `prepare` that completes left running, in the
+    background and detached, is running when the run has ended, and the run didn't wait for it."""
+    script = "sleep 60 > /dev/null 2>&1 &\necho $! > {pids}/background\n(sleep 60 > /dev/null 2>&1 & echo $! > {pids}/detached)\n"
+    with Signalled(tmp_path, script, [{"cmd": "echo ran-step"}]) as run:
+        start = time.monotonic()
+        err = run.end()
+        assert run.proc.returncode == 0 and time.monotonic() - start < 20, err
+        assert "ran-step" in run.out and err.splitlines()[-1] == ">> run completed"
+        assert list(run.tmp.iterdir()) == []
+        assert not gone(run.pid("background"), 0.3) and not gone(run.pid("detached"), 0.3)
+
+
+def test_p5_72_script_reads_the_terminal_and_ctrl_c_ends_it(tmp_path: Path):
+    """SPEC "prepare" (A signal while it runs): the shell has Autobot's terminal. A script reads `/dev/tty`
+    and its standard input from it; Ctrl-C there ends the command it is waiting for, and the CLI reports the
+    interrupt and ends from SIGINT."""
+    tdir, pid, answers, went_on = tmp_path / "tmp", tmp_path / "pid", tmp_path / "answers", tmp_path / "went_on"
+    tdir.mkdir()
+    path = tmp_path / "script.autobot.yaml"
+    script = (
+        f"printf 'passphrase: ' > /dev/tty\nread first < /dev/tty\nprintf 'again: '\nread second\n"
+        f"echo \"[$first][$second]\" > {answers}\nsh -c 'echo $$ > {pid}; exec sleep 60'\ntouch {went_on}\n"
+    )
+    path.write_text(yaml.safe_dump(make_doc([], prepare=script)))
+    child = pexpect.spawn(
+        sys.executable, ["-W", "ignore", "-m", "autobot.cli", str(path)], env={**os.environ, "TMPDIR": str(tdir)}, timeout=20, encoding="utf-8",
+        preexec_fn=default_signals,
+    )
+    try:
+        child.expect_exact("passphrase: ")
+        child.sendline("open sesame")
+        child.expect_exact("again: ")
+        child.sendline("from stdin")
+        deadline = time.monotonic() + 20
+        while not pid.read_text().endswith("\n") if pid.exists() else True:
+            assert child.isalive() and time.monotonic() < deadline
+            time.sleep(0.05)
+        child.sendcontrol("c")
+        rest = child.read()
+        child.close()
+        assert answers.read_text() == "[open sesame][from stdin]\n"
+        assert (child.exitstatus, child.signalstatus) == (None, signal.SIGINT), rest
+        assert "Interrupted" in rest and "Traceback" not in rest
+        assert gone(int(pid.read_text())) and not went_on.exists() and list(tdir.iterdir()) == []
+    finally:
+        child.close(force=True)
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(pid.read_text()), signal.SIGKILL)
 
 
 def test_p5_72_temp_path_is_never_read_as_shell_code(timeline: Timeline, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

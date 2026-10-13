@@ -668,11 +668,11 @@ def test_p5_55_prepare_temp_file_removed_when_the_shell_is_not_run(prep_tmp: Pat
     """Every later failure removes it too."""
     import subprocess
 
-    def run(command: list[str], **kw: Any) -> None:
+    def popen(command: list[str], **kw: Any) -> None:
         assert [f.name for f in prep_tmp.iterdir()] == [os.path.basename(command[-1])]
         raise MemoryError
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
     with pytest.raises(MemoryError):
         Runner._run_prepare("#!/bin/sh\ntrue\n", dict(os.environ))
     assert list(prep_tmp.iterdir()) == []
