@@ -970,17 +970,36 @@ def test_p5_81_quoted_template_value_on_the_spawn_line_arrives_whole(os_env, val
     assert out["out"] == f"<{value}>"
 
 
-def test_p5_81_entry_without_a_name_is_not_in_the_run_environment(tmp_path: Path):
+# Runs its arguments with the environment of this process and an entry `=nameless`, through the C library's
+# `execve`: Python's own `subprocess`, `os.posix_spawn` and `os.execve` refuse an entry with an empty name
+# since 3.14, and coreutils' `env` refuses one too, but the kernel takes it, so a program can be started so
+NAMELESS_EXEC = """\
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+argv = [os.fsencode(a) for a in sys.argv[1:]]
+envp = [os.fsencode(k) + b"=" + os.fsencode(v) for k, v in os.environ.items()] + [b"=nameless"]
+libc.execve(argv[0], (ctypes.c_char_p * (len(argv) + 1))(*argv, None), (ctypes.c_char_p * (len(envp) + 1))(*envp, None))
+sys.exit(f"execve: {os.strerror(ctypes.get_errno())}")
+"""
+
+
+def run_nameless(*argv: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, "-c", NAMELESS_EXEC, *argv], check=False, capture_output=True, text=True, timeout=60)
+
+
+@pytest.mark.parametrize("prepare", [None, "AB_P=1\n"], ids=["plain", "prepare"])
+def test_p5_81_entry_without_a_name_is_not_in_the_run_environment(tmp_path: Path, prepare: str | None):
     """SPEC "The environment of the spawned process": an entry with an empty name, which a program can be
-    started with, is left out: the process is spawned, without it."""
+    started with, is left out: the process is spawned, without it, after a `prepare` too."""
+    # the entry is there for a program started so
+    check = run_nameless(sys.executable, "-c", "print(open('/proc/self/environ', 'rb').read().split(b'\\0').count(b'=nameless'))")
+    assert (check.returncode, check.stdout) == (0, "1\n"), check.stderr
     out = tmp_path / "out"
-    doc = make_doc([{"cmd": f"env | grep -c '^=' > {out}", "ignore_error": True}])
+    # the environment the shell was started with, as the kernel holds it: bash itself drops a nameless entry
+    doc = make_doc([{"cmd": f"tr '\\0' '\\n' < /proc/$$/environ | grep -c '^=' > {out}", "ignore_error": True}], prepare=prepare)
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
-    env = {**os.environ, "": "nameless"}
-    res = subprocess.run(
-        [sys.executable, "-m", "autobot.cli", str(path)], check=False, capture_output=True, text=True, env=env, timeout=60
-    )
+    res = run_nameless(sys.executable, "-m", "autobot.cli", str(path))
     assert res.returncode == 0 and res.stderr.splitlines()[-1] == ">> run completed"
     assert "Traceback" not in res.stdout + res.stderr and "nameless" not in res.stdout
     assert out.read_text() == "0\n"
