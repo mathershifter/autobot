@@ -317,7 +317,7 @@ Without `fields`, each item is a string or number, sent in answer to the prompt'
 
 After the last line, the step checks the result. With `assert`, the output must match. Otherwise the exit code of the last line is read with `echo $?` and must be 0. With top-level `errors`, the patterns stand in for the exit code check, except at a `posix` shell prompt (see [Error handling](#error-handling)). The exact rules are in [SPEC.md](SPEC.md#cmd--send-commands-to-the-shell).
 
-The output is what the command printed: the echo of the command, the prompt and ANSI escape sequences are removed. Text printed without a final newline shares a line with the prompt and is not captured. See [Captured output](SPEC.md#captured-output).
+The output is what the command printed: the prompt, ANSI escape sequences and, where it is recognized, the echo of the command are removed. Text printed without a final newline shares a line with the prompt and is not captured. See [Captured output](SPEC.md#captured-output).
 
 A `cmd` blocks until a shell prompt comes back. For a command that doesn't return one (`reboot`, `exit`, connecting to an idle console), use `line`.
 
@@ -462,7 +462,7 @@ By default, a `cmd` step fails on a non-zero exit code.
 
 It covers command failures only: a non-zero exit code, a failed `assert`, an `errors` match and an embedded-script upload mismatch. A timeout, a closed connection or a template error always ends the script.
 
-**Global error patterns:** top-level `errors` detects errors by output pattern, for CLIs without exit codes (e.g. Arista EOS). The patterns are matched against each command line's output, not the echoed command. They replace the exit code check of command lines, except at a prompt with `posix: true`: give the device's shell prompt its own entry with it, and a `cmd` whose last line ends there gets both checks, the patterns first, then the exit code.
+**Global error patterns:** top-level `errors` detects errors by output pattern, for CLIs without exit codes (e.g. Arista EOS). The patterns are matched against each command line's [output](#cmd). They replace the exit code check of command lines, except at a prompt with `posix: true`: give the device's shell prompt its own entry with it, and a `cmd` whose last line ends there gets both checks, the patterns first, then the exit code.
 
 ```yaml
 prompts:

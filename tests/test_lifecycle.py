@@ -79,7 +79,7 @@ def test_p5_46_attach_timeout_message_names_spawn():
 
 
 def test_p5_47_check_rc_timeout_message(shell_session: Session):
-    """SPEC "cmd" ignore_error: the `$?` wait times out with a message naming the exit code check."""
+    """SPEC "Ignoring a failure with ignore_error": the `$?` wait times out with a message naming the exit code check."""
     s = shell_session
     s.get_prompt(timeout=5)
     s.sendline("sleep 30")
@@ -109,7 +109,7 @@ def test_p5_49_attach_eof_message(spawn: str, status: str):
 
 
 def test_p5_50_check_rc_eof_message(shell_session: Session):
-    """SPEC "cmd" ignore_error: the connection closing during the `$?` wait names the exit code check."""
+    """SPEC "Ignoring a failure with ignore_error": the connection closing during the `$?` wait names the exit code check."""
     s = shell_session
     s.get_prompt(timeout=5)
     s.sendline("sleep 0.5; exit")  # the shell is still running when the `$?` check is sent
