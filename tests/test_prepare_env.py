@@ -1320,8 +1320,11 @@ def test_p5_104_required_variable_is_not_set_by_an_environment_that_cannot_be_re
 
 # -- P5-105: where the environment is written ---------------------------------------
 
+# The lock is taken on a copy of 9 that `flock` alone gets (`8>&9`): ksh93 and mksh mark a descriptor above
+# 2 that `exec` opens close-on-exec, so `flock -n 9` would find no 9. The lock belongs to the open file, so
+# the script holds it on 9 once `flock` is gone, in every shell.
 OWN_DESCRIPTORS = {
-    "lock-file": 'exec 9>"@D@/prepare.lock"\nflock -n 9 || exit 1\nAB_A=S3CRET-v4lue\n',
+    "lock-file": 'exec 9>"@D@/prepare.lock"\nflock -n 8 8>&9 || exit 1\nAB_A=S3CRET-v4lue\n',
     "appended-log": 'exec 9>>"@D@/log" 3>"@D@/three"\nAB_A=S3CRET-v4lue\n',
     "descriptor-to-stderr": "exec 9>&2\nAB_A=S3CRET-v4lue\n",
     "exit-in-function-with-descriptor": "f() { AB_A=S3CRET-v4lue; exit 0; }\nf 9>&2\n",
