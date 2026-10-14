@@ -100,13 +100,17 @@ script:
         - cmd: sudo sonic-installer list | grep -e 'Next:'
           ignore_error: true
           register: next_version
-        # - cmd: "echo 'Next version: {{ vars.next_version }}'"
+        # the image the switch boots next, without its label: 'Next: SONiC-OS-202511.1' is
+        # 'SONiC-OS-202511.1'. A set value is a template, rendered where the step stands.
+        - set:
+            next_image: "{{ vars.next_version | replace('Next:', '') | trim }}"
+        # - cmd: "echo 'Next image: {{ vars.next_image }}'"
         - block:
             name: Upgrade SONiC
             script:
               - cmd: sudo sonic-installer install -y {{ env.SONIC_IMAGE }}
               - call: reboot
-          when: "{{ env.SONIC_VERSION not in vars.next_version }}"
+          when: "{{ env.SONIC_VERSION not in vars.next_image }}"
         # - block:
         #     name: Check Aboot
         #     prompts:

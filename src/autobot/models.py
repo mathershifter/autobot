@@ -374,6 +374,23 @@ class ControlStep(pydantic.BaseModel):
         return v
 
 
+class SetStep(pydantic.BaseModel):
+    model_config = _STRICT
+    # values are data, like those of `vars`: their strings are rendered when the step runs
+    set_: dict[Annotated[str, pydantic.StringConstraints(min_length=1)], Any] = pydantic.Field(alias="set")
+    after: Omittable[After] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+
+    @pydantic.field_validator("set_", mode="before")
+    @classmethod
+    def _not_empty(cls, v: Any) -> Any:
+        if v == {}:
+            raise _custom("too_short", "set must assign at least one variable")
+        return v
+
+
 class PluginStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="allow", strict=True)
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
@@ -397,7 +414,7 @@ class PluginStep(pydantic.BaseModel):
         return data
 
 
-_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control")
+_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control", "set")
 _COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
 
 
@@ -422,6 +439,7 @@ Step = Annotated[
     | Annotated[LineStep, pydantic.Tag("line")]
     | Annotated[ReturnStep, pydantic.Tag("return")]
     | Annotated[ControlStep, pydantic.Tag("control")]
+    | Annotated[SetStep, pydantic.Tag("set")]
     | Annotated[PluginStep, pydantic.Tag("plugin")],
     pydantic.Discriminator(
         _step_discriminator,

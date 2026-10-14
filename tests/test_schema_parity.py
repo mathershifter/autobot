@@ -297,6 +297,7 @@ HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
     models.LineStep: _step_host({"line": "x"}),
     models.ReturnStep: _step_host({"return": 1}),
     models.ControlStep: _step_host({"control": "c"}),
+    models.SetStep: _step_host({"set": {"a": "x"}}),
 }
 
 
@@ -934,6 +935,7 @@ EMPTY_AFTER: dict[str, tuple[dict[str, Any], tuple]] = {
     "line": (s({"line": "x", "after": ""}), ("script", 0, "line", "after")),
     "return": (s({"return": 1, "after": ""}), ("script", 0, "return", "after")),
     "control": (s({"control": "c", "after": ""}), ("script", 0, "control", "after")),
+    "set": (s({"set": {"a": 1}, "after": ""}), ("script", 0, "set", "after")),
     "in-fn": (d(fn={"f": {"script": [{"cmd": "x", "after": ""}]}}), ("fn", "f", "script", 0, "cmd", "after")),
     "in-attach-script": (
         d(attach={"spawn": "ssh host", "script": [{"line": "x", "after": ""}]}),
@@ -982,7 +984,7 @@ def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
         if "after" in definition.get("properties", {})
     ]
     assert sorted(name for name, _ in found) == [
-        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "stepCommon",
+        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "setStep", "stepCommon",
     ]
     assert all(prop == {"type": "string", "minLength": 1} for _, prop in found)
 
