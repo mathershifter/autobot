@@ -35,35 +35,37 @@ def _dump(fd: int) -> int:
 
 
 class _Terminated(BaseException):
-    """SIGTERM arrived while the script ran."""
+    """SIGTERM or SIGHUP arrived while the script ran."""
 
 
 @contextlib.contextmanager
 def _terminable() -> Iterator[None]:
-    """While `prepare` runs, SIGTERM unwinds like an interrupt, so the script's process is killed and its
-    temp file removed; then autobot ends by the signal, as it would have without this.
+    """While `prepare` runs, SIGTERM and SIGHUP unwind like an interrupt, so the script's process is killed
+    and its temp file removed; then autobot ends by the signal, as it would have without this.
 
-    Only where SIGTERM has its default action and a handler can be set: in the main thread.
+    Only a signal that has its default action, and where a handler can be set: in the main thread.
     """
+    got: list[int] = []
 
     def unwind(signum: int, frame: object) -> None:
-        raise _Terminated
+        if not got:  # the first one ends the run: a second would unwind the cleanup
+            got.append(signum)
+            raise _Terminated
 
     try:
-        default = signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
-        if default:
-            signal.signal(signal.SIGTERM, unwind)
-    except ValueError:  # not the main thread
-        default = False
-    try:
+        with contextlib.suppress(ValueError):  # not the main thread
+            for sig in (signal.SIGTERM, signal.SIGHUP):
+                if signal.getsignal(sig) is signal.SIG_DFL:
+                    signal.signal(sig, unwind)
         yield
     except _Terminated:
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGTERM)
-        raise
+        signal.signal(got[0], signal.SIG_DFL)
+        os.kill(os.getpid(), got[0])
+        sys.exit(128 + got[0])  # the signal didn't end the process: it is PID 1
     finally:
-        if default:
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is unwind:
+                signal.signal(sig, signal.SIG_DFL)
 
 
 def run(script: str, environ: dict[str, str]) -> dict[str, str]:
