@@ -57,7 +57,8 @@ jobs:
   test:
     name: Full test suite
     needs: version
-    runs-on: ubuntu-24.04
+    # the bash of 24.04 (5.2) fails P8-34 (tests/test_echo.py); 26.04 has the 5.3 the suite is run with
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
