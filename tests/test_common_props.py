@@ -233,7 +233,7 @@ def test_p3_17_after_timeout_uses_step_timeout():
 
 
 def test_p3_18_after_eof_names_pattern():
-    """SPEC "cmd" ignore_error: the connection closing during the after wait names the rendered pattern."""
+    """SPEC "Ignoring a failure with ignore_error": the connection closing during the after wait names the rendered pattern."""
     with pytest.raises(EOFError, match=r"^connection closed while waiting for the after pattern 'login: x'$"):
         run_script([{"line": "exit"}, {"cmd": "true", "after": "login: {{ 'x' }}", "timeout": 5}])
 

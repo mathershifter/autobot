@@ -230,7 +230,7 @@ def assert_aborted(runner: Runner, probe: ProbeExecutor) -> None:
 
 
 def test_p1_20_ignore_error_does_not_swallow_timeout(probe: ProbeExecutor):
-    """SPEC "cmd" ignore_error: a prompt timeout aborts despite ignore_error."""
+    """SPEC "Ignoring a failure with ignore_error": a prompt timeout aborts despite ignore_error."""
     r = aborting_runner({"cmd": "sleep 30", "timeout": 1})
     with pytest.raises(TimeoutError):
         r.run()
@@ -238,7 +238,7 @@ def test_p1_20_ignore_error_does_not_swallow_timeout(probe: ProbeExecutor):
 
 
 def test_p1_20_ignore_error_does_not_swallow_eof(probe: ProbeExecutor):
-    """SPEC "cmd" ignore_error: a closed connection (EOFError) aborts.
+    """SPEC "Ignoring a failure with ignore_error": a closed connection (EOFError) aborts.
 
     Uses the real shell rather than F3: ``exit`` closes the session before
     the next prompt.
@@ -250,7 +250,7 @@ def test_p1_20_ignore_error_does_not_swallow_eof(probe: ProbeExecutor):
 
 
 def test_p1_20_ignore_error_does_not_swallow_template_error(probe: ProbeExecutor, sent: SentLog):
-    """SPEC "cmd" ignore_error: an undefined template variable aborts."""
+    """SPEC "Ignoring a failure with ignore_error": an undefined template variable aborts."""
     r = aborting_runner({"cmd": "echo {{ vars.nope }}"})
     with pytest.raises(ValueError, match="^template error: "):
         r.run()
@@ -259,7 +259,7 @@ def test_p1_20_ignore_error_does_not_swallow_template_error(probe: ProbeExecutor
 
 
 def test_p1_20_ignore_error_does_not_swallow_invalid_regex(probe: ProbeExecutor):
-    """SPEC "cmd" ignore_error: an assert that renders to an invalid regular expression aborts.
+    """SPEC "Ignoring a failure with ignore_error": an assert that renders to an invalid regular expression aborts.
 
     It is a ``ValueError`` naming the pattern, not a raw ``re.error``; one that isn't a template is
     rejected when the script is loaded (P6-65).
@@ -281,7 +281,7 @@ def test_p1_21_assert_rendering_to_an_empty_regex_aborts(probe: ProbeExecutor):
 
 
 def test_p1_20_ignore_error_does_not_swallow_responses_exhausted(probe: ProbeExecutor):
-    """SPEC "cmd" ignore_error: a prompt-response failure inside the command aborts.
+    """SPEC "Ignoring a failure with ignore_error": a prompt-response failure inside the command aborts.
 
     The command prompts ``LOGIN: `` twice; the prompt's sendEach has one item, so
     the second match raises ``responses exhausted``.
