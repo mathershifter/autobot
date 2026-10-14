@@ -150,7 +150,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | `autobot` | yes      | Schema version: `2026-10` |
 | `prepare` | no       | A local shell script that runs first and sets `env` variables. See [Prepare](#prepare) |
 | `env`     | no       | The script's variables and their defaults, read as `{{ env.KEY }}`. See [Templating](#templating) |
-| `vars`    | no       | Any data, read as `{{ vars.KEY }}`. Used as written, not rendered; compute values with a [`set`](#set) step |
+| `vars`    | no       | Any data under non-empty keys, read as `{{ vars.KEY }}`. Used as written, not rendered; compute values with a [`set`](#set) step |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `^% .*`). They replace the `$?` exit code check of command lines, except at a `posix` shell prompt. See [Error handling](#error-handling) |
 | `fn`      | no       | Named functions, run with `call`. See [Functions](#functions) |

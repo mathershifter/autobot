@@ -93,6 +93,15 @@ def test_p8_58_set_error_locations(step: dict[str, Any], expected: list):
     assert errors(doc(step)) == expected
 
 
+def test_p8_58_set_top_level_vars_reject_an_empty_key_as_set_does(both_validate: Callable):
+    """SPEC "YAML Script Structure", "Top-level fields" (`vars`): an empty key of the top-level `vars` is
+    rejected by both, with the error a `set` step gives; a nested mapping's empty key is data."""
+    bad = make_doc([], vars={"": "x", "ok": 1})
+    assert both_validate(bad) == (False, False)
+    assert errors(bad) == [(("vars", "", "[key]"), "string_too_short", "String should have at least 1 character")]
+    assert both_validate(make_doc([], vars={"m": {"": "x"}})) == (True, True)
+
+
 def test_p8_58_set_beside_a_cmd_is_a_cmd_with_an_extra_field():
     """SPEC "Common Step Properties": a built-in key takes precedence in the order of the step types."""
     assert errors(doc({"cmd": "true", "set": {"a": 1}})) == [

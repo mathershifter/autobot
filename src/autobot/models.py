@@ -127,6 +127,8 @@ def _env_value(v: Any) -> Any:
 
 
 EnvValue = Annotated[Any, pydantic.BeforeValidator(_env_value)]
+# a key of `vars`, which nothing could read as `vars.<key>` if it were empty
+VarName = Annotated[str, pydantic.StringConstraints(min_length=1)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -377,7 +379,7 @@ class ControlStep(pydantic.BaseModel):
 class SetStep(pydantic.BaseModel):
     model_config = _STRICT
     # values are data, like those of `vars`: their strings are rendered when the step runs
-    set_: dict[Annotated[str, pydantic.StringConstraints(min_length=1)], Any] = pydantic.Field(alias="set")
+    set_: dict[VarName, Any] = pydantic.Field(alias="set")
     after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
@@ -487,7 +489,7 @@ class Config(pydantic.BaseModel):
         return v
     prepare: Omittable[str] = None
     env: NotNull[dict[str, EnvValue]] = {}
-    vars: NotNull[dict[str, Any]] = {}
+    vars: NotNull[dict[VarName, Any]] = {}
     prompts: NotNull[list[Prompt]] = []
     fn: NotNull[dict[str, Function]] = {}
     errors: NotNull[list[ErrorRegex]] = []

@@ -1081,11 +1081,14 @@ def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Ca
 
 
 def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
-    """`propertyNames` is on the three free-form mappings and on `stepCommon`; every other object is closed."""
+    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed.
+    A key of `vars` and of a `set` step is also non-empty."""
     names = {"type": "string"}
     props, defs = schema["properties"], schema["$defs"]
-    for node in (props["env"], props["vars"], props["fn"], defs["stepCommon"]):
+    for node in (props["env"], props["fn"], defs["stepCommon"]):
         assert node["propertyNames"] == names
+    for node in (props["vars"], defs["setStep"]["properties"]["set"]):
+        assert node["propertyNames"] == {**names, "minLength": 1}
 
     def objects(node: Any, path: str = "") -> Any:
         if isinstance(node, dict):

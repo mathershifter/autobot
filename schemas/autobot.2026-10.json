@@ -15,7 +15,7 @@
     },
     "vars": {
       "type": "object",
-      "propertyNames": { "type": "string" },
+      "propertyNames": { "type": "string", "minLength": 1 },
       "additionalProperties": true
     },
     "prompts": {
