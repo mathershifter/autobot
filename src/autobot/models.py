@@ -127,6 +127,8 @@ def _env_value(v: Any) -> Any:
 
 
 EnvValue = Annotated[Any, pydantic.BeforeValidator(_env_value)]
+# a key of `vars`, which nothing could read as `vars.<key>` if it were empty
+VarName = Annotated[str, pydantic.StringConstraints(min_length=1)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -374,6 +376,23 @@ class ControlStep(pydantic.BaseModel):
         return v
 
 
+class SetStep(pydantic.BaseModel):
+    model_config = _STRICT
+    # values are data, like those of `vars`: their strings are rendered when the step runs
+    set_: dict[VarName, Any] = pydantic.Field(alias="set")
+    after: Omittable[After] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+
+    @pydantic.field_validator("set_", mode="before")
+    @classmethod
+    def _not_empty(cls, v: Any) -> Any:
+        if v == {}:
+            raise _custom("too_short", "set must assign at least one variable")
+        return v
+
+
 class PluginStep(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="allow", strict=True)
     plugin_key_: str | None = pydantic.Field(None, exclude=True)
@@ -397,7 +416,7 @@ class PluginStep(pydantic.BaseModel):
         return data
 
 
-_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control")
+_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control", "set")
 _COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
 
 
@@ -422,6 +441,7 @@ Step = Annotated[
     | Annotated[LineStep, pydantic.Tag("line")]
     | Annotated[ReturnStep, pydantic.Tag("return")]
     | Annotated[ControlStep, pydantic.Tag("control")]
+    | Annotated[SetStep, pydantic.Tag("set")]
     | Annotated[PluginStep, pydantic.Tag("plugin")],
     pydantic.Discriminator(
         _step_discriminator,
@@ -469,7 +489,7 @@ class Config(pydantic.BaseModel):
         return v
     prepare: Omittable[str] = None
     env: NotNull[dict[str, EnvValue]] = {}
-    vars: NotNull[dict[str, Any]] = {}
+    vars: NotNull[dict[VarName, Any]] = {}
     prompts: NotNull[list[Prompt]] = []
     fn: NotNull[dict[str, Function]] = {}
     errors: NotNull[list[ErrorRegex]] = []

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import re
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 
 from . import log
@@ -14,6 +14,7 @@ from .models import (
     ControlStep,
     LineStep,
     ReturnStep,
+    SetStep,
     SleepStep,
 )
 from .session import CommandError
@@ -255,6 +256,32 @@ class ControlExecutor:
             log.say(f"control sent: ^{char.upper()}")
 
 
+class SetExecutor:
+    key = "set"
+    model = SetStep
+
+    def execute(self, step: SetStep, ctx: RunnerContext, timeout: float) -> None:
+        # in the order written, on a copy: a later key reads an earlier one, and a failure assigns nothing
+        work = dict(ctx.config.vars)
+        for name, value in step.set_.items():
+            work[name] = self._render(value, ctx, {"vars": work})
+        for name in step.set_:
+            ctx.config.vars[name] = work[name]
+        # the names, not the values: they may be secrets
+        log.say(f"set: {', '.join(f'vars.{name}' for name in step.set_)}")
+
+    def _render(self, value: Any, ctx: RunnerContext, extra: dict) -> Any:
+        if isinstance(value, str):
+            text = ctx.render(value, extra)
+            # jinja drops the line break that ends a template; a value keeps it, as in the top-level vars
+            return text + "\n" if value.endswith(("\n", "\r")) else text
+        if isinstance(value, list):
+            return [self._render(v, ctx, extra) for v in value]
+        if isinstance(value, dict):
+            return {k: self._render(v, ctx, extra) for k, v in value.items()}
+        return value
+
+
 def register_builtins(reg: StepRegistry):
     for cls in (
         CmdExecutor,
@@ -264,5 +291,6 @@ def register_builtins(reg: StepRegistry):
         LineExecutor,
         ReturnExecutor,
         ControlExecutor,
+        SetExecutor,
     ):
         reg.register(cls(), builtin=True)

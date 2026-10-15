@@ -150,7 +150,7 @@ See [Errors while the script runs](SPEC.md#errors-while-the-script-runs) and [A 
 | `autobot` | yes      | Schema version: `2026-10` |
 | `prepare` | no       | A local shell script that runs first and sets `env` variables. See [Prepare](#prepare) |
 | `env`     | no       | The script's variables and their defaults, read as `{{ env.KEY }}`. See [Templating](#templating) |
-| `vars`    | no       | Any data, read as `{{ vars.KEY }}` |
+| `vars`    | no       | Any data under non-empty keys, read as `{{ vars.KEY }}`. Used as written, not rendered; compute values with a [`set`](#set) step |
 | `prompts` | no       | Prompts to recognize and answer. See [Prompts](#prompts) |
 | `errors`  | no       | Regex patterns for CLI error detection (e.g. `^% .*`). They replace the `$?` exit code check of command lines, except at a `posix` shell prompt. See [Error handling](#error-handling) |
 | `fn`      | no       | Named functions, run with `call`. See [Functions](#functions) |
@@ -298,6 +298,7 @@ Without `fields`, each item is a string or number, sent in answer to the prompt'
 | `sleep` | Pauses: `- sleep: 60s` |
 | `call` | Runs a function: `- call: check_boot`. See [Functions](#functions) |
 | [`block`](#block) | A named group of steps with its own setup, cleanup and prompts |
+| [`set`](#set) | Sets variables in `vars`, with values rendered as templates |
 
 ### `cmd`
 
@@ -387,6 +388,29 @@ A block groups steps under a name. Its `breakout` runs after its `script`, also 
 
 Enter a sub-console with `line`, not `cmd`: a `cmd` would wait for a prompt that an idle console shows only after Return is pressed. The script goes on after a block whose breakout failed, but the run then does not end with status 0. See [SPEC.md](SPEC.md#block--named-group-of-steps).
 
+### `set`
+
+Assigns variables in `vars` where the step stands in the script, so its templates see `env`, `session.*` and what earlier steps registered:
+
+```yaml
+- cmd: show version
+  register: version_output
+- set:
+    url: "https://{{ vars.host }}/api"
+    image: "{{ env.SITE }}.swi"
+    summary: "{{ vars.version_output | trim }}"
+    retries: 3                # not a string: stored as the number 3
+```
+
+- Every string is rendered, also inside lists and mappings. Numbers, booleans and null are stored as written. A rendered value is text, stored as rendered (not stripped).
+- The names are assigned in order, so a later value can read an earlier one: `b: "{{ vars.a }}-y"`.
+- If any value fails to render, the step fails and none of its names is assigned.
+- An expression that gives a boolean is an error here as anywhere else: write `true` as YAML, or say which text you mean, e.g. `{{ (vars.a == vars.b) | tojson }}`.
+- `vars` is global: a `set` in a function or block stays after it.
+- Takes `after`, `when`, `delay_before` and `delay_after`, but no `timeout`.
+
+The progress line names the variables, never their values: `>> set: vars.url, vars.image, vars.summary, vars.retries`. See [SPEC.md](SPEC.md#set--set-variables).
+
 ## Common step properties
 
 Every step type except `sleep` takes these optional fields:
@@ -397,7 +421,7 @@ Every step type except `sleep` takes these optional fields:
 | `when`         | Template. The step is skipped if it renders to an empty string, `false`, `0` or `none` (in any letter case) |
 | `delay_before` | Duration to wait before the step |
 | `delay_after`  | Duration to wait after the step |
-| `timeout`      | Limit for each wait and each send of the step (default 300s), not for the step as a whole. Not on `line` and `return` |
+| `timeout`      | Limit for each wait and each send of the step (default 300s), not for the step as a whole. Not on `line`, `return` and `set` |
 
 They apply in this order: `after`, `when`, `delay_before`, the step, `delay_after`.
 
@@ -409,7 +433,7 @@ A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`,
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, a prompt's `send` string and `attach.spawn`. Other values, such as `prepare`, the `env` defaults, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, the values of a [`set`](#set) step, a prompt's `send` string and `attach.spawn`. Other values, such as `prepare`, the `env` defaults, the top-level `vars`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:
@@ -428,7 +452,7 @@ script:
 | Variable         | Value |
 |------------------|-------|
 | `env.*`          | The variables the `env` section declares, and nothing else |
-| `vars.*`         | The `vars` section, plus what `register` stored |
+| `vars.*`         | The `vars` section, plus what `register` and `set` stored |
 | `session.before` | The text before the last `after` match, or the output of the last command |
 | `session.match`  | The text that matched the last `after` pattern or shell prompt |
 
@@ -438,7 +462,7 @@ A variable of the `env` section takes its value from the first of `-e KEY=VALUE`
 
 - A key with an empty value is required.
 - The default gives the type: a string, a boolean (`1`, `true`, `yes`, `on`, `0`, `false`, `no`, `off`) or a number. Any other value is an error.
-- A default is a literal, not a template; compose a value in `prepare`.
+- A default is a literal, not a template; compose a value in `prepare` or in a [`set`](#set) step.
 - `env` has the declared keys only: `{{ env.HOME }}` needs a `HOME` key. A declared name takes whatever the environment has under it, so avoid names the shell already exports (`HOSTNAME`, `USER`, `HOME`).
 
 Things to watch for:

@@ -649,7 +649,7 @@ REPORT = [
     "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
     "  attach.timeout: invalid duration: 5 minutes [value_error]",
     "  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]",
-    "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control or a "
+    "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control, set or a "
     "registered plugin step (got a mapping with the key cmdd) [invalid_step]",
     "  script.2.block.block.script.0.control.control: a control value is one character, a letter or one of "
     "@ ` [ { \\ | ] } ^ ~ _ ?, got 'ab' [control_char]",

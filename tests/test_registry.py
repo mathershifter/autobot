@@ -30,15 +30,16 @@ from autobot.models import (
     LineStep,
     PluginStep,
     ReturnStep,
+    SetStep,
     SleepStep,
 )
 from autobot.registry import PluginError, StepRegistry
 
-BUILTINS = {"cmd", "sleep", "call", "block", "line", "return", "control"}
+BUILTINS = {"cmd", "sleep", "call", "block", "line", "return", "control", "set"}
 
 
 def test_p7_01_builtins_registered_and_not_plugins(isolated_registry: StepRegistry):
-    """The seven builtin step types are registered and are not plugins."""
+    """The eight builtin step types are registered and are not plugins."""
     reg = isolated_registry
     assert BUILTINS <= set(reg.keys())
     assert not {e.key for e in reg.plugin_executors()} & BUILTINS
@@ -340,7 +341,7 @@ def test_p7_24_sleep_step_still_runs_the_builtin(isolated_registry: StepRegistry
     assert nap.ran == []
 
 
-@pytest.mark.parametrize("model", [CmdStep, CallStep, BlockStep, LineStep, ReturnStep, ControlStep])
+@pytest.mark.parametrize("model", [CmdStep, CallStep, BlockStep, LineStep, ReturnStep, ControlStep, SetStep])
 def test_p7_24_every_builtin_model_is_taken(isolated_registry: StepRegistry, model: type[pydantic.BaseModel]):
     """Every built-in model is refused, and for this reason rather than for its common property fields."""
     reg = isolated_registry
@@ -379,7 +380,7 @@ def test_p7_26_two_plugins_may_share_a_model(isolated_registry: StepRegistry):
     assert reg.get("nap") is nap and reg.get("snooze") is snooze
     assert [e.key for e in reg.plugin_executors()] == ["nap", "snooze"]
     # only built-in steps are found by their model; a plugin's model is in no dispatch table
-    assert sorted(reg._model_keys.values()) == sorted(["cmd", "sleep", "call", "block", "line", "return", "control"])
+    assert sorted(reg._model_keys.values()) == sorted(["cmd", "sleep", "call", "block", "line", "return", "control", "set"])
     with pytest.raises(ValueError, match="^no executor for step: "):
         reg.key_for_step(RestStep(nap="a"))
     run_script([{"nap": "a"}, {"snooze": "b"}, {"nap": "c", "when": "true"}, {"sleep": "10ms"}])

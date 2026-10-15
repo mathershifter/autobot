@@ -297,6 +297,7 @@ HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
     models.LineStep: _step_host({"line": "x"}),
     models.ReturnStep: _step_host({"return": 1}),
     models.ControlStep: _step_host({"control": "c"}),
+    models.SetStep: _step_host({"set": {"a": "x"}}),
 }
 
 
@@ -934,6 +935,7 @@ EMPTY_AFTER: dict[str, tuple[dict[str, Any], tuple]] = {
     "line": (s({"line": "x", "after": ""}), ("script", 0, "line", "after")),
     "return": (s({"return": 1, "after": ""}), ("script", 0, "return", "after")),
     "control": (s({"control": "c", "after": ""}), ("script", 0, "control", "after")),
+    "set": (s({"set": {"a": 1}, "after": ""}), ("script", 0, "set", "after")),
     "in-fn": (d(fn={"f": {"script": [{"cmd": "x", "after": ""}]}}), ("fn", "f", "script", 0, "cmd", "after")),
     "in-attach-script": (
         d(attach={"spawn": "ssh host", "script": [{"line": "x", "after": ""}]}),
@@ -982,7 +984,7 @@ def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
         if "after" in definition.get("properties", {})
     ]
     assert sorted(name for name, _ in found) == [
-        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "stepCommon",
+        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "setStep", "stepCommon",
     ]
     assert all(prop == {"type": "string", "minLength": 1} for _, prop in found)
 
@@ -1079,11 +1081,14 @@ def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Ca
 
 
 def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
-    """`propertyNames` is on the three free-form mappings and on `stepCommon`; every other object is closed."""
+    """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed.
+    A key of `vars` and of a `set` step is also non-empty."""
     names = {"type": "string"}
     props, defs = schema["properties"], schema["$defs"]
-    for node in (props["env"], props["vars"], props["fn"], defs["stepCommon"]):
+    for node in (props["env"], props["fn"], defs["stepCommon"]):
         assert node["propertyNames"] == names
+    for node in (props["vars"], defs["setStep"]["properties"]["set"]):
+        assert node["propertyNames"] == {**names, "minLength": 1}
 
     def objects(node: Any, path: str = "") -> Any:
         if isinstance(node, dict):
