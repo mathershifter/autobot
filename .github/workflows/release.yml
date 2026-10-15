@@ -1,13 +1,17 @@
-# Cutting a release: set `version` in pyproject.toml on main through a PR, merge it, then push an
-# annotated tag `vX.Y.Z` on the merge commit:
+# Cutting a release:
 #
-#   git tag -a vX.Y.Z -m "Autobot X.Y.Z" <merge commit>
-#   git push origin vX.Y.Z
+#   1. Write the release notes in a draft GitHub release for the tag `vX.Y.Z` (the tag needn't exist yet).
+#   2. Merge the PR that sets `version` in pyproject.toml to X.Y.Z on main.
+#   3. Push an annotated tag on the merge commit:
+#        git tag -a vX.Y.Z -m "Autobot X.Y.Z" <merge commit>
+#        git push origin vX.Y.Z
 #
-# This workflow checks that the tag matches the version and that the full test suite passed on the tagged
-# commit, builds the wheel and sdist and smoke-tests the wheel, then attaches both to the tag's GitHub
-# release. A release written by hand beforehand (a draft, say) keeps its notes and state; without one, a
-# draft with generated notes is created for a human to review and publish.
+# The workflow does the rest: it checks that the tag matches the version and that the full test suite
+# passed on the tagged commit, builds the wheel and sdist and smoke-tests the wheel, attaches both to the
+# draft, checks they are there, and publishes the draft with its notes and title unchanged. It is marked
+# Latest only if X.Y.Z is above every other published vX.Y.Z release (so a patch to an older line isn't).
+# Without a draft, a draft with generated notes is created and left for a human to review and publish. A
+# release that is already published (a re-run, say) gets its files replaced and nothing else.
 #
 # The full suite is the `Tests` job of ci.yml's run for the push of the tagged commit to main: if it
 # passed, it isn't run again here; if it is still queued or running, this workflow waits for it (up to 45
@@ -210,12 +214,44 @@ jobs:
           name: dist
           path: dist
       - name: Upload to the release, or create a draft
+        id: upload
         run: |
-          if out="$(gh release view "$GITHUB_REF_NAME" --json isDraft 2>&1)"; then
+          if out="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>&1)"; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            # only a draft that was there before this run is published, by the step below
+            echo "publish=$out" >> "$GITHUB_OUTPUT"
           elif [[ "$out" == "release not found" ]]; then
             gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --generate-notes --title "Autobot $VERSION"
+            url="$(gh release view "$GITHUB_REF_NAME" --json url --jq .url)"
+            echo "::notice::created draft $url with generated notes; review them and publish it by hand"
+            echo "Created draft [$GITHUB_REF_NAME]($url) with generated notes: review them and publish it by hand." >> "$GITHUB_STEP_SUMMARY"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "$out" >&2
             exit 1
           fi
+      - name: Check both files are attached
+        run: |
+          attached="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')"
+          for f in "autobot-$VERSION-py3-none-any.whl" "autobot-$VERSION.tar.gz"; do
+            if ! grep -Fxq "$f" <<< "$attached"; then
+              echo "::error::$f is not attached to the release of $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+      - name: Publish the draft
+        if: steps.upload.outputs.publish == 'true'
+        run: |
+          # Latest only if this is a plain vX.Y.Z above every other published, non-prerelease vX.Y.Z
+          # shellcheck disable=SC2016 # the $s are jq's
+          latest="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName --jq '
+            def v: ltrimstr("v") | split(".") | map(tonumber);
+            def plain: test("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
+            env.GITHUB_REF_NAME as $tag
+            | [.[].tagName | select(plain and . != $tag) | v] as $others
+            | ($tag | plain) and ($others | all(. < ($tag | v)))')"
+          if [[ "$(gh release view "$GITHUB_REF_NAME" --json isPrerelease --jq .isPrerelease)" == true ]]; then
+            latest=false
+          fi
+          echo "publishing $GITHUB_REF_NAME, latest=$latest"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest="$latest"
