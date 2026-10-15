@@ -1,0 +1,151 @@
+# Cutting a release: set `version` in pyproject.toml on main through a PR, merge it, then push an
+# annotated tag `vX.Y.Z` on the merge commit:
+#
+#   git tag -a vX.Y.Z -m "Autobot X.Y.Z" <merge commit>
+#   git push origin vX.Y.Z
+#
+# This workflow checks that the tag matches the version, runs the full test suite, builds the wheel and
+# sdist and smoke-tests the wheel, then attaches both to the tag's GitHub release. A release written by
+# hand beforehand (a draft, say) keeps its notes and state; without one, a draft with generated notes is
+# created for a human to review and publish.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.11.16"
+
+jobs:
+  version:
+    name: Tag matches the package version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: check
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in pyproject.toml"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Full test suite
+    needs: version
+    # the bash of 24.04 (5.2) fails P8-34 (tests/test_echo.py); 26.04 has the 5.3 the suite is run with
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the shells the tests cover
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bash dash zsh busybox ksh mksh
+          for s in sh bash dash zsh busybox ksh mksh ksh93; do
+            printf '%-8s %s\n' "$s" "$(command -v "$s" || echo 'not installed')"
+          done
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - run: uv sync --locked
+      - name: Run the tests
+        run: uv run --locked pytest -q -rs | tee "$RUNNER_TEMP/pytest.log"
+      - name: Check that the build tests ran
+        run: |
+          if grep -E '^SKIPPED .*(uv is not installed|uv build --offline)' "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::the build-marked tests were skipped"
+            exit 1
+          fi
+
+  build:
+    name: Build and smoke-test the wheel
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - run: uv build --clear --no-create-gitignore --out-dir dist
+      - name: Check the sdist carries the schema
+        run: |
+          tar -tzf "dist/autobot-$VERSION.tar.gz" | grep -Fx "autobot-$VERSION/schemas/autobot.2026-10.json"
+          tar -tzf "dist/autobot-$VERSION.tar.gz" | grep -Fx "autobot-$VERSION/src/autobot/autobot.2026-10.json"
+      - name: Smoke-test the wheel in a clean venv
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" "dist/autobot-$VERSION-py3-none-any.whl"
+          "$RUNNER_TEMP/smoke/bin/autobot" --help
+          "$RUNNER_TEMP/smoke/bin/autobot" validate examples/*.autobot.yaml
+          "$RUNNER_TEMP/smoke/bin/python" -I -c 'import importlib.resources as r; f = r.files("autobot") / "autobot.2026-10.json"; assert f.is_file(), f; print(f)'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attach to the GitHub release
+    needs: [version, test, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Upload to the release, or create a draft
+        run: |
+          if out="$(gh release view "$GITHUB_REF_NAME" --json isDraft 2>&1)"; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          elif [[ "$out" == "release not found" ]]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --generate-notes --title "Autobot $VERSION"
+          else
+            echo "$out" >&2
+            exit 1
+          fi
