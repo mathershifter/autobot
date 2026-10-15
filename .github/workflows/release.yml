@@ -4,10 +4,15 @@
 #   git tag -a vX.Y.Z -m "Autobot X.Y.Z" <merge commit>
 #   git push origin vX.Y.Z
 #
-# This workflow checks that the tag matches the version, runs the full test suite, builds the wheel and
-# sdist and smoke-tests the wheel, then attaches both to the tag's GitHub release. A release written by
-# hand beforehand (a draft, say) keeps its notes and state; without one, a draft with generated notes is
-# created for a human to review and publish.
+# This workflow checks that the tag matches the version and that the full test suite passed on the tagged
+# commit, builds the wheel and sdist and smoke-tests the wheel, then attaches both to the tag's GitHub
+# release. A release written by hand beforehand (a draft, say) keeps its notes and state; without one, a
+# draft with generated notes is created for a human to review and publish.
+#
+# The full suite is the `Tests` job of ci.yml's run for the push of the tagged commit to main: if it
+# passed, it isn't run again here; if it is still queued or running, this workflow waits for it (up to 45
+# minutes); if it failed or was cancelled, the release fails. When there is no such run, or its `Tests`
+# job was skipped because the push changed nothing the tests cover, the full suite runs here.
 name: release
 
 on:
@@ -59,28 +64,93 @@ jobs:
     needs: version
     # the bash of 24.04 (5.2) fails P8-34 (tests/test_echo.py); 26.04 has the 5.3 the suite is run with
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    # up to 45 minutes waiting for main's run, or the suite itself (which follows only a short wait)
+    timeout-minutes: 90
     permissions:
+      actions: read
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Look for the full suite's run on main
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main&per_page=100"
+          deadline=$((SECONDS + 45 * 60))
+          while :; do
+            # the newest run for the commit; a re-run keeps its id and shows its latest attempt
+            run="$(gh api "$runs" --jq '.workflow_runs | max_by(.id) | select(.) | [.id, .status, .run_attempt, .html_url] | @tsv')"
+            if [[ -z "$run" ]]; then
+              echo "no ci run for the push of $GITHUB_SHA to main; running the full suite here"
+              echo "suite=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            IFS=$'\t' read -r id status attempt url <<< "$run"
+            if [[ "$status" == completed ]]; then
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::$url is still $status after 45 minutes; re-run this workflow once it completes"
+              exit 1
+            fi
+            echo "$url (attempt $attempt) is $status; waiting"
+            sleep 30
+          done
+          job="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?filter=latest" --jq '
+            [.jobs[] | select(.name == "Tests")] | first | select(.)
+            | [.conclusion // .status,
+               ([.steps[] | select(.name == "Check that the build tests ran")] | first | .conclusion // "absent"),
+               .html_url]
+            | @tsv')"
+          if [[ -z "$job" ]]; then
+            echo "$url (attempt $attempt) has no Tests job; running the full suite here"
+            echo "suite=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          IFS=$'\t' read -r conclusion build_check job_url <<< "$job"
+          case "$conclusion" in
+            success)
+              if [[ "$build_check" != success ]]; then
+                echo "$job_url didn't check that the build tests ran ($build_check); running the full suite here"
+                echo "suite=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::the full suite passed on main in $job_url; not running it again"
+                echo "suite=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            skipped)
+              echo "$job_url was skipped (the push changed nothing the tests cover); running the full suite here"
+              echo "suite=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::the full suite on main concluded $conclusion for this commit: $job_url"
+              exit 1
+              ;;
+          esac
+      - if: steps.main.outputs.suite == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install the shells the tests cover
+        if: steps.main.outputs.suite == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends bash dash zsh busybox ksh mksh
           for s in sh bash dash zsh busybox ksh mksh ksh93; do
             printf '%-8s %s\n' "$s" "$(command -v "$s" || echo 'not installed')"
           done
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - if: steps.main.outputs.suite == 'true'
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: false
-      - run: uv sync --locked
+      - if: steps.main.outputs.suite == 'true'
+        run: uv sync --locked
       - name: Run the tests
+        if: steps.main.outputs.suite == 'true'
         run: uv run --locked pytest -q -rs | tee "$RUNNER_TEMP/pytest.log"
       - name: Check that the build tests ran
+        if: steps.main.outputs.suite == 'true'
         run: |
           if grep -E '^SKIPPED .*(uv is not installed|uv build --offline)' "$RUNNER_TEMP/pytest.log"; then
             echo "::error::the build-marked tests were skipped"
