@@ -1053,6 +1053,17 @@ def test_p6_75_parity_non_string_key_rejected(both_validate: Callable, where: st
     assert both_validate(build(str(key))) == (True, True)
 
 
+@pytest.mark.parametrize("where", list(FREE_KEYS))
+def test_p6_75_parity_empty_key_rejected(both_validate: Callable, where: str):
+    """SPEC "YAML Script Structure": a key of `env`, `vars`, `fn` or a `set` step's mapping is not empty, in both:
+    `string_too_short` at `<mapping>..[key]`, the only error; a blank key is a name like any other."""
+    build, loc = FREE_KEYS[where]
+    doc = build("")
+    assert both_validate(doc) == (False, False)
+    assert [(e["type"], e["loc"]) for e in model_errors(doc)] == [("string_too_short", (*loc, "", "[key]"))]
+    assert both_validate(build(" ")) == (True, True)
+
+
 @pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
 @pytest.mark.parametrize("where", list(FIXED_KEYS))
 def test_p6_75_parity_non_string_key_in_a_fixed_mapping_rejected(both_validate: Callable, where: str, literal: str):
@@ -1084,12 +1095,11 @@ def test_p6_75_parity_non_string_key_in_a_plugin_step_rejected(both_validate: Ca
 
 def test_p6_75_schema_names_string_keys_on_every_open_mapping(schema: dict[str, Any]):
     """`propertyNames` is on the four free-form mappings and on `stepCommon`; every other object is closed.
-    A key of `vars` and of a `set` step is also non-empty."""
+    A key of the four free-form mappings is also non-empty."""
     names = {"type": "string"}
     props, defs = schema["properties"], schema["$defs"]
-    for node in (props["env"], props["fn"], defs["stepCommon"]):
-        assert node["propertyNames"] == names
-    for node in (props["vars"], defs["setStep"]["properties"]["set"]):
+    assert defs["stepCommon"]["propertyNames"] == names
+    for node in (props["env"], props["vars"], props["fn"], defs["setStep"]["properties"]["set"]):
         assert node["propertyNames"] == {**names, "minLength": 1}
 
     def objects(node: Any, path: str = "") -> Any:
@@ -1114,6 +1124,26 @@ def test_p6_75_non_string_key_is_a_validation_error_on_load(tmp_path: Any):
     res = run_cli(None, tmp_path, raw="autobot: 2026-10\nattach: {spawn: 'true'}\nvars: {1: x}\nscript: []\n")
     assert res.returncode == 1
     assert "Validation errors:" in res.stderr and "string_type" in res.stderr and "Traceback" not in res.stderr
+
+
+def test_p6_75_empty_key_is_a_validation_error_on_load(tmp_path: Any):
+    """Through the CLI: an empty key of `env` and of `fn` is reported at `env..[key]` and `fn..[key]`, and
+    `call: ''` is a call to an undefined function."""
+    from conftest import run_cli
+
+    head = "autobot: 2026-10\nattach: {spawn: 'true'}\n"
+    res = run_cli(None, tmp_path, raw=head + "env: {'': x}\nfn: {'': {script: []}}\nscript: [{call: ''}]\n")
+    assert res.returncode == 1 and "Traceback" not in res.stderr
+    lines = res.stderr.splitlines()
+    at = lines.index("Validation errors:")
+    assert lines[at : at + 3] == [
+        "Validation errors:",
+        "  env..[key]: String should have at least 1 character [string_too_short]",
+        "  fn..[key]: String should have at least 1 character [string_too_short]",
+    ]
+    res = run_cli(None, tmp_path, raw=head + "script: [{call: ''}]\n")
+    assert res.returncode == 1
+    assert "  script.0.call: call to undefined function '' [undefined_function]" in res.stderr.splitlines()
 
 
 # -- P6-78: a YAML boolean is never text ---------------------------------------
@@ -1392,8 +1422,9 @@ def test_p6_90_parity_ordinary_spawn_accepted(both_validate: Callable):
 
 
 def test_p6_90_top_level_env_is_not_handed_to_exec(both_validate: Callable):
-    """The top-level `env` holds template values, not a process environment: its names and values aren't checked."""
-    assert both_validate(d(env={"A=B": "x", "": "x", "C": "x\0y"})) == (True, True)
+    """The top-level `env` holds template values, not a process environment: its names and values aren't checked as exec would, though a name is never empty (P6-75)."""
+    assert both_validate(d(env={"A=B": "x", "C": "x\0y"})) == (True, True)
+    assert both_validate(d(env={"A=B": "x", "": "x"})) == (False, False)
 
 
 # -- P6-92: `attach` has no `env` ------------------------------------------------

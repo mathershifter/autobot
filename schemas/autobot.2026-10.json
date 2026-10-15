@@ -10,7 +10,7 @@
     "prepare": { "type": "string" },
     "env": {
       "type": "object",
-      "propertyNames": { "type": "string" },
+      "propertyNames": { "type": "string", "minLength": 1 },
       "additionalProperties": { "type": ["string", "boolean", "number", "null"] }
     },
     "vars": {
@@ -28,7 +28,7 @@
     },
     "fn": {
       "type": "object",
-      "propertyNames": { "type": "string" },
+      "propertyNames": { "type": "string", "minLength": 1 },
       "additionalProperties": { "$ref": "#/$defs/function" }
     },
     "attach": { "$ref": "#/$defs/attach" },
