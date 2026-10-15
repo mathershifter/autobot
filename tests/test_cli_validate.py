@@ -7,6 +7,7 @@ the same file, so a change to one that the other doesn't follow fails.
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import subprocess
@@ -25,10 +26,24 @@ from autobot.runner import Runner
 from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
-# the program's name is `autobot` when installed and `cli.py` under `python -m autobot.cli`
-USAGE = re.compile(r"usage: \S+ validate \[-h\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
+# the program's name is whatever the interpreter prints: `autobot` when installed, and under
+# `python -m autobot.cli` `cli.py` up to Python 3.13 and `python -m autobot.cli` from 3.14
+USAGE = re.compile(r"usage: \S[^\n]*? validate \[-h\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
 EXAMPLES = sorted((ROOT / "examples").glob("*.autobot.yaml"))
 STEP = {"cmd": "true"}
+
+
+def _date_reason(month: int, day: int) -> str:
+    """Python's own reason for a date that doesn't exist, which the report quotes: its wording changes between
+    versions (3.14 adds `, not <month>`), and what Autobot wraps around it doesn't."""
+    try:
+        datetime.date(2001, month, day)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError(f"2001-{month}-{day} is a date")
+
+
+BAD_MONTH_99, BAD_MONTH_13 = _date_reason(99, 99), _date_reason(13, 1)
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -159,8 +174,8 @@ LOAD_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] =
     "yaml-two-documents": (lambda m: m.write("s", raw="a: 1\n---\nb: 2\n"), (), "YAML error in {path}, line 2, "),
     "yaml-bad-date": (
         lambda m: m.write("s", raw="vars: {d: 2001-99-99}\n"), (),
-        "YAML error in {path}, line 1, column 11: invalid timestamp (month must be in 1..12); "
-        "quote the value if it is meant as text\n",
+        (f"YAML error in {{path}}, line 1, column 11: invalid timestamp ({BAD_MONTH_99}); "
+         "quote the value if it is meant as text\n"),
     ),
     "yaml-huge-int": (
         lambda m: m.write("s", raw="vars:\n  n: " + "9" * 5000 + "\n"), (),
@@ -221,8 +236,8 @@ SCRIPT_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]]
 ENV_ERRORS: dict[str, tuple[Callable[[Markers], Path], tuple[str, ...], str]] = {
     "undeclared-key-in-spawn": (
         lambda m: m.write("s", env={"A": "a"}, spawn="{{ env.AB_VALIDATE_NOT_SET }}"), (),
-        "Run failed in {path}: template error: env has no key 'AB_VALIDATE_NOT_SET': the script's env section "
-        "doesn't declare it\n",
+        ("Run failed in {path}: template error: env has no key 'AB_VALIDATE_NOT_SET': the script's env section "
+         "doesn't declare it\n"),
     ),
     "env-required": (
         lambda m: m.write("s", env={"H": None, "O": "o"}), ("-e", "O=1"),
@@ -267,8 +282,8 @@ def test_p6_105_what_yaml_types_cannot_hold_is_a_yaml_error(m: Markers):
     are errors of the document, reported like any YAML error, and the scripts after them are checked."""
     ok, ok2 = m.write("ok"), m.write("ok2", prepare=None)
     bad = {
-        "date": ("vars: {d: 2001-99-99}\n", ", line 1, column 11: invalid timestamp (month must be in 1..12); quote"),
-        "key": ("vars:\n  2001-13-01: 1\n", ", line 2, column 3: invalid timestamp (month must be in 1..12); quote"),
+        "date": ("vars: {d: 2001-99-99}\n", f", line 1, column 11: invalid timestamp ({BAD_MONTH_99}); quote"),
+        "key": ("vars:\n  2001-13-01: 1\n", f", line 2, column 3: invalid timestamp ({BAD_MONTH_13}); quote"),
         "zone": ("vars:\n  - 2001-01-01 00:00:00 +99:99\n", ", line 2, column 5: invalid timestamp (offset must be"),
         "digits": ("vars:\n  n: " + "9" * 5000 + "\n", ", line 2, column 6: invalid int (Exceeds the limit (4300 digits)"),
         "hex": ("vars: {n: 0x_}\n", ", line 1, column 11: invalid int (invalid literal for int() with base 16: ''); quote"),
