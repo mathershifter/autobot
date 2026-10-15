@@ -1636,7 +1636,7 @@ def test_p5_112_values_without_a_prepare_are_those_of_a_script_that_does_nothing
         assert dict((k, v) for k, v, _ in results[0])["TERM"] == "dumb"
 
 
-ODD_NAMES = {"MY.VAR": "dflt", "my-var": None, "1X": 7, "A=B": "x", "": "y", "AB_NUL": "a\0b", "AB\0N": "z", "AB_OK": "ok"}
+ODD_NAMES = {"MY.VAR": "dflt", "my-var": None, "1X": 7, "A=B": "x", "AB_NUL": "a\0b", "AB\0N": "z", "AB_OK": "ok"}
 
 
 @pytest.mark.parametrize(
@@ -1646,18 +1646,18 @@ ODD_NAMES = {"MY.VAR": "dflt", "my-var": None, "1X": 7, "A=B": "x", "": "y", "AB
 )
 def test_p5_113_declared_name_that_a_shell_or_an_environment_cannot_hold(timeline, prep_tmp, tmp_path: Path, script):
     """SPEC "prepare" (Its environment), "The environment in templates": a declared variable that no
-    environment can hold (an empty name, a `=` in the name, a NUL) is left out of the script's, and a shell
+    environment can hold (a `=` in the name, a NUL; an empty name is not valid in `env`) is left out of the script's, and a shell
     may drop a name it can't have as a variable (`MY.VAR`, `my-var`, `1X`; dash does). Nothing fails: such a
     variable has its default, its `--env` value counts with every shell, and the script has the others."""
     seen = tmp_path / "seen"
     timeline.stop_attach = True
-    for given in ({"my-var": "cli"}, {"MY.VAR": "c1", "my-var": "c2", "1X": " 8 ", "A=B": "c4", "": "c5", "AB_NUL": "c6", "AB\0N": "c7"}):
+    for given in ({"my-var": "cli"}, {"MY.VAR": "c1", "my-var": "c2", "1X": " 8 ", "A=B": "c4", "AB_NUL": "c6", "AB\0N": "c7"}):
         r = make_runner([], prepare=script and script.format(f'echo "$AB_OK" > {seen}'), env=ODD_NAMES, given=given)
         with pytest.raises(AttachRecorded):
             r.run()
         assert r._env == ODD_NAMES | given | ({"1X": 8} if "1X" in given else {})
         assert script is None or seen.read_text() == "ok\n"
-        assert r.render("{{ env['MY.VAR'] }} {{ env['A=B'] }} {{ env[''] }}") == " ".join(r._env[k] for k in ("MY.VAR", "A=B", ""))
+        assert r.render("{{ env['MY.VAR'] }} {{ env['A=B'] }}") == " ".join(r._env[k] for k in ("MY.VAR", "A=B"))
 
 
 def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timeline, prep_tmp):

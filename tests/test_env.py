@@ -302,13 +302,13 @@ def test_p5_96_env_option_sets_a_declared_variable(tmp_path: Path, monkeypatch: 
     assert status == 0 and "\n<os><>\n" in out
 
 
-@pytest.mark.parametrize("item", ["AB_B", "", "AB_B:x"])
+@pytest.mark.parametrize("item", ["AB_B", "", "AB_B:x", "=x", "="])
 def test_p5_96_env_option_without_an_equals_sign(tmp_path: Path, item: str):
-    """SPEC "CLI": a load error, status 1, before anything runs."""
+    """SPEC "CLI": a load error, status 1, before anything runs; an empty KEY (`=x`) is one too, since no `env` key is empty."""
     assert cli(tmp_path, "-e", "AB_B=x", "--env", item) == (1, "", "--env requires KEY=VALUE format\n")
 
 
-@pytest.mark.parametrize("key", ["AB_NOPE", "ab_b", "AB_B ", "", "HOME"])
+@pytest.mark.parametrize("key", ["AB_NOPE", "ab_b", "AB_B ", "HOME"])
 def test_p5_96_env_option_for_a_key_the_script_does_not_declare(tmp_path: Path, key: str):
     """SPEC "CLI": a key that isn't a key of the `env` section is a script error naming it, whatever its
     value and whether the environment has it; nothing runs."""

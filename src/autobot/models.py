@@ -127,8 +127,8 @@ def _env_value(v: Any) -> Any:
 
 
 EnvValue = Annotated[Any, pydantic.BeforeValidator(_env_value)]
-# a key of `vars`, which nothing could read as `vars.<key>` if it were empty
-VarName = Annotated[str, pydantic.StringConstraints(min_length=1)]
+# a key the script chooses (`env`, `vars`, `fn`, a `set` step): a name nothing could read, run or set if it were empty
+Key = Annotated[str, pydantic.StringConstraints(min_length=1)]
 Regex = Annotated[str, pydantic.AfterValidator(_regex)]
 ErrorRegex = Annotated[str, pydantic.AfterValidator(_error_regex)]
 # `after`: a non-empty regex once rendered
@@ -379,7 +379,7 @@ class ControlStep(pydantic.BaseModel):
 class SetStep(pydantic.BaseModel):
     model_config = _STRICT
     # values are data, like those of `vars`: their strings are rendered when the step runs
-    set_: dict[VarName, Any] = pydantic.Field(alias="set")
+    set_: dict[Key, Any] = pydantic.Field(alias="set")
     after: Omittable[After] = None
     when: Omittable[str] = None
     delay_before: Omittable[Duration] = None
@@ -488,10 +488,10 @@ class Config(pydantic.BaseModel):
             raise _custom("unsupported_version", f"unsupported autobot version {text(v)!r}; expected {VERSION}")
         return v
     prepare: Omittable[str] = None
-    env: NotNull[dict[str, EnvValue]] = {}
-    vars: NotNull[dict[VarName, Any]] = {}
+    env: NotNull[dict[Key, EnvValue]] = {}
+    vars: NotNull[dict[Key, Any]] = {}
     prompts: NotNull[list[Prompt]] = []
-    fn: NotNull[dict[str, Function]] = {}
+    fn: NotNull[dict[Key, Function]] = {}
     errors: NotNull[list[ErrorRegex]] = []
     attach: Attach
     script: list[Step]
