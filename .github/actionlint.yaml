@@ -1,0 +1,4 @@
+# ubuntu-26.04 is a GitHub-hosted runner in public preview that actionlint 1.7.12 doesn't list yet
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
