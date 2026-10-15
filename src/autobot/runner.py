@@ -264,13 +264,16 @@ class Runner:
     def _ctx(self) -> dict:
         return {"env": self._env, "vars": self._config.vars, "session": self._session.ctx}
 
-    def render(self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False) -> str:
+    def render(
+        self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False, keep_newline: bool = False
+    ) -> str:
         """Render a template to text. A boolean isn't text, so an expression that gives one is a template
-        error, unless `condition`: the text is then only read as a yes or no, as `when` reads it."""
+        error, unless `condition`: the text is then only read as a yes or no, as `when` reads it.
+        `keep_newline`: the line break that ends the template is kept, as in a value that is stored."""
         ctx = self._ctx
         if extra_ctx:
             ctx = {**ctx, **extra_ctx}
-        return render_template(template, ctx, condition=condition)
+        return render_template(template, ctx, condition=condition, keep_newline=keep_newline)
 
     _run_prepare = staticmethod(prepare.run)
 

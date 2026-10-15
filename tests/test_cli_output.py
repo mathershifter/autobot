@@ -731,13 +731,16 @@ SECRETS = {
     "env-value": {"env": {"PASSWORD": [20240917]}},
     "env-mapping-value": {"env": {"PASSWORD": {"hunter2-secret": 20240917}}},
     "env-not-a-mapping": {"env": "hunter2-secret"},
+    "set-not-a-mapping": {"script": [{"set": "token=hunter2-secret"}]},
+    "set-list": {"script": [{"set": ["hunter2-secret"]}]},
+    "set-in-a-block": {"script": [{"block": {"name": "b", "script": [{"set": "hunter2-secret"}]}}]},
 }
 
 
 @pytest.mark.parametrize("case", SECRETS)
 def test_p8_28_value_that_would_be_sent_is_never_in_the_report(tmp_path: Path, case: str):
     """SPEC "CLI": the report shows no value for an error at a prompt's `send` (the parts of a `sendEach`
-    included), at a `line` or at an `env` value: it may be a password."""
+    included), at a `line`, at a `set` step's mapping or at an `env` value: it may be a password."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(make_doc([]) | SECRETS[case]))
     res = piped(path)

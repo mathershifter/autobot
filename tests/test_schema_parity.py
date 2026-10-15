@@ -1010,6 +1010,7 @@ FREE_KEYS: dict[str, tuple[Callable[[Any], dict[str, Any]], tuple]] = {
     "env": (lambda k: d(env={"A": "a", k: "x"}), ("env",)),
     "vars": (lambda k: d(vars={"a": 1, k: "x"}), ("vars",)),
     "fn": (lambda k: d(fn={"f": {"script": []}, k: {"script": []}}), ("fn",)),
+    "set": (lambda k: s({"set": {"a": 1, k: "x"}}), ("script", 0, "set", "set")),
 }
 # the mappings with fixed keys: doc(key) -> a document with `key` as one more key of that mapping
 FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
@@ -1029,6 +1030,7 @@ FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "line": lambda k: s({"line": "x", k: "x"}),
     "return": lambda k: s({"return": 1, k: "x"}),
     "control": lambda k: s({"control": "a", k: "x"}),
+    "set": lambda k: s({"set": {"a": 1}, k: "x"}),
     "fn-step": lambda k: d(fn={"f": {"script": [{"cmd": "x", k: "x"}]}}),
 }
 
@@ -1036,7 +1038,7 @@ FIXED_KEYS: dict[str, Callable[[Any], dict[str, Any]]] = {
 @pytest.mark.parametrize("literal", list(KEY_LITERALS.values()), ids=list(KEY_LITERALS))
 @pytest.mark.parametrize("where", list(FREE_KEYS))
 def test_p6_75_parity_non_string_key_rejected(both_validate: Callable, where: str, literal: str):
-    """SPEC "YAML Script Structure": a key of `env`, `vars` or `fn` is a string, in both.
+    """SPEC "YAML Script Structure": a key of `env`, `vars`, `fn` or a `set` step's mapping is a string, in both.
 
     The models always rejected `vars: {1: x}`; the schema accepted it, having nothing to say about a key's type.
     """

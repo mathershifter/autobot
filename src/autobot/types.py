@@ -44,6 +44,8 @@ def _no_boolean(value: Any) -> Any:
 # text the engine sends or stores, and a condition, whose text is only read as a yes or no
 _jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean)
 _condition_env = _Environment(undefined=jinja2.StrictUndefined)
+# a value that is stored (`set`): the line break that ends the template is part of it
+_value_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean, keep_trailing_newline=True)
 
 
 class ScriptError(ValueError):
@@ -63,7 +65,7 @@ def _search(s: Any, pattern: str) -> bool:
         raise ScriptError(f"template error: search: invalid regex {pattern!r}: {e}") from e
 
 
-for _env in (_jinja_env, _condition_env):
+for _env in (_jinja_env, _condition_env, _value_env):
     _env.filters["contains"] = lambda s, substring: substring in str(s)
     _env.filters["search"] = _search
 
@@ -102,13 +104,15 @@ type Omittable[T] = Annotated[T | None, pydantic.BeforeValidator(reject_null)]
 type NotNull[T] = Annotated[T, pydantic.BeforeValidator(reject_null)]
 
 
-def render(template: Any, ctx: dict, *, condition: bool = False) -> Any:
+def render(template: Any, ctx: dict, *, condition: bool = False, keep_newline: bool = False) -> Any:
     """Render a template to text. `condition`: the text is only read as a yes or no (`when`), so a boolean
-    is written out as Jinja2 does it instead of being refused."""
+    is written out as Jinja2 does it instead of being refused. `keep_newline`: the text is stored, and keeps
+    the line break that ends the template, unless whitespace control (`-}}`, `-%}`) removes it."""
     if not isinstance(template, str):
         return template
+    env = _condition_env if condition else _value_env if keep_newline else _jinja_env
     try:
-        return (_condition_env if condition else _jinja_env).from_string(template).render(ctx)
+        return env.from_string(template).render(ctx)
     except jinja2.TemplateError as e:
         raise ScriptError(f"template error: {e}") from e
     except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error

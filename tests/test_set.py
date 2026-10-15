@@ -221,14 +221,45 @@ def test_p8_58_set_text_is_not_stripped_and_not_rendered_again():
         ("a\rb", "a\nb"),
         ("{{ vars.crlf }}", "x\r\ny\r\n"),
         ("no break", "no break"),
+        ("{{ 'x' -}}\n", "x"),
+        ("{% if vars.w %}x{% endif -%}\n", "x"),
+        ("{{ 'x' -}}\r\n", "x"),
+        ("{{ 'x' }}\n\n", "x\n\n"),
+        ("{{ 'x' -}}\n\n", "x"),
     ],
-    ids=["block-scalar", "template", "crlf", "cr", "from-vars", "none"],
+    ids=["block-scalar", "template", "crlf", "cr", "from-vars", "none", "expr-trim", "stmt-trim", "crlf-trim",
+         "two-breaks", "two-breaks-trim"],
 )
 def test_p8_58_set_line_breaks(value: str, stored: str):
-    """SPEC "set" (Values): line breaks of the template's text are `\\n`, the last one is kept, and a value
-    read from vars keeps its own."""
+    """SPEC "set" (Values): line breaks of the template's text are `\\n`, the last one is kept unless
+    whitespace control removes it, and a value read from vars keeps its own."""
     out = run_vars([{"set": {"v": value}}], vars={"w": "word", "crlf": "x\r\ny\r\n"})
     assert out["v"] == stored
+
+
+def test_p8_58_set_trimmed_value_in_a_cmd_runs():
+    """The review's case: a value whose `-}}` removes its line break, used in a quoted `cmd`, runs as one
+    command (with the break put back, bash waited at its `>` prompt for the closing quote)."""
+    out = run_vars([{"set": {"ws": "{{ 'x' -}}\n"}}, {"cmd": "echo \"[{{ vars.ws }}]\"", "register": "got"}])
+    assert out["got"] == "[x]"
+
+
+def test_p8_58_set_yaml_collections_are_stored_as_written(tmp_path: Path):
+    """SPEC "set" (Values): `!!omap`, `!!pairs` and `!!set` are no list or mapping of the script, and
+    nothing inside them is rendered."""
+    from autobot import cli
+
+    path = tmp_path / "s.autobot.yaml"
+    path.write_text(
+        "autobot: 2026-10\nattach: {spawn: sh}\nscript:\n  - set:\n"
+        "      o: !!omap [{a: '{{ x }}'}, {b: 2}]\n"
+        "      p: !!pairs [{a: '{{ x }}'}, {a: 3}]\n"
+        "      s: !!set {'{{ x }}': null}\n"
+    )
+    r = make_runner([])
+    step = Config.model_validate(cli._load(str(path))).script
+    r.run_steps(step)
+    assert r.config.vars == {"o": [("a", "{{ x }}"), ("b", 2)], "p": [("a", "{{ x }}"), ("a", 3)], "s": {"{{ x }}"}}
 
 
 def test_p8_58_set_top_level_vars_are_not_rendered():

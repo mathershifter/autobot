@@ -272,13 +272,13 @@ class SetExecutor:
 
     def _render(self, value: Any, ctx: RunnerContext, extra: dict) -> Any:
         if isinstance(value, str):
-            text = ctx.render(value, extra)
-            # jinja drops the line break that ends a template; a value keeps it, as in the top-level vars
-            return text + "\n" if value.endswith(("\n", "\r")) else text
+            # the line break that ends the template is part of the value, as in the top-level vars
+            return ctx.render(value, extra, keep_newline=True)
         if isinstance(value, list):
             return [self._render(v, ctx, extra) for v in value]
         if isinstance(value, dict):
             return {k: self._render(v, ctx, extra) for k, v in value.items()}
+        # the pairs of `!!omap` and `!!pairs` (tuples) and a `!!set` are stored as written
         return value
 
 
