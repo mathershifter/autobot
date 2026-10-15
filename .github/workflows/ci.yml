@@ -1,0 +1,116 @@
+# Tests on pull requests to main (without the `slow` tests) and on pushes to main (the full suite), when
+# the change touches what the tests run or read. `ci-ok` always runs and passes only if the tests passed
+# or weren't needed: it is the one check to make required.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.11.16"
+
+jobs:
+  changes:
+    name: Changes that need the tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tests: ${{ steps.diff.outputs.tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # a pull request is checked out as its merge commit, whose first parent is main
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            base=HEAD^1
+          else
+            base="$BEFORE"
+          fi
+          if ! changed="$(git diff --name-only "$base" HEAD)"; then
+            echo "no diff against $base; running the tests"
+            echo "tests=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$changed"
+          # code, dependencies, and what the tests read: the examples, README.md and SPEC.md
+          pattern='^(src/|tests/|schemas/|examples/|pyproject\.toml$|uv\.lock$|\.python-version$|README\.md$|SPEC\.md$|\.github/workflows/ci\.yml$)'
+          relevant="$(grep -E "$pattern" <<< "$changed" | grep -vE '^tests/.*\.md$' || true)"
+          if [[ -n "$relevant" ]]; then
+            echo "tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  tests:
+    name: Tests
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    # the bash of 24.04 (5.2) fails P8-34 (tests/test_echo.py); 26.04 has the 5.3 the suite is run with
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the shells the tests cover
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bash dash zsh busybox ksh mksh
+          for s in sh bash dash zsh busybox ksh mksh ksh93; do
+            printf '%-8s %s\n' "$s" "$(command -v "$s" || echo 'not installed')"
+          done
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv sync --locked
+      - name: Run the tests (without the slow ones on a pull request)
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            set -- -m "not slow"
+          fi
+          uv run --locked pytest -q -rs "$@" | tee "$RUNNER_TEMP/pytest.log"
+      - name: Check that the build tests ran
+        run: |
+          if grep -E '^SKIPPED .*(uv is not installed|uv build --offline)' "$RUNNER_TEMP/pytest.log"; then
+            echo "::error::the build-marked tests were skipped"
+            exit 1
+          fi
+
+  ci-ok:
+    name: ci-ok
+    needs: [changes, tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          TESTS: ${{ needs.tests.result }}
+          NEEDED: ${{ needs.changes.outputs.tests }}
+        run: |
+          echo "changes: $CHANGES, tests needed: $NEEDED, tests: $TESTS"
+          [[ "$CHANGES" == success ]]
+          [[ "$TESTS" == success || ( "$TESTS" == skipped && "$NEEDED" == false ) ]]
