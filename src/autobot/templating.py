@@ -1,5 +1,9 @@
-"""Jinja2 templating: the environments the engine renders with, their filters, `render`, and the checks of a
-template's syntax and of a rendered regex (see SPEC, Jinja2 Templating)."""
+"""Jinja2 templating: the environments the engine renders with and their filters (`Templater`), `render`, and
+the checks of a template's syntax and of a rendered regex (see SPEC, Jinja2 Templating).
+
+`templater` is the default instance: the free functions `render` and `check_template` are its, for the
+models' validators and for a runner built without a templater of its own.
+"""
 
 from __future__ import annotations
 
@@ -33,13 +37,6 @@ def _no_boolean(value: Any) -> Any:
     return value
 
 
-# text the engine sends or stores, and a condition, whose text is only read as a yes or no
-_jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean)
-_condition_env = _Environment(undefined=jinja2.StrictUndefined)
-# a value that is stored (`set`): the line break that ends the template is part of it
-_value_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean, keep_trailing_newline=True)
-
-
 def _search(s: Any, pattern: str) -> bool:
     try:
         return bool(re.search(pattern, str(s)))
@@ -47,35 +44,56 @@ def _search(s: Any, pattern: str) -> bool:
         raise ScriptError(f"template error: search: invalid regex {pattern!r}: {e}") from e
 
 
-for _env in (_jinja_env, _condition_env, _value_env):
-    _env.filters["contains"] = lambda s, substring: substring in str(s)
-    _env.filters["search"] = _search
+class Templater:
+    """The three Jinja2 environments a run renders with, with the custom filters (SPEC, Custom Filters)
+    registered on each: `text` for what the engine sends or stores, `condition` for a `when`, whose text is
+    only read as a yes or no, and `value` for a value that is stored (`set`), of which the line break that
+    ends the template is part. A runner has one; `templater` below is the default."""
+
+    def __init__(self) -> None:
+        self.text = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean)
+        self.condition = _Environment(undefined=jinja2.StrictUndefined)
+        self.value = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean, keep_trailing_newline=True)
+        for env in (self.text, self.condition, self.value):
+            env.filters["contains"] = lambda s, substring: substring in str(s)
+            env.filters["search"] = _search
+
+    def render(self, template: Any, ctx: dict, *, condition: bool = False, keep_newline: bool = False) -> Any:
+        """Render a template to text. `condition`: the text is only read as a yes or no (`when`), so a boolean
+        is written out as Jinja2 does it instead of being refused. `keep_newline`: the text is stored, and keeps
+        the line break that ends the template, unless whitespace control (`-}}`, `-%}`) removes it."""
+        if not isinstance(template, str):
+            return template
+        env = self.condition if condition else self.value if keep_newline else self.text
+        try:
+            return env.from_string(template).render(ctx)
+        except jinja2.TemplateError as e:
+            raise ScriptError(f"template error: {e}") from e
+        except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
+            if isinstance(e, ScriptError):  # already reported, by a filter
+                raise
+            why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            raise ScriptError(f"template error: {why}") from e
+
+    def check_template(self, template: str) -> None:
+        """Report a template syntax error now rather than when the template is rendered."""
+        try:
+            self.text.parse(template)
+        except jinja2.TemplateError as e:
+            raise ScriptError(f"template error: {e}") from e
+
+
+templater = Templater()
 
 
 def render(template: Any, ctx: dict, *, condition: bool = False, keep_newline: bool = False) -> Any:
-    """Render a template to text. `condition`: the text is only read as a yes or no (`when`), so a boolean
-    is written out as Jinja2 does it instead of being refused. `keep_newline`: the text is stored, and keeps
-    the line break that ends the template, unless whitespace control (`-}}`, `-%}`) removes it."""
-    if not isinstance(template, str):
-        return template
-    env = _condition_env if condition else _value_env if keep_newline else _jinja_env
-    try:
-        return env.from_string(template).render(ctx)
-    except jinja2.TemplateError as e:
-        raise ScriptError(f"template error: {e}") from e
-    except Exception as e:  # noqa: BLE001 - whatever an expression raises, e.g. {{ 1/0 }}, is a template error
-        if isinstance(e, ScriptError):  # already reported, by a filter
-            raise
-        why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-        raise ScriptError(f"template error: {why}") from e
+    """`templater.render`: see `Templater.render`."""
+    return templater.render(template, ctx, condition=condition, keep_newline=keep_newline)
 
 
 def check_template(template: str) -> None:
-    """Report a template syntax error now rather than when the template is rendered."""
-    try:
-        _jinja_env.parse(template)
-    except jinja2.TemplateError as e:
-        raise ScriptError(f"template error: {e}") from e
+    """`templater.check_template`: see `Templater.check_template`."""
+    templater.check_template(template)
 
 
 def check_regex(pattern: str, what: str) -> None:

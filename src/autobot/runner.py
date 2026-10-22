@@ -6,21 +6,22 @@ from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequenc
 from typing import TYPE_CHECKING, Any, TextIO
 
 from . import prepare
+from . import registry as registry_mod
 from .environment import resolve_env, typed
 from .errors import BreakoutError, ScriptError
 from .log import ConsoleReporter, OutputLost
 from .models import Config, PluginStep, Prompt, Step, names_command
 from .prompts import build_handler
-from .registry import registry
 from .report import Left, RunOutcome, StepRef, step_ref, trail
 from .session import PromptHandler, Session
+from .templating import Templater, check_regex
+from .templating import templater as default_templater
 from .terminal import run_environ
-from .templating import check_regex, check_template
-from .templating import render as render_template
 from .types import text
 
 if TYPE_CHECKING:
     from .protocols import Reporter
+    from .registry import StepRegistry
 
 
 # what runs the `prepare` script: given the script, the environment it runs in and the reporter, it gives
@@ -44,21 +45,28 @@ class Runner:
         config: Config,
         given: dict[str, str],
         *,
+        registry: StepRegistry | None = None,
         reporter: Reporter | None = None,
         transcript: TextIO | None = None,
         environ: Mapping[str, str] | None = None,
         prepare: Prepare | None = None,
+        templater: Templater | None = None,
     ):
-        """`given`: the `--env` values, which come before those of the environment. `reporter`: where the
-        run says what it does; the CLI's, or one of the runner's own on stderr. `transcript`: where the
-        session's output goes, as the device sent it; the process's stdout when none is given. `environ`:
-        the environment the run starts from, which `prepare` runs in, the `env` section reads and the
-        process is spawned in; that of this process, on a plain terminal (`terminal.run_environ`), when
-        none is given. `prepare`: what runs the `prepare` script, `run_prepare` when none is given."""
-        registry.discover()
+        """`given`: the `--env` values, which come before those of the environment. The keyword arguments
+        are what the run is wired to, each with the default a run has when none is given. `registry`: the
+        steps the run dispatches to, `autobot.registry.registry` by default. `reporter`: where the run says
+        what it does; the CLI's, or one of the runner's own on stderr. `transcript`: where the session's
+        output goes, as the device sent it; the process's stdout. `environ`: the environment the run starts
+        from, which `prepare` runs in, the `env` section reads and the process is spawned in; that of this
+        process, on a plain terminal (`terminal.run_environ`). `prepare`: what runs the `prepare` script,
+        `run_prepare`. `templater`: the Jinja2 environments templates are rendered with,
+        `autobot.templating.templater`."""
+        self._registry: StepRegistry = registry if registry is not None else registry_mod.registry
+        self._registry.discover()
         self._config = config
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._prepare: Prepare = prepare if prepare is not None else run_prepare
+        self._templater: Templater = templater if templater is not None else default_templater
         self._default_timeout = 300
         # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ() if environ is None else dict(environ)
@@ -149,7 +157,7 @@ class Runner:
         ctx = self._ctx
         if extra_ctx:
             ctx = {**ctx, **extra_ctx}
-        return render_template(template, ctx, condition=condition, keep_newline=keep_newline)
+        return self._templater.render(template, ctx, condition=condition, keep_newline=keep_newline)
 
     def _spawn_command(self) -> str:
         attach = self._config.attach
@@ -179,7 +187,7 @@ class Runner:
         # the run's own `vars`, and the top-level prompts resolved from them, before `prepare` runs
         self._vars = copy.deepcopy(self._config.vars)
         self._session.restore_handlers(self._handlers())
-        check_template(attach.spawn)  # a syntax error stops the run before `prepare`
+        self._templater.check_template(attach.spawn)  # a syntax error stops the run before `prepare`
         timeout = self._get_timeout(attach)
         self._env = self._resolve_run_env()
         spawn = self._spawn_command()
@@ -323,11 +331,11 @@ class Runner:
         if delay_before:
             self._session.sleep(delay_before)
 
-        key = registry.key_for_step(step)
-        executor = registry.get(key)
+        key = self._registry.key_for_step(step)
+        executor = self._registry.get(key)
         # plugin models don't carry the common properties; keep `step` intact. The plugin's model is the
         # one that passed when the script was loaded, validated once (SPEC, Common Step Properties)
-        model = step.validated(registry) if isinstance(step, PluginStep) else step
+        model = step.validated(self._registry) if isinstance(step, PluginStep) else step
         executor.execute(model, self, timeout)
 
         delay_after = getattr(step, "delay_after", None)

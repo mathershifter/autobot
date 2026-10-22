@@ -514,8 +514,9 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 
 def test_p6_108_runner_raises_the_first_script_error():
-    """`Runner(config, given)` takes the configuration and the `--env` values, and a `reporter` by keyword
-    alone, and raises the first script error that depends on no value: an `--env` key, the type of an
+    """`Runner(config, given)` takes the configuration and the `--env` values, and what the run is wired to
+    (`registry`, `reporter`, `transcript`, `environ`, `prepare`, `templater`) by keyword alone, each with
+    a default, and raises the first script error that depends on no value: an `--env` key, the type of an
     `--env` value, then the prompts in their order. An `env` default is no template and is not checked; a
     variable without a value is the run's."""
     import inspect
@@ -524,8 +525,9 @@ def test_p6_108_runner_raises_the_first_script_error():
     from autobot.errors import ScriptError
 
     params = inspect.signature(Runner).parameters
-    assert list(params) == ["config", "given", "reporter", "transcript", "environ", "prepare"]
-    assert params["reporter"].kind is inspect.Parameter.KEYWORD_ONLY and params["reporter"].default is None
+    assert list(params) == ["config", "given", "registry", "reporter", "transcript", "environ", "prepare", "templater"]
+    for name in list(params)[2:]:
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY and params[name].default is None, name
     typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
         Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three", "NOPE": "x"})

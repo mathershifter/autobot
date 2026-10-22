@@ -22,7 +22,6 @@ import pytest
 import yaml
 
 import autobot.registry as registry_mod
-import autobot.runner as runner_mod
 from autobot.cli.schema import load_schema
 from autobot.errors import LineTooLong, PartialLine
 from autobot.log import ConsoleReporter
@@ -421,7 +420,6 @@ def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> StepRegistry:
     register_builtins(reg)
     reg.discover_calls = 0  # type: ignore[attr-defined]
     monkeypatch.setattr(registry_mod, "registry", reg)
-    monkeypatch.setattr(runner_mod, "registry", reg)
     real = importlib.metadata.entry_points
 
     def entry_points(**kw):

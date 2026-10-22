@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from autobot.duration import parse_duration
-from autobot.templating import _jinja_env, check_template, render
+from autobot.templating import check_template, render, templater
 from autobot.types import ensure_list
 
 
@@ -52,7 +52,7 @@ def test_p8_03_render_passthrough_and_filters():
     assert render(5, {}) == 5
     assert render(None, {}) is None
     assert render(["{{ x }}"], {}) == ["{{ x }}"]
-    assert {"contains", "search"} <= set(_jinja_env.filters)
+    assert all({"contains", "search"} <= set(env.filters) for env in (templater.text, templater.condition, templater.value))
 
 
 def test_p8_04_render_trailing_newline_dropped():
