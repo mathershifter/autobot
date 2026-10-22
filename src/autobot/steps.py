@@ -17,7 +17,8 @@ from .models import (
     SetStep,
     SleepStep,
 )
-from .types import check_regex, ensure_list
+from .templating import check_regex
+from .types import ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext

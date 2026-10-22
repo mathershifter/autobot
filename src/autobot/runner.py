@@ -19,8 +19,9 @@ from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
 from .terminal import run_environ
-from .types import check_regex, check_template, text
-from .types import render as render_template
+from .templating import check_regex, check_template
+from .templating import render as render_template
+from .types import text
 
 if TYPE_CHECKING:
     from .protocols import Reporter

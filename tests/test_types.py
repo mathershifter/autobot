@@ -6,13 +6,9 @@ from typing import Any
 
 import pytest
 
-from autobot.types import (
-    _jinja_env,
-    check_template,
-    ensure_list,
-    parse_duration,
-    render,
-)
+from autobot.duration import parse_duration
+from autobot.templating import _jinja_env, check_template, render
+from autobot.types import ensure_list
 
 
 @pytest.mark.parametrize(

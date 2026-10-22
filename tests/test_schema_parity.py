@@ -728,11 +728,11 @@ def test_p6_69_schema_duration_maximum_is_the_largest_double(schema: dict[str, A
     """SPEC "Duration Format": the schema's bound and the model's are the same number."""
     import sys
 
-    from autobot import types
+    from autobot import duration
 
     [number] = [alt for alt in schema["$defs"]["duration"]["oneOf"] if alt["type"] == "number"]
     assert number == {"type": "number", "minimum": 0, "maximum": sys.float_info.max}
-    assert types.DURATION_MAX == sys.float_info.max == FLOAT_MAX
+    assert duration.DURATION_MAX == sys.float_info.max == FLOAT_MAX
 
 
 @pytest.mark.parametrize("field", list(DURATION_FIELDS))
