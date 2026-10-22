@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .types import RunError
+from .errors import RunError
 
 # Stripped before looking for a shebang: whitespace, a BOM, and the zero-width characters of copy and paste.
 _JUNK = " \t\r\n﻿​⁠"

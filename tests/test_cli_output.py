@@ -16,10 +16,11 @@ import yaml
 from conftest import make_config, make_doc, plugin_dist
 
 from autobot import cli, log
+from autobot.errors import StepFailure
 from autobot.log import ConsoleReporter
 from autobot.models import Config
 from autobot.runner import Runner
-from autobot.steps import CmdExecutor, StepFailure
+from autobot.steps import CmdExecutor
 from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
@@ -482,8 +483,8 @@ def test_p8_29_unexpected_error_and_interrupt_in_a_step(capsys: pytest.CaptureFi
 CATCHING_PLUGIN = '''
 import pydantic
 
+from autobot.errors import StepFailure
 from autobot.models import CmdStep
-from autobot.steps import StepFailure
 
 
 class TryStep(pydantic.BaseModel):

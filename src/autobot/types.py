@@ -10,6 +10,8 @@ import jinja2
 import pydantic
 from pydantic_core import PydanticCustomError
 
+from .errors import ScriptError
+
 DURATION_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$")
 DURATION_MULT = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
 DURATION_MAX = sys.float_info.max
@@ -46,16 +48,6 @@ _jinja_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean
 _condition_env = _Environment(undefined=jinja2.StrictUndefined)
 # a value that is stored (`set`): the line break that ends the template is part of it
 _value_env = _Environment(undefined=jinja2.StrictUndefined, finalize=_no_boolean, keep_trailing_newline=True)
-
-
-class ScriptError(ValueError):
-    """A problem of the script that shows only while it runs: a template, a rendered pattern, a `sendEach`
-    collection. The CLI reports it without a traceback."""
-
-
-class RunError(RuntimeError):
-    """A failure of the run that the device or the environment explains: a failed command, a prompt out of
-    responses, a failed `prepare`. The CLI reports it without a traceback."""
 
 
 def _search(s: Any, pattern: str) -> bool:

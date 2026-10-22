@@ -24,12 +24,13 @@ import yaml
 import autobot.registry as registry_mod
 import autobot.runner as runner_mod
 from autobot.cli import load_schema
+from autobot.errors import LineTooLong, PartialLine
 from autobot.log import ConsoleReporter
 from autobot.models import Config
 from autobot.protocols import Reporter
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
-from autobot.session import LineTooLong, PartialLine, PromptHandler, Session
+from autobot.session import PromptHandler, Session
 from autobot.steps import register_builtins
 
 

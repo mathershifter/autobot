@@ -14,8 +14,9 @@ import pytest
 from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
+from autobot.errors import CommandError, LineTooLong
 from autobot.screen import _inside, _mid_echo, _shown, strip_echo
-from autobot.session import HELD_GRACE, CommandError, LineTooLong, PromptHandler, Session
+from autobot.session import HELD_GRACE, PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
 EOS_PROMPT = "cmp474(s1)(vrf:MGMT)#"

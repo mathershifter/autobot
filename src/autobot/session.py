@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING
 
 import pexpect
 
+from .errors import CommandError, LineTooLong, PartialLine, RunError, ScriptError
 from .log import ConsoleReporter, OutputLost
 from .screen import ANSI_ESCAPE_RE, STRAY_RE, _mid_echo, strip_echo
 from .terminal import LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte, run_environ
 from .transcript import CleanWriter
-from .types import RunError, ScriptError
 
 if TYPE_CHECKING:
     from .protocols import Reporter
@@ -36,20 +36,6 @@ HELD_GRACE = 1.0
 # it: `logout` sent in the same breath as Ctrl-C arrives as `ogout`. Nothing shows when the far side is
 # done, so the line waits this long; it is no guarantee on a far side that is slower than that.
 CONTROL_SETTLE = 0.5
-
-
-class CommandError(RunError):
-    def __init__(self, message: str, output: str = ""):
-        super().__init__(message)
-        self.output = output
-
-
-class LineTooLong(RunError):
-    """A line that the terminal of the spawned process would cut: it is not sent."""
-
-
-class PartialLine(RunError):
-    """A line that would be added to the part of an earlier one that is typed at the far side: it is not sent."""
 
 
 PARTIAL = (

@@ -21,7 +21,8 @@ from conftest import BASH, FakeDevice, SentLog, make_doc, make_runner, run_cli
 from conftest import run_vars as run
 
 import autobot.terminal as terminal_mod
-from autobot.session import LineTooLong, PartialLine, PromptHandler, Session, SimpleHandler
+from autobot.errors import LineTooLong, PartialLine
+from autobot.session import PromptHandler, Session, SimpleHandler
 from autobot.terminal import canon_limit
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"

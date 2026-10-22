@@ -22,10 +22,10 @@ import yaml
 from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
 
 from autobot import cli
+from autobot.errors import StepFailure
 from autobot.log import ConsoleReporter
 from autobot.runner import BreakoutError, Left, left, trail
 from autobot.session import PromptHandler, Session, SimpleHandler
-from autobot.steps import StepFailure
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"
 LOGIN = {

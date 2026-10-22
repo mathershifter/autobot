@@ -474,7 +474,7 @@ def test_p6_108_send_syntax_error_names_its_prompt(m: Markers):
     """`run` reports the first script error, and a prompt's says which prompt it is about: two prompts with
     the same mistake give different messages, like the error of a `sendEach` and of rendering a `send`."""
     from autobot.models import Config
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
     end = "template error: unexpected end of template, expected 'end of print statement'."
     sh = {"name": "sh", "expect": [r"\$ "], "return": True}
@@ -504,7 +504,7 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
     """The prompts of a block are loaded on entering it: the same message, as a failed run."""
     from conftest import SHELL_PROMPT, run_script
 
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
     block = {"name": "b", "prompts": [SHELL_PROMPT, {"name": "more", "expect": ["--More--"], "send": "{{ x "}], "script": [STEP]}
     with pytest.raises(ScriptError) as ei:
@@ -520,7 +520,7 @@ def test_p6_108_runner_raises_the_first_script_error():
     import inspect
 
     from autobot.models import Config
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
     params = inspect.signature(Runner).parameters
     assert list(params) == ["config", "given", "reporter"]

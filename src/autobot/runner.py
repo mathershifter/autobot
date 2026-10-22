@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING, Any
 from jinja2 import StrictUndefined
 
 from . import prepare
+from .errors import RunError, ScriptError
 from .log import ConsoleReporter, OutputLost
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
 from .steps import register_builtins
 from .terminal import run_environ
-from .types import RunError, ScriptError, check_regex, check_template, text
+from .types import check_regex, check_template, text
 from .types import render as render_template
 
 if TYPE_CHECKING:

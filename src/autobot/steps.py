@@ -5,6 +5,7 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from .errors import CommandError, ScriptError, StepFailure
 from .models import (
     BlockStep,
     CallStep,
@@ -15,8 +16,7 @@ from .models import (
     SetStep,
     SleepStep,
 )
-from .session import CommandError
-from .types import RunError, ScriptError, check_regex, ensure_list
+from .types import check_regex, ensure_list
 
 if TYPE_CHECKING:
     from .protocols import RunnerContext
@@ -29,10 +29,6 @@ if TYPE_CHECKING:
 # for slow serial/terminal-server consoles.
 SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
-
-
-class StepFailure(RunError):
-    """A command failure that `ignore_error` swallows (exit code, assert, upload)."""
 
 
 class CmdExecutor:

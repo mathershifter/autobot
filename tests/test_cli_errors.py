@@ -18,11 +18,10 @@ import yaml
 from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli
 
 from autobot import cli
+from autobot.errors import CommandError, RunError, ScriptError, StepFailure
 from autobot.registry import PluginError
 from autobot.runner import Runner, StepRef, trail
-from autobot.session import CommandError
-from autobot.steps import CmdExecutor, StepFailure
-from autobot.types import RunError, ScriptError
+from autobot.steps import CmdExecutor
 
 PIN = {"name": "pin", "expect": ["PIN:"], "send": {"each": "vars.pins"}}
 BOOLEAN = (
@@ -685,7 +684,7 @@ def test_p6_87_traceback_flag_shows_the_traceback_of_an_expected_failure(tmp_pat
         assert lines[0] == "Traceback (most recent call last):"
         assert "jinja2.exceptions.UndefinedError: 'dict object' has no attribute 'nope'" in lines
         assert "The above exception was the direct cause of the following exception:" in lines
-        assert "autobot.types.ScriptError: template error: 'dict object' has no attribute 'nope'" in lines
+        assert "autobot.errors.ScriptError: template error: 'dict object' has no attribute 'nope'" in lines
         assert lines[-2:] == _lines(plain)
     assert "Traceback" not in plain.stderr
 

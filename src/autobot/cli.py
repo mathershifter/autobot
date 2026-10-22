@@ -21,11 +21,12 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
+from .errors import RunError, ScriptError
 from .log import ERROR, OK, WARN, ConsoleReporter, OutputLost
 from .models import Config
 from .registry import PluginError, registry
 from .runner import BreakoutError, Runner, _kind, left, trail
-from .types import RunError, ScriptError, text
+from .types import text
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor

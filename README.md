@@ -549,7 +549,7 @@ A plugin adds a step type. It is an executor class registered in the `autobot.st
 - `ctx.session.posix` is true while the session is at a `posix` shell prompt, and false once anything is sent.
 - `ctx.vars[name] = value` stores a value, as `register` and `set` do, for the templates after it. Each run starts with a copy of the script's `vars`; `ctx.config` is the script as loaded, to read.
 - `ctx.reporter.say(text)` prints a `>> ` progress line at the step's level, like the built-in steps' lines; `say(text, "warn")` for a failure the step goes on from. Don't write to stderr yourself.
-- Raise `autobot.types.RunError` for what the device did, or `autobot.types.ScriptError` for a bad value in the script. Most other exceptions from the plugin's own code are reported as a bug in the plugin.
+- Raise `autobot.errors.RunError` for what the device did, or `autobot.errors.ScriptError` for a bad value in the script. Most other exceptions from the plugin's own code are reported as a bug in the plugin.
 
 A plugin's key can't be a built-in step key or a common step property name. See [SPEC.md](SPEC.md#common-step-properties).
 
