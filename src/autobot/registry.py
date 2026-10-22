@@ -1,3 +1,13 @@
+"""The step registry: the built-in executors and the plugins of the `autobot.steps` entry-point group.
+
+`registry` is the default instance, with the built-ins registered; the CLI and the runner use it, and a
+`Config.model_validate(doc)` without a plugins context checks its plugin steps against it (see
+`autobot.models.PLUGINS`). Its public methods are reachable on this module as well, through the module
+`__getattr__` at the bottom: `from autobot import registry; registry.register(...)` registers on the
+instance, as SPEC documents (Common Step Properties). Code that needs the object itself, e.g. for
+`isinstance`, uses `autobot.registry.registry`.
+"""
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -196,8 +206,7 @@ register_builtins(registry)
 
 
 def __getattr__(name: str) -> Any:
-    # `from autobot import registry` gives this module: the instance's public methods are reachable on
-    # it, so `registry.register(...)` registers on the instance
+    # the instance's public methods on the module (see the module docstring); anything else is a module error
     if not name.startswith("_") and hasattr(StepRegistry, name):
         return getattr(registry, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
