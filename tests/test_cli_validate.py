@@ -523,7 +523,7 @@ def test_p6_108_runner_raises_the_first_script_error():
     from autobot.errors import ScriptError
 
     params = inspect.signature(Runner).parameters
-    assert list(params) == ["config", "given", "reporter"]
+    assert list(params) == ["config", "given", "reporter", "transcript", "environ"]
     assert params["reporter"].kind is inspect.Parameter.KEYWORD_ONLY and params["reporter"].default is None
     typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):

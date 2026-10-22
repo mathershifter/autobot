@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import copy
-from collections.abc import Callable, Iterator, MutableMapping, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any, TextIO
 
 from . import prepare
 from .environment import resolve_env, typed
@@ -34,15 +34,27 @@ def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dic
 
 
 class Runner:
-    def __init__(self, config: Config, given: dict[str, str], *, reporter: Reporter | None = None):
+    def __init__(
+        self,
+        config: Config,
+        given: dict[str, str],
+        *,
+        reporter: Reporter | None = None,
+        transcript: TextIO | None = None,
+        environ: Mapping[str, str] | None = None,
+    ):
         """`given`: the `--env` values, which come before those of the environment. `reporter`: where the
-        run says what it does; the CLI's, or one of the runner's own on stderr."""
+        run says what it does; the CLI's, or one of the runner's own on stderr. `transcript`: where the
+        session's output goes, as the device sent it; the process's stdout when none is given. `environ`:
+        the environment the run starts from, which `prepare` runs in, the `env` section reads and the
+        process is spawned in; that of this process, on a plain terminal (`terminal.run_environ`), when
+        none is given."""
         registry.discover()
         self._config = config
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._default_timeout = 300
         # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
-        self._environ = run_environ()
+        self._environ = run_environ() if environ is None else dict(environ)
         for key in given:
             if key not in config.env:
                 raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
@@ -56,7 +68,7 @@ class Runner:
         self._vars: dict[str, Any] = copy.deepcopy(config.vars)
         # the top-level prompts are resolved here as well as at each run's start: a collection that can't
         # be, or a send template that doesn't parse, is an error before `prepare` runs
-        self._session = Session(self._handlers(), reporter=self._reporter)
+        self._session = Session(self._handlers(), reporter=self._reporter, transcript=transcript, environ=self._environ)
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's

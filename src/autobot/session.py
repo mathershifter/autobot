@@ -19,6 +19,9 @@ from .terminal import LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte
 from .transcript import CleanWriter
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from typing import TextIO
+
     from .protocols import Reporter
 
 
@@ -266,10 +269,22 @@ class PatternTable:
 
 
 class Session:
-    def __init__(self, handlers: list[PromptHandler], *, reporter: Reporter | None = None):
+    def __init__(
+        self,
+        handlers: list[PromptHandler],
+        *,
+        reporter: Reporter | None = None,
+        transcript: TextIO | None = None,
+        environ: Mapping[str, str] | None = None,
+    ):
         """`reporter`: where the session says what it does, and what keeps the run's lost output; the
-        runner's, or one of the session's own on stderr."""
+        runner's, or one of the session's own on stderr. `transcript`: the stream the session's output is
+        written to as the device sent it (SPEC, Output); the process's stdout, as it is at each attach,
+        when none is given. `environ`: the environment a child is spawned in when `attach` gets no `env`
+        of its own; that of a run (`terminal.run_environ`), taken at each attach, when none is given."""
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
+        self._transcript = transcript
+        self._environ = environ
         self._cld: pexpect.spawn | None = None
         self._echo: CleanWriter | None = None
         self._prompt = PromptState()
@@ -403,15 +418,18 @@ class Session:
         self._forget()
         self._ctx["before"] = self._ctx["match"] = ""
         self._login = LoginState()
+        if env is None:
+            env = run_environ() if self._environ is None else dict(self._environ)
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
             encoding="utf-8",
             codec_errors="replace",
-            env=run_environ() if env is None else env,
+            env=env,
             dimensions=(PTY_ROWS, PTY_COLS),
         )
-        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout, self._reporter)
+        transcript = sys.stdout if self._transcript is None else self._transcript
+        self._echo = self._cld.logfile_read = CleanWriter(transcript, self._reporter)
         cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
