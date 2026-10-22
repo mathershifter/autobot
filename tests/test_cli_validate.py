@@ -22,6 +22,7 @@ import yaml
 from conftest import ROOT, make_doc, plugin_dist
 
 from autobot import cli, prepare
+from autobot import runner as runner_mod
 from autobot.runner import Runner
 from autobot.screen import ANSI_ESCAPE_RE
 
@@ -140,7 +141,7 @@ def test_p6_93_validate_reaches_no_spawn_no_prepare_and_no_subprocess(
         raise AssertionError("validate ran something")
 
     for owner, name in (
-        (pexpect, "spawn"), (subprocess, "Popen"), (prepare, "run"), (Runner, "_run_prepare"), (Runner, "run"),
+        (pexpect, "spawn"), (subprocess, "Popen"), (prepare, "run"), (runner_mod, "run_prepare"), (Runner, "run"),
         (prepare.tempfile, "NamedTemporaryFile"), (os, "fork"), (os, "forkpty"),
     ):
         monkeypatch.setattr(owner, name, never)
@@ -523,7 +524,7 @@ def test_p6_108_runner_raises_the_first_script_error():
     from autobot.errors import ScriptError
 
     params = inspect.signature(Runner).parameters
-    assert list(params) == ["config", "given", "reporter", "transcript", "environ"]
+    assert list(params) == ["config", "given", "reporter", "transcript", "environ", "prepare"]
     assert params["reporter"].kind is inspect.Parameter.KEYWORD_ONLY and params["reporter"].default is None
     typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):

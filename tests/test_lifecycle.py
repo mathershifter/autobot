@@ -35,7 +35,7 @@ from conftest import (
 
 from autobot.log import ConsoleReporter
 from autobot.errors import BreakoutError
-from autobot.runner import Runner
+from autobot.runner import Runner, run_prepare
 from autobot.session import PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
@@ -660,9 +660,9 @@ def test_p5_55_prepare_temp_file_removed_when_the_write_fails(
 
 
 def test_p5_55_run_prepare_removes_the_file_when_the_write_fails(prep_tmp: Path):
-    """The audit's reproduction: `Runner._run_prepare("echo \\ud800")` left `_autobot_*.sh` in the temp dir."""
+    """The audit's reproduction: `run_prepare("echo \\ud800")` left `_autobot_*.sh` in the temp dir."""
     with pytest.raises(UnicodeEncodeError):
-        Runner._run_prepare("echo \ud800", dict(os.environ), ConsoleReporter())
+        run_prepare("echo \ud800", dict(os.environ), ConsoleReporter())
     assert list(prep_tmp.iterdir()) == []
 
 
@@ -676,7 +676,7 @@ def test_p5_55_prepare_temp_file_removed_when_the_shell_is_not_run(prep_tmp: Pat
 
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(MemoryError):
-        Runner._run_prepare("#!/bin/sh\ntrue\n", dict(os.environ), ConsoleReporter())
+        run_prepare("#!/bin/sh\ntrue\n", dict(os.environ), ConsoleReporter())
     assert list(prep_tmp.iterdir()) == []
 
 

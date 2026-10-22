@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from .protocols import Reporter
 
 
+# what runs the `prepare` script: given the script, the environment it runs in and the reporter, it gives
+# the environment the script leaves (see `run_prepare`, the runner's default)
+Prepare = Callable[[str, dict[str, str], "Reporter"], dict[str, str]]
+
+
 def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dict[str, str]:
     """Run the `prepare` script in `environ`, saying what happens, and give the environment it leaves."""
     reporter.say("prepare: running local script" + ("" if prepare.shebang(script) else " (no shebang, using /bin/sh)"))
@@ -42,16 +47,18 @@ class Runner:
         reporter: Reporter | None = None,
         transcript: TextIO | None = None,
         environ: Mapping[str, str] | None = None,
+        prepare: Prepare | None = None,
     ):
         """`given`: the `--env` values, which come before those of the environment. `reporter`: where the
         run says what it does; the CLI's, or one of the runner's own on stderr. `transcript`: where the
         session's output goes, as the device sent it; the process's stdout when none is given. `environ`:
         the environment the run starts from, which `prepare` runs in, the `env` section reads and the
         process is spawned in; that of this process, on a plain terminal (`terminal.run_environ`), when
-        none is given."""
+        none is given. `prepare`: what runs the `prepare` script, `run_prepare` when none is given."""
         registry.discover()
         self._config = config
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
+        self._prepare: Prepare = prepare if prepare is not None else run_prepare
         self._default_timeout = 300
         # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ() if environ is None else dict(environ)
@@ -144,8 +151,6 @@ class Runner:
             ctx = {**ctx, **extra_ctx}
         return render_template(template, ctx, condition=condition, keep_newline=keep_newline)
 
-    _run_prepare = staticmethod(run_prepare)
-
     def _spawn_command(self) -> str:
         attach = self._config.attach
         # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
@@ -204,7 +209,7 @@ class Runner:
         if self._config.prepare:
             # as written, not rendered. No process can be started with an empty name, a `=` in a name or a NUL
             fit = {k: v for k, v in environ.items() if k and "=" not in k and "\0" not in k + v}
-            environ = self._run_prepare(self._config.prepare, fit, self._reporter)
+            environ = self._prepare(self._config.prepare, fit, self._reporter)
         return self._resolve_env(environ)
 
     def _attach_and_run(self, spawn: str, timeout: float):
