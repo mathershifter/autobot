@@ -153,8 +153,8 @@ class SimpleHandler(PromptHandler):
 class HeldPrompt:
     """A shell prompt that a prompt wait holds: one that may be the prompt the line editor wrote again
     inside its echo (see HELD_GRACE). `read` is what an `after` wait read up to it, which the prompt wait
-    that takes the prompt up starts its output with; `line` is the prompt's line as it was matched, `match`
-    the match and `handler` the handler whose regex matched it."""
+    that takes the prompt up starts its output with (empty for a prompt the wait read itself); `line` is
+    the prompt's line as it was matched, `match` the match and `handler` the handler whose regex matched it."""
 
     read: str
     line: str
@@ -221,6 +221,23 @@ class ScanResult:
     at_prompt: bool = False
     read: str | None = None
     handler: PromptHandler | None = None
+
+
+@dataclass
+class PromptWait:
+    """One prompt wait (`get_prompt`) while it reads. `sent` is the line sent before it, whose echo is
+    stripped from the output; `solicited`: the one solicit newline was sent, or must not be; `deadline` and
+    `timeout` are the wait's; `output` is what was read so far, as captured; `held` is a shell prompt that
+    may be inside the echo, and `held_at` the size of `output` when it was held: once more is read, the
+    echo went on and the prompt is dropped."""
+
+    sent: str | None
+    solicited: bool
+    deadline: float
+    timeout: float
+    output: list[str] = field(default_factory=list)
+    held: HeldPrompt | None = None
+    held_at: int = 0
 
 
 class PatternTable:
@@ -459,100 +476,142 @@ class Session:
         capture: bool = True,
         solicit: bool = True,
     ) -> str:
-        """Wait for a shell prompt. `solicit=False`: never press Return for one, whatever was sent last."""
+        """Wait for a shell prompt. `solicit=False`: never press Return for one, whatever was sent last.
+
+        Each poll ends at the earliest match among the table's patterns. A line break, an escape sequence
+        and stray characters are consumed, the text before them captured; a prompt with responses is
+        answered; a shell prompt ends the wait, or is held when it may be inside the echo of the line sent;
+        a poll with no match takes a held prompt for the prompt, or sends the one solicit newline.
+        """
         if not self._cld:
             raise RuntimeError("not attached")
         if self._prompt.at_prompt:
             return ""
+        wait = self._begin_wait(timeout, solicit)
+        table = self._table
+        while True:
+            remaining = wait.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out after {timeout}s waiting for {self._prompt_what()}")
+            if wait.held and wait.held_at != len(wait.output):
+                wait.held = None  # the echo went on
+            unread = self._cld.buffer
+            i = self._cld.expect(table.patterns, timeout=min(HELD_GRACE if wait.held else POLL, remaining))
+            before = str(self._cld.before or "")
+            if i == table.line_break:
+                wait.output.append(before.rstrip("\r") + "\n")
+                continue
+            if i == table.timeout:
+                match = self._on_timeout(wait, unread)
+                if match is not None:
+                    return self._finish(wait, match, errors, capture)
+                continue
+            if before:
+                wait.output.append(before)
+            if i == table.eof:
+                raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
+            h = table.handler_for(i)  # None: an escape sequence or stray characters, consumed
+            if h is None:
+                continue
+            if h.is_return:
+                match = self._on_shell_prompt(wait, h, before)
+                if match is not None:
+                    return self._finish(wait, match, errors, capture)
+            else:
+                self._answer(wait, h, i)
 
+    def _begin_wait(self, timeout: float, solicit: bool) -> PromptWait:
+        """Start a prompt wait. Takes the last line sent (`_send.line`, cleared: its echo is stripped from
+        the output) and whether the wait may solicit (`_send.solicit`, set back to True: a command that is
+        still running would answer a solicit newline with a second prompt); takes up a prompt an `after`
+        wait handed on (`_prompt.held`, cleared), with what was read up to it, as if the wait had read it;
+        and starts the handlers' response selection over."""
         sent, self._send.line = self._send.line, None
-        # a command that is still running would answer a solicit newline with a second prompt
         solicited, self._send.solicit = not (self._send.solicit and solicit), True
         for h in self._handlers:
             h.reset()
-        output: list[str] = []
-        # a held prompt: one that may be written again inside the echo, and the size of `output` with it
-        held: HeldPrompt | None = None
-        held_at = 0
+        wait = PromptWait(sent, solicited, time.monotonic() + timeout, timeout)
         carried, self._prompt.held = self._prompt.held, None
         if carried:
-            output.append(carried.read)
-            held, held_at = carried, 1
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"timed out after {timeout}s waiting for {self._prompt_what()}")
-            if held and held_at != len(output):
-                held = None  # the echo went on
-            unread = self._cld.buffer
-            table = self._table
-            i = self._cld.expect(table.patterns, timeout=min(HELD_GRACE if held else POLL, remaining))
-            before = str(self._cld.before or "")
-            if i == table.line_break:
-                output.append(before.rstrip("\r") + "\n")
-                continue
-            if i == table.timeout:
-                # unmatched text stays buffered; it comes back with the next match
-                if held:
-                    if self._cld.buffer == unread:
-                        # nothing came after it for a whole poll: it was the prompt
-                        self._prompt.text, self._prompt.handler = held.line, held.handler
-                        return self._finish(output, sent, errors, capture, held.match)
-                    continue  # no Return is pressed at a prompt that is held
-                if not (solicited or self._send.partial or self._send.unanswered) and all(
-                    h.is_fresh for h in self._handlers
-                ):
-                    self._put_line("", deadline - time.monotonic(), timeout)
-                    solicited = True
-                continue
-            if before:
-                output.append(before)
-            if i == table.escape or i == table.stray:
-                continue
-            if i == table.eof:
-                raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
-            for h in self._handlers:
-                if h.start <= i < h.end:
-                    if h.is_return:
-                        if _mid_echo("".join(output), sent):
-                            # the line editor wrote the prompt again while echoing the line (readline does
-                            # for a line that ends at the right margin): the echo goes on from the row's start
-                            output.append("\r")
-                            held = HeldPrompt("", before + str(self._cld.after), str(self._cld.after), h)
-                            held_at = len(output)
-                            break
-                        self._prompt.text, self._prompt.handler = before + str(self._cld.after), h
-                        return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
-                    try:
-                        self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
-                    except (LineTooLong, PartialLine) as e:
-                        self._send.unanswered = True
-                        raise type(e)(f"prompt '{h.name}': {e}") from None
-                    except BaseException:
-                        self._send.unanswered = True  # no response left, or one that could not be rendered or sent
-                        raise
-                    self._reporter.say(f"prompt answered: {h.name}")  # never the response
-                    if h.credentials:
-                        self._login.open.append(h.name)
-                        self._login.pending = True
-                        if h.name not in self._login.logins:
-                            self._login.logins.append(h.name)
-                    break
+            wait.output.append(carried.read)
+            wait.held, wait.held_at = carried, 1
+        return wait
+
+    def _on_timeout(self, wait: PromptWait, unread: str) -> str | None:
+        """A poll ended with no match; the unmatched text stays buffered and comes back with the next match.
+        Reads `wait.held` and the child's buffer against `unread`, what it held before the poll: a held
+        prompt after which nothing at all arrived was the prompt, so `_prompt.text` and `_prompt.handler`
+        are set to it and its match is returned. Otherwise None: no Return is pressed while a prompt is
+        held; with none held, the one solicit newline is sent (`wait.solicited`) when the wait may, no
+        handler has fired, no part of a line is typed at the far side (`_send.partial`) and no prompt is
+        waiting for an answer (`_send.unanswered`)."""
+        cld = self._cld
+        assert cld
+        if wait.held:
+            if cld.buffer == unread:
+                self._prompt.text, self._prompt.handler = wait.held.line, wait.held.handler
+                return wait.held.match
+            return None
+        if not (wait.solicited or self._send.partial or self._send.unanswered) and all(
+            h.is_fresh for h in self._handlers
+        ):
+            self._put_line("", wait.deadline - time.monotonic(), wait.timeout)
+            wait.solicited = True
+        return None
+
+    def _on_shell_prompt(self, wait: PromptWait, h: PromptHandler, before: str) -> str | None:
+        """A shell prompt regex of `h` matched, `before` being what this read had before it. Reads
+        `wait.output` and `wait.sent`: when the output so far is the start of the line sent, the line editor
+        may have written the prompt again while echoing the line (readline does, for a line that ends at
+        the right margin), so the prompt is held (`wait.held`, `wait.held_at`), a `\\r` goes into the output,
+        from which the echo goes on, and None is returned. Otherwise the session is at the prompt:
+        `_prompt.text` and `_prompt.handler` are set and the match is returned."""
+        cld = self._cld
+        assert cld
+        after = str(cld.after)
+        if _mid_echo("".join(wait.output), wait.sent):
+            wait.output.append("\r")
+            wait.held = HeldPrompt("", before + after, after, h)
+            wait.held_at = len(wait.output)
+            return None
+        self._prompt.text, self._prompt.handler = before + after, h
+        return after
+
+    def _answer(self, wait: PromptWait, h: PromptHandler, i: int) -> None:
+        """A prompt with responses matched, at the regex of index `i`. Sends the response `h` picks for it,
+        within what is left of the wait (`wait.deadline`, `wait.timeout`). Sets `_send.unanswered` when the
+        response could not be sent (none left, or one that could not be rendered or sent): the prompt is
+        still waiting for one. Records a credentials prompt in `_login` as answered, open and pending."""
+        try:
+            self._put_line(h.respond(i - h.start), wait.deadline - time.monotonic(), wait.timeout)
+        except (LineTooLong, PartialLine) as e:
+            self._send.unanswered = True
+            raise type(e)(f"prompt '{h.name}': {e}") from None
+        except BaseException:
+            self._send.unanswered = True
+            raise
+        self._reporter.say(f"prompt answered: {h.name}")  # never the response
+        if h.credentials:
+            self._login.open.append(h.name)
+            self._login.pending = True
+            if h.name not in self._login.logins:
+                self._login.logins.append(h.name)
 
     def _prompt_what(self) -> str:
         names = ", ".join(f"'{h.name}'" for h in self._handlers if h.is_return) or "none defined"
         return f"a shell prompt ({names})"
 
-    def _finish(
-        self, output: list[str], sent: str | None, errors: Sequence[str] | None, capture: bool, match: str
-    ) -> str:
+    def _finish(self, wait: PromptWait, match: str, errors: Sequence[str] | None, capture: bool) -> str:
+        """The wait ended at a shell prompt (`_prompt.text` and `_prompt.handler` are set): the session is at
+        it (`_prompt.at_prompt`) and no login is pending. The captured output is what was read up to its
+        last line break, less the echo of the line sent (`wait.sent`); `capture` stores it and `match` in
+        `ctx`. An `errors` pattern that matches the output is a CommandError."""
         self._prompt.at_prompt = True
         self._login.pending = False
-        text = "".join(output)
+        text = "".join(wait.output)
         text = text[: text.rfind("\n") + 1]
-        if sent:
-            text = strip_echo(text, sent)
+        if wait.sent:
+            text = strip_echo(text, wait.sent)
         if capture:
             self._ctx["before"] = text
             self._ctx["match"] = match
