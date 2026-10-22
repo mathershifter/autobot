@@ -305,7 +305,7 @@ def test_p6_84_unexpected_error_outside_a_run_is_reported_the_same_way(
     assert code == 70
     assert err.startswith("Unexpected error in Autobot: ") and err.rstrip().endswith("KeyError: 'loading'")
 
-    monkeypatch.setattr(cli, "load_schema", boom)
+    monkeypatch.setattr(cli.schema, "load_schema", boom)
     code, out, err = _main(monkeypatch, capsys, "schema")
     assert (code, out) == (70, "")
     assert err.startswith("Unexpected error in Autobot: ") and "Traceback (most recent call last):" in err
@@ -810,9 +810,9 @@ def test_p6_88_ctrl_c_while_loading_is_interrupted_too(
     def interrupt(*_args: object, **_kwargs: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.yaml, "load", interrupt)
+    monkeypatch.setattr(cli.loader.yaml, "load", interrupt)
     killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(cli.signals.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     handler = signal.getsignal(signal.SIGINT)
     try:
         # the process signals itself; where that returns (here: replaced), it exits with status 130

@@ -447,11 +447,11 @@ def test_p5_90_interrupt_during_a_breakout_is_a_breakout_that_did_not_finish(fak
 
 
 def test_p5_90_left_names_the_interrupt_that_ended_an_inner_breakout():
-    """`cli._left` for an interrupt of a block's breakout followed by another error: the interrupted
+    """`cli.report.left_behind` for an interrupt of a block's breakout followed by another error: the interrupted
     breakout is reported by what ended it."""
     first, ended = KeyboardInterrupt(), RuntimeError("x")
     RunOutcome.of(ended).left = Left((first, ended), ())
-    assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
+    assert said(lambda: cli.report.left_behind(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: interrupted",
         f"{LEFT}a breakout did not finish",
     ]
@@ -841,7 +841,7 @@ def test_p5_93_operating_system_error_in_a_breakout_points_to_the_traceback(fake
     error = OSError(28, "No space left on device")
     ended = BreakoutError("x")
     RunOutcome.of(ended).left = Left((error,), ())
-    assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
+    assert said(lambda: cli.report.left_behind(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: [Errno 28] No space left on device",
         "  (run with --traceback for details)",
         f"{LEFT}the script completed, but a breakout did not finish",

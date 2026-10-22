@@ -15,7 +15,7 @@ import pytest
 from conftest import ProbeExecutor, model_ok
 
 from autobot import models
-from autobot.cli import add_plugin_steps
+from autobot.cli.schema import add_plugin_steps
 
 COMMON = sorted(models._COMMON_PROPS - {"plugin_key_"})
 

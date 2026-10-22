@@ -883,7 +883,7 @@ def test_p8_28_offending_value_is_shown_unless_the_message_shows_it(type_: str, 
     """The value is written as YAML writes it, cut at 60 characters; a mapping shows its keys and a list its
     length. Whether it is shown depends on the error's type: not for the types whose message shows the value
     or whose name says what it is, and not for a missing or an unknown key."""
-    assert cli._got(type_, msg, value) == got
+    assert cli.validation.got(type_, msg, value) == got
 
 
 @pytest.mark.parametrize(

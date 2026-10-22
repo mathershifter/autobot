@@ -58,7 +58,7 @@ def running(mark: Path, seconds: int = 30) -> dict[str, Any]:
 
 
 def interrupted(sig: signal.Signals) -> str:
-    return f"Interrupted ({sig.name}): {cli.UNCLEAN}"
+    return f"Interrupted ({sig.name}): {cli.report.UNCLEAN}"
 
 
 NONE_RAN, UNFINISHED, CLOSED = " without running the breakouts", " before the breakouts finished", ""
@@ -66,7 +66,7 @@ NONE_RAN, UNFINISHED, CLOSED = " without running the breakouts", " before the br
 
 def lost(path: Path, stream: str, why: str, how: str = NONE_RAN) -> str:
     """The report of output that was lost: in a step of the script, in a step of a breakout, or in no step."""
-    return f"Run failed in {path}: cannot write {stream}: {why}; the session was closed{how}; {cli.UNKNOWN}"
+    return f"Run failed in {path}: cannot write {stream}: {why}; the session was closed{how}; {cli.report.UNKNOWN}"
 
 
 PIPE = "[Errno 32] Broken pipe"
@@ -257,14 +257,14 @@ def test_p6_114_signal_ends_a_run_whose_stderr_nobody_reads(fake_device: FakeDev
 
 
 def handled(monkeypatch: pytest.MonkeyPatch, stderr: Any, sig: signal.Signals = signal.SIGTERM) -> list[tuple]:
-    """What the handler of `cli._ended_by_signal` does when it is called, with `stderr` as `sys.stderr`: its
+    """What the handler of `cli.signals.ended_by_signal` does when it is called, with `stderr` as `sys.stderr`: its
     calls of `os.write`, `os.kill` (with the signal's action at that time) and `os._exit`, in order."""
     calls: list[tuple] = []
     saved, stop = signal.getsignal(sig), signal.getsignal(signal.SIGTTOU)
     monkeypatch.setattr(sys, "stderr", stderr)
     try:
         signal.signal(sig, signal.SIG_DFL)
-        with cli._ended_by_signal(ConsoleReporter()):
+        with cli.signals.ended_by_signal(ConsoleReporter()):
             handler = signal.getsignal(sig)
             monkeypatch.setattr(os, "write", lambda fd, data: calls.append(("write", fd, data)) or len(data))
             monkeypatch.setattr(os, "kill", lambda pid, signum: calls.append(("kill", pid, signum, signal.getsignal(signum))))
@@ -326,7 +326,7 @@ def test_p6_114_ignored_signal_stays_ignored(fake_device: FakeDevice, cli_run, t
 
 
 def test_p6_114_only_a_default_action_is_replaced_and_it_is_put_back():
-    """`cli._ended_by_signal`: a signal with its default action gets the handler for the block, and its
+    """`cli.signals.ended_by_signal`: a signal with its default action gets the handler for the block, and its
     default action back after it. One that is ignored, or has a handler of somebody else's, is left alone."""
 
     def theirs(signum, frame):
@@ -336,11 +336,11 @@ def test_p6_114_only_a_default_action_is_replaced_and_it_is_put_back():
     try:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
-        with cli._ended_by_signal(ConsoleReporter()):
+        with cli.signals.ended_by_signal(ConsoleReporter()):
             assert callable(signal.getsignal(signal.SIGTERM)) and signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL and signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
         signal.signal(signal.SIGTERM, theirs)
-        with cli._ended_by_signal(ConsoleReporter()):
+        with cli.signals.ended_by_signal(ConsoleReporter()):
             assert signal.getsignal(signal.SIGTERM) is theirs
         assert signal.getsignal(signal.SIGTERM) is theirs
     finally:
@@ -355,7 +355,7 @@ def test_p6_114_no_handler_outside_the_main_thread():
 
     def block() -> None:
         try:
-            with cli._ended_by_signal(ConsoleReporter()):
+            with cli.signals.ended_by_signal(ConsoleReporter()):
                 seen.append([signal.getsignal(sig) for sig in SIGNALS])
         except BaseException as e:  # noqa: BLE001 - whatever it is, the test reports it
             seen.append(e)

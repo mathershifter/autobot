@@ -13,7 +13,7 @@ import pytest
 import yaml
 from conftest import ROOT, SHELL_PROMPT, FakeDevice, SentLog, make_doc, run_vars
 
-from autobot.cli import UniqueKeyLoader
+from autobot.cli.loader import UniqueKeyLoader
 from autobot.errors import BreakoutError
 from autobot.models import Config
 from autobot.report import left, trail

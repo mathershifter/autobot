@@ -27,7 +27,7 @@ from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
 # the program's name is whatever the interpreter prints: `autobot` when installed, and under
-# `python -m autobot.cli` `cli.py` up to Python 3.13 and `python -m autobot.cli` from 3.14
+# `python -m autobot.cli` `__main__.py` up to Python 3.13 and `python -m autobot.cli` from 3.14
 USAGE = re.compile(r"usage: \S[^\n]*? validate \[-h\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
 EXAMPLES = sorted((ROOT / "examples").glob("*.autobot.yaml"))
 STEP = {"cmd": "true"}
@@ -554,14 +554,14 @@ def test_p6_98_unexpected_error_keeps_its_traceback_and_ends_the_command(
 ):
     """A bug is no verdict on the script: status 70 with the traceback, and the scripts after it aren't checked."""
     first, boom, last = m.write("first"), m.write("boom"), m.write("last")
-    real = cli._load
+    real = cli.loader.load
 
     def load(rep: Any, path: str) -> object:
         if path == str(boom):
             raise KeyError("x")
         return real(rep, path)
 
-    monkeypatch.setattr(cli, "_load", load)
+    monkeypatch.setattr(cli.loader, "load", load)
     code, out, err = _main(monkeypatch, capsys, "validate", first, boom, last)
     lines = err.splitlines()
     assert (code, out) == (70, "")
@@ -625,8 +625,8 @@ def test_p6_98_interrupt_while_validating_is_interrupted(
     def ended() -> None:
         raise SystemExit(130)
 
-    monkeypatch.setattr(cli, "_load", interrupt)
-    monkeypatch.setattr(cli, "_interrupted", ended)
+    monkeypatch.setattr(cli.loader, "load", interrupt)
+    monkeypatch.setattr(cli.signals, "interrupted", ended)
     assert _main(monkeypatch, capsys, "validate", m.write("s")) == (130, "", "Interrupted\n")
 
 
@@ -1073,7 +1073,7 @@ def test_p6_107_unexpected_error_shows_the_path_escaped(
     def load(rep: Any, path: str) -> object:
         raise KeyError("x")
 
-    monkeypatch.setattr(cli, "_load", load)
+    monkeypatch.setattr(cli.loader, "load", load)
     code, _, err = _main(monkeypatch, capsys, "validate", "a\nb\x1b[31m.yaml")
     assert code == 70 and err.splitlines()[1] == "  while checking a\\nb\\x1b[31m.yaml" and ESC not in err
 

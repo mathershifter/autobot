@@ -258,7 +258,7 @@ def test_p8_58_set_yaml_collections_are_stored_as_written(tmp_path: Path):
         "      s: !!set {'{{ x }}': null}\n"
     )
     r = make_runner([])
-    step = Config.model_validate(cli._load(ConsoleReporter(), str(path))).script
+    step = Config.model_validate(cli.loader.load(ConsoleReporter(), str(path))).script
     r.run_steps(step)
     assert r.vars == {"o": [("a", "{{ x }}"), ("b", 2)], "p": [("a", "{{ x }}"), ("a", 3)], "s": {"{{ x }}"}}
 
