@@ -589,7 +589,7 @@ def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch
         if through_cli:
             monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
             with pytest.raises(SystemExit) as ei:
-                cli.main(rep)
+                cli.main(reporter=rep)
             assert ei.value.code == 3
         else:
             with pytest.raises(log.OutputLost):
@@ -611,7 +611,7 @@ def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch
         for argv, status in ((["validate", str(path)], 0), (["schema"], 0)):
             monkeypatch.setattr(sys, "argv", ["autobot", *argv])
             try:
-                cli.main(rep)
+                cli.main(reporter=rep)
                 code: Any = 0
             except SystemExit as e:
                 code = e.code
@@ -649,7 +649,7 @@ def test_p6_115_command_that_lost_its_messages_leaves_nothing_behind(monkeypatch
     monkeypatch.setattr(sys, "stderr", Breaking(OSError(errno.ENOSPC, "No space left on device"), "valid"))
     rep = ConsoleReporter()
     with pytest.raises(SystemExit) as ei:
-        cli.main(rep)
+        cli.main(reporter=rep)
     monkeypatch.undo()
     assert ei.value.code == 3 and rep.lost is None
     rep.say("after")
