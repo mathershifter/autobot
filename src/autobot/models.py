@@ -10,6 +10,7 @@ import pydantic
 from pydantic_core import PydanticCustomError
 
 from .keys import BUILTIN_KEYS, COMMON_PROPS
+from .terminal import CONTROL_NOTE
 from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
 if TYPE_CHECKING:
@@ -398,7 +399,7 @@ class ReturnStep(pydantic.BaseModel):
     delay_after: Omittable[Duration] = None
 
 
-# what sendcontrol maps to a control character: Ctrl+A..Z in either case, and the punctuation keys
+# the keys `terminal.control_byte` has a control character for: Ctrl+A..Z in either case, and the punctuation keys
 CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
 
 
@@ -416,10 +417,7 @@ class ControlStep(pydantic.BaseModel):
     def _control(cls, v: StringOrArray) -> StringOrArray:
         for char in ensure_list(v):
             if not CONTROL_RE.fullmatch(char):
-                raise _custom(
-                    "control_char",
-                    f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got '{char}'",
-                )
+                raise _custom("control_char", f"{CONTROL_NOTE}, got '{char}'")
         return v
 
 

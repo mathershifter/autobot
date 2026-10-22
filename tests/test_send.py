@@ -3,6 +3,7 @@ refused when the terminal it is typed on would cut it (P8-43 to P8-47)."""
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import math
 import os
@@ -22,6 +23,7 @@ from conftest import run_vars as run
 
 import autobot.terminal as terminal_mod
 from autobot.errors import LineTooLong, PartialLine
+from autobot.models import CONTROL_RE
 from autobot.session import PromptHandler, Session, SimpleHandler
 from autobot.terminal import canon_limit
 
@@ -1522,3 +1524,48 @@ def test_p8_55_interrupt_before_a_prompt_is_answered_leaves_it_unanswered(fake_d
     finally:
         monkeypatch.undo()
         s.detach(failing=True)
+
+
+# -- P8-59: a key that has no control character -------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["1", "ab", "", " ", "^C", "é", "K"], ids=repr)
+def test_p8_59_control_key_without_a_control_character_is_refused(shell_session: Session, sent: SentLog, key: str):
+    """SPEC "control": `session.sendcontrol` takes the keys of a `control` step. Any other key is a
+    `ValueError` with the step's message; nothing is written, and the session is where it was, at its
+    prompt, so the next prompt wait returns at once."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    state = (copy.copy(s._prompt), copy.copy(s._send))
+    with pytest.raises(ValueError) as ei:
+        s.sendcontrol(key, timeout=5)
+    assert str(ei.value) == f"{terminal_mod.CONTROL_NOTE}, got '{key}'"
+    assert (s._prompt, s._send) == state and sent == []
+    started = time.monotonic()
+    assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+
+
+def test_p8_59_refused_key_does_not_end_a_partial_line(attach, tmp_path: Path, sent: SentLog):
+    """The guard of P8-48 stands: a key that sends nothing can't have dropped the line typed at the far side."""
+    s, log = _partial(attach, tmp_path, "--pause", 100)
+    sent.clear()
+    with pytest.raises(ValueError):
+        s.sendcontrol("1", timeout=5)
+    assert s._send.partial is True and sent == []
+    with pytest.raises(PartialLine):
+        s.sendline("exit", timeout=5)
+    assert not log.exists()
+
+
+def test_p8_59_control_byte_has_a_byte_for_the_keys_of_a_control_step():
+    """`terminal.control_byte` and `models.CONTROL_RE` agree on every character: the keys with a byte are
+    exactly those a `control` step accepts (the Kelvin sign, which lowercases to `k`, is neither)."""
+    for code in [*range(0x3000), 0x212A]:
+        char = chr(code)
+        try:
+            byte = terminal_mod.control_byte(char)
+        except ValueError as e:
+            assert CONTROL_RE.fullmatch(char) is None, char
+            assert str(e) == f"{terminal_mod.CONTROL_NOTE}, got '{char}'"
+        else:
+            assert CONTROL_RE.fullmatch(char) is not None and len(byte) == 1, char

@@ -765,8 +765,11 @@ class Session:
         return rc
 
     def sendcontrol(self, char: str, *, timeout: float = 300):
+        """Send the control character of `char`, a key of the `control` step, within `timeout`. Any other
+        key is a `ValueError`: nothing is sent and nothing changes."""
         if not self._cld:
             raise RuntimeError("not attached")
+        control_byte(char)  # refused before any state changes
         self._prompt.at_prompt = False
         self._send.solicit = True
         self._prompt.held = None

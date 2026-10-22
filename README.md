@@ -545,7 +545,7 @@ A plugin adds a step type. It is an executor class registered in the `autobot.st
 `ctx` gives the plugin the session (`ctx.session`, an `autobot.protocols.SessionLike`), the run's variables (`ctx.vars`), the `errors` patterns (`ctx.errors`), the steps of a function (`ctx.function(name)`), the config (`ctx.config`), the reporter (`ctx.reporter`), the running step's path (`ctx.path`), `ctx.render(template)`, `ctx.run_steps(steps, path=None)`, `ctx.prompts(prompts)` and, for a cleanup of its own, `ctx.run_breakout(steps, what, path=None)`. `path` names the list in an error report (`fn.<name>.script`, `<ctx.path>.block.enter`); without it the steps are named after the plugin step, `<ctx.path>.<key>.<index>`.
 
 - `ctx.session.sendline(text, timeout=timeout)` sends a command; follow it with `ctx.session.get_prompt(...)`. With `solicit=True` it is a raw send, like a `line` step.
-- `ctx.session.sendcontrol(char, timeout=timeout)` sends a control character.
+- `ctx.session.sendcontrol(char, timeout=timeout)` sends a control character; `char` is a key the `control` step takes, and any other is a `ValueError`.
 - `ctx.session.posix` is true while the session is at a `posix` shell prompt, and false once anything is sent.
 - `with ctx.prompts(prompts):` makes a list of `Prompt` models (`autobot.models`) the session's prompts for the body and restores the previous ones on exit, as a block with `prompts` does.
 - `ctx.vars[name] = value` stores a value, as `register` and `set` do, for the templates after it. Each run starts with a copy of the script's `vars`; `ctx.config` is the script as loaded, to read.
