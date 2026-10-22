@@ -15,7 +15,7 @@ import pydantic
 
 from ..errors import BreakoutError, ScriptError
 from ..log import ERROR, OK, WARN, ConsoleReporter, OutputLost
-from ..models import Config
+from ..models import PLUGINS, Config
 from ..registry import PluginError, registry
 from ..report import trail
 from ..runner import Runner
@@ -71,7 +71,7 @@ def _config(rep: ConsoleReporter, script: str) -> Config:
     raised as `LoadError`."""
     config_dict = loader.load(rep, script)
     try:
-        return Config.model_validate(config_dict)
+        return Config.model_validate(config_dict, context={PLUGINS: registry})
     except pydantic.ValidationError as e:
         validation.report(rep, e)
         raise LoadError from None

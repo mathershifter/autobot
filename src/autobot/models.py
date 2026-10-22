@@ -2,15 +2,48 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Annotated, Any
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Annotated, Any
 
 import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
+from .keys import BUILTIN_KEYS, COMMON_PROPS
 from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
+if TYPE_CHECKING:
+    from .protocols import PluginLookup
+
 VERSION = "2026-10"
+
+PLUGINS = "plugins"
+"""The validation context key of the plugins a script is checked against:
+`Config.model_validate(doc, context={PLUGINS: lookup})`, with a `PluginLookup` (`autobot.protocols`).
+Without it, the default registry, `autobot.registry.registry`, which discovers the installed plugins."""
+
+# the lookup of the validation under way; pydantic's Discriminator callable gets no context, so it is kept here
+_plugins: ContextVar[PluginLookup | None] = ContextVar("autobot.models.plugins", default=None)
+
+
+def _lookup() -> PluginLookup:
+    lookup = _plugins.get()
+    return lookup if lookup is not None else _default_plugins()
+
+
+def _default_plugins() -> PluginLookup:
+    # imported here, not at the top: the registry imports the models
+    from . import registry
+
+    return registry.registry
+
+
+def plugin_key_of(data: dict[str, Any], plugins: PluginLookup) -> str | None:
+    """The first key of a step that a plugin registers, or None; a common step property is never one."""
+    for key in data:
+        if key not in COMMON_PROPS and plugins.has(key):
+            return key
+    return None
 
 
 # strict: a value has the type the schema names, so YAML's !!binary isn't a string
@@ -405,32 +438,21 @@ class PluginStep(pydantic.BaseModel):
     @pydantic.model_validator(mode="before")
     @classmethod
     def _capture_plugin_key(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            from .registry import registry
-
-            if "plugin_key_" in data:
-                raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
-            for key in data:
-                if key not in _COMMON_PROPS and registry.has(key):
-                    return {**data, "plugin_key_": key}
-        return data
-
-
-_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control", "set")
-_COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
+        if not isinstance(data, dict):
+            return data
+        if "plugin_key_" in data:
+            raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
+        key = plugin_key_of(data, _lookup())
+        return {**data, "plugin_key_": key} if key else data
 
 
 def _step_discriminator(v: Any) -> str | None:
-    if isinstance(v, dict):
-        for key in _BUILTIN_KEYS:
-            if key in v:
-                return key
-        from .registry import registry
-
-        for key in v:
-            if key not in _COMMON_PROPS and registry.has(key):
-                return "plugin"
-    return None
+    if not isinstance(v, dict):
+        return None
+    for key in BUILTIN_KEYS:
+        if key in v:
+            return key
+    return "plugin" if plugin_key_of(v, _lookup()) else None
 
 
 Step = Annotated[
@@ -448,7 +470,7 @@ Step = Annotated[
         custom_error_type="invalid_step",
         custom_error_message=(
             "cannot determine step type; expected one of "
-            f"{', '.join(_BUILTIN_KEYS)} or a registered plugin step"
+            f"{', '.join(BUILTIN_KEYS)} or a registered plugin step"
         ),
     ),
 ]
@@ -498,8 +520,7 @@ class Config(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="after")
     def _check_steps(self) -> Config:
-        from .registry import registry
-
+        plugins = _lookup()
         roots: list[tuple[tuple, list[Step]]] = [
             (("attach", "script"), self.attach.script),
             (("script",), self.script),
@@ -523,13 +544,13 @@ class Config(pydantic.BaseModel):
                 elif isinstance(step, PluginStep):
                     # the step's other keys reach the first plugin's model as fields, and an extra="allow"
                     # model would take a second plugin's key as data, so that step would never run
-                    keys = [k for k in step.model_extra or {} if registry.has(k)]
+                    keys = [k for k in step.model_extra or {} if plugins.has(k)]
                     if len(keys) > 1:
                         msg = f"step has more than one plugin key: {', '.join(keys)}"
                         errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
                         continue
                     try:
-                        registry.validate_plugin_step(step)
+                        plugins.validate_plugin_step(step)
                     except pydantic.ValidationError as e:
                         errors += [
                             {
@@ -545,3 +566,19 @@ class Config(pydantic.BaseModel):
         if errors:
             raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
         return self
+
+    # defined last: the outermost validator, so that the lookup is set while the steps are discriminated
+    # and `_check_steps` runs
+    @pydantic.model_validator(mode="wrap")
+    @classmethod
+    def _with_plugins(
+        cls, data: Any, handler: pydantic.ModelWrapValidatorHandler[Config], info: pydantic.ValidationInfo
+    ) -> Config:
+        lookup = (info.context or {}).get(PLUGINS)
+        if lookup is None:
+            return handler(data)
+        token = _plugins.set(lookup)
+        try:
+            return handler(data)
+        finally:
+            _plugins.reset(token)

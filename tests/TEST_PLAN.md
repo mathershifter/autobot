@@ -109,7 +109,7 @@ This generalizes `sleeps` from `tests/test_plugin_common_props.py`. It monkeypat
 
 ### F6: registry isolation (`tests/conftest.py`)
 
-- `isolated_registry` fixture: creates a fresh `StepRegistry` and calls `register_builtins` on it. It monkeypatches `autobot.registry.registry` and `autobot.runner.registry`. `autobot.models` imports the registry lazily, so the module-attribute patch covers it. It also wraps `importlib.metadata.entry_points` with a call counter (`reg.discover_calls`).
+- `isolated_registry` fixture: creates a fresh `StepRegistry` and calls `register_builtins` on it. It monkeypatches `autobot.registry.registry` and `autobot.runner.registry`. `autobot.models` reaches the default registry through the module attribute only when a validation has no plugins context (`Config.model_validate(doc, context={PLUGINS: reg})` names one), so the patch covers it. It also wraps `importlib.metadata.entry_points` with a call counter (`reg.discover_calls`).
 - `plugin_dist(tmp_path, key, source)` helper: writes `<mod>.py` plus `<mod>-0.1.dist-info/{METADATA,entry_points.txt}` with an `[autobot.steps]` entry. Generalizes `test_plugins.plugin_path`. Use it with `monkeypatch.syspath_prepend`, or with `PYTHONPATH` for CLI subprocesses.
 - `register_plugin(executor)` fixture: registers the executor on the global registry and removes it from `_executors` and `_model_keys` in teardown. Generalizes `test_plugin_common_props.probe`.
 - `ProbeExecutor`: records `(step, timeout, [h.name for h in ctx.session.save_handlers()], id(handlers))` on each `execute`. It's used to look at session state from inside a script.

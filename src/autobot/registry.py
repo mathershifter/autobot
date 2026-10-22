@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 import pydantic
 
-from .models import _BUILTIN_KEYS, _COMMON_PROPS, PluginStep
+from .keys import BUILTIN_KEYS, COMMON_PROPS
+from .models import PluginStep
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -41,7 +42,7 @@ class StepRegistry:
         # discriminator never routes them, or a built-in key, to a plugin: such a name could never be set
         key, model = executor.key, executor.model
         who = _describe(executor, origin)
-        if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
+        if key in COMMON_PROPS or key in BUILTIN_KEYS or key in self._builtins:
             raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
             )
@@ -66,7 +67,7 @@ class StepRegistry:
         clashes = [
             name if name == field else f"{name} (field {field!r})"
             for field, info in model.model_fields.items()
-            for name in sorted(_input_names(field, info) & _COMMON_PROPS)
+            for name in sorted(_input_names(field, info) & COMMON_PROPS)
         ]
         if clashes:
             raise PluginError(

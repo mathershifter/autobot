@@ -5,13 +5,16 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pydantic
 import pytest
 from conftest import make_doc, plugin_dist, run_cli
 
-from autobot.models import Config
+from autobot import models
+from autobot.models import PLUGINS, Config
 from autobot.registry import StepRegistry
+from autobot.steps import register_builtins
 
 PLUGIN = '''
 from __future__ import annotations
@@ -81,6 +84,54 @@ def test_discovery_is_lazy_and_idempotent(
         )
     reg.discover()
     assert reg.discover_calls == 1  # type: ignore[attr-defined]
+
+
+class _Counting:
+    """A plugin lookup over a registry that counts what validation asks of it."""
+
+    def __init__(self, reg: StepRegistry) -> None:
+        self._has, self._validate = reg.has, reg.validate_plugin_step  # bound now: the test patches the registry
+        self.validated, self.asked = 0, []
+
+    def has(self, key: str) -> bool:
+        self.asked.append(key)
+        return self._has(key)
+
+    def validate_plugin_step(self, step: Any) -> Any:
+        self.validated += 1
+        return self._validate(step)
+
+
+def test_plugin_context_and_default_registry_agree(isolated_registry: StepRegistry, probe, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "As a library": `Config.model_validate(doc)` checks the plugin steps against the default registry,
+    and `context={PLUGINS: lookup}` against the lookup given. With the same plugins both give the same
+    `Config`, and either way the plugin's model is validated once per step, at load."""
+    doc = make_doc([{"probe": "a", "timeout": "5s"}, {"probe": "b"}], timeout=None)
+    counted = _Counting(isolated_registry)
+    monkeypatch.setattr(isolated_registry, "validate_plugin_step", counted.validate_plugin_step)
+    by_default = Config.model_validate(doc)
+    assert counted.validated == 2
+    by_context = Config.model_validate(doc, context={PLUGINS: counted})
+    assert counted.validated == 4
+    assert by_default == by_context
+    assert [s.plugin_key_ for s in by_context.script] == ["probe", "probe"]  # type: ignore[union-attr]
+    assert "probe" in counted.asked
+    assert models._plugins.get() is None  # the context's lookup is the validation's alone
+
+
+def test_plugin_context_decides_what_a_plugin_step_is(isolated_registry: StepRegistry, probe):
+    """The lookup given decides which keys are plugin steps, and the plugin's own fields are checked
+    against it, at the step's path, as with the default registry."""
+    doc = make_doc([{"probe": "a"}], timeout=None)
+    builtins_only = StepRegistry()
+    register_builtins(builtins_only)
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(doc, context={PLUGINS: builtins_only})
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("invalid_step", ("script", 0))]
+    assert Config.model_validate(doc).script[0].plugin_key_ == "probe"  # type: ignore[union-attr]
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(make_doc([{"probe": "a", "prob": 1}], timeout=None), context={PLUGINS: isolated_registry})
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("extra_forbidden", ("script", 0, "prob"))]
 
 
 def test_p7_07_schema_command_includes_plugin_defs(plugin_path: Path):

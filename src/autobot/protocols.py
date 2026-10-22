@@ -143,3 +143,16 @@ class StepExecutor(Protocol):
     def model(self) -> type[pydantic.BaseModel]: ...
 
     def execute(self, step: Any, ctx: RunnerContext, timeout: float) -> None: ...
+
+
+class PluginLookup(Protocol):
+    """What the models ask of the plugins while a script is validated: `autobot.registry.StepRegistry`
+    has this shape. Given as `Config.model_validate(doc, context={autobot.models.PLUGINS: lookup})`."""
+
+    def has(self, key: str) -> bool:
+        """Whether `key` is a registered plugin step; may discover the installed plugins to find out."""
+        ...
+
+    def validate_plugin_step(self, step: Any) -> Any:
+        """The plugin's own model of a `PluginStep`, validated; raises `pydantic.ValidationError`."""
+        ...
