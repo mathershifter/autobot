@@ -91,27 +91,29 @@ errors:
   - '^! .*'
 
 script:
+  # Every line of the cmd is sent and its output checked against the errors patterns above. A '!'
+  # comment line of the EOS config syntax is left out: where the device echoes it without the
+  # indentation, the echo is not recognized and stays in the captured output (see SPEC, Captured
+  # output), where '^! .*' would match it and fail the step. The comments are YAML comments instead.
+  #
+  # The lab switches get a root password and an admin without one: a backdoor, a bad idea outside
+  # a lab.
   - cmd: |
       enable
         configure session
           hostname {{ env.SWITCH_HOSTNAME }}
-          ! lab switches enable root backdoor and nopassword admin, bad idea IRL
           username admin privilege 15 role network-admin nopassword
-          !
           aaa root secret root
           aaa authentication policy local allow-nopassword-remote-login
           aaa authentication policy on-success log
           aaa authentication policy on-failure log
           aaa authorization exec default local
           aaa authorization commands all default local
-          !
           vrf instance {{ env.MGMT_VRF }}
-          !
           interface {{ env.MGMT_INTF }}
             vrf {{ env.MGMT_VRF }}
             ip address {{ env.MGMT_IP }}
             exit
-          !
           ip route vrf {{ env.MGMT_VRF }} 0.0.0.0/0 {{ env.MGMT_GW }}
           commit
         exit

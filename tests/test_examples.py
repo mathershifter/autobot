@@ -41,6 +41,41 @@ def test_p6_20_examples_validate_schema(schema_validator: Any, path: Path):
     assert errors == []
 
 
+def sent_lines(doc: Any) -> list[str]:
+    """Every line a `cmd` of the document sends, as written (templates included), wherever the step is."""
+    lines: list[str] = []
+
+    def walk(steps: list[dict[str, Any]]) -> None:
+        for step in steps:
+            if "cmd" in step:
+                cmd = step["cmd"]
+                items = cmd if isinstance(cmd, list) else [cmd]
+                for item in items:
+                    lines.extend(item.splitlines() if "\n" in item and not item.startswith("#!") else [item])
+            if "block" in step:
+                for key in ("enter", "script", "breakout"):
+                    walk(step["block"].get(key) or [])
+
+    walk(doc["attach"].get("script") or [])
+    walk(doc["script"])
+    walk(doc["attach"].get("breakout") or [])
+    for fn in (doc.get("fn") or {}).values():
+        walk(fn["script"])
+    return lines
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_119_examples_send_no_line_their_own_errors_patterns_match(path: Path):
+    """SPEC "Captured output": where the echo of a sent line is not recognized it stays in the captured
+    output, and an `errors` pattern can match it. So no example sends a line that one of its own patterns
+    matches (the EOS example sent `! lab switches ...` comment lines, which its `^! .*` would match)."""
+    doc = load(path)
+    lines = sent_lines(doc)
+    assert lines, path.name
+    matched = [(pattern, line) for pattern in doc.get("errors") or [] for line in lines if re.search(pattern, line.strip(), re.MULTILINE)]
+    assert matched == []
+
+
 # -- the examples' shell prompt regexes ---------------------------------------
 
 PROMPT_SAMPLES = {
