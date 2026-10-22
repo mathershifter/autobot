@@ -190,7 +190,7 @@ class CallExecutor:
     def execute(self, step: CallStep, ctx: RunnerContext, timeout: float) -> None:
         steps = ctx.function(step.call)
         ctx.reporter.say(f"call: {step.call}", "group")
-        ctx.run_steps(steps)
+        ctx.run_steps(steps, path=f"fn.{step.call}.script")
 
 
 class BlockExecutor:
@@ -201,15 +201,16 @@ class BlockExecutor:
         ctx.reporter.say(f"block enter: {step.block.name}", "group")
         # a block without prompts leaves the session's as they are: no swap, no restore
         swap = ctx.prompts(step.block.prompts) if step.block.prompts else contextlib.nullcontext()
+        path = f"{ctx.path}.block"  # the block's lists are named after the step, as the report names them
         with swap:
             try:
                 if step.block.enter:
-                    ctx.run_steps(step.block.enter)
-                ctx.run_steps(step.block.script)
+                    ctx.run_steps(step.block.enter, path=f"{path}.enter")
+                ctx.run_steps(step.block.script, path=f"{path}.script")
             finally:
                 if step.block.breakout:
                     ctx.reporter.say(f"block breakout: {step.block.name}", "group")
-                    ctx.run_breakout(step.block.breakout, "block breakout")
+                    ctx.run_breakout(step.block.breakout, "block breakout", path=f"{path}.breakout")
         ctx.reporter.say(f"block completed: {step.block.name}", "ok")
 
 

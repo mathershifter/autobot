@@ -436,7 +436,7 @@ def test_p6_85_trail_is_set_once_by_the_innermost_step(monkeypatch: pytest.Monke
     script = [{"block": {"name": "b", "script": [{"call": "f"}]}}]
     runner = Runner(make_config(script, fn={"f": {"script": [{"cmd": "true"}]}}), {})
     with pytest.raises(StepFailure) as ei:
-        runner.run_steps(runner.config.script)
+        runner.run_steps(runner.config.script, path="script")
     assert trail(ei.value) == (
         StepRef("script.0", "block", "block: b"),
         StepRef("script.0.block.script.0", "call", "call: f"),

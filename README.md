@@ -542,7 +542,7 @@ A plugin adds a step type. It is an executor class registered in the `autobot.st
 - `model`: a pydantic model of the step's own fields,
 - `execute(step, ctx, timeout)`: what the step does.
 
-`ctx` gives the plugin the session (`ctx.session`, an `autobot.protocols.SessionLike`), the run's variables (`ctx.vars`), the `errors` patterns (`ctx.errors`), the steps of a function (`ctx.function(name)`), the config (`ctx.config`), the reporter (`ctx.reporter`), `ctx.render(template)`, `ctx.run_steps(steps)`, `ctx.prompts(prompts)` and, for a cleanup of its own, `ctx.run_breakout(steps, what)`.
+`ctx` gives the plugin the session (`ctx.session`, an `autobot.protocols.SessionLike`), the run's variables (`ctx.vars`), the `errors` patterns (`ctx.errors`), the steps of a function (`ctx.function(name)`), the config (`ctx.config`), the reporter (`ctx.reporter`), the running step's path (`ctx.path`), `ctx.render(template)`, `ctx.run_steps(steps, path=None)`, `ctx.prompts(prompts)` and, for a cleanup of its own, `ctx.run_breakout(steps, what, path=None)`. `path` names the list in an error report (`fn.<name>.script`, `<ctx.path>.block.enter`); without it the steps are named after the plugin step, `<ctx.path>.<key>.<index>`.
 
 - `ctx.session.sendline(text, timeout=timeout)` sends a command; follow it with `ctx.session.get_prompt(...)`. With `solicit=True` it is a raw send, like a `line` step.
 - `ctx.session.sendcontrol(char, timeout=timeout)` sends a control character.

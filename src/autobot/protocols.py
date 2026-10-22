@@ -102,6 +102,12 @@ class RunnerContext(Protocol):
         """Where a step says what it does, as the built-in steps do with `ctx.reporter.say(...)`."""
         ...
 
+    @property
+    def path(self) -> str:
+        """The path of the running step, as a report names it (`script.3`; see SPEC, Errors while the script
+        runs): what a plugin builds the `path` of a list it runs from."""
+        ...
+
     def function(self, name: str) -> list[Step]:
         """The steps of `fn.<name>`; `ValueError` when the script defines no such function."""
         ...
@@ -110,9 +116,16 @@ class RunnerContext(Protocol):
         self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False, keep_newline: bool = False
     ) -> str: ...
 
-    def run_steps(self, steps: list) -> None: ...
+    def run_steps(self, steps: list, *, path: str | None = None) -> None:
+        """Run `steps` as `call` and `block` run theirs. `path` names the list in a report: `call` passes
+        `fn.<name>.script`, `block` `<ctx.path>.block.enter`; without it the steps are named after the
+        running step, `<ctx.path>.<key>.<index>`, as those a plugin builds in code are."""
+        ...
 
-    def run_breakout(self, steps: list, what: str = "breakout") -> None: ...
+    def run_breakout(self, steps: list, what: str = "breakout", *, path: str | None = None) -> None:
+        """Run `steps` as a breakout, best-effort; an error is logged as `>> <what> error ...` and kept.
+        `path` as for `run_steps`."""
+        ...
 
     def prompts(self, prompts: list[Prompt]) -> AbstractContextManager[None]:
         """The session's prompts are those of `prompts` for the body, as in a block with `prompts`: the

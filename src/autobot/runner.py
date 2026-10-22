@@ -9,7 +9,7 @@ from . import prepare
 from .environment import resolve_env, typed
 from .errors import BreakoutError, ScriptError
 from .log import ConsoleReporter, OutputLost
-from .models import BlockStep, Config, PluginStep, Prompt, Step, names_command
+from .models import Config, PluginStep, Prompt, Step, names_command
 from .prompts import build_handler
 from .registry import registry
 from .report import Left, RunOutcome, StepRef, step_ref, trail
@@ -65,20 +65,6 @@ class Runner:
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
         self.before_attach: Callable[[], None] | None = None
-        # the path of every step list of the script, by the list's identity: executors pass run_steps the list
-        self._paths: dict[int, str] = {}
-        self._index(config.attach.script, "attach.script")
-        self._index(config.script, "script")
-        self._index(config.attach.breakout, "attach.breakout")
-        for name, fn in config.fn.items():
-            self._index(fn.script, f"fn.{name}.script")
-
-    def _index(self, steps: list[Step], path: str):
-        self._paths[id(steps)] = path
-        for i, step in enumerate(steps):
-            if isinstance(step, BlockStep):
-                for part in ("enter", "script", "breakout"):
-                    self._index(getattr(step.block, part), f"{path}.{i}.block.{part}")
 
     @property
     def session(self) -> Session:
@@ -99,6 +85,11 @@ class Runner:
     @property
     def reporter(self) -> Reporter:
         return self._reporter
+
+    @property
+    def path(self) -> str:
+        """The path of the running step (`script.3`, see SPEC, Errors while the script runs); empty outside one."""
+        return self._stack[-1].path if self._stack else ""
 
     def function(self, name: str) -> list[Step]:
         fn = self._config.fn.get(name)
@@ -215,12 +206,12 @@ class Runner:
         self._session.attach(spawn, env=self._environ, timeout=timeout)
         try:
             if attach.script:
-                self.run_steps(attach.script)
-            self.run_steps(self._config.script)
+                self.run_steps(attach.script, path="attach.script")
+            self.run_steps(self._config.script, path="script")
         finally:
             if attach.breakout:
                 self._reporter.say("breakout: detaching", "group")
-                self.run_breakout(attach.breakout)
+                self.run_breakout(attach.breakout, path="attach.breakout")
             self._warn_no_logout()
 
     def _warn_no_logout(self):
@@ -248,15 +239,15 @@ class Runner:
         if self._unfinished:
             RunOutcome.of(error).left = Left(tuple(self._unfinished), self._session.logins, self._session.login_pending)
 
-    def run_breakout(self, steps: list[Step], what: str = "breakout"):
+    def run_breakout(self, steps: list[Step], what: str = "breakout", *, path: str | None = None):
         """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
         so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
         ends the breakout as well, and so does lost output: they are kept, and go on. No breakout runs once
-        the run's output is lost."""
+        the run's output is lost. `path` names the list as `run_steps` does."""
         self._reporter.check()
         try:
             self._session.reset_handlers()
-            self.run_steps(steps)
+            self.run_steps(steps, path=path)
             self._session.logins_covered()
         except (KeyboardInterrupt, OutputLost) as e:
             self._unfinished.append(e)
@@ -265,10 +256,11 @@ class Runner:
             self._unfinished.append(e)
             self._reporter.say(f"{what} error ({type(e).__name__}): {e}", "warn")
 
-    def run_steps(self, steps: list[Step]):
-        path = self._paths.get(id(steps))
+    def run_steps(self, steps: list[Step], *, path: str | None = None):
+        """Run `steps` in order. `path` is the list's path in the script, for the report (`script`,
+        `fn.<name>.script`, `<block's path>.block.enter`); without it the list is one built in code, e.g.
+        by a plugin, and is named after the step that runs it."""
         if path is None:
-            # a list built in code, e.g. by a plugin: named after the step that runs it
             path = f"{self._stack[-1].path}.{self._stack[-1].key}" if self._stack else "steps"
         for i, step in enumerate(steps):
             self._run_step(step, f"{path}.{i}")
