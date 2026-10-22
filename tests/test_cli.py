@@ -15,6 +15,7 @@ import yaml
 from conftest import FakeDevice, make_doc, run_cli
 
 from autobot import cli
+from autobot.log import ConsoleReporter
 
 # the echoed command shows `$((1+1))` literally; only the output has `got-2-`
 GOT = {"cmd": 'echo "got-$((1+1))-{{ env.MSG }}"'}
@@ -191,7 +192,7 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
     path.write_text("autobot: 2026-10\n")
     monkeypatch.setattr(cli.yaml, "load", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        cli._load(str(path))
+        cli._load(ConsoleReporter(), str(path))
 
 
 # -- Runner construction: env and prompt send templates -----------------------
@@ -661,7 +662,7 @@ def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: py
 
     An installed package used to download it from the `main` branch on GitHub.
     """
-    cli._cmd_schema()
+    cli._cmd_schema(ConsoleReporter())
     out = capsys.readouterr()
     assert json.loads(out.out) == schema  # no plugins are installed here
     assert out.err == ""
@@ -695,7 +696,7 @@ def test_p6_81_packaged_file_that_is_not_the_schema_falls_back_to_schemas(
     (tmp_path / SCHEMA_NAME).write_bytes(content)
     monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
     assert cli.load_schema() == schema
-    cli._cmd_schema()
+    cli._cmd_schema(ConsoleReporter())
     out = capsys.readouterr()
     assert json.loads(out.out) == schema
     assert out.err == ""
@@ -713,7 +714,7 @@ def test_p6_81_no_schema_anywhere_is_a_clean_error(monkeypatch: pytest.MonkeyPat
     with pytest.raises(cli.SchemaError):
         cli.load_schema()
     with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
+        cli._cmd_schema(ConsoleReporter())
     assert ei.value.code == 1
     out = capsys.readouterr()
     assert out.out == ""
@@ -745,7 +746,7 @@ def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
     monkeypatch.setattr(cli.registry, "discover", discover)
     monkeypatch.setattr(cli, "load_schema", load_schema)
     with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
+        cli._cmd_schema(ConsoleReporter())
     assert ei.value.code == 1
     out = capsys.readouterr()
     assert out.err == (

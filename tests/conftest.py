@@ -24,7 +24,9 @@ import yaml
 import autobot.registry as registry_mod
 import autobot.runner as runner_mod
 from autobot.cli import load_schema
+from autobot.log import ConsoleReporter
 from autobot.models import Config
+from autobot.protocols import Reporter
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
 from autobot.session import LineTooLong, PartialLine, PromptHandler, Session
@@ -112,13 +114,16 @@ def make_config(script: list[dict[str, Any]], **kw: Any) -> Config:
     return Config.model_validate(make_doc(script, **kw))
 
 
-def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
-    """``given``: the ``--env`` values; ``env``: the script's ``env`` section.
+def make_runner(
+    script: list[dict[str, Any]], *, given: dict[str, str] | None = None, reporter: Reporter | None = None, **kw: Any
+) -> Runner:
+    """``given``: the ``--env`` values; ``env``: the script's ``env`` section; ``reporter``: the runner's,
+    where a test reads the lost output or shares one reporter between a runner and a session.
 
     A run resolves ``env`` once ``prepare`` has run. Without a ``prepare`` it is resolved here as well,
     so that a test can render a template, or see an error of ``env``, without a run.
     """
-    runner = Runner(make_config(script, **kw), given or {})
+    runner = Runner(make_config(script, **kw), given or {}, reporter=reporter)
     if runner.config.prepare is None:
         runner._env = runner._resolve_env(runner._environ)
     return runner
@@ -165,6 +170,12 @@ def attached_runner() -> Iterator[Callable[..., Runner]]:
     yield factory
     for r in runners:
         r.session.detach()
+
+
+@pytest.fixture
+def reporter() -> ConsoleReporter:
+    """A reporter of the test's own: its messages go to the captured stderr, and it keeps no loss of another test."""
+    return ConsoleReporter()
 
 
 @pytest.fixture

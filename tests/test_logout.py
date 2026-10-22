@@ -22,6 +22,7 @@ import yaml
 from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
 
 from autobot import cli
+from autobot.log import ConsoleReporter
 from autobot.runner import BreakoutError, Left, left, trail
 from autobot.session import PromptHandler, Session, SimpleHandler
 from autobot.steps import StepFailure
@@ -450,7 +451,7 @@ def test_p5_90_left_names_the_interrupt_that_ended_an_inner_breakout():
     breakout is reported by what ended it."""
     first, ended = KeyboardInterrupt(), RuntimeError("x")
     ended.autobot_left = Left((first, ended), ())  # type: ignore[attr-defined]
-    assert said(lambda: cli._left(argparse.Namespace(script="s.yaml"), ended)) == [
+    assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: interrupted",
         f"{LEFT}a breakout did not finish",
     ]
@@ -840,7 +841,7 @@ def test_p5_93_operating_system_error_in_a_breakout_points_to_the_traceback(fake
     error = OSError(28, "No space left on device")
     ended = BreakoutError("x")
     ended.autobot_left = Left((error,), ())  # type: ignore[attr-defined]
-    assert said(lambda: cli._left(argparse.Namespace(script="s.yaml"), ended)) == [
+    assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: [Errno 28] No space left on device",
         "  (run with --traceback for details)",
         f"{LEFT}the script completed, but a breakout did not finish",

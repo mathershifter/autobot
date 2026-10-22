@@ -35,7 +35,8 @@ from conftest import BASH, SHELL_ENV, FakeDevice, default_signals, make_doc, mak
 from test_logout import LEFT, LOGOUT, SENT, console, report
 
 from autobot import cli, log
-from autobot.screen import CleanWriter
+from autobot.log import ConsoleReporter
+from autobot.transcript import CleanWriter
 from autobot.session import PromptHandler, Session
 from autobot.terminal import Pty
 
@@ -263,7 +264,7 @@ def handled(monkeypatch: pytest.MonkeyPatch, stderr: Any, sig: signal.Signals = 
     monkeypatch.setattr(sys, "stderr", stderr)
     try:
         signal.signal(sig, signal.SIG_DFL)
-        with cli._ended_by_signal():
+        with cli._ended_by_signal(ConsoleReporter()):
             handler = signal.getsignal(sig)
             monkeypatch.setattr(os, "write", lambda fd, data: calls.append(("write", fd, data)) or len(data))
             monkeypatch.setattr(os, "kill", lambda pid, signum: calls.append(("kill", pid, signum, signal.getsignal(signum))))
@@ -335,11 +336,11 @@ def test_p6_114_only_a_default_action_is_replaced_and_it_is_put_back():
     try:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
-        with cli._ended_by_signal():
+        with cli._ended_by_signal(ConsoleReporter()):
             assert callable(signal.getsignal(signal.SIGTERM)) and signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
         assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL and signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
         signal.signal(signal.SIGTERM, theirs)
-        with cli._ended_by_signal():
+        with cli._ended_by_signal(ConsoleReporter()):
             assert signal.getsignal(signal.SIGTERM) is theirs
         assert signal.getsignal(signal.SIGTERM) is theirs
     finally:
@@ -354,7 +355,7 @@ def test_p6_114_no_handler_outside_the_main_thread():
 
     def block() -> None:
         try:
-            with cli._ended_by_signal():
+            with cli._ended_by_signal(ConsoleReporter()):
                 seen.append([signal.getsignal(sig) for sig in SIGNALS])
         except BaseException as e:  # noqa: BLE001 - whatever it is, the test reports it
             seen.append(e)
@@ -571,7 +572,7 @@ def test_p6_115_run_raises_output_lost_and_sends_nothing_more(children, monkeypa
             Path(os.fsdecode(left_behind)).unlink(missing_ok=True)
     assert not isinstance(ei.value, Exception) and broken.calls == 1
     assert not any(b"bye" in data or b"never" in data or data.startswith(b"rm -f") or data == b"\x03" for data in written), written
-    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and log.lost is None
+    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and runner.reporter.lost is None
     assert len(children) == 1 and not children[0].isalive() and runner.session._cld is None
 
 
@@ -579,7 +580,8 @@ def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch
     """The lost output is the run's. Once `Runner.run()` has raised it, on streams that work, a message
     is printed, a session sends, the runner runs again, and `validate` and `schema` in the same process
     exit as they do; and so after a run through `cli.main()`."""
-    runner = make_runner([{"cmd": "echo N''OW"}])
+    rep = ConsoleReporter()  # the one reporter of the runner, the CLI and the session, as the CLI's is
+    runner = make_runner([{"cmd": "echo N''OW"}], reporter=rep)
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(make_doc([{"cmd": "echo N''OW"}])))
     for through_cli in (False, True):
@@ -587,16 +589,16 @@ def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch
         if through_cli:
             monkeypatch.setattr(sys, "argv", ["autobot", str(path)])
             with pytest.raises(SystemExit) as ei:
-                cli.main()
+                cli.main(rep)
             assert ei.value.code == 3
         else:
             with pytest.raises(log.OutputLost):
                 runner.run()
         monkeypatch.undo()
-        assert log.lost is None
+        assert rep.lost is None
         capsys.readouterr()
-        log.say("after")
-        s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+        rep.say("after")
+        s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)], reporter=rep)
         s.attach(BASH, env=dict(SHELL_ENV), timeout=5)
         try:
             s.get_prompt(timeout=5)
@@ -609,7 +611,7 @@ def test_p6_115_lost_output_is_gone_with_its_run(monkeypatch: pytest.MonkeyPatch
         for argv, status in ((["validate", str(path)], 0), (["schema"], 0)):
             monkeypatch.setattr(sys, "argv", ["autobot", *argv])
             try:
-                cli.main()
+                cli.main(rep)
                 code: Any = 0
             except SystemExit as e:
                 code = e.code
@@ -631,10 +633,11 @@ def test_p6_115_run_raises_the_lost_output_whatever_came_after_it(monkeypatch: p
 
     monkeypatch.setattr(Session, "detach", interrupted_close)
     monkeypatch.setattr(sys, "stdout", Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe")))
+    runner = make_runner([NOW])
     with pytest.raises(log.OutputLost, match="^cannot write stdout: ") as ei:
-        make_runner([NOW]).run()
+        runner.run()
     monkeypatch.undo()
-    assert isinstance(ei.value.__context__, KeyboardInterrupt) and log.lost is None
+    assert isinstance(ei.value.__context__, KeyboardInterrupt) and runner.reporter.lost is None
 
 
 def test_p6_115_command_that_lost_its_messages_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):
@@ -644,11 +647,12 @@ def test_p6_115_command_that_lost_its_messages_leaves_nothing_behind(monkeypatch
     path.write_text(yaml.safe_dump(make_doc([{"cmd": "true"}])))
     monkeypatch.setattr(sys, "argv", ["autobot", "validate", str(path)])
     monkeypatch.setattr(sys, "stderr", Breaking(OSError(errno.ENOSPC, "No space left on device"), "valid"))
+    rep = ConsoleReporter()
     with pytest.raises(SystemExit) as ei:
-        cli.main()
+        cli.main(rep)
     monkeypatch.undo()
-    assert ei.value.code == 3 and log.lost is None
-    log.say("after")
+    assert ei.value.code == 3 and rep.lost is None
+    rep.say("after")
     assert capsys.readouterr().err == ">> after\n"
 
 
@@ -702,9 +706,10 @@ def test_p6_115_function_named_breakout_is_no_breakout(monkeypatch: pytest.Monke
 
 def test_p6_115_writer_fails_once_and_stays_failed():
     """`CleanWriter`: after a write that failed, no write is tried again, a later one raises the same
-    `OutputLost` (the run's, `log.lost`), and the close at the end of the session raises nothing."""
+    `OutputLost` (the run's, `reporter.lost`), and the close at the end of the session raises nothing."""
     stream = Breaking(BrokenPipeError(errno.EPIPE, "Broken pipe"))
-    writer = CleanWriter(stream)
+    rep = ConsoleReporter()
+    writer = CleanWriter(stream, rep)
     writer.write("fine\n")
     with pytest.raises(log.OutputLost) as first:
         writer.write("NOW\n")
@@ -713,7 +718,7 @@ def test_p6_115_writer_fails_once_and_stays_failed():
     with pytest.raises(log.OutputLost):
         writer.flush()
     writer.close()
-    assert second.value is first.value is log.clear() and stream.calls == 1 and stream.getvalue() == "fine\n"
+    assert second.value is first.value is rep.clear() and stream.calls == 1 and stream.getvalue() == "fine\n"
 
 
 def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPatch, capfd, tmp_path: Path):
@@ -722,7 +727,8 @@ def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPat
     for failing in (False, True):
         out = open(tmp_path / "out", "w")
         monkeypatch.setattr(sys, "stdout", out)
-        s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
+        rep = ConsoleReporter()
+        s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)], reporter=rep)
         s.attach(BASH, timeout=5)
         cld = s._cld
         out.close()
@@ -733,33 +739,34 @@ def test_p6_115_last_write_of_a_session_that_fails(monkeypatch: pytest.MonkeyPat
             with pytest.raises(log.OutputLost, match="^cannot write stdout: I/O operation on closed file"):
                 s.detach()
         assert s._cld is None and cld is not None and not cld.isalive()
-        assert (log.clear() is None) == failing  # a loss found by a close that only logs it ends nothing
+        assert (rep.clear() is None) == failing  # a loss found by a close that only logs it ends nothing
         monkeypatch.undo()
 
 
 def test_p6_115_what_a_failed_write_is(monkeypatch: pytest.MonkeyPatch):
-    """`log.writing`: any error of the operating system and a closed stream are `OutputLost`, named for
-    the stream; a `ValueError` of an open stream is a bug and stays what it is."""
+    """`reporter.writing`: any error of the operating system and a closed stream are `OutputLost`, named
+    for the stream; a `ValueError` of an open stream is a bug and stays what it is."""
+    rep = ConsoleReporter()
     stream = io.StringIO()
     for error, text in [(OSError(errno.ENOSPC, "No space left on device"), "[Errno 28] No space left on device"), (BlockingIOError(errno.EAGAIN, "x"), "[Errno 11] x")]:
-        with pytest.raises(log.OutputLost, match="^cannot write the output: " + text.replace("[", r"\[").replace("]", r"\]")) as ei, log.writing(stream):
+        with pytest.raises(log.OutputLost, match="^cannot write the output: " + text.replace("[", r"\[").replace("]", r"\]")) as ei, rep.writing(stream):
             raise error
-        assert ei.value.__cause__ is error and log.lost is ei.value
+        assert ei.value.__cause__ is error and rep.lost is ei.value
         with pytest.raises(log.OutputLost):  # no breakout runs after it, one with nothing to send either
-            make_runner([{"cmd": "true"}]).run_breakout([])
-        with pytest.raises(log.OutputLost) as again, log.writing(stream):  # kept: nothing is written after it
+            make_runner([{"cmd": "true"}], reporter=rep).run_breakout([])
+        with pytest.raises(log.OutputLost) as again, rep.writing(stream):  # kept: nothing is written after it
             raise AssertionError("not reached")
-        assert again.value is ei.value is log.clear() and log.lost is None
-    with pytest.raises(ValueError, match="^a bug$"), log.writing(stream):
+        assert again.value is ei.value is rep.clear() and rep.lost is None
+    with pytest.raises(ValueError, match="^a bug$"), rep.writing(stream):
         raise ValueError("a bug")
     stream.close()
-    with pytest.raises(log.OutputLost, match="^cannot write the output: I/O operation on closed file"), log.writing(stream):
+    with pytest.raises(log.OutputLost, match="^cannot write the output: I/O operation on closed file"), rep.writing(stream):
         stream.write("x")
-    log.clear()
+    rep.clear()
     monkeypatch.setattr(sys, "stderr", stream)
     with pytest.raises(log.OutputLost, match="^cannot write stderr: "):
-        log.say("x")
-    log.clear()
+        rep.say("x")
+    rep.clear()
 
 
 @pytest.mark.parametrize("error", [BrokenPipeError(errno.EPIPE, "Broken pipe"), OSError(errno.ENOSPC, "No space left on device")], ids=["EPIPE", "ENOSPC"])
@@ -772,15 +779,16 @@ def test_p6_115_message_that_cannot_be_written_is_output_lost(monkeypatch: pytes
             raise error
 
     monkeypatch.setattr(sys, "stderr", Stderr())
+    rep = ConsoleReporter()
     with pytest.raises(log.OutputLost, match=r"^cannot write stderr: \[Errno ") as ei:
-        log.say("one")
+        rep.say("one")
     out = io.StringIO()
     monkeypatch.setattr(sys, "stderr", out)
     with pytest.raises(log.OutputLost) as again:  # no message after it, until the next run
-        log.say("never")
+        rep.say("never")
     assert again.value is ei.value and out.getvalue() == ""
-    log.clear()
-    log.say("two")
+    rep.clear()
+    rep.say("two")
     assert out.getvalue() == ">> two\n"
 
 
@@ -788,25 +796,27 @@ def test_p6_115_interrupted_message_is_not_printed_with_the_next(monkeypatch: py
     """An interrupt while a message is rendered leaves nothing of it behind for the next message."""
     out = io.StringIO()
     monkeypatch.setattr(sys, "stderr", out)
-    render = log.console.print
+    rep = ConsoleReporter()
+    render = rep.console.print
 
     def interrupted_print(text: Any) -> None:
         render(text)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(log.console, "print", interrupted_print)
+    monkeypatch.setattr(rep.console, "print", interrupted_print)
     with pytest.raises(KeyboardInterrupt):
-        log.say("one")
-    monkeypatch.setattr(log.console, "print", render)
-    log.say("two")
+        rep.say("one")
+    monkeypatch.setattr(rep.console, "print", render)
+    rep.say("two")
     assert out.getvalue() == ">> two\n"
 
 
 def test_p6_115_no_stderr_is_no_error(monkeypatch: pytest.MonkeyPatch):
     """With file descriptor 2 closed there is no `sys.stderr`: a message goes nowhere, and nothing fails."""
     monkeypatch.setattr(sys, "stderr", None)
-    log.say("x")
-    log.error("Run failed", "y")
+    rep = ConsoleReporter()  # built without a stderr, as the CLI's is with file descriptor 2 closed
+    rep.say("x")
+    rep.error("Run failed", "y")
 
 
 # -- P6-116: Ctrl-C ---------------------------------------------------------------------------------------
@@ -1114,7 +1124,7 @@ def test_p6_115_nothing_is_sent_after_the_output_is_lost_whoever_tries(register_
         runner.run()
     monkeypatch.undo()
     assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
-    assert log.lost is None and len(children) == 1 and not children[0].isalive()
+    assert runner.reporter.lost is None and len(children) == 1 and not children[0].isalive()
 
 
 def test_p6_115_interrupt_while_the_run_ends_does_not_hide_the_lost_output(register_plugin, monkeypatch: pytest.MonkeyPatch, capsys, tmp_path: Path):

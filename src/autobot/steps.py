@@ -5,8 +5,6 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
-
-from . import log
 from .models import (
     BlockStep,
     CallStep,
@@ -58,7 +56,7 @@ class CmdExecutor:
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
                 ctx.session.sendline(cmd, timeout=timeout)
-                log.say(f"cmd: {cmd}")
+                ctx.reporter.say(f"cmd: {cmd}")
             if lines:
                 output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
             self._check(step, ctx, "".join(output), timeout, probe=bool(lines))
@@ -67,7 +65,7 @@ class CmdExecutor:
                 output.append(e.output)
             if not step.ignore_error:
                 raise
-            log.say(f"error ignored: {e}", "warn")
+            ctx.reporter.say(f"error ignored: {e}", "warn")
         self._register(step, ctx, "".join(output))
 
     @staticmethod
@@ -111,7 +109,7 @@ class CmdExecutor:
     def _register(self, step: CmdStep, ctx: RunnerContext, output: str) -> None:
         if step.register_:
             ctx.vars[step.register_] = output.strip()
-            log.say(f"register: vars.{step.register_}", "detail")
+            ctx.reporter.say(f"register: vars.{step.register_}", "detail")
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
         tmp = f"/tmp/_autobot_{uuid.uuid4().hex}"
@@ -123,9 +121,9 @@ class CmdExecutor:
         if not script.endswith("\n"):
             script += "\n"  # jinja drops the trailing newline
         try:
-            log.say(f"script: writing to {tmp}", "detail")
+            ctx.reporter.say(f"script: writing to {tmp}", "detail")
             self._upload(ctx, script.encode(), tmp, timeout)
-            log.say(f"script: executing {tmp}", "detail")
+            ctx.reporter.say(f"script: executing {tmp}", "detail")
             ctx.session.sendline(tmp, timeout=timeout)
             output = ctx.session.get_prompt(timeout=timeout, errors=ctx.errors or None)
             self._check(step, ctx, output, timeout, shell=True)
@@ -134,7 +132,7 @@ class CmdExecutor:
                 output = e.output
             if not step.ignore_error:
                 raise
-            log.say(f"error ignored: {e}", "warn")
+            ctx.reporter.say(f"error ignored: {e}", "warn")
         except BaseException:
             # e.g. a timeout: the script or an upload line may still be running
             interrupt = True
@@ -169,13 +167,13 @@ class CmdExecutor:
         try:
             if interrupt:
                 ctx.session.sendcontrol("c", timeout=timeout)
-                log.say("script: interrupt sent: ^C", "warn")
+                ctx.reporter.say("script: interrupt sent: ^C", "warn")
             ctx.session.get_prompt(timeout=timeout, capture=False)
             ctx.session.sendline(f"rm -f {tmp} {tmp}.b64", timeout=timeout)
             ctx.session.get_prompt(timeout=timeout, capture=False)
-            log.say(f"script: cleaned up {tmp}", "detail")
+            ctx.reporter.say(f"script: cleaned up {tmp}", "detail")
         except Exception as e:  # noqa: BLE001 - best-effort, must not mask the step error
-            log.say(f"script: cleanup of {tmp} failed ({type(e).__name__}): {e}", "warn")
+            ctx.reporter.say(f"script: cleanup of {tmp} failed ({type(e).__name__}): {e}", "warn")
 
 
 class SleepExecutor:
@@ -183,7 +181,7 @@ class SleepExecutor:
     model = SleepStep
 
     def execute(self, step: SleepStep, ctx: RunnerContext, timeout: float) -> None:
-        log.say(f"sleep: {step.sleep}s")
+        ctx.reporter.say(f"sleep: {step.sleep}s")
         ctx.session.sleep(step.sleep)
 
 
@@ -193,7 +191,7 @@ class CallExecutor:
 
     def execute(self, step: CallStep, ctx: RunnerContext, timeout: float) -> None:
         steps = ctx.function(step.call)
-        log.say(f"call: {step.call}", "group")
+        ctx.reporter.say(f"call: {step.call}", "group")
         ctx.run_steps(steps)
 
 
@@ -202,7 +200,7 @@ class BlockExecutor:
     model = BlockStep
 
     def execute(self, step: BlockStep, ctx: RunnerContext, timeout: float) -> None:
-        log.say(f"block enter: {step.block.name}", "group")
+        ctx.reporter.say(f"block enter: {step.block.name}", "group")
         if step.block.prompts:
             saved_handlers = ctx.session.save_handlers()
             block_handlers = [ctx.build_handler(p) for p in step.block.prompts]
@@ -216,12 +214,12 @@ class BlockExecutor:
                 ctx.run_steps(step.block.script)
             finally:
                 if step.block.breakout:
-                    log.say(f"block breakout: {step.block.name}", "group")
+                    ctx.reporter.say(f"block breakout: {step.block.name}", "group")
                     ctx.run_breakout(step.block.breakout, "block breakout")
         finally:
             if saved_handlers is not None:
                 ctx.session.restore_handlers(saved_handlers)
-        log.say(f"block completed: {step.block.name}", "ok")
+        ctx.reporter.say(f"block completed: {step.block.name}", "ok")
 
 
 class LineExecutor:
@@ -231,7 +229,7 @@ class LineExecutor:
     def execute(self, step: LineStep, ctx: RunnerContext, timeout: float) -> None:
         for line in ensure_list(step.line):
             ctx.session.sendline(ctx.render(line), solicit=True, timeout=timeout)
-            log.say("line sent")  # not the text: it may be a password, which the session doesn't echo
+            ctx.reporter.say("line sent")  # not the text: it may be a password, which the session doesn't echo
 
 
 class ReturnExecutor:
@@ -241,7 +239,7 @@ class ReturnExecutor:
     def execute(self, step: ReturnStep, ctx: RunnerContext, timeout: float) -> None:
         for _ in range(step.newline_count):
             ctx.session.sendline("", solicit=True, timeout=timeout)
-            log.say("return sent")
+            ctx.reporter.say("return sent")
 
 
 class ControlExecutor:
@@ -251,7 +249,7 @@ class ControlExecutor:
     def execute(self, step: ControlStep, ctx: RunnerContext, timeout: float) -> None:
         for char in ensure_list(step.control):
             ctx.session.sendcontrol(char, timeout=timeout)
-            log.say(f"control sent: ^{char.upper()}")
+            ctx.reporter.say(f"control sent: ^{char.upper()}")
 
 
 class SetExecutor:
@@ -266,7 +264,7 @@ class SetExecutor:
         for name in step.set_:
             ctx.vars[name] = work[name]
         # the names, not the values: they may be secrets
-        log.say(f"set: {', '.join(f'vars.{name}' for name in step.set_)}")
+        ctx.reporter.say(f"set: {', '.join(f'vars.{name}' for name in step.set_)}")
 
     def _render(self, value: Any, ctx: RunnerContext, extra: dict) -> Any:
         if isinstance(value, str):

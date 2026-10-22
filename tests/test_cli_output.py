@@ -16,6 +16,7 @@ import yaml
 from conftest import make_config, make_doc, plugin_dist
 
 from autobot import cli, log
+from autobot.log import ConsoleReporter
 from autobot.models import Config
 from autobot.runner import Runner
 from autobot.steps import CmdExecutor, StepFailure
@@ -215,8 +216,9 @@ def test_p8_24_messages_have_no_automatic_highlighting(tmp_path: Path):
 def test_p8_24_control_characters_in_a_message(capsys: pytest.CaptureFixture[str]):
     """SPEC "Output": in a message a tab becomes spaces up to the next multiple of eight columns, and a BEL,
     backspace, vertical tab, form feed or carriage return is left out. A line break in it stays."""
-    log.say("cmd: a\tb\x07c\x08d\x0be\x0cf\rg")
-    log.say("error ignored: two\nlines", "warn")
+    rep = ConsoleReporter()
+    rep.say("cmd: a\tb\x07c\x08d\x0be\x0cf\rg")
+    rep.say("error ignored: two\nlines", "warn")
     assert capsys.readouterr().err == ">> cmd: a       bcdefg\n>> error ignored: two\nlines\n"
 
 
@@ -316,7 +318,7 @@ def test_p8_26_call_line_comes_before_the_functions_steps(capsys: pytest.Capture
     runner = Runner(make_config([{"call": "empty"}], fn={"empty": {"script": []}}), {})
     runner.run_steps(runner.config.script)
     assert capsys.readouterr().err == ">> call: empty\n"
-    assert log.depth == 0
+    assert runner.reporter.depth == 0
 
 
 # -- what is sent without a `cmd` ----------------------------------------------------------
@@ -581,24 +583,25 @@ def test_p8_25_line_break_goes_to_stderr_once(monkeypatch: pytest.MonkeyPatch, c
     """The unit: after an echo that ends mid-line, the next message is preceded by one line break on stderr,
     only where the streams are one; an echo that ends a line needs none."""
     monkeypatch.setattr(log, "_shared", lambda: True)
-    log.echoed("out\r\nPROMPT$ ")
-    log.say("cmd: a")
-    log.say("cmd: b")
-    log.echoed("a\r\n")
-    log.say("cmd: c")
-    log.echoed("")  # nothing written: the line state is unchanged
-    log.error("Run failed in x", "boom")
-    log.echoed("PROMPT$ ")
-    log.note("at", "script.0 (cmd: c)")
+    rep = ConsoleReporter()
+    rep.echoed("out\r\nPROMPT$ ")
+    rep.say("cmd: a")
+    rep.say("cmd: b")
+    rep.echoed("a\r\n")
+    rep.say("cmd: c")
+    rep.echoed("")  # nothing written: the line state is unchanged
+    rep.error("Run failed in x", "boom")
+    rep.echoed("PROMPT$ ")
+    rep.note("at", "script.0 (cmd: c)")
     out = capsys.readouterr()
     assert out.err == "\n>> cmd: a\n>> cmd: b\n>> cmd: c\nRun failed in x: boom\n\n  at script.0 (cmd: c)\n"
     assert out.out == ""
 
     monkeypatch.setattr(log, "_shared", lambda: False)
-    log.echoed("PROMPT$ ")
-    log.say("cmd: d")
+    rep.echoed("PROMPT$ ")
+    rep.say("cmd: d")
     assert capsys.readouterr().err == ">> cmd: d\n"
-    log.echoed("\n")
+    rep.echoed("\n")
 
 
 def test_p8_25_streams_without_a_file_descriptor_are_not_shared(capsys: pytest.CaptureFixture[str]):
@@ -956,13 +959,14 @@ def test_p8_26_indentation_stops_at_eight_levels(tmp_path: Path):
 
 
 def test_p8_23_say_styles_only_the_label(capsys: pytest.CaptureFixture[str]):
-    """`log.say` prints the text as it is after `>> `; the label ends at the first `: `."""
-    log.say("cmd: echo a: b [/x]")
-    log.say("called f", "ok")
-    log.error("Run failed in x", "boom [/]")
-    log.error("Interrupted", style=log.WARN)
-    log.note("at", "script.0 (cmd: true)")
-    log.more("  as [it] is")
+    """`say` prints the text as it is after `>> `; the label ends at the first `: `."""
+    rep = ConsoleReporter()
+    rep.say("cmd: echo a: b [/x]")
+    rep.say("called f", "ok")
+    rep.error("Run failed in x", "boom [/]")
+    rep.error("Interrupted", style=log.WARN)
+    rep.note("at", "script.0 (cmd: true)")
+    rep.more("  as [it] is")
     assert capsys.readouterr().err.splitlines() == [
         ">> cmd: echo a: b [/x]",
         ">> called f",

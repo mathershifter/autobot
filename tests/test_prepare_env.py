@@ -29,8 +29,9 @@ from conftest import (
 )
 
 from autobot import prepare
+from autobot.log import ConsoleReporter
 from autobot.models import Config
-from autobot.runner import Runner
+from autobot.runner import Runner, run_prepare
 
 NAMES = ("AB_A", "AB_B", "AB_C", "AB_OS", "AB_GONE", "AB_NEW", "AB_HOST", "AB_SHELL")
 
@@ -235,12 +236,12 @@ def dump_fd() -> int:
 
 @pytest.fixture
 def sourced(prep_tmp: Path, tmp_path: Path, capfd):
-    """`prepare.run` in an environment of its own, `PATH`, an empty `HOME` and the marker `AB_OS`; returns
-    the environment the shell left and what went to stderr. A test asserts on the markers alone, so a failure
-    shows no environment."""
+    """The runner's `run_prepare` in an environment of its own, `PATH`, an empty `HOME` and the marker
+    `AB_OS`; returns the environment the shell left and what went to stderr. A test asserts on the markers
+    alone, so a failure shows no environment."""
 
     def run(script: str, **extra: str) -> tuple[dict[str, str], str]:
-        env = prepare.run(script, {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "AB_OS": f"{SECRET}-os", **extra})
+        env = run_prepare(script, {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "AB_OS": f"{SECRET}-os", **extra}, ConsoleReporter())
         assert list(prep_tmp.iterdir()) == []
         out, err = capfd.readouterr()
         assert out == ""
@@ -609,7 +610,8 @@ def in_child(tmp_path: Path, code: str, *args: str) -> tuple[int, str, str, list
 # `os.unlink` sends the process SIGHUP before it removes the script's file (`tempfile` removes a file of its own, too)
 HUP_AT_UNLINK = """
 import os, signal, sys
-from autobot import prepare
+from autobot.log import ConsoleReporter
+from autobot.runner import run_prepare
 
 unlink = os.unlink
 
@@ -619,7 +621,7 @@ def hup_first(path, **kw):
     unlink(path, **kw)
 
 os.unlink = hup_first
-prepare.run(sys.argv[1], dict(os.environ))
+run_prepare(sys.argv[1], dict(os.environ), ConsoleReporter())
 """
 
 
@@ -655,10 +657,11 @@ def test_p5_72_signal_that_does_not_end_the_process_is_its_exit_status(tmp_path:
     assert err.splitlines() == [RUNNING]
 
 
-# what SIGTERM and SIGHUP have once `prepare.run` has ended, after what it gave or raised and what a handler of the caller's wrote
+# what SIGTERM and SIGHUP have once `prepare` has ended, after what it gave or raised and what a handler of the caller's wrote
 HANDLERS = """
 import os, signal, sys, threading
-from autobot import prepare
+from autobot.log import ConsoleReporter
+from autobot.runner import run_prepare
 
 TERM, HUP, IGN = signal.SIGTERM, signal.SIGHUP, signal.SIG_IGN
 
@@ -667,7 +670,7 @@ def own(signum, frame):
 
 def run():
     try:
-        print(prepare.run(sys.argv[1], dict(os.environ)).get("AB_NEW"))
+        print(run_prepare(sys.argv[1], dict(os.environ), ConsoleReporter()).get("AB_NEW"))
     except BaseException as e:
         print(type(e).__name__)
     print(*(getattr(signal.getsignal(sig), "name", "own") for sig in (TERM, HUP)), flush=True)

@@ -21,7 +21,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.reader import ReaderError
 
-from . import log
+from .log import ERROR, OK, WARN, ConsoleReporter, OutputLost
 from .models import Config
 from .registry import PluginError, registry
 from .runner import BreakoutError, Runner, _kind, left, trail
@@ -109,31 +109,31 @@ class UniqueKeyLoader(yaml.SafeLoader):
             ) from e
 
 
-def _load(path: str) -> object:
+def _load(rep: ConsoleReporter, path: str) -> object:
     name = _visible(path)
     try:
         with open(path, "rb") as f:
             return yaml.load(f, Loader=UniqueKeyLoader)
     except OSError as e:
-        log.error(f"Cannot read script {name}", str(e.strerror or e))
+        rep.error(f"Cannot read script {name}", str(e.strerror or e))
     except yaml.MarkedYAMLError as e:
         mark = e.problem_mark
         at = f", line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        log.error(f"YAML error in {name}{at}", str(e.problem))
+        rep.error(f"YAML error in {name}{at}", str(e.problem))
         if e.context:
             mark = e.context_mark
             at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-            log.more(f"  {e.context}{at}")
+            rep.more(f"  {e.context}{at}")
     except ReaderError as e:
         what = "character" if e.encoding == "unicode" else f"{e.encoding} byte"
-        log.error(f"YAML error in {name}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
+        rep.error(f"YAML error in {name}, position {e.position}", f"{e.reason} ({what} #x{e.character:02x})")
     except yaml.YAMLError as e:
-        log.error(f"YAML error in {name}", str(e))
+        rep.error(f"YAML error in {name}", str(e))
     except RecursionError:
         # the parser follows the nesting of the document with its own: hundreds of levels are too many
-        log.error(f"YAML error in {name}", "the document is nested too deeply")
+        rep.error(f"YAML error in {name}", "the document is nested too deeply")
     except ValueError as e:  # from anywhere else in the loader: what the document holds, not a bug
-        log.error(f"YAML error in {name}", str(e) or type(e).__name__)
+        rep.error(f"YAML error in {name}", str(e) or type(e).__name__)
     raise LoadError
 
 
@@ -231,26 +231,26 @@ def _visible(text: str) -> str:
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
 
 
-def _traceback(args: argparse.Namespace | None, e: BaseException) -> None:
+def _traceback(rep: ConsoleReporter, args: argparse.Namespace | None, e: BaseException) -> None:
     if getattr(args, "traceback", False):
-        log.more("".join(traceback.format_exception(e)).rstrip("\n"))
+        rep.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
-def _where(e: BaseException) -> None:
+def _where(rep: ConsoleReporter, e: BaseException) -> None:
     """The step that was running, and the calls that led to it. A block is part of its steps' paths."""
     steps = trail(e)
     if not steps:
         return
     *outer, last = steps
-    log.note("at", f"{last.path} ({last.what})")
+    rep.note("at", f"{last.path} ({last.what})")
     callers = [ref for ref in reversed(outer) if ref.key != "block"]
     for ref in callers[:CALLERS]:
-        log.note("called from", f"{ref.path} ({ref.what})")
+        rep.note("called from", f"{ref.path} ({ref.what})")
     if len(callers) > CALLERS:
-        log.note("...", f"and {len(callers) - CALLERS} more callers")
+        rep.note("...", f"and {len(callers) - CALLERS} more callers")
 
 
-def _left(args: argparse.Namespace | None, e: BaseException) -> None:
+def _left(rep: ConsoleReporter, args: argparse.Namespace | None, e: BaseException) -> None:
     """After the report of how the run ended: each breakout that did not finish, and what that may mean."""
     state = left(e)
     if state is None:
@@ -260,18 +260,18 @@ def _left(args: argparse.Namespace | None, e: BaseException) -> None:
         if error is e:  # the interrupt that ended the breakout is what ended the run: reported already
             continue
         if isinstance(error, KeyboardInterrupt):
-            _traceback(args, error)
-            log.error(head, "interrupted")
-            _where(error)
+            _traceback(rep, args, error)
+            rep.error(head, "interrupted")
+            _where(rep, error)
         elif isinstance(error, EXPECTED) and not (_broad(error) and _plugins_own(error)):
-            _traceback(args, error)
-            log.error(head, str(error) or type(error).__name__)
-            _where(error)
+            _traceback(rep, args, error)
+            rep.error(head, str(error) or type(error).__name__)
+            _where(rep, error)
             if _broad(error) and not getattr(args, "traceback", False):
-                log.hint("(run with --traceback for details)")
+                rep.hint("(run with --traceback for details)")
         else:  # a bug, in Autobot or in a plugin, not something the device did: with its traceback
-            log.error(head, f"unexpected error ({type(error).__name__}): {error}")
-            _unexpected(error)  # type: ignore[arg-type]
+            rep.error(head, f"unexpected error ({type(error).__name__}): {error}")
+            _unexpected(rep, error)  # type: ignore[arg-type]
     completed = isinstance(e, BreakoutError)
     if all(isinstance(error, EOFError) for error in state.breakouts):
         # nothing more could be said to the far side: over plain ssh the close is the logout
@@ -286,7 +286,7 @@ def _left(args: argparse.Namespace | None, e: BaseException) -> None:
             why += f"; credentials were sent ({names}), and no shell prompt was reached after them"
         else:
             why += f"; the run sent credentials ({names})"
-    log.error(head, why)
+    rep.error(head, why)
 
 
 def _broad(e: BaseException) -> bool:
@@ -310,26 +310,26 @@ def _plugins_own(e: BaseException) -> bool:
     return last is not None and last.co_name == "_step" and os.path.basename(last.co_filename) == "runner.py"
 
 
-def _unexpected(e: Exception) -> None:
+def _unexpected(rep: ConsoleReporter, e: Exception) -> None:
     # under a plugin step, whatever fails unexpectedly is the plugin's doing: its own code, or a step it
     # built that no script could hold
     plugin = next((ref for ref in reversed(trail(e)) if ref.plugin), None)
     if plugin:
-        log.error(
+        rep.error(
             f"Unexpected error in plugin '{plugin.key}'",
             "this is a bug in the plugin, not in the script. "
             "Please report it to the plugin's author with the traceback below.",
         )
     else:
-        log.error(
+        rep.error(
             "Unexpected error in Autobot",
             "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
-    _where(e)
+    _where(rep, e)
     script = getattr(e, "autobot_script", None)
     if script is not None:  # `validate` checks several: say which one it was
-        log.note("while checking", _visible(script))
-    log.more("".join(traceback.format_exception(e)).rstrip("\n"))
+        rep.note("while checking", _visible(script))
+    rep.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
 
 def _interrupted() -> NoReturn:
@@ -346,7 +346,7 @@ def _interrupted() -> NoReturn:
 
 
 @contextlib.contextmanager
-def _ended_by_signal() -> Iterator[None]:
+def _ended_by_signal(rep: ConsoleReporter) -> Iterator[None]:
     """While the session is open, SIGTERM and SIGHUP end the process at once, as they do by default,
     after one line on stderr that says what that leaves. Nothing is cleaned up and nothing more is sent.
 
@@ -365,7 +365,7 @@ def _ended_by_signal() -> Iterator[None]:
             # a background job that writes to its terminal is stopped by this signal (`stty tostop`)
             signal.signal(signal.SIGTTOU, signal.SIG_IGN)
             if select.select([], [fd], [], 0)[1]:
-                start = "\n" if log.open_line() else ""
+                start = "\n" if rep.open_line() else ""
                 os.write(fd, f"{start}Interrupted ({signal.Signals(signum).name}): {UNCLEAN}\n".encode())
         except (OSError, ValueError):
             pass
@@ -388,7 +388,7 @@ def _ended_by_signal() -> Iterator[None]:
             signal.signal(sig, signal.SIG_DFL)
 
 
-def _lost(args: argparse.Namespace, e: log.OutputLost) -> None:
+def _lost(rep: ConsoleReporter, args: argparse.Namespace, e: OutputLost) -> None:
     """Report a run whose output was lost, on stderr if stderr can still be written, with the breakouts
     that didn't finish."""
     state = left(e)
@@ -398,11 +398,11 @@ def _lost(args: argparse.Namespace, e: log.OutputLost) -> None:
         how = "the session was closed without running the breakouts"
     else:  # at the spawn, or at the close, after the breakouts
         how = "the session was closed"
-    with contextlib.suppress(log.OutputLost):  # stderr may be the stream that is lost
-        _traceback(args, e)
-        log.error(f"Run failed in {_visible(args.script)}", f"{e}; {how}; {UNKNOWN}")
-        _where(e)
-        _left(args, e)
+    with contextlib.suppress(OutputLost):  # stderr may be the stream that is lost
+        _traceback(rep, args, e)
+        rep.error(f"Run failed in {_visible(args.script)}", f"{e}; {how}; {UNKNOWN}")
+        _where(rep, e)
+        _left(rep, args, e)
 
 
 def _discard_unwritten() -> bool:
@@ -424,34 +424,34 @@ def _discard_unwritten() -> bool:
     return failed
 
 
-def _discover(args: argparse.Namespace | None = None) -> None:
+def _discover(rep: ConsoleReporter, args: argparse.Namespace | None = None) -> None:
     # validation depends on the installed plugins, so a broken one is reported first, before the script is read
     try:
         registry.discover()
     except PluginError as e:
-        _traceback(args, e)
-        log.error("Plugin error", str(e))
+        _traceback(rep, args, e)
+        rep.error("Plugin error", str(e))
         raise LoadError from None
 
 
-def _config(script: str) -> Config:
+def _config(rep: ConsoleReporter, script: str) -> Config:
     """The validation stage, which `run` and `validate` share: the file read and parsed, and the document
     validated against the models. Nothing of the script is rendered or run. A load error is reported, and
     raised as `LoadError`."""
-    config_dict = _load(script)
+    config_dict = _load(rep, script)
     try:
         return Config.model_validate(config_dict)
     except pydantic.ValidationError as e:
-        log.error("Validation errors:")
+        rep.error("Validation errors:")
         for err in _one_per_value(e.errors()):
             where = ".".join(map(str, err["loc"])) or "(document)"
             what = err["msg"].removeprefix("Value error, ")
             # the message is the model's, or a plugin model's, and may show a value of the script as it is
-            log.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
+            rep.problem(_visible(where), _visible(what + _got(err["type"], what, err["input"], err["loc"])), err["type"])
         raise LoadError from None
 
 
-def _runner(args: argparse.Namespace, config: Config) -> Runner:
+def _runner(rep: ConsoleReporter, args: argparse.Namespace, config: Config) -> Runner:
     """What `run` adds to the validation stage before it runs anything: the `--env` values checked, each
     for its form and a key the script declares, and `prompts` resolved. An error is reported, and raised
     as `LoadError`."""
@@ -459,73 +459,73 @@ def _runner(args: argparse.Namespace, config: Config) -> Runner:
     for item in args.env:
         key, eq, value = item.partition("=")
         if not eq or not key:  # no `env` key is empty
-            log.error("--env requires KEY=VALUE format")  # without the argument, which may be a value
+            rep.error("--env requires KEY=VALUE format")  # without the argument, which may be a value
             raise LoadError
         given[key] = value
 
     try:
-        return Runner(config, given)
+        return Runner(config, given, reporter=rep)
     except ScriptError as e:  # the `--env` keys and prompt send templates, checked before prepare/spawn
-        _traceback(args, e)
-        log.error(f"Script error in {_visible(args.script)}", str(e))
+        _traceback(rep, args, e)
+        rep.error(f"Script error in {_visible(args.script)}", str(e))
         raise LoadError from None
 
 
-def _cmd_run(args):
+def _cmd_run(rep: ConsoleReporter, args: argparse.Namespace) -> None:
     if sys.stdout is None:
         # fd 1 is closed (`>&-`): the session's output has nowhere to go, and the next file opened, the
         # session's pty for one, would become fd 1
-        log.error(
+        rep.error(
             "Cannot write the session's output",
             "stdout is closed (redirect it to /dev/null to discard the output)",
         )
         raise LoadError
-    _discover(args)
-    runner = _runner(args, _config(args.script))
+    _discover(rep, args)
+    runner = _runner(rep, args, _config(rep, args.script))
     try:
         with contextlib.ExitStack() as session:
             # from the spawn on: until then `prepare` deals with a signal itself
-            runner.before_attach = lambda: session.enter_context(_ended_by_signal())
+            runner.before_attach = lambda: session.enter_context(_ended_by_signal(rep))
             runner.run()
-    except log.OutputLost as e:
-        _lost(args, e)
+    except OutputLost as e:
+        _lost(rep, args, e)
         raise
     except BreakoutError as e:
-        _left(args, e)
+        _left(rep, args, e)
         sys.exit(EXIT_BREAKOUT)
     except EXPECTED as e:
         if _broad(e) and _plugins_own(e):
             raise  # a bug in the plugin, like any other exception of its own
-        _traceback(args, e)
+        _traceback(rep, args, e)
         reason = str(e) or type(e).__name__
         if isinstance(e, RecursionError) and any(ref.key == "call" for ref in trail(e)):
             reason = f"functions call each other too deeply ({reason})"
-        log.error(f"Run failed in {_visible(args.script)}", reason)
-        _where(e)
+        rep.error(f"Run failed in {_visible(args.script)}", reason)
+        _where(rep, e)
         if _broad(e) and not args.traceback:
-            log.hint("(run with --traceback for details)")
-        _left(args, e)
+            rep.hint("(run with --traceback for details)")
+        _left(rep, args, e)
         sys.exit(EXIT_RUN)
-    log.say("run completed", "ok")
+    rep.say("run completed", "ok")
 
 
-def _cmd_validate(args: argparse.Namespace) -> None:
+def _cmd_validate(rep: ConsoleReporter, args: argparse.Namespace) -> None:
     """`run`'s validation stage for each script, and nothing after it: no template is rendered and nothing
     runs. Nothing is written to stdout, so a closed one is no error."""
-    _discover(args)
+    _discover(rep, args)
     failed = False
     for script in args.script:
         try:
-            _config(script)
+            _config(rep, script)
         except LoadError:
             failed = True
-            log.verdict(_visible(script), "invalid", log.ERROR)
+            rep.verdict(_visible(script), "invalid", ERROR)
         except Exception as e:
             e.autobot_script = script  # type: ignore[attr-defined]
             raise
         else:
             if not args.quiet:
-                log.verdict(_visible(script), "valid", log.OK)
+                rep.verdict(_visible(script), "valid", OK)
     if failed:
         raise LoadError
 
@@ -556,14 +556,14 @@ def load_schema() -> dict[str, Any]:
     raise SchemaError(f"neither {packaged} nor {source} holds the JSON schema")
 
 
-def _cmd_schema(args: argparse.Namespace | None = None):
-    _discover(args)
+def _cmd_schema(rep: ConsoleReporter, args: argparse.Namespace | None = None) -> None:
+    _discover(rep, args)
     try:
         schema = load_schema()
     except SchemaError as e:
-        log.error("Cannot read the schema", str(e))
+        rep.error("Cannot read the schema", str(e))
         raise LoadError from None
-    with log.writing(sys.stdout):
+    with rep.writing(sys.stdout):
         print(json.dumps(add_plugin_steps(schema, registry.plugin_executors()), indent=2), flush=True)
 
 
@@ -596,12 +596,14 @@ def add_plugin_steps(schema: dict[str, Any], executors: list[StepExecutor]) -> d
     return schema
 
 
-def main():
+def main(reporter: ConsoleReporter | None = None) -> None:
+    """`reporter`: where the command reports; built here, for this process's stderr, when none is given."""
+    rep = reporter if reporter is not None else ConsoleReporter()
     code: Any = None
-    log.clear()
+    rep.clear()
     try:
-        _main()
-    except log.OutputLost:  # reported where there was something to say, and a stream to say it on
+        _main(rep)
+    except OutputLost:  # reported where there was something to say, and a stream to say it on
         code = EXIT_RUN
     except SystemExit as e:
         code = 0 if e.code is None else e.code
@@ -609,12 +611,12 @@ def main():
         # output that could not be written is a failure of any command that had not failed already
         if _discard_unwritten() and not code:
             code = EXIT_RUN
-        log.clear()
+        rep.clear()
     if code is not None:
         sys.exit(code)
 
 
-def _main():
+def _main(rep: ConsoleReporter) -> None:
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -659,23 +661,23 @@ def _main():
 
     try:
         if args.command == "schema":
-            _cmd_schema(args)
+            _cmd_schema(rep, args)
         elif args.command == "run":
-            _cmd_run(args)
+            _cmd_run(rep, args)
         elif args.command == "validate":
-            _cmd_validate(args)
+            _cmd_validate(rep, args)
         else:
             parser.print_help()
             sys.exit(EXIT_LOAD)
     except KeyboardInterrupt as e:
-        _traceback(args, e)
-        log.error("Interrupted", style=log.WARN)
-        _where(e)
-        _left(args, e)
+        _traceback(rep, args, e)
+        rep.error("Interrupted", style=WARN)
+        _where(rep, e)
+        _left(rep, args, e)
         _interrupted()
     except Exception as e:  # noqa: BLE001 - a bug in autobot or a plugin: say so and keep the traceback
-        _unexpected(e)
-        _left(args, e)
+        _unexpected(rep, e)
+        _left(rep, args, e)
         sys.exit(EXIT_UNEXPECTED)
 
 

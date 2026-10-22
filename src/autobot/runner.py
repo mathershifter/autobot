@@ -6,11 +6,12 @@ import math
 import re
 from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jinja2 import StrictUndefined
 
-from . import log, prepare
+from . import prepare
+from .log import ConsoleReporter, OutputLost
 from .models import BlockStep, Config, PluginStep, Prompt, SendEach, Step, names_command
 from .registry import registry
 from .session import PromptHandler, Session, SimpleHandler
@@ -18,6 +19,9 @@ from .steps import register_builtins
 from .terminal import run_environ
 from .types import RunError, ScriptError, check_regex, check_template, text
 from .types import render as render_template
+
+if TYPE_CHECKING:
+    from .protocols import Reporter
 
 
 register_builtins(registry)
@@ -169,6 +173,16 @@ def _typed(key: str, value: str, default: Any, source: str) -> Any:
     return value
 
 
+def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dict[str, str]:
+    """Run the `prepare` script in `environ`, saying what happens, and give the environment it leaves."""
+    reporter.say("prepare: running local script" + ("" if prepare.shebang(script) else " (no shebang, using /bin/sh)"))
+    result = prepare.run(script, environ)
+    if not result.read:
+        reporter.say("prepare: its environment could not be read", "warn")
+    reporter.say("prepare: done", "ok")
+    return result.environ
+
+
 class _Env(dict):  # holds its keys and nothing else: a template reads attributes too
     __slots__ = ()
 
@@ -177,10 +191,12 @@ class _Env(dict):  # holds its keys and nothing else: a template reads attribute
 
 
 class Runner:
-    def __init__(self, config: Config, given: dict[str, str]):
-        """`given`: the `--env` values, which come before those of the environment."""
+    def __init__(self, config: Config, given: dict[str, str], *, reporter: Reporter | None = None):
+        """`given`: the `--env` values, which come before those of the environment. `reporter`: where the
+        run says what it does; the CLI's, or one of the runner's own on stderr."""
         registry.discover()
         self._config = config
+        self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._default_timeout = 300
         # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ()
@@ -197,7 +213,7 @@ class Runner:
         self._vars: dict[str, Any] = copy.deepcopy(config.vars)
         # the top-level prompts are resolved here as well as at each run's start: a collection that can't
         # be, or a send template that doesn't parse, is an error before `prepare` runs
-        self._session = Session(self._handlers())
+        self._session = Session(self._handlers(), reporter=self._reporter)
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
@@ -232,6 +248,10 @@ class Runner:
     @property
     def errors(self) -> Sequence[str]:
         return self._errors
+
+    @property
+    def reporter(self) -> Reporter:
+        return self._reporter
 
     def function(self, name: str) -> list[Step]:
         fn = self._config.fn.get(name)
@@ -297,7 +317,7 @@ class Runner:
             ctx = {**ctx, **extra_ctx}
         return render_template(template, ctx, condition=condition, keep_newline=keep_newline)
 
-    _run_prepare = staticmethod(prepare.run)
+    _run_prepare = staticmethod(run_prepare)
 
     def _spawn_command(self) -> str:
         attach = self._config.attach
@@ -311,13 +331,13 @@ class Runner:
 
     def run(self):
         self._unfinished = []  # nothing of an earlier run of this runner counts for this one
-        log.clear()
+        self._reporter.clear()
         try:
             self._run()
         finally:
             # lost output is the run's, and gone with it. It is what ended the run, whatever came after it
             # on the way out (an interrupt)
-            lost = log.clear()
+            lost = self._reporter.clear()
             if lost:
                 self._mark(lost)
                 raise lost
@@ -335,13 +355,13 @@ class Runner:
         if self._config.prepare:
             # as written, not rendered. No process can be started with an empty name, a `=` in a name or a NUL
             fit = {k: v for k, v in environ.items() if k and "=" not in k and "\0" not in k + v}
-            environ = self._run_prepare(self._config.prepare, fit)
+            environ = self._run_prepare(self._config.prepare, fit, self._reporter)
         self._env = self._resolve_env(environ)
         spawn = self._spawn_command()
 
         if self.before_attach:
             self.before_attach()
-        log.say(f"attach: {spawn}")
+        self._reporter.say(f"attach: {spawn}")
         try:
             self._session.attach(spawn, env=self._environ, timeout=timeout)
             try:
@@ -350,11 +370,11 @@ class Runner:
                 self.run_steps(self._config.script)
             finally:
                 if attach.breakout:
-                    log.say("breakout: detaching", "group")
+                    self._reporter.say("breakout: detaching", "group")
                     self.run_breakout(attach.breakout)
                 names = self._session.logins_open
                 if names and not self._unfinished:  # a breakout that failed is reported, with the credentials
-                    log.say(
+                    self._reporter.say(
                         f"no logout: the run sent credentials (prompt{'s' if len(names) != 1 else ''} "
                         f"{', '.join(repr(n) for n in names)}), and no breakout ran after them to log out "
                         "before the session is closed",
@@ -388,17 +408,17 @@ class Runner:
         so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
         ends the breakout as well, and so does lost output: they are kept, and go on. No breakout runs once
         the run's output is lost."""
-        log.check()
+        self._reporter.check()
         try:
             self._session.reset_handlers()
             self.run_steps(steps)
             self._session.logins_covered()
-        except (KeyboardInterrupt, log.OutputLost) as e:
+        except (KeyboardInterrupt, OutputLost) as e:
             self._unfinished.append(e)
             raise
         except Exception as e:  # noqa: BLE001 - breakout is best-effort
             self._unfinished.append(e)
-            log.say(f"{what} error ({type(e).__name__}): {e}", "warn")
+            self._reporter.say(f"{what} error ({type(e).__name__}): {e}", "warn")
 
     def run_steps(self, steps: list[Step]):
         path = self._paths.get(id(steps))
@@ -414,7 +434,7 @@ class Runner:
 
     def _run_step(self, step: Step, path: str = "steps.0"):
         self._stack.append(_ref(step, path))
-        log.depth = len(self._stack) - 1
+        self._reporter.depth = len(self._stack) - 1
         try:
             self._step(step)
         except BaseException as e:
@@ -423,13 +443,13 @@ class Runner:
             if not hasattr(e, "autobot_trail"):
                 e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
                 if isinstance(e, KeyboardInterrupt):
-                    log.say("step interrupted", "fail")
+                    self._reporter.say("step interrupted", "fail")
                 elif isinstance(e, Exception):
-                    log.say(f"step failed ({type(e).__name__}): {e}", "fail")
+                    self._reporter.say(f"step failed ({type(e).__name__}): {e}", "fail")
             raise
         finally:
             self._stack.pop()
-            log.depth = max(len(self._stack) - 1, 0)
+            self._reporter.depth = max(len(self._stack) - 1, 0)
 
     def _step(self, step: Step):
         timeout = self._get_timeout(step)

@@ -513,15 +513,18 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 
 def test_p6_108_runner_raises_the_first_script_error():
-    """`Runner(config, given)` takes the configuration and the `--env` values, and raises the first script
-    error that depends on no value: an `--env` key, the type of an `--env` value, then the prompts in their
-    order. An `env` default is no template and is not checked; a variable without a value is the run's."""
+    """`Runner(config, given)` takes the configuration and the `--env` values, and a `reporter` by keyword
+    alone, and raises the first script error that depends on no value: an `--env` key, the type of an
+    `--env` value, then the prompts in their order. An `env` default is no template and is not checked; a
+    variable without a value is the run's."""
     import inspect
 
     from autobot.models import Config
     from autobot.types import ScriptError
 
-    assert list(inspect.signature(Runner).parameters) == ["config", "given"]
+    params = inspect.signature(Runner).parameters
+    assert list(params) == ["config", "given", "reporter"]
+    assert params["reporter"].kind is inspect.Parameter.KEYWORD_ONLY and params["reporter"].default is None
     typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
         Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three", "NOPE": "x"})
@@ -553,10 +556,10 @@ def test_p6_98_unexpected_error_keeps_its_traceback_and_ends_the_command(
     first, boom, last = m.write("first"), m.write("boom"), m.write("last")
     real = cli._load
 
-    def load(path: str) -> object:
+    def load(rep: Any, path: str) -> object:
         if path == str(boom):
             raise KeyError("x")
-        return real(path)
+        return real(rep, path)
 
     monkeypatch.setattr(cli, "_load", load)
     code, out, err = _main(monkeypatch, capsys, "validate", first, boom, last)
@@ -616,7 +619,7 @@ def test_p6_106_unexpected_error_names_the_script_being_checked(m: Markers, tmp_
 def test_p6_98_interrupt_while_validating_is_interrupted(
     m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    def interrupt(path: str) -> object:
+    def interrupt(rep: Any, path: str) -> object:
         raise KeyboardInterrupt
 
     def ended() -> None:
@@ -806,7 +809,7 @@ def test_p6_102_validate_exits_0_exactly_when_run_gets_past_validation(
     class Validated(BaseException):  # not an `Exception`, which `main` would report as a bug
         pass
 
-    def after_validation(args: Any, config: Any) -> Runner:
+    def after_validation(rep: Any, args: Any, config: Any) -> Runner:
         reached.append(config)
         raise Validated
 
@@ -1067,7 +1070,7 @@ def test_p6_107_every_report_shows_the_path_escaped(m: Markers, case: str, char:
 def test_p6_107_unexpected_error_shows_the_path_escaped(
     m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    def load(path: str) -> object:
+    def load(rep: Any, path: str) -> object:
         raise KeyError("x")
 
     monkeypatch.setattr(cli, "_load", load)

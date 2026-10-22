@@ -6,13 +6,18 @@ import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 import pexpect
 
-from . import log
-from .screen import ANSI_ESCAPE_RE, STRAY_RE, CleanWriter, _mid_echo, strip_echo
+from .log import ConsoleReporter, OutputLost
+from .screen import ANSI_ESCAPE_RE, STRAY_RE, _mid_echo, strip_echo
 from .terminal import LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte, run_environ
+from .transcript import CleanWriter
 from .types import RunError, ScriptError
+
+if TYPE_CHECKING:
+    from .protocols import Reporter
 
 
 # How long a prompt wait holds a shell prompt that may be one the line editor wrote again inside its echo:
@@ -139,7 +144,10 @@ class SimpleHandler(PromptHandler):
 
 
 class Session:
-    def __init__(self, handlers: list[PromptHandler]):
+    def __init__(self, handlers: list[PromptHandler], *, reporter: Reporter | None = None):
+        """`reporter`: where the session says what it does, and what keeps the run's lost output; the
+        runner's, or one of the session's own on stderr."""
+        self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._cld: pexpect.spawn | None = None
         self._echo: CleanWriter | None = None
         self._at_prompt = False
@@ -169,6 +177,10 @@ class Session:
     @property
     def ctx(self) -> dict[str, str]:
         return self._ctx
+
+    @property
+    def reporter(self) -> Reporter:
+        return self._reporter
 
     @property
     def logins(self) -> tuple[str, ...]:
@@ -296,7 +308,7 @@ class Session:
             env=run_environ() if env is None else env,
             dimensions=(PTY_ROWS, PTY_COLS),
         )
-        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout)
+        self._echo = self._cld.logfile_read = CleanWriter(sys.stdout, self._reporter)
         cld = self._cld
         try:
             # zero-width: wait for output but leave it buffered for get_prompt
@@ -339,12 +351,12 @@ class Session:
             finally:
                 if echo:
                     echo.close()
-        except (Exception, log.OutputLost) as e:  # noqa: BLE001 - must not replace the error that is propagating
+        except (Exception, OutputLost) as e:  # noqa: BLE001 - must not replace the error that is propagating
             if not failing:
                 raise
-            if isinstance(e, log.OutputLost):
-                log.clear()  # found only now, by a run that another error is ending: it ends nothing
-            log.say(f"close error ({type(e).__name__}): {e}", "warn")
+            if isinstance(e, OutputLost):
+                self._reporter.clear()  # found only now, by a run that another error is ending: it ends nothing
+            self._reporter.say(f"close error ({type(e).__name__}): {e}", "warn")
 
     def get_prompt(
         self,
@@ -422,7 +434,7 @@ class Session:
                     except BaseException:
                         self._unanswered = True  # no response left, or one that could not be rendered or sent
                         raise
-                    log.say(f"prompt answered: {h.name}")  # never the response
+                    self._reporter.say(f"prompt answered: {h.name}")  # never the response
                     if h.credentials:
                         self._open.append(h.name)
                         self._pending = True
@@ -540,7 +552,7 @@ class Session:
                 )
         elif longest >= LINUX_CANON and not self._warned:
             self._warned = True
-            log.say(
+            self._reporter.say(
                 f"long line: {longest} bytes; a far side that reads whole lines, with no line editor, keeps only "
                 f"the first {LINUX_CANON - 1} bytes of one (the usual limit on Linux) and drops the rest without an error",
                 "warn",
@@ -565,7 +577,7 @@ class Session:
         """
         cld = self._cld
         assert cld
-        log.check()  # nothing is sent once the run's output is lost
+        self._reporter.check()  # nothing is sent once the run's output is lost
         self._writes += 1
         pty = Pty(cld.child_fd)
         try:

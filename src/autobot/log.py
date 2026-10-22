@@ -1,6 +1,8 @@
 """Autobot's own messages: one console on stderr, a small palette and the `>> ` marker.
 
-The session's output never comes through here: `screen.CleanWriter` writes it to stdout as the device sent it.
+`ConsoleReporter` is the `Reporter` (`autobot.protocols`) the CLI builds once and hands to the runner, which
+hands it to the session and to the steps. The session's output never comes through it: `transcript.CleanWriter`
+writes it to stdout as the device sent it, and only tells the reporter where that left the line.
 """
 
 from __future__ import annotations
@@ -33,8 +35,6 @@ WARN = "bold yellow"
 INDENT = "  "
 MAX_INDENT = 8  # levels: deeper steps stay at this one, so a deep recursion doesn't run off the screen
 
-depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
-
 
 def _styled() -> bool:
     """Whether the messages are styled: these three things decide, and nothing else rich would consult."""
@@ -60,15 +60,20 @@ def _console() -> Console:
     )
 
 
-console = _console()
-_open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
+def _shared() -> bool:
+    """Whether stdout and stderr are the same terminal, pipe or file, so their lines interleave."""
+    try:
+        out, err = os.fstat(sys.stdout.fileno()), os.fstat(sys.stderr.fileno())
+    except (OSError, ValueError, AttributeError):  # a stream without a file descriptor
+        return False
+    return (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
 
 
 class OutputLost(BaseException):
     """A write of the operator's output failed: the session's echo on stdout, or a message on stderr.
     The run ends at once: no breakout runs and nothing more is sent. It is no `Exception`, so that no
-    best-effort cleanup takes it for a failure to go on from. The first one of a run is kept (`lost`) and
-    raised again by `check`, which everything that writes or sends calls first."""
+    best-effort cleanup takes it for a failure to go on from. The reporter keeps the first one of a run
+    (`lost`) and raises it again from `check`, which everything that writes or sends calls first."""
 
     def __init__(self, stream: object, error: BaseException):
         name = "stdout" if stream is sys.stdout else "stderr" if stream is sys.stderr else "the output"
@@ -80,121 +85,110 @@ class OutputLost(BaseException):
         self.__cause__ = error
 
 
-# The first write that failed, until the run is over: the stream and its error, and from the first
-# `check` on the `OutputLost` that is made of them
-lost: OutputLost | tuple[object, BaseException] | None = None
+class ConsoleReporter:
+    """The messages on stderr, styled as the environment and stderr are when it is built, and the run's
+    lost output. One per process in the CLI; a `Runner` or `Session` built without one makes its own."""
 
+    def __init__(self) -> None:
+        self.console = _console()
+        self.depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
+        self._open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
+        # The first write that failed, until the run is over: the stream and its error, and from the first
+        # `check` on the `OutputLost` that is made of them
+        self._lost: OutputLost | tuple[object, BaseException] | None = None
 
-def check() -> None:
-    """Raise the `OutputLost` of this run again, if there is one: nothing is written or sent after it."""
-    global lost
-    if isinstance(lost, tuple):
-        lost = OutputLost(*lost)
-    if lost:
-        raise lost
+    @property
+    def lost(self) -> OutputLost | None:
+        """The `OutputLost` of this run, if a write has failed: nothing is written or sent after it."""
+        if isinstance(self._lost, tuple):
+            self._lost = OutputLost(*self._lost)
+        return self._lost
 
+    def check(self) -> None:
+        """Raise the `OutputLost` of this run again, if there is one."""
+        lost = self.lost
+        if lost:
+            raise lost
 
-def clear() -> OutputLost | None:
-    """Forget the lost output, of a run that is over or about to start, and return it if there was one."""
-    global lost
-    try:
-        check()
-    except OutputLost as e:
-        return e
-    finally:
-        lost = None
-    return None
+    def clear(self) -> OutputLost | None:
+        """Forget the lost output, of a run that is over or about to start, and return it if there was one."""
+        try:
+            self.check()
+        except OutputLost as e:
+            return e
+        finally:
+            self._lost = None
+        return None
 
+    @contextlib.contextmanager
+    def writing(self, stream: object) -> Iterator[None]:
+        """Around a write to the operator's `stream`, or a flush of it: a failure of any kind (a reader that
+        has gone, a full disk, a size limit, a closed stream) is raised as `OutputLost`, and kept."""
+        self.check()
+        try:
+            yield
+        except (OSError, ValueError) as e:
+            kept, self._lost = self._lost, (stream, e)  # kept in one step, before anything an interrupt can come in at
+            if not isinstance(e, OSError) and not getattr(stream, "closed", False):
+                self._lost = kept
+                raise  # not what a closed stream raises: a bug
+            self.check()
 
-@contextlib.contextmanager
-def writing(stream: object) -> Iterator[None]:
-    """Around a write to the operator's `stream`, or a flush of it: a failure of any kind (a reader that
-    has gone, a full disk, a size limit, a closed stream) is raised as `OutputLost`, and kept."""
-    global lost
-    check()
-    try:
-        yield
-    except (OSError, ValueError) as e:
-        kept, lost = lost, (stream, e)  # kept in one step, before anything an interrupt can come in at
-        if not isinstance(e, OSError) and not getattr(stream, "closed", False):
-            lost = kept
-            raise  # not what a closed stream raises: a bug
-        check()
+    def echoed(self, data: str) -> None:
+        """Note where the session echo left stdout: at the start of a line, or in the middle of one."""
+        if data:
+            self._open_line = not data.endswith("\n")
 
+    def open_line(self) -> bool:
+        """Whether a message on stderr would continue a line of the session's, e.g. its prompt."""
+        return self._open_line and _shared()
 
-def echoed(data: str) -> None:
-    """Note where the session echo left stdout: at the start of a line, or in the middle of one."""
-    global _open_line
-    if data:
-        _open_line = not data.endswith("\n")
+    def _print(self, text: Text) -> None:
+        buffer = self.console.file
+        try:
+            self.console.print(text)
+            rendered = buffer.getvalue()
+        finally:  # an interrupt must not leave part of this message for the next one
+            buffer.seek(0)
+            buffer.truncate()
+        if self.open_line():
+            # start a new line. On stderr, so stdout stays what the session sent
+            rendered, self._open_line = "\n" + rendered, False
+        if sys.stderr is None:  # file descriptor 2 is closed: there is nowhere to say it
+            return
+        with self.writing(sys.stderr):
+            sys.stderr.write(rendered)
+            sys.stderr.flush()
 
+    def say(self, text: str, kind: str = "step") -> None:
+        """Print one `>> ` line, indented by the running step's depth. `text` is printed as it is; only its
+        label, up to the first `: `, is styled."""
+        mark, label_style, rest_style = KINDS[kind]
+        label, sep, rest = text.partition(": ")
+        self._print(
+            Text.assemble((MARK, mark), " " + INDENT * min(self.depth, MAX_INDENT), (label + sep, label_style), (rest, rest_style))
+        )
 
-def _shared() -> bool:
-    """Whether stdout and stderr are the same terminal, pipe or file, so their lines interleave."""
-    try:
-        out, err = os.fstat(sys.stdout.fileno()), os.fstat(sys.stderr.fileno())
-    except (OSError, ValueError, AttributeError):  # a stream without a file descriptor
-        return False
-    return (out.st_dev, out.st_ino) == (err.st_dev, err.st_ino)
+    def error(self, head: str, detail: str | None = None, style: str = ERROR) -> None:
+        """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
+        self._print(Text.assemble((head, style), "" if detail is None else f": {detail}"))
 
+    def verdict(self, subject: str, word: str, style: str) -> None:
+        """Print what the CLI found about one of several subjects, e.g. `a.yaml: valid`: `word` stands out."""
+        self._print(Text.assemble(f"{subject}: ", (word, style)))
 
-def open_line() -> bool:
-    """Whether a message on stderr would continue a line of the session's, e.g. its prompt."""
-    return _open_line and _shared()
+    def note(self, label: str, text: str) -> None:
+        """Print a line that belongs to the verdict above it, e.g. `  at script.0 (cmd: true)`."""
+        self._print(Text.assemble((f"  {label} ", "dim"), text))
 
+    def hint(self, text: str) -> None:
+        """Print a dim last line of a report, e.g. where to find more."""
+        self._print(Text(f"  {text}", "dim"))
 
-def _print(text: Text) -> None:
-    global _open_line
-    buffer = console.file
-    try:
-        console.print(text)
-        rendered = buffer.getvalue()
-    finally:  # an interrupt must not leave part of this message for the next one
-        buffer.seek(0)
-        buffer.truncate()
-    if open_line():
-        # start a new line. On stderr, so stdout stays what the session sent
-        rendered, _open_line = "\n" + rendered, False
-    if sys.stderr is None:  # file descriptor 2 is closed: there is nowhere to say it
-        return
-    with writing(sys.stderr):
-        sys.stderr.write(rendered)
-        sys.stderr.flush()
+    def problem(self, where: str, what: str, tag: str) -> None:
+        """Print one entry of a list of problems: where it is, what it is, and its type."""
+        self._print(Text.assemble("  ", (where, "bold"), f": {what} ", (f"[{tag}]", "dim")))
 
-
-def say(text: str, kind: str = "step") -> None:
-    """Print one `>> ` line, indented by the running step's depth. `text` is printed as it is; only its
-    label, up to the first `: `, is styled."""
-    mark, label_style, rest_style = KINDS[kind]
-    label, sep, rest = text.partition(": ")
-    _print(Text.assemble((MARK, mark), " " + INDENT * min(depth, MAX_INDENT), (label + sep, label_style), (rest, rest_style)))
-
-
-def error(head: str, detail: str | None = None, style: str = ERROR) -> None:
-    """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
-    _print(Text.assemble((head, style), "" if detail is None else f": {detail}"))
-
-
-def verdict(subject: str, word: str, style: str) -> None:
-    """Print what the CLI found about one of several subjects, e.g. `a.yaml: valid`: `word` stands out."""
-    _print(Text.assemble(f"{subject}: ", (word, style)))
-
-
-def note(label: str, text: str) -> None:
-    """Print a line that belongs to the verdict above it, e.g. `  at script.0 (cmd: true)`."""
-    _print(Text.assemble((f"  {label} ", "dim"), text))
-
-
-def hint(text: str) -> None:
-    """Print a dim last line of a report, e.g. where to find more."""
-    _print(Text(f"  {text}", "dim"))
-
-
-def problem(where: str, what: str, tag: str) -> None:
-    """Print one entry of a list of problems: where it is, what it is, and its type."""
-    _print(Text.assemble("  ", (where, "bold"), f": {what} ", (f"[{tag}]", "dim")))
-
-
-def more(text: str) -> None:
-    """Print further lines of a report as they are, unstyled."""
-    _print(Text(text))
+    def more(self, text: str) -> None:
+        """Print further lines of a report as they are, unstyled."""
+        self._print(Text(text))
