@@ -204,8 +204,8 @@ def test_p6_74_eos_prompt_after_a_control_character_is_still_a_prompt(prompt: st
 def test_p6_74_eos_prompts_through_the_engine(prompt: str, lead: str):
     """The engine itself, not this file's copy of its reading: `^` finds each prompt behind what the engine consumes."""
     s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
-    assert s._is_shell_prompt(lead + prompt) is True
-    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+    assert s._scan(lead + prompt).at_prompt is True
+    assert s._scan(f"{lead}{prompt}echo hi").at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -217,7 +217,7 @@ def test_p6_74_eos_prompt_behind_text_on_its_line_is_not_a_prompt(text: str):
     """What `^` costs: a prompt with text before it on its line, also text ended by a CR, NUL or BEL, isn't matched."""
     assert read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), text) is None
     s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
-    assert s._is_shell_prompt(text) is False
+    assert s._scan(text).at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -264,8 +264,8 @@ def test_p6_76_sonic_prompts_through_the_engine(prompt: str, lead: str):
     """`^` finds each prompt behind what the engine consumes or discards: line breaks, escape sequences, stray CR, NUL, BEL."""
     assert read_prompt(shell_regexes(SONIC), f"output\r\n{lead}{prompt}") == (prompt, "")
     s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
-    assert s._is_shell_prompt(lead + prompt) is True
-    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+    assert s._scan(lead + prompt).at_prompt is True
+    assert s._scan(f"{lead}{prompt}echo hi").at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -288,7 +288,7 @@ def test_p6_76_sonic_prompt_behind_text_on_its_line(text: str):
     expected = text.startswith("fooadmin")
     assert (read_prompt(shell_regexes(SONIC), text) is not None) is expected
     s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
-    assert s._is_shell_prompt(text) is expected
+    assert s._scan(text).at_prompt is expected
 
 
 def test_p6_76_sonic_regex_starts_at_the_line():

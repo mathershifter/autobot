@@ -194,7 +194,7 @@ def test_p2_24_line_answers_the_question(sent: SentLog, tmp_path: Path):
 def test_p2_24_match_ends_at_a_shell_prompt(text: str, expected: bool):
     """The check behind it: the text read ends with a shell prompt's match, and nothing follows the prompt."""
     s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True), PromptHandler("q", [r"Proceed\? "], [["y"]], False)])
-    assert s._is_shell_prompt(text, whole=True) is expected
+    assert s._scan(text, whole=True).at_prompt is expected
 
 
 def test_p2_05_multiline_lines_rendered_individually():

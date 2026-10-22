@@ -520,7 +520,7 @@ PROMPT_TEXTS: dict[str, tuple[Callable[[], list[PromptHandler]], str, bool]] = {
 def test_p4_32_prompt_text_checked_like_a_prompt_wait(case: str):
     """SPEC "Prompt state across a swap": earliest match wins, ties by order, breaks and escapes skipped."""
     handlers, text, expected = PROMPT_TEXTS[case]
-    assert Session(handlers())._is_shell_prompt(text) is expected
+    assert Session(handlers())._scan(text).at_prompt is expected
 
 
 # case -> (handlers after the swap, still at the prompt)
@@ -946,16 +946,16 @@ def test_p4_42_line_feed_through_a_pty_is_a_line_break(raw_device: Callable[...,
     ids=repr,
 )
 def test_p4_42_prompt_swap_reads_the_prompt_the_same_way(text: str, expected: bool):
-    """`_is_shell_prompt` (a block's prompt swap) discards what `get_prompt` discards."""
+    """`_scan` (a block's prompt swap) discards what `get_prompt` discards."""
     s = Session([PromptHandler("sh", [ANCHORED], [], True)])
-    assert s._is_shell_prompt(text) is expected
+    assert s._scan(text).at_prompt is expected
 
 
 def test_p4_42_prompt_regex_wins_a_tie_with_the_stray_characters():
     """A prompt regex that itself starts at a leading CR still matches there (ties go to the prompts)."""
     s = Session([PromptHandler("login", [r"\rlogin: $"], [["x"]], False), PromptHandler("sh", [r"^\$ $"], [], True)])
-    assert s._is_shell_prompt("\rlogin: ") is False  # the login prompt, not a shell prompt
-    assert s._is_shell_prompt("\r$ ") is True
+    assert s._scan("\rlogin: ").at_prompt is False  # the login prompt, not a shell prompt
+    assert s._scan("\r$ ").at_prompt is True
 
 
 # -- P4-44: a prompt written again inside the echo of the line that was sent (the device is sent `x`) --
@@ -1238,13 +1238,13 @@ def test_p4_44_output_without_an_echo_is_not_held(raw_device: Callable[..., Sess
 
 def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
     s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
-    assert s._is_shell_prompt("x \rPROMPT$ ", whole=True)
-    assert not s._is_shell_prompt("x \rPROMPT$ ", whole=True, sent="x")
-    assert not s._is_shell_prompt("ec\rPROMPT$ ", whole=True, sent="echo hi")
-    assert s._is_shell_prompt("x \rPROMPT$ x\r\nPROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("y\rPROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("PROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("x\r\nPROMPT$ ", whole=True, sent="x")
+    assert s._scan("x \rPROMPT$ ", whole=True).at_prompt
+    assert not s._scan("x \rPROMPT$ ", whole=True, sent="x").at_prompt
+    assert not s._scan("ec\rPROMPT$ ", whole=True, sent="echo hi").at_prompt
+    assert s._scan("x \rPROMPT$ x\r\nPROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("y\rPROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("PROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("x\r\nPROMPT$ ", whole=True, sent="x").at_prompt
 
 
 @pytest.mark.parametrize(

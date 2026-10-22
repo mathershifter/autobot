@@ -22,6 +22,10 @@ if TYPE_CHECKING:
     from .protocols import Reporter
 
 
+# How long a prompt wait reads for a match before it looks at the time: after the first such period with no
+# match it sends its one solicit newline, if it may (SPEC: the engine polls in 5-second intervals).
+POLL = 5.0
+
 # How long a prompt wait holds a shell prompt that may be one the line editor wrote again inside its echo:
 # the prompt is taken for the prompt once nothing arrives for this long. Readline writes the prompt and the
 # rest of the line in one write; the time is for a slow line between a device and its console server.
@@ -208,6 +212,51 @@ class LoginState:
     pending: bool = False
 
 
+@dataclass
+class ScanResult:
+    """What a prompt wait, reading only a given text, would make of it. `at_prompt`: it would stop at a
+    shell prompt; `read`: what it would have captured up to a prompt it holds at the end of the text, None
+    when it holds none; `handler`: the handler of the shell prompt it would stop at, or of the one it holds."""
+
+    at_prompt: bool = False
+    read: str | None = None
+    handler: PromptHandler | None = None
+
+
+class PatternTable:
+    """The patterns of a prompt wait, in the order pexpect gets them: the line break, an escape sequence,
+    the regexes of each handler in turn (a handler's `start` to `end`), a run of stray characters, then
+    TIMEOUT and EOF. pexpect takes the earliest match, and the first of the list on a tie: a prompt regex
+    that itself starts at a leading `\\r` beats the stray run. The regexes are compiled once, as pexpect
+    compiles a string (`re.DOTALL`). One that doesn't compile leaves them all as strings, so that the next
+    prompt wait reports the error (SPEC: a prompt regex that isn't valid), and a scan finds nothing."""
+
+    def __init__(self, handlers: list[PromptHandler]):
+        self._handlers = handlers
+        patterns: list[str | re.Pattern[str]] = [r"\r\n", ANSI_ESCAPE_RE]
+        self.line_break = 0
+        self.escape = 1
+        for h in handlers:
+            h.start = len(patterns)
+            h.end = h.start + len(h.patterns)
+            patterns.extend(h.patterns)
+        self.stray = len(patterns)
+        patterns.append(STRAY_RE)
+        self.timeout = len(patterns)
+        self.eof = len(patterns) + 1
+        self.regexes: list[re.Pattern[str]] | None
+        try:
+            self.regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in patterns]
+        except re.error:
+            self.regexes = None
+        # what a wait hands to pexpect
+        self.patterns: list = [*(patterns if self.regexes is None else self.regexes), pexpect.TIMEOUT, pexpect.EOF]
+
+    def handler_for(self, i: int) -> PromptHandler | None:
+        """The handler whose regex is at index `i`, or None for a pattern of the engine's own."""
+        return next((h for h in self._handlers if h.start <= i < h.end), None)
+
+
 class Session:
     def __init__(self, handlers: list[PromptHandler], *, reporter: Reporter | None = None):
         """`reporter`: where the session says what it does, and what keeps the run's lost output; the
@@ -253,39 +302,45 @@ class Session:
         return self._login.pending
 
     def _set_handlers(self, handlers: list[PromptHandler]):
+        """Swap the handlers: the patterns are rebuilt, and the prompt on screen and a held prompt, judged
+        by the old handlers, are judged again by the new ones. A swap never puts the session at a prompt."""
         self._handlers = handlers
-        self._patterns: list = [r"\r\n", ANSI_ESCAPE_RE]
-        for h in handlers:
-            h.start = len(self._patterns)
-            h.end = h.start + len(h.patterns)
-            self._patterns.extend(h.patterns)
-        # after the prompts: on a tie (a prompt regex that itself starts at a leading `\r`) the prompt wins
-        self._stray = len(self._patterns)
-        self._patterns.append(STRAY_RE)
-        self._patterns.append(pexpect.TIMEOUT)
-        self._patterns.append(pexpect.EOF)
-        # the prompt on screen still counts only if the new prompts take it for a shell prompt
-        at_prompt, _, found = self._scan(self._prompt.text, False, None)
-        self._prompt.at_prompt = self._prompt.at_prompt and at_prompt
-        if not any(h is self._prompt.handler for h in handlers):
-            # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
-            # is the one a wait would stop at in the prompt's line. The prompt's text ends where its match
-            # ended, so a regex that ends with `$` may match it where it does not match the output: it is
-            # read with the rest of the line, which is unread. Only when nothing matches that is the text
-            # read alone, as it is for `at_prompt`
-            rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
-            line = self._scan(self._prompt.text + rest, False, None)[2] if rest else None
-            self._prompt.handler = (line or found) if at_prompt else None
-        if self._prompt.held:
-            # a prompt an `after` wait handed on was judged by the old handlers, and is judged again as it
-            # was, against the line sent before it: it stays held, for its new handler, if the text still
-            # ends with a shell prompt. A change of the handlers never puts the session at a prompt
-            held = self._prompt.held
-            at_prompt, read, h = self._scan(held.line, True, self._send.line)
-            ends = at_prompt or read is not None
-            self._prompt.held = (
-                HeldPrompt(held.read if read is None else read, held.line, held.match, h) if h and ends else None
-            )
+        self._table = PatternTable(handlers)
+        self._rejudge_prompt()
+        self._rejudge_held()
+
+    def _rejudge_prompt(self):
+        """The prompt on screen still counts only if the new handlers take it for a shell prompt. Reads
+        `_prompt.text`, `_prompt.at_prompt` and the unread rest of the prompt's line; sets `_prompt.at_prompt`
+        (never to True) and `_prompt.handler`, which is kept when it is among the new handlers."""
+        found = self._scan(self._prompt.text)
+        self._prompt.at_prompt = self._prompt.at_prompt and found.at_prompt
+        if any(h is self._prompt.handler for h in self._handlers):
+            return
+        # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
+        # is the one a wait would stop at in the prompt's line. The prompt's text ends where its match
+        # ended, so a regex that ends with `$` may match it where it does not match the output: it is
+        # read with the rest of the line, which is unread. Only when nothing matches that is the text
+        # read alone, as it is for `at_prompt`
+        rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
+        line = self._scan(self._prompt.text + rest).handler if rest else None
+        self._prompt.handler = (line or found.handler) if found.at_prompt else None
+
+    def _rejudge_held(self):
+        """A prompt an `after` wait handed on was judged by the old handlers, and is judged again as it was,
+        against the line sent before it. Reads `_prompt.held` and `_send.line`; sets `_prompt.held`: the
+        prompt stays held, for its new handler and with what the new handlers read up to it, if its line
+        still ends with a shell prompt, and is dropped otherwise."""
+        held = self._prompt.held
+        if not held:
+            return
+        found = self._scan(held.line, whole=True, sent=self._send.line)
+        ends = found.at_prompt or found.read is not None
+        if found.handler and ends:
+            read = held.read if found.read is None else found.read
+            self._prompt.held = HeldPrompt(read, held.line, held.match, found.handler)
+        else:
+            self._prompt.held = None
 
     @property
     def posix(self) -> bool:
@@ -298,38 +353,34 @@ class Session:
         """The handler whose regex matched the shell prompt the session is at, if it is at one."""
         return self._prompt.handler if self._prompt.at_prompt else None
 
-    def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
-        """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
+    def _scan(self, text: str, whole: bool = False, sent: str | None = None) -> ScanResult:
+        """Read `text` as a prompt wait would, with the current handlers, without reading from the child.
 
-        `whole`: and the prompt's match ends where `text` ends, so nothing was read past the prompt.
-        `sent`: the line sent before `text` came, when no line break came before `text`.
+        `whole`: a shell prompt counts only if its match ends where `text` ends, so nothing was read past
+        it. `sent`: the line sent before `text` came, when no line break came before `text`: a shell prompt
+        inside its echo is held, not stopped at.
         """
-        return self._scan(text, whole, sent)[0]
-
-    def _scan(self, text: str, whole: bool, sent: str | None) -> tuple[bool, str | None, PromptHandler | None]:
-        """`_is_shell_prompt`, what get_prompt would have captured if `text` ends with a prompt it holds, and
-        the handler of the shell prompt it would stop at, or of the one it holds."""
-        try:
-            regexes = [re.compile(p, re.DOTALL) if isinstance(p, str) else p for p in self._patterns[:-2]]
-        except re.error:
-            return False, None, None  # the next get_prompt reports it
+        table = self._table
+        if table.regexes is None:
+            return ScanResult()  # the next prompt wait reports the regex
         read = ""
         held = False
         holder: PromptHandler | None = None
         while True:
-            found = [(m.start(), i, m.end()) for i, r in enumerate(regexes) if (m := r.search(text))]
+            found = [(m.start(), i, m.end()) for i, r in enumerate(table.regexes) if (m := r.search(text))]
             if not found:
-                return False, read if held else None, holder if held else None
+                return ScanResult(False, read if held else None, holder if held else None)
             start, i, end = min(found)
             read += text[:start]
             held = False
-            if 1 < i < self._stray:
-                h = next(h for h in self._handlers if h.start <= i < h.end)
+            h = table.handler_for(i)
+            if h is not None:
                 if not (h.is_return and _mid_echo(read, sent)):
-                    return h.is_return and (not whole or end == len(text)), None, h if h.is_return else None
+                    at_prompt = h.is_return and (not whole or end == len(text))
+                    return ScanResult(at_prompt, None, h if h.is_return else None)
                 read += "\r"  # a prompt that may be written again inside the echo: get_prompt holds it
                 held, holder = end == len(text), h
-            elif i == 0:
+            elif i == table.line_break:
                 read += "\n"
             text = text[end:]  # a line break, escape sequence or stray character, consumed as get_prompt does
 
@@ -435,12 +486,13 @@ class Session:
             if held and held_at != len(output):
                 held = None  # the echo went on
             unread = self._cld.buffer
-            i = self._cld.expect(self._patterns, timeout=min(HELD_GRACE if held else 5, remaining))
+            table = self._table
+            i = self._cld.expect(table.patterns, timeout=min(HELD_GRACE if held else POLL, remaining))
             before = str(self._cld.before or "")
-            if i == 0:
+            if i == table.line_break:
                 output.append(before.rstrip("\r") + "\n")
                 continue
-            if i == len(self._patterns) - 2:
+            if i == table.timeout:
                 # unmatched text stays buffered; it comes back with the next match
                 if held:
                     if self._cld.buffer == unread:
@@ -456,9 +508,9 @@ class Session:
                 continue
             if before:
                 output.append(before)
-            if i == 1 or i == self._stray:
+            if i == table.escape or i == table.stray:
                 continue
-            if i == len(self._patterns) - 1:
+            if i == table.eof:
                 raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
             for h in self._handlers:
                 if h.start <= i < h.end:
@@ -529,15 +581,17 @@ class Session:
         self._ctx["match"] = str(self._cld.after or "")
         # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
         # session is at it, as after a prompt wait
-        _, broke, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
+        _, line_break, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
         if not self._prompt.at_prompt and not self._cld.buffer:
-            at_prompt, read, h = self._scan(line, True, None if broke else self._send.line)
-            if at_prompt:
-                self._prompt.at_prompt, self._prompt.text, self._prompt.handler = True, line, h
+            # the echo of the line sent can be in the line only when no line break came before it
+            sent = self._send.line if line_break == "" else None
+            found = self._scan(line, whole=True, sent=sent)
+            if found.at_prompt:
+                self._prompt.at_prompt, self._prompt.text, self._prompt.handler = True, line, found.handler
                 self._login.pending = False
-            elif read is not None and h:
+            elif found.read is not None and found.handler:
                 # the prompt may be one written again inside the echo: the next prompt wait holds it
-                self._prompt.held = HeldPrompt(read, line, self._ctx["match"], h)
+                self._prompt.held = HeldPrompt(found.read, line, self._ctx["match"], found.handler)
         return idx
 
     def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):
