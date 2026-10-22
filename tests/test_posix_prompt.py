@@ -437,7 +437,7 @@ def test_p1_33_swap_to_other_handlers_reads_the_prompt_with_the_rest_of_its_line
     s.attach(spawn, env=dict(SHELL_ENV), timeout=5)
     try:
         s.get_prompt(timeout=5)
-        assert (s._prompt, s._cld.buffer) == ("switch#", " ")  # type: ignore[union-attr]
+        assert (s._prompt.text, s._cld.buffer) == ("switch#", " ")  # type: ignore[union-attr]
         for _ in range(2):  # into a block, and out of it
             assert (s._shell(), s.posix) == (s._handlers[1], False)
             s.restore_handlers(bash_then_cli())

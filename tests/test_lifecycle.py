@@ -373,7 +373,7 @@ def test_p5_58_get_prompt_after_detach_is_not_attached():
     s.get_prompt(timeout=5)
     assert s.get_prompt(timeout=5) == ""  # at the prompt: returns at once
     s.detach()
-    assert s._at_prompt is False
+    assert s._prompt.at_prompt is False
     with pytest.raises(RuntimeError, match="^not attached$"):
         s.get_prompt(timeout=5)
     with pytest.raises(RuntimeError, match="^not attached$"):

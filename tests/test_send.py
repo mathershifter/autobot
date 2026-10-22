@@ -484,15 +484,15 @@ def test_p8_42_session_after_a_failed_send(attach):
     s = attach(typed("--stop", 1000))
     with pytest.raises(TimeoutError):
         s.sendline("x" * LONG, timeout=0.5)
-    assert (s._at_prompt, s._sent, s._solicit, s._partial) == (False, None, False, True)
+    assert (s._prompt.at_prompt, s._send.line, s._send.solicit, s._send.partial) == (False, None, False, True)
 
 
 def test_p8_42_send_that_wrote_nothing_leaves_no_partial_line(attach):
     """A control character that the pty didn't take is not part of a line."""
     s = attach(typed("--stop", 0))
-    assert s._partial is False
+    assert s._send.partial is False
     s.sendline("ls", timeout=5)
-    assert s._partial is False
+    assert s._send.partial is False
 
 
 # -- P8-48: while part of a line is typed at the far side ---------------------------------------------
@@ -516,7 +516,7 @@ def test_p8_48_no_prompt_wait_presses_return_however_many_follow(attach, tmp_pat
     for _ in range(3):
         with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
             s.get_prompt(timeout=6)
-        assert s._partial is True
+        assert s._send.partial is True
     assert sent == [] and not log.exists()
 
 
@@ -551,7 +551,7 @@ def test_p8_48_every_line_is_refused_until_a_control_character(attach, tmp_path:
         with pytest.raises(PartialLine) as ei:
             send()
         assert str(ei.value) == PARTIAL
-        assert (s._at_prompt, s._sent, s._solicit, s._partial) == (False, None, False, True)
+        assert (s._prompt.at_prompt, s._send.line, s._send.solicit, s._send.partial) == (False, None, False, True)
     time.sleep(1.2)  # the child reads again
     assert sent == [] and not log.exists()
 
@@ -560,7 +560,7 @@ def test_p8_48_control_character_ends_it(attach, tmp_path: Path):
     """After a `control: c` the cut line is the far side's to drop, and lines are sent again."""
     s, log = _partial(attach, tmp_path)
     s.sendcontrol("c", timeout=5)
-    assert s._partial is False
+    assert s._send.partial is False
     s.sendline("exit", timeout=5)
     s.get_prompt(timeout=5)
     lines = log.read_text().splitlines()
@@ -577,14 +577,14 @@ def test_p8_48_control_character_that_is_a_return_is_refused(attach, tmp_path: P
         s.sendcontrol(key, timeout=5)
     assert str(ei.value) == PARTIAL.replace("line not sent", "control character not sent", 1)
     time.sleep(1.2)
-    assert s._partial is True and not log.exists()
+    assert s._send.partial is True and not log.exists()
 
 
 def test_p8_48_control_character_that_is_not_sent_does_not_end_it(attach, tmp_path: Path):
     s, _ = _partial(attach, tmp_path, "--pause", 100)
     with pytest.raises(TimeoutError, match="while sending a control character"):
         s.sendcontrol("c", timeout=0.3)
-    assert s._partial is True
+    assert s._send.partial is True
 
 
 def test_p8_48_answer_to_a_prompt_is_not_sent(attach, tmp_path: Path, sent: SentLog):
@@ -597,13 +597,13 @@ def test_p8_48_answer_to_a_prompt_is_not_sent(attach, tmp_path: Path, sent: Sent
         s.get_prompt(timeout=5)
     assert str(ei.value) == f"prompt 'ask': {PARTIAL}"
     time.sleep(1.2)
-    assert sent == [] and not log.exists() and s._partial is True
+    assert sent == [] and not log.exists() and s._send.partial is True
 
 
 def test_p8_48_new_child_has_no_partial_line(attach, tmp_path: Path):
     s, _ = _partial(attach, tmp_path)
     s.detach(failing=True)
-    assert s._partial is False
+    assert s._send.partial is False
 
 
 @pytest.mark.slow
@@ -732,11 +732,11 @@ def test_p8_43_session_is_where_it_was_after_a_refused_line(attach):
     s = attach(NOEDIT)
     s.sendline("echo before", timeout=5)
     s.get_prompt(timeout=5)
-    state = (s._at_prompt, s._sent, s._solicit, s._held)
+    state = (s._prompt.at_prompt, s._send.line, s._send.solicit, s._prompt.held)
     assert state[0] is True
     with pytest.raises(LineTooLong):
         s.sendline(echo(5000), timeout=5)
-    assert (s._at_prompt, s._sent, s._solicit, s._held) == state
+    assert (s._prompt.at_prompt, s._send.line, s._send.solicit, s._prompt.held) == state
     s.sendline("echo ok", timeout=5)
     assert s.get_prompt(timeout=5) == "ok\n"
 
@@ -1043,17 +1043,17 @@ def test_p8_49_send_of_the_scripts_own_ends_it(fake_device: FakeDevice, attach, 
     s = attach(spawn, [PromptHandler("sh", [r"PROMPT\$ "], [], True), SimpleHandler("pw", ["Password: $"], "p" * 5000, str)], prompt=False)
     with pytest.raises(LineTooLong):
         s.get_prompt(timeout=5)
-    assert s._unanswered is True
+    assert s._send.unanswered is True
     for _ in range(2):
         with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
             s.get_prompt(timeout=6)
-    assert sent == [] and fake_device.read(log) == [] and s._unanswered is True
+    assert sent == [] and fake_device.read(log) == [] and s._send.unanswered is True
     s.sendline("secret", solicit=True, timeout=5)
-    assert s._unanswered is False
+    assert s._send.unanswered is False
     s.get_prompt(timeout=5)
     assert fake_device.read(log) == ["PASSWORD=secret"]
     s.detach()
-    assert s._unanswered is False
+    assert s._send.unanswered is False
 
 
 # -- P8-50: a long line after the child has exited ----------------------------------------------------
@@ -1404,9 +1404,9 @@ def test_p8_54_new_child_waits_for_no_control_character(shell_session: Session):
     s = shell_session
     s.get_prompt(timeout=5)
     s.sendcontrol("u", timeout=5)
-    assert s._control_at > 0
+    assert s._send.control_at > 0
     s.detach()
-    assert s._control_at == -math.inf
+    assert s._send.control_at == -math.inf
 
 
 # -- P8-55: an interrupt before a byte is sent --------------------------------------------------------------
@@ -1429,13 +1429,13 @@ def test_p8_55_interrupt_before_a_line_is_sent_leaves_the_session_where_it_was(s
     s.get_prompt(timeout=5)
     s.sendcontrol("c", timeout=5)
     s.get_prompt(timeout=5)
-    state = (s._at_prompt, s._sent, s._solicit, s._held)
+    state = (s._prompt.at_prompt, s._send.line, s._send.solicit, s._prompt.held)
     assert state[0] is True
     interrupting(monkeypatch)
     with pytest.raises(KeyboardInterrupt):
         s.sendline("echo never", timeout=5)
     monkeypatch.undo()
-    assert (s._at_prompt, s._sent, s._solicit, s._held) == state
+    assert (s._prompt.at_prompt, s._send.line, s._send.solicit, s._prompt.held) == state
     started = time.monotonic()
     assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
 
@@ -1467,14 +1467,14 @@ def test_p8_55_interrupt_once_the_write_began_is_no_line_that_was_not_sent(shell
     with pytest.raises(KeyboardInterrupt):
         s.sendline("echo sent", timeout=5)
     monkeypatch.undo()
-    assert s._at_prompt is False and s._held is None
+    assert s._prompt.at_prompt is False and s._prompt.held is None
     if when == "partway":
-        assert s._partial is True and s._sent is None and s._solicit is False
+        assert s._send.partial is True and s._send.line is None and s._send.solicit is False
         s.expect(["echo"], timeout=5)  # the shell has the part, and shows it
         s.sendcontrol("c", timeout=5)  # drops it
         s.get_prompt(timeout=5)
     else:
-        assert s._partial is False and s._sent == "echo sent"
+        assert s._send.partial is False and s._send.line == "echo sent"
         assert s.get_prompt(timeout=5) == "sent\n"
 
 
@@ -1517,7 +1517,7 @@ def test_p8_55_interrupt_before_a_prompt_is_answered_leaves_it_unanswered(fake_d
         with pytest.raises(KeyboardInterrupt):
             s.get_prompt(timeout=5)
         monkeypatch.undo()
-        assert s._unanswered is True and FakeDevice.read(log) == []
+        assert s._send.unanswered is True and FakeDevice.read(log) == []
     finally:
         monkeypatch.undo()
         s.detach(failing=True)

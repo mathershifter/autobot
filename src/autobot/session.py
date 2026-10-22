@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import math
 import re
 import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pexpect
@@ -143,6 +145,69 @@ class SimpleHandler(PromptHandler):
         return value
 
 
+@dataclass
+class HeldPrompt:
+    """A shell prompt that a prompt wait holds: one that may be the prompt the line editor wrote again
+    inside its echo (see HELD_GRACE). `read` is what an `after` wait read up to it, which the prompt wait
+    that takes the prompt up starts its output with; `line` is the prompt's line as it was matched, `match`
+    the match and `handler` the handler whose regex matched it."""
+
+    read: str
+    line: str
+    match: str
+    handler: PromptHandler
+
+
+@dataclass
+class PromptState:
+    """What the session knows of the shell prompt on screen.
+
+    `at_prompt` is True from a wait that ended at a shell prompt, or an `after` wait that read one, until
+    anything is sent, the child is forgotten, or a swap of the handlers no longer takes the prompt for one.
+    `text` is the line of the last shell prompt reached, as matched, and `handler` the one of the current
+    handlers whose regex matched it, or None; it is read only while `at_prompt`. `held` is a prompt an
+    `after` wait handed on to the next prompt wait: it is set only while `at_prompt` is False, and anything
+    sent drops it."""
+
+    at_prompt: bool = False
+    text: str = ""
+    handler: PromptHandler | None = None
+    held: HeldPrompt | None = None
+
+
+@dataclass
+class SendState:
+    """What the session knows of the last send.
+
+    `line` is the last line sent, until the next prompt wait takes it to strip its echo, or a write fails.
+    `solicit` is whether the next prompt wait may press Return for a prompt: False after a command (a
+    sendline without `solicit`) or a failed write, until a prompt wait starts, a control character is sent
+    or a `$?` check fails. `partial` is True only after a write of which the pty took some bytes but not all
+    of them, until a control character is sent: no line is sent and no Return pressed while it is.
+    `unanswered` is True only after a prompt whose answer could not be sent, until something is sent: no
+    Return is pressed while it is. `control_at` is when the last control character was written (monotonic;
+    -inf before any). `writes` counts the sends that got as far as the write, over the life of the session."""
+
+    line: str | None = None
+    solicit: bool = True
+    partial: bool = False
+    unanswered: bool = False
+    control_at: float = -math.inf
+    writes: int = 0
+
+
+@dataclass
+class LoginState:
+    """The prompts answered with credentials since the process was spawned. `logins`: by name, each once, in
+    the order they were first answered; `open`: those answered since a breakout last finished, with repeats;
+    `pending`: credentials were sent and no shell prompt was reached since. It starts over at the next spawn
+    and is kept when the child is closed."""
+
+    logins: list[str] = field(default_factory=list)
+    open: list[str] = field(default_factory=list)
+    pending: bool = False
+
+
 class Session:
     def __init__(self, handlers: list[PromptHandler], *, reporter: Reporter | None = None):
         """`reporter`: where the session says what it does, and what keeps the run's lost output; the
@@ -150,28 +215,11 @@ class Session:
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._cld: pexpect.spawn | None = None
         self._echo: CleanWriter | None = None
-        self._at_prompt = False
-        self._prompt = ""
-        # the handler whose regex matched the shell prompt the session is at; it counts while `_at_prompt`
-        self._at: PromptHandler | None = None
-        self._sent: str | None = None
-        self._solicit = True
+        self._prompt = PromptState()
+        self._send = SendState()
+        self._login = LoginState()
         self._warned = False  # of a long line, once
-        # part of a line is typed at the far side, after a send that failed: no line is sent, since its
-        # Return would enter that part, until a control character has been sent
-        self._partial = False
-        # a prompt got no answer (it was refused, or the prompt had none left): the prompt is still waiting
-        # for one, and a solicit newline would be an empty answer, until something is sent
-        self._unanswered = False
-        # a prompt an `after` wait read and get_prompt would hold: what was read up to it, its line, the match
-        # and the handler of that prompt
-        self._held: tuple[str, str, str, PromptHandler] | None = None
         self._ctx: dict[str, str] = {"before": "", "match": ""}
-        self._control_at = -math.inf  # when the last control character was sent (monotonic)
-        self._logins: list[str] = []
-        self._open: list[str] = []  # those answered since a breakout last finished
-        self._writes = 0  # how many sends got as far as the write
-        self._pending = False  # credentials were sent, and no shell prompt was reached after them
         self._set_handlers(handlers)
 
     @property
@@ -186,23 +234,23 @@ class Session:
     def logins(self) -> tuple[str, ...]:
         """The prompts that were answered with credentials since the process was spawned, by name. They
         are still known once the session is closed."""
-        return tuple(self._logins)
+        return tuple(self._login.logins)
 
     @property
     def logins_open(self) -> tuple[str, ...]:
         """The prompts answered with credentials since a breakout last finished (`logins_covered`), or
         since the spawn. By name, each once, in the order they were first answered."""
-        return tuple(dict.fromkeys(self._open))
+        return tuple(dict.fromkeys(self._login.open))
 
     def logins_covered(self):
         """A breakout has finished: it may have logged out of what was logged in to before it."""
-        self._open = []
+        self._login.open = []
 
     @property
     def login_pending(self) -> bool:
         """Whether credentials were sent and no shell prompt was reached after them: a login that was
         refused, or one that the run didn't see the end of."""
-        return self._pending
+        return self._login.pending
 
     def _set_handlers(self, handlers: list[PromptHandler]):
         self._handlers = handlers
@@ -217,25 +265,27 @@ class Session:
         self._patterns.append(pexpect.TIMEOUT)
         self._patterns.append(pexpect.EOF)
         # the prompt on screen still counts only if the new prompts take it for a shell prompt
-        at_prompt, _, found = self._scan(self._prompt, False, None)
-        self._at_prompt = self._at_prompt and at_prompt
-        if not any(h is self._at for h in handlers):
+        at_prompt, _, found = self._scan(self._prompt.text, False, None)
+        self._prompt.at_prompt = self._prompt.at_prompt and at_prompt
+        if not any(h is self._prompt.handler for h in handlers):
             # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
             # is the one a wait would stop at in the prompt's line. The prompt's text ends where its match
             # ended, so a regex that ends with `$` may match it where it does not match the output: it is
             # read with the rest of the line, which is unread. Only when nothing matches that is the text
-            # read alone, as it is for `_at_prompt`
+            # read alone, as it is for `at_prompt`
             rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
-            line = self._scan(self._prompt + rest, False, None)[2] if rest else None
-            self._at = (line or found) if at_prompt else None
-        if self._held:
+            line = self._scan(self._prompt.text + rest, False, None)[2] if rest else None
+            self._prompt.handler = (line or found) if at_prompt else None
+        if self._prompt.held:
             # a prompt an `after` wait handed on was judged by the old handlers, and is judged again as it
             # was, against the line sent before it: it stays held, for its new handler, if the text still
             # ends with a shell prompt. A change of the handlers never puts the session at a prompt
-            was, text, match, _ = self._held
-            at_prompt, read, h = self._scan(text, True, self._sent)
+            held = self._prompt.held
+            at_prompt, read, h = self._scan(held.line, True, self._send.line)
             ends = at_prompt or read is not None
-            self._held = (was if read is None else read, text, match, h) if h and ends else None
+            self._prompt.held = (
+                HeldPrompt(held.read if read is None else read, held.line, held.match, h) if h and ends else None
+            )
 
     @property
     def posix(self) -> bool:
@@ -246,7 +296,7 @@ class Session:
 
     def _shell(self) -> PromptHandler | None:
         """The handler whose regex matched the shell prompt the session is at, if it is at one."""
-        return self._at if self._at_prompt else None
+        return self._prompt.handler if self._prompt.at_prompt else None
 
     def _is_shell_prompt(self, text: str, whole: bool = False, sent: str | None = None) -> bool:
         """Whether get_prompt, reading only `text`, would stop at a shell prompt of the current handlers.
@@ -285,21 +335,14 @@ class Session:
 
     def _forget(self):
         """Drop what is known of a child: its prompt, the last line sent to it and whether to solicit."""
-        self._at_prompt = False
-        self._prompt = ""
-        self._at = None
-        self._sent = None
-        self._solicit = True
-        self._held = None
-        self._partial = False
-        self._unanswered = False
-        self._control_at = -math.inf
+        self._prompt = PromptState()
+        self._send = SendState(writes=self._send.writes)  # the count is of the session, not of a child
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
         self._forget()
         self._ctx["before"] = self._ctx["match"] = ""
-        self._logins, self._open, self._pending = [], [], False
+        self._login = LoginState()
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,
@@ -368,28 +411,28 @@ class Session:
         """Wait for a shell prompt. `solicit=False`: never press Return for one, whatever was sent last."""
         if not self._cld:
             raise RuntimeError("not attached")
-        if self._at_prompt:
+        if self._prompt.at_prompt:
             return ""
 
-        sent, self._sent = self._sent, None
+        sent, self._send.line = self._send.line, None
         # a command that is still running would answer a solicit newline with a second prompt
-        solicited, self._solicit = not (self._solicit and solicit), True
+        solicited, self._send.solicit = not (self._send.solicit and solicit), True
         for h in self._handlers:
             h.reset()
         output: list[str] = []
-        # a held prompt: one that may be written again inside the echo. The size of `output` with it, the
-        # prompt's line, its match and its handler
-        held: tuple[int, str, str, PromptHandler] | None = None
-        carried, self._held = self._held, None
+        # a held prompt: one that may be written again inside the echo, and the size of `output` with it
+        held: HeldPrompt | None = None
+        held_at = 0
+        carried, self._prompt.held = self._prompt.held, None
         if carried:
-            output.append(carried[0])
-            held = (1, *carried[1:])
+            output.append(carried.read)
+            held, held_at = carried, 1
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"timed out after {timeout}s waiting for {self._prompt_what()}")
-            if held and held[0] != len(output):
+            if held and held_at != len(output):
                 held = None  # the echo went on
             unread = self._cld.buffer
             i = self._cld.expect(self._patterns, timeout=min(HELD_GRACE if held else 5, remaining))
@@ -402,10 +445,12 @@ class Session:
                 if held:
                     if self._cld.buffer == unread:
                         # nothing came after it for a whole poll: it was the prompt
-                        self._prompt, self._at = held[1], held[3]
-                        return self._finish(output, sent, errors, capture, held[2])
+                        self._prompt.text, self._prompt.handler = held.line, held.handler
+                        return self._finish(output, sent, errors, capture, held.match)
                     continue  # no Return is pressed at a prompt that is held
-                if not (solicited or self._partial or self._unanswered) and all(h.is_fresh for h in self._handlers):
+                if not (solicited or self._send.partial or self._send.unanswered) and all(
+                    h.is_fresh for h in self._handlers
+                ):
                     self._put_line("", deadline - time.monotonic(), timeout)
                     solicited = True
                 continue
@@ -422,24 +467,25 @@ class Session:
                             # the line editor wrote the prompt again while echoing the line (readline does
                             # for a line that ends at the right margin): the echo goes on from the row's start
                             output.append("\r")
-                            held = (len(output), before + str(self._cld.after), str(self._cld.after), h)
+                            held = HeldPrompt("", before + str(self._cld.after), str(self._cld.after), h)
+                            held_at = len(output)
                             break
-                        self._prompt, self._at = before + str(self._cld.after), h
+                        self._prompt.text, self._prompt.handler = before + str(self._cld.after), h
                         return self._finish(output, sent, errors, capture, str(self._cld.after or ""))
                     try:
                         self._put_line(h.respond(i - h.start), deadline - time.monotonic(), timeout)
                     except (LineTooLong, PartialLine) as e:
-                        self._unanswered = True
+                        self._send.unanswered = True
                         raise type(e)(f"prompt '{h.name}': {e}") from None
                     except BaseException:
-                        self._unanswered = True  # no response left, or one that could not be rendered or sent
+                        self._send.unanswered = True  # no response left, or one that could not be rendered or sent
                         raise
                     self._reporter.say(f"prompt answered: {h.name}")  # never the response
                     if h.credentials:
-                        self._open.append(h.name)
-                        self._pending = True
-                        if h.name not in self._logins:
-                            self._logins.append(h.name)
+                        self._login.open.append(h.name)
+                        self._login.pending = True
+                        if h.name not in self._login.logins:
+                            self._login.logins.append(h.name)
                     break
 
     def _prompt_what(self) -> str:
@@ -449,8 +495,8 @@ class Session:
     def _finish(
         self, output: list[str], sent: str | None, errors: Sequence[str] | None, capture: bool, match: str
     ) -> str:
-        self._at_prompt = True
-        self._pending = False
+        self._prompt.at_prompt = True
+        self._login.pending = False
         text = "".join(output)
         text = text[: text.rfind("\n") + 1]
         if sent:
@@ -477,20 +523,21 @@ class Session:
     def expect(self, patterns: list, timeout: float = 300, what: str | None = None) -> int:
         if not self._cld:
             raise RuntimeError("not attached")
-        self._held = None
+        self._prompt.held = None
         idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
         # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
         # session is at it, as after a prompt wait
         _, broke, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
-        if not self._at_prompt and not self._cld.buffer:
-            at_prompt, read, h = self._scan(line, True, None if broke else self._sent)
+        if not self._prompt.at_prompt and not self._cld.buffer:
+            at_prompt, read, h = self._scan(line, True, None if broke else self._send.line)
             if at_prompt:
-                self._at_prompt, self._prompt, self._at, self._pending = True, line, h, False
+                self._prompt.at_prompt, self._prompt.text, self._prompt.handler = True, line, h
+                self._login.pending = False
             elif read is not None and h:
                 # the prompt may be one written again inside the echo: the next prompt wait holds it
-                self._held = (read, line, self._ctx["match"], h)
+                self._prompt.held = HeldPrompt(read, line, self._ctx["match"], h)
         return idx
 
     def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):
@@ -498,27 +545,27 @@ class Session:
         a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
         if not self._cld:
             raise RuntimeError("not attached")
-        state = (self._at_prompt, self._sent, self._solicit, self._held, self._writes)
-        self._at_prompt = False
-        self._sent = line
-        self._solicit = solicit
-        self._held = None
+        prompt, send = copy.copy(self._prompt), copy.copy(self._send)
+        self._prompt.at_prompt = False
+        self._prompt.held = None
+        self._send.line = line
+        self._send.solicit = solicit
         try:
             self._put_line(line, timeout)
         except (LineTooLong, PartialLine, KeyboardInterrupt):
-            if self._writes == state[4]:  # it never got to the write: the session is where it was
-                self._at_prompt, self._sent, self._solicit, self._held = state[:4]
+            if self._send.writes == send.writes:  # it never got to the write: the session is where it was
+                self._prompt, self._send = prompt, send
             raise
-        self._unanswered = False
+        self._send.unanswered = False
 
     def _put_line(self, line: str, timeout: float, of: float | None = None):
         """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
         of, when `timeout` is what is left of it."""
         cld = self._cld
         assert cld
-        if self._partial:
+        if self._send.partial:
             raise PartialLine(f"line not sent: {PARTIAL}")
-        settle = self._control_at + CONTROL_SETTLE - time.monotonic()
+        settle = self._send.control_at + CONTROL_SETTLE - time.monotonic()
         if settle > 0:
             time.sleep(settle)  # the far side is still dealing with the control character
         deadline = time.monotonic() + timeout
@@ -560,11 +607,11 @@ class Session:
 
     def _put_control(self, char: str, timeout: float):
         data = control_byte(char)
-        if self._partial and data in (b"\r", b"\n"):  # Ctrl+M and Ctrl+J are the Return key
+        if self._send.partial and data in (b"\r", b"\n"):  # Ctrl+M and Ctrl+J are the Return key
             raise PartialLine(f"control character not sent: {PARTIAL}")
         self._write(data, time.monotonic() + timeout, timeout, "a control character")
-        self._partial = False  # the far side has been told to drop what was typed
-        self._control_at = time.monotonic()
+        self._send.partial = False  # the far side has been told to drop what was typed
+        self._send.control_at = time.monotonic()
 
     def _write(self, data: bytes, deadline: float, timeout: float, what: str):
         """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
@@ -578,15 +625,15 @@ class Session:
         cld = self._cld
         assert cld
         self._reporter.check()  # nothing is sent once the run's output is lost
-        self._writes += 1
+        self._send.writes += 1
         pty = Pty(cld.child_fd)
         try:
             # into pexpect's buffer and the operator echo, like the output a wait reads
             pty.write(data, deadline, timeout, what, lambda: cld.expect(pexpect.TIMEOUT, timeout=0))
         except BaseException as e:
-            self._sent = None
-            self._solicit = False
-            self._partial = self._partial or pty.done > 0
+            self._send.line = None
+            self._send.solicit = False
+            self._send.partial = self._send.partial or pty.done > 0
             if isinstance(e, pexpect.EOF) or closed(e):
                 raise EOFError(f"connection closed while sending {what}") from e
             raise
@@ -602,7 +649,7 @@ class Session:
             # the lookahead waits for what follows the digits: a code split across two reads is read whole
             self._expect([r"__AUTOBOT_RC=(\d+)(?=\D)"], timeout, "the exit code of the command (echo $?)")
         except BaseException as e:
-            self._solicit = True  # like a prompt wait that timed out: the next wait follows no command
+            self._send.solicit = True  # like a prompt wait that timed out: the next wait follows no command
             if h and h.posix and isinstance(e, TimeoutError):
                 # a regex of the prompt that also matches a CLI's prompt sends the check to the CLI
                 raise TimeoutError(f"{e} at prompt '{h.name}' (posix: true): is it a POSIX shell?") from e
@@ -615,11 +662,11 @@ class Session:
     def sendcontrol(self, char: str, *, timeout: float = 300):
         if not self._cld:
             raise RuntimeError("not attached")
-        self._at_prompt = False
-        self._solicit = True
-        self._held = None
+        self._prompt.at_prompt = False
+        self._send.solicit = True
+        self._prompt.held = None
         self._put_control(char, timeout)
-        self._unanswered = False
+        self._send.unanswered = False
 
     def sleep(self, seconds: float):
         if not self._cld:
