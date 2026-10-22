@@ -5,15 +5,16 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pydantic
 import pytest
-from conftest import make_doc, plugin_dist, run_cli
+from conftest import make_doc, make_runner, plugin_dist, run_cli
 
 from autobot import models
-from autobot.models import PLUGINS, Config
+from autobot.models import PLUGINS, Config, PluginStep
 from autobot.registry import StepRegistry
+from autobot.runner import Runner
 from autobot.steps import register_builtins
 
 PLUGIN = '''
@@ -308,3 +309,78 @@ def test_p7_08_recursive_call_is_accepted():
     Config.model_validate(
         make_doc([{"call": "a"}], fn={"a": {"script": [{"call": "b"}]}, "b": {"script": [{"call": "a"}]}})
     )
+
+
+# -- P7-29: a plugin step's model is validated once ----------------------------------------------------
+
+
+class CountingStep(pydantic.BaseModel):
+    """A plugin model whose validator counts its runs, as one with a cost or a side effect would show them."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+    counting: str
+    validations: ClassVar[list[str]] = []
+
+    @pydantic.field_validator("counting")
+    @classmethod
+    def _count(cls, v: str) -> str:
+        cls.validations.append(v)
+        return v
+
+
+class CountingExecutor:
+    key = "counting"
+    model = CountingStep
+
+    def __init__(self) -> None:
+        self.seen: list[CountingStep] = []
+
+    def execute(self, step: CountingStep, ctx: Any, timeout: float) -> None:
+        self.seen.append(step)
+
+
+def test_p7_29_plugin_model_is_validated_once_at_load_and_not_again_when_it_runs(isolated_registry: StepRegistry, register_plugin):
+    """SPEC "Common Step Properties", "As a library": a plugin step's fields are validated against the
+    plugin's model once, when the script is loaded; the model that passed is the one `execute` receives,
+    in this run and the next. Before the fix the runner validated the step again at every run."""
+    executor = register_plugin(CountingExecutor())
+    CountingStep.validations.clear()
+    config = Config.model_validate(make_doc([{"counting": "x"}]))
+    assert CountingStep.validations == ["x"]
+    runner = Runner(config, {})
+    runner.run()
+    runner.run()
+    assert CountingStep.validations == ["x"]
+    step = config.script[0]
+    assert isinstance(step, PluginStep)
+    assert len(executor.seen) == 2 and executor.seen[0] is executor.seen[1] is step.validated(isolated_registry)
+    assert executor.seen[0].counting == "x"
+    assert "_plugin_model" not in step.model_dump() and "_plugin_model" not in step.model_dump(exclude_unset=True)
+
+
+def test_p7_29_plugin_step_built_in_code_is_validated_once_when_it_first_runs(isolated_registry: StepRegistry, register_plugin):
+    """A `PluginStep` that no `Config` validated, one a plugin builds for `ctx.run_steps`, is validated the
+    first time it runs, and not again."""
+    executor = register_plugin(CountingExecutor())
+    CountingStep.validations.clear()
+    step = PluginStep.model_validate({"counting": "y"})
+    assert step.plugin_key_ == "counting" and CountingStep.validations == []
+    runner = make_runner([])
+    runner.run_steps([step])
+    runner.run_steps([step])
+    assert CountingStep.validations == ["y"]
+    assert len(executor.seen) == 2 and executor.seen[0] is executor.seen[1]
+    assert executor.seen[0].counting == "y"
+
+
+def test_p7_29_plugin_step_that_fails_validation_keeps_no_model(isolated_registry: StepRegistry, register_plugin):
+    """A step whose fields the plugin's model rejects is the validation error, at load and when built in
+    code; nothing is kept for a later run."""
+    register_plugin(CountingExecutor())
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(make_doc([{"counting": 1}]))
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("string_type", ("script", 0, "counting"))]
+    step = PluginStep.model_validate({"counting": 1})
+    for _ in range(2):
+        with pytest.raises(pydantic.ValidationError):
+            step.validated(isolated_registry)

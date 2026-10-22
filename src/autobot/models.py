@@ -446,6 +446,8 @@ class PluginStep(pydantic.BaseModel):
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
     timeout: Omittable[Duration] = None
+    # the plugin's own model of the step, once validated (see `validated`)
+    _plugin_model: Any = pydantic.PrivateAttr(default=None)
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -456,6 +458,14 @@ class PluginStep(pydantic.BaseModel):
             raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
         key = plugin_key_of(data, _lookup())
         return {**data, "plugin_key_": key} if key else data
+
+    def validated(self, plugins: PluginLookup) -> Any:
+        """The plugin's own model of this step, validated once: when the script was loaded (`Config`
+        validates every plugin step), or now, for a step built in code that no `Config` holds. The same
+        object every time, so what the plugin's `execute` gets is what passed."""
+        if self._plugin_model is None:
+            self._plugin_model = plugins.validate_plugin_step(self)
+        return self._plugin_model
 
 
 def _step_discriminator(v: Any) -> str | None:
@@ -562,7 +572,7 @@ class Config(pydantic.BaseModel):
                         errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
                         continue
                     try:
-                        plugins.validate_plugin_step(step)
+                        step.validated(plugins)
                     except pydantic.ValidationError as e:
                         errors += [
                             {

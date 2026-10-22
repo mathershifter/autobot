@@ -308,8 +308,9 @@ class Runner:
 
         key = registry.key_for_step(step)
         executor = registry.get(key)
-        # plugin models don't carry the common properties; keep `step` intact
-        model = registry.validate_plugin_step(step) if isinstance(step, PluginStep) else step
+        # plugin models don't carry the common properties; keep `step` intact. The plugin's model is the
+        # one that passed when the script was loaded, validated once (SPEC, Common Step Properties)
+        model = step.validated(registry) if isinstance(step, PluginStep) else step
         executor.execute(model, self, timeout)
 
         delay_after = getattr(step, "delay_after", None)

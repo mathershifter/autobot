@@ -884,7 +884,7 @@ The `after` wait comes before the step, and the step then runs as it would witho
 
 `attach.timeout` bounds only the wait for the spawned process's first output; steps don't inherit it either.
 
-These properties also apply to plugin steps. They are handled by the runner; the plugin's own model receives only its plugin-specific fields. Those fields are validated against the plugin's model when the script is loaded, wherever the step appears (the same places as for `call`). A failure is a validation error at the step's path, e.g. `script.0.ech0` with type `extra_forbidden` for a misspelled field.
+These properties also apply to plugin steps. They are handled by the runner; the plugin's own model receives only its plugin-specific fields. Those fields are validated against the plugin's model when the script is loaded, wherever the step appears (the same places as for `call`), and once: the model that passed is the one the plugin's `execute` receives, and nothing is validated again when the step runs. A failure is a validation error at the step's path, e.g. `script.0.ech0` with type `extra_forbidden` for a misspelled field.
 
 A plugin step has exactly one plugin key. A step with keys of two or more registered plugins is a validation error of type `invalid_step` at the step's path, e.g. `script.0` with the message `step has more than one plugin key: free, loose` (the keys in the step's order), even when the first plugin's model allows extra fields. A built-in key takes precedence: in `{cmd: x, free: y}` the step is a `cmd` step and `free` is an unknown field (`extra_forbidden`).
 
