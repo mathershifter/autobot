@@ -12,7 +12,7 @@ from .log import ConsoleReporter, OutputLost
 from .models import BlockStep, Config, PluginStep, Prompt, Step, names_command
 from .prompts import build_handler
 from .registry import registry
-from .report import Left, StepRef, step_ref, trail
+from .report import Left, RunOutcome, StepRef, step_ref, trail
 from .session import PromptHandler, Session
 from .steps import register_builtins
 from .terminal import run_environ
@@ -239,16 +239,14 @@ class Runner:
         if self._unfinished:
             first = self._unfinished[0]
             error = BreakoutError(f"a breakout did not finish ({type(first).__name__}): {first}")
-            error.autobot_trail = trail(first)  # type: ignore[attr-defined]
+            RunOutcome.of(error).trail = trail(first)
             self._mark(error)
             raise error
 
     def _mark(self, error: BaseException):
         """Note on `error`, the one that ends the run, what the run may have left behind, for the CLI's report."""
         if self._unfinished:
-            error.autobot_left = Left(  # type: ignore[attr-defined]
-                tuple(self._unfinished), self._session.logins, self._session.login_pending
-            )
+            RunOutcome.of(error).left = Left(tuple(self._unfinished), self._session.logins, self._session.login_pending)
 
     def run_breakout(self, steps: list[Step], what: str = "breakout"):
         """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
@@ -287,8 +285,9 @@ class Runner:
         except BaseException as e:
             # where it failed, for the CLI's report: set once, by the innermost step, which also says so
             # at once, before any breakout runs
-            if not hasattr(e, "autobot_trail"):
-                e.autobot_trail = tuple(self._stack)  # type: ignore[attr-defined]
+            outcome = RunOutcome.of(e)
+            if outcome.trail is None:
+                outcome.trail = tuple(self._stack)
                 if isinstance(e, KeyboardInterrupt):
                     self._reporter.say("step interrupted", "fail")
                 elif isinstance(e, Exception):

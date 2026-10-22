@@ -24,7 +24,7 @@ from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, 
 from autobot import cli
 from autobot.errors import BreakoutError, StepFailure
 from autobot.log import ConsoleReporter
-from autobot.report import Left, left, trail
+from autobot.report import Left, RunOutcome, left, trail
 from autobot.session import PromptHandler, Session, SimpleHandler
 
 TYPED = Path(__file__).resolve().parent / "fakes" / "typed.py"
@@ -450,7 +450,7 @@ def test_p5_90_left_names_the_interrupt_that_ended_an_inner_breakout():
     """`cli._left` for an interrupt of a block's breakout followed by another error: the interrupted
     breakout is reported by what ended it."""
     first, ended = KeyboardInterrupt(), RuntimeError("x")
-    ended.autobot_left = Left((first, ended), ())  # type: ignore[attr-defined]
+    RunOutcome.of(ended).left = Left((first, ended), ())
     assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: interrupted",
         f"{LEFT}a breakout did not finish",
@@ -840,7 +840,7 @@ def test_p5_93_operating_system_error_in_a_breakout_points_to_the_traceback(fake
 
     error = OSError(28, "No space left on device")
     ended = BreakoutError("x")
-    ended.autobot_left = Left((error,), ())  # type: ignore[attr-defined]
+    RunOutcome.of(ended).left = Left((error,), ())
     assert said(lambda: cli._left(ConsoleReporter(), argparse.Namespace(script="s.yaml"), ended)) == [
         "Breakout failed in s.yaml: [Errno 28] No space left on device",
         "  (run with --traceback for details)",

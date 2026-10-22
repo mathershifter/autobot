@@ -56,11 +56,41 @@ class Left:
     pending: bool = False  # no shell prompt was reached after the credentials: the login may not have happened
 
 
+@dataclass
+class RunOutcome:
+    """What the run notes on the error it ends with, for the report. `trail`: the steps that were running when
+    the error was raised, outermost first, set once, by the innermost step (None until the error has left a
+    step). `left`: what the run may have left behind, set as the error leaves the run. `Runner.run()` raises
+    the error with one; `trail(error)` and `left(error)` read it, and give nothing for an error without one."""
+
+    trail: tuple[StepRef, ...] | None = None
+    left: Left | None = None
+
+    @classmethod
+    def of(cls, error: BaseException) -> RunOutcome:
+        """The outcome noted on `error`, noted now if it had none."""
+        outcome = _outcome(error)
+        if outcome is None:
+            outcome = cls()
+            setattr(error, _ATTR, outcome)
+        return outcome
+
+
+_ATTR = "autobot_outcome"  # the one attribute of an exception that is Autobot's; read and written here only
+
+
+def _outcome(error: BaseException) -> RunOutcome | None:
+    outcome = getattr(error, _ATTR, None)
+    return outcome if isinstance(outcome, RunOutcome) else None
+
+
 def trail(error: BaseException) -> tuple[StepRef, ...]:
     """The steps that were running when `error` was raised, outermost first; empty outside a step."""
-    return getattr(error, "autobot_trail", ())
+    outcome = _outcome(error)
+    return outcome.trail or () if outcome else ()
 
 
 def left(error: BaseException) -> Left | None:
     """What the run that `error` ended may have left behind; None when every breakout finished."""
-    return getattr(error, "autobot_left", None)
+    outcome = _outcome(error)
+    return outcome.left if outcome else None

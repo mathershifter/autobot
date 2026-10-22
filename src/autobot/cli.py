@@ -314,7 +314,8 @@ def _plugins_own(e: BaseException) -> bool:
     return last is not None and last.co_name == "_step" and os.path.basename(last.co_filename) == "runner.py"
 
 
-def _unexpected(rep: ConsoleReporter, e: Exception) -> None:
+def _unexpected(rep: ConsoleReporter, e: Exception, script: str | None = None) -> None:
+    """`script`: the one of several that was being checked (`validate`), named after where it failed."""
     # under a plugin step, whatever fails unexpectedly is the plugin's doing: its own code, or a step it
     # built that no script could hold
     plugin = next((ref for ref in reversed(trail(e)) if ref.plugin), None)
@@ -330,8 +331,7 @@ def _unexpected(rep: ConsoleReporter, e: Exception) -> None:
             "this is a bug, not a problem with the script. Please report it with the traceback below.",
         )
     _where(rep, e)
-    script = getattr(e, "autobot_script", None)
-    if script is not None:  # `validate` checks several: say which one it was
+    if script is not None:
         rep.note("while checking", _visible(script))
     rep.more("".join(traceback.format_exception(e)).rstrip("\n"))
 
@@ -524,9 +524,9 @@ def _cmd_validate(rep: ConsoleReporter, args: argparse.Namespace) -> None:
         except LoadError:
             failed = True
             rep.verdict(_visible(script), "invalid", ERROR)
-        except Exception as e:
-            e.autobot_script = script  # type: ignore[attr-defined]
-            raise
+        except Exception as e:  # noqa: BLE001 - a bug, in autobot or in a plugin's model: say which script
+            _unexpected(rep, e, script)
+            sys.exit(EXIT_UNEXPECTED)
         else:
             if not args.quiet:
                 rep.verdict(_visible(script), "valid", OK)
