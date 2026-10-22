@@ -116,7 +116,7 @@ def test_p1_11_errors_leave_session_at_prompt(
         r.run_steps(steps([{"cmd": "echo '% oops'", "timeout": "5s"}]))
     sent.clear()
     r.run_steps(steps([{"cmd": "echo next", "register": "n", "timeout": "5s"}]))
-    assert r.config.vars["n"] == "next"
+    assert r.vars["n"] == "next"
     assert sent.lines() == ["echo next"]
 
 
@@ -137,7 +137,7 @@ def test_p1_14_unignored_failure_registers_nothing(attached_runner: Callable[...
     r = attached_runner(vars={"out": "old"})
     with pytest.raises(RuntimeError, match="exit code 1"):
         r.run_steps(steps([{"cmd": "echo x; false", "register": "out", "timeout": "5s"}]))
-    assert r.config.vars["out"] == "old"
+    assert r.vars["out"] == "old"
 
 
 def test_p1_15_ignored_assert_failure_registers_output():
@@ -205,7 +205,7 @@ def test_p1_19_session_before_cleared_by_empty_output(attached_runner: Callable[
         ]
     )
     r.run_steps(skipped)
-    assert "r" not in r.config.vars
+    assert "r" not in r.vars
 
 
 # -- P1-20: ignore_error covers command failures only (decision #10) --------
@@ -226,7 +226,7 @@ def aborting_runner(step: dict, **kw) -> Runner:
 
 def assert_aborted(runner: Runner, probe: ProbeExecutor) -> None:
     assert probe.calls == [], "the step after the aborting step ran"
-    assert runner.config.vars["r"] == "preset"
+    assert runner.vars["r"] == "preset"
 
 
 def test_p1_20_ignore_error_does_not_swallow_timeout(probe: ProbeExecutor):
@@ -274,7 +274,7 @@ def test_p1_20_ignore_error_does_not_swallow_invalid_regex(probe: ProbeExecutor)
 def test_p1_21_assert_rendering_to_an_empty_regex_aborts(probe: ProbeExecutor):
     """SPEC "cmd": an assert pattern that renders to nothing would match any output; it aborts instead."""
     r = aborting_runner({"cmd": "echo hi", "assert": ["hi", "{{ vars.empty }}"]})
-    r.config.vars["empty"] = ""
+    r.config.vars["empty"] = ""  # the script's section, read by the run
     with pytest.raises(ValueError, match="^assert: a pattern rendered to an empty regex, which matches any output$"):
         r.run()
     assert_aborted(r, probe)

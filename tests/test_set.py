@@ -259,7 +259,7 @@ def test_p8_58_set_yaml_collections_are_stored_as_written(tmp_path: Path):
     r = make_runner([])
     step = Config.model_validate(cli._load(str(path))).script
     r.run_steps(step)
-    assert r.config.vars == {"o": [("a", "{{ x }}"), ("b", 2)], "p": [("a", "{{ x }}"), ("a", 3)], "s": {"{{ x }}"}}
+    assert r.vars == {"o": [("a", "{{ x }}"), ("b", 2)], "p": [("a", "{{ x }}"), ("a", 3)], "s": {"{{ x }}"}}
 
 
 def test_p8_58_set_top_level_vars_are_not_rendered():
@@ -274,7 +274,7 @@ def test_p8_58_set_boolean_expression_is_a_template_error():
     r = make_runner([{"set": {"same": "{{ vars.a == vars.b }}"}}], vars={"a": 1, "b": 1})
     with pytest.raises(ValueError, match=r"^template error: an expression gave a boolean \(true\)"):
         r.run()
-    assert "same" not in r.config.vars
+    assert "same" not in r.vars
 
 
 def test_p8_58_set_boolean_with_tojson_is_text():
@@ -303,7 +303,7 @@ def test_p8_58_set_failure_assigns_nothing(sent: SentLog, bad: str, match: str):
     )
     with pytest.raises(ValueError, match=match):
         r.run()
-    assert r.config.vars == {"a": "old-a"}
+    assert r.vars == {"a": "old-a"}
     assert sent.lines() == ["echo bye"]
 
 
@@ -312,7 +312,7 @@ def test_p8_58_set_in_a_list_value_failure_assigns_nothing():
     r = make_runner([{"set": {"a": "x", "l": ["ok", {"k": "{{ nope }}"}]}}])
     with pytest.raises(ValueError, match=r"^template error: 'nope' is undefined$"):
         r.run()
-    assert r.config.vars == {}
+    assert r.vars == {}
 
 
 def test_p8_58_set_sends_nothing_and_waits_for_nothing(sent: SentLog, timeline: Timeline):

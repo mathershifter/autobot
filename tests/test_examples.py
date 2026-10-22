@@ -491,7 +491,7 @@ def test_p6_113_example_login_prompt_answers_the_prompts_and_not_the_banner(fake
     runner.run()
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
     assert sent.lines()[:3] == ["admin", "secret", "echo in"] and "root" not in sent.lines()
-    assert runner.config.vars["out"] == "in"
+    assert runner.vars["out"] == "in"
 
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)

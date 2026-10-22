@@ -127,7 +127,7 @@ def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = 
 def run_script(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
     """Build a config, run it end to end, and return the runner.
 
-    Registered values are in ``runner.config.vars``.
+    Registered values are in ``runner.vars``.
     """
     runner = make_runner(script, given=given, **kw)
     runner.run()
@@ -136,7 +136,7 @@ def run_script(script: list[dict[str, Any]], *, given: dict[str, str] | None = N
 
 def run_vars(script: list[dict[str, Any]], **kw: Any) -> dict[str, Any]:
     """``run_script`` and return the registered ``vars``."""
-    return run_script(script, **kw).config.vars
+    return run_script(script, **kw).vars
 
 
 def steps(items: list[dict[str, Any]]) -> list:

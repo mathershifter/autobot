@@ -896,9 +896,9 @@ def test_p5_10_block_prompts_active_inside_block(probe: ProbeExecutor):
         ]
     )
     assert probe.by_name("inside")["handlers"] == ["blk"]
-    assert runner.config.vars["x"] == "x"
+    assert runner.vars["x"] == "x"
     assert probe.by_name("after")["handlers"] == ["sh"]
-    assert runner.config.vars["y"] == "y"
+    assert runner.vars["y"] == "y"
 
 
 @pytest.mark.parametrize("with_breakout", [False, True], ids=["no-breakout", "breakout"])
@@ -1138,7 +1138,7 @@ def test_p5_35_block_swap_keeps_recognized_prompt(sent: SentLog, case: str):
         reg("echo after", "a"),
     ])
     assert timed(runner) < FAST
-    assert runner.config.vars == {"b": "before", "i1": "in1", "i2": "in2", "a": "after"}
+    assert runner.vars == {"b": "before", "i1": "in1", "i2": "in2", "a": "after"}
     assert "" not in sent.lines()
     assert sent.commands() == ["echo before", "echo in1", "echo in2", "echo after"]
     assert runner.session.ctx == {"before": "after\n", "match": "PROMPT$ "}
@@ -1153,7 +1153,7 @@ def test_p5_36_block_question_answered_without_solicit(sent: SentLog):
     ])
     assert timed(runner) < FAST
     assert sent.lines() == ["echo before", RC_PROBE, ASK, "y", RC_PROBE, "echo after", RC_PROBE]
-    assert runner.config.vars == {"b": "before", "ans": "y\ngot=y", "a": "after"}
+    assert runner.vars == {"b": "before", "ans": "y\ngot=y", "a": "after"}
 
 
 def test_p5_37_block_prompt_change_waits_for_new_prompt(sent: SentLog):
@@ -1170,7 +1170,7 @@ def test_p5_37_block_prompt_change_waits_for_new_prompt(sent: SentLog):
     ])
     assert timed(runner) < FAST
     assert "" not in sent.lines()
-    assert runner.config.vars == {"b": "before", "i1": "in1", "a": "after"}
+    assert runner.vars == {"b": "before", "i1": "in1", "a": "after"}
 
 
 def test_p5_38_nested_blocks_keep_recognized_prompt(sent: SentLog, probe: ProbeExecutor):
@@ -1182,7 +1182,7 @@ def test_p5_38_nested_blocks_keep_recognized_prompt(sent: SentLog, probe: ProbeE
     runner = top_runner([reg("echo before", "b"), outer, reg("echo after", "a")])
     assert timed(runner) < FAST
     assert "" not in sent.lines()
-    assert runner.config.vars == {"b": "before", "o1": "o1", "i1": "i1", "o2": "o2", "a": "after"}
+    assert runner.vars == {"b": "before", "o1": "o1", "i1": "i1", "o2": "o2", "a": "after"}
     assert probe.by_name("in_inner")["ctx"]["before"] == "o1\n"
     assert probe.by_name("after_inner")["ctx"]["before"] == "i1\n"
 
@@ -1201,7 +1201,7 @@ def test_p5_39_unrecognized_prompt_not_used_on_entry(sent: SentLog):
     with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for a shell prompt \('blk'\)$"):
         runner.run()
     assert sent.lines() == ["echo before", RC_PROBE, "", "echo bo", RC_PROBE]
-    assert runner.config.vars == {"b": "before", "bo": "bo"}
+    assert runner.vars == {"b": "before", "bo": "bo"}
 
 
 def test_p5_40_unrecognized_prompt_not_used_on_exit(sent: SentLog):
@@ -1213,7 +1213,7 @@ def test_p5_40_unrecognized_prompt_not_used_on_exit(sent: SentLog):
     with pytest.raises(TimeoutError, match=r"^timed out after 1(\.0)?s waiting for a shell prompt \('top'\)$"):
         runner.run()
     assert sent.lines() == [TO_BLK["line"], "echo in1", RC_PROBE, ""]
-    assert runner.config.vars == {"i1": "in1"}
+    assert runner.vars == {"i1": "in1"}
 
 
 def test_p5_41_restore_after_error_keeps_recognized_prompt(sent: SentLog):
@@ -1228,7 +1228,7 @@ def test_p5_41_restore_after_error_keeps_recognized_prompt(sent: SentLog):
         runner.run()
     assert time.monotonic() - start < FAST
     assert "" not in sent.lines()
-    assert runner.config.vars == {"b": "before", "bbo": "bbo", "bo": "bo"}
+    assert runner.vars == {"b": "before", "bbo": "bbo", "bo": "bo"}
 
 
 # -- P5: attach spawn arguments ---------------------------------------------
@@ -1298,7 +1298,7 @@ def test_p5_57_spawn_with_leading_whitespace_runs(timeline: Timeline, spawn: str
     executable`), and a wrapper template that renders to nothing leaves exactly that space.
     """
     r = run_script([{"cmd": "echo hi", "register": "out"}], spawn=spawn, env={"WRAPPER": ""}, given=given)
-    assert r.config.vars["out"] == "hi"
+    assert r.vars["out"] == "hi"
     [(_, call, _)] = [c for c in timeline.calls if c[0] == "attach"]
     assert call[0] == ("env " if given else "") + BASH
 
@@ -1357,7 +1357,7 @@ def test_p5_83_spawned_shell_has_the_window_of_the_constants():
             {"cmd": "echo $LINES $COLUMNS", "register": "bash"},
             {"cmd": "tput lines; tput cols", "register": "tput"},
         ]
-    ).config.vars
+    ).vars
     assert out == {"stty": "500 80", "bash": "500 80", "tput": "500\n80"}
 
 
@@ -1368,7 +1368,7 @@ def test_p5_83_spawn_line_that_sets_the_rows_gives_the_program_that_height(rows:
     out = run_script(
         [{"cmd": "stty size", "register": "stty"}, {"cmd": "echo $LINES $COLUMNS", "register": "bash"}],
         spawn=f"sh -c 'stty rows {rows} && exec {BASH}'",
-    ).config.vars
+    ).vars
     assert out == {"stty": f"{rows} 80", "bash": f"{rows} 80"}
 
 

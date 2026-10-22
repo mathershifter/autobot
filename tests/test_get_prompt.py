@@ -1154,7 +1154,7 @@ def test_p4_44_cmd_with_after_at_a_redrawn_prompt_waits_for_the_real_one(tmp_pat
         spawn=raw_spawn(tmp_path, "x \r\x1b[APROMPT$ ", "x\r\nout\r\nPROMPT$ "),
         prompts=[{"name": "sh", "expect": [r"^PROMPT\$ $"], "return": True}],
         errors=["NOPE"],
-    ).config.vars
+    ).vars
     assert out == {"first": "out", "second": "out"}
     assert sent.lines() == ["x", "x", "x"]
 

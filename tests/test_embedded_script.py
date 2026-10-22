@@ -367,7 +367,7 @@ def test_p2_17_timed_out_script_leaves_session_at_prompt(
             r.run_steps(steps([{"cmd": "#!/bin/sh\nsleep 30\n", "timeout": "2s"}]))
         start = time.monotonic()
         r.run_steps(steps([{"cmd": "echo next", "register": "next", "timeout": "3s"}]))
-        assert r.config.vars["next"] == "next"
+        assert r.vars["next"] == "next"
         assert time.monotonic() - start < 2
         assert_removed(tmp_path_hex)
     finally:

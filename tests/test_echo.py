@@ -604,7 +604,7 @@ def test_p8_35_line_past_the_input_limit_of_the_terminal_is_not_sent(over: int):
         f"line of {CANON + over} bytes not sent: the terminal reads whole lines (canonical mode) and takes "
         f"4095 bytes of one, so the last {over} would be dropped without an error"
     )
-    assert runner.config.vars == {}
+    assert runner.vars == {}
 
 
 # -- P4-44: a prompt that the line editor writes again while it echoes --------------------------------
@@ -636,7 +636,7 @@ def test_p4_44_error_of_a_command_with_a_redrawn_prompt_is_raised_on_it(cols: in
     runner = make_runner(script, spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
     with pytest.raises(CommandError, match="command error: FATAL"):
         runner.run()
-    assert "b" not in runner.config.vars
+    assert "b" not in runner.vars
     # ignored, the error leaves the command its output and the next command its own
     script[1]["ignore_error"] = True
     out = run(script, spawn=f"{VT100} LC_ALL=C {BASH}", errors=["^FATAL"])
