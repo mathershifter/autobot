@@ -823,6 +823,63 @@ def test_p6_88_ctrl_c_while_loading_is_interrupted_too(
         signal.signal(signal.SIGINT, handler)
 
 
+def test_p6_88_ctrl_c_while_the_arguments_are_parsed_is_interrupted_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """An interrupt while the command line is parsed is one before the run as well: `Interrupted` alone, no
+    traceback, and the process signals itself. Before the fix the arguments were parsed outside the `try`,
+    and the interrupt left `main` with a traceback."""
+    def interrupt(self, *_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args", interrupt)
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli.signals.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    handler = signal.getsignal(signal.SIGINT)
+    try:
+        argv = ["autobot", str(_script(tmp_path))]
+        monkeypatch.setattr(sys, "argv", list(argv))
+        with pytest.raises(SystemExit) as ei:
+            cli.main()
+        out = capsys.readouterr()
+        assert (ei.value.code, out.out, out.err) == (130, "", "Interrupted\n")
+        assert killed == [(os.getpid(), signal.SIGINT)]
+        assert sys.argv == argv  # `run` went into the arguments the parser got, not into the process's own
+    finally:
+        signal.signal(signal.SIGINT, handler)
+
+
+def test_p6_118_main_takes_its_arguments_and_leaves_sys_argv_alone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """`cli.main(argv)` parses `argv`, the arguments after the command's name, as the console script
+    parses `sys.argv[1:]`: a script alone is `run <script>`, `validate` takes its options anywhere. Neither
+    form changes `sys.argv`. Before the fix `main` took no arguments and put `run` into `sys.argv`."""
+    path = _script(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["autobot", "--not-an-option-of-autobot"])
+
+    def run(*argv: str) -> tuple[Any, str, str]:
+        code = None
+        try:
+            cli.main(list(argv))
+        except SystemExit as e:
+            code = e.code
+        out = capsys.readouterr()
+        return code, out.out, out.err
+
+    code, out, err = run(str(path))  # `run <script>`: a run of the script's `cmd: true`
+    assert code is None and "PROMPT$ " in out and err.splitlines()[-1] == ">> run completed"
+    assert run("validate", str(path), "-q") == (None, "", "")
+    assert run("validate", str(path), str(path)) == (None, "", f"{path}: valid\n{path}: valid\n")
+    code, out, err = run("-h")
+    assert code == 0 and out.startswith("usage: autobot [-h] {run,validate,schema}") and err == ""
+    code, out, err = run()
+    assert code == 1 and out.startswith("usage: autobot [-h] {run,validate,schema}") and err == ""
+    code, out, err = run("run", "--bogus", str(path))
+    assert code == 2 and out == "" and "unrecognized arguments: --bogus" in err
+    assert sys.argv == ["autobot", "--not-an-option-of-autobot"]
+
+
 def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):
     """A shell that runs autobot in a loop stops at Ctrl-C, as it does for any command the signal kills: the
     next iteration, which would be the next device, doesn't start."""

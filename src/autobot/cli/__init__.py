@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 import pydantic
@@ -167,13 +168,15 @@ def _cmd_schema(rep: ConsoleReporter, args: argparse.Namespace | None = None) ->
         print(json.dumps(schema.add_plugin_steps(document, registry.plugin_executors()), indent=2), flush=True)
 
 
-def main(reporter: ConsoleReporter | None = None) -> None:
-    """`reporter`: where the command reports; built here, for this process's stderr, when none is given."""
+def main(argv: Sequence[str] | None = None, reporter: ConsoleReporter | None = None) -> None:
+    """`argv`: the arguments after the command's name; this process's own (`sys.argv[1:]`) when none is
+    given, and `sys.argv` is not changed either way. `reporter`: where the command reports; built here,
+    for this process's stderr, when none is given."""
     rep = reporter if reporter is not None else ConsoleReporter()
     code: Any = None
     rep.clear()
     try:
-        _main(rep)
+        _main(rep, list(sys.argv[1:] if argv is None else argv))
     except OutputLost:  # reported where there was something to say, and a stream to say it on
         code = EXIT_RUN
     except SystemExit as e:
@@ -187,7 +190,7 @@ def main(reporter: ConsoleReporter | None = None) -> None:
         sys.exit(code)
 
 
-def _main(rep: ConsoleReporter) -> None:
+def _main(rep: ConsoleReporter, argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -220,17 +223,19 @@ def _main(rep: ConsoleReporter) -> None:
             help="Also print the Python traceback of an error that is reported without one",
         )
 
-    if len(sys.argv) > 1 and sys.argv[1] not in ("run", "validate", "schema", "-h", "--help"):
-        sys.argv.insert(1, "run")
-
-    if sys.argv[1:2] == ["validate"]:
-        # its options may come between the scripts, which the parser of the subcommands doesn't allow
-        args = validate_parser.parse_intermixed_args(sys.argv[2:])
-        args.command = "validate"
-    else:
-        args = parser.parse_args()
-
+    # from here on an interrupt, or a bug, is reported as one of the run's, so parsing is inside the try:
+    # an interrupt before the run prints `Interrupted` alone (SPEC, Errors while the script runs)
+    args: argparse.Namespace | None = None
     try:
+        if argv and argv[0] not in ("run", "validate", "schema", "-h", "--help"):
+            argv = ["run", *argv]  # a script alone is `run <script>`
+        if argv[:1] == ["validate"]:
+            # its options may come between the scripts, which the parser of the subcommands doesn't allow
+            args = validate_parser.parse_intermixed_args(argv[1:])
+            args.command = "validate"
+        else:
+            args = parser.parse_args(argv)
+
         if args.command == "schema":
             _cmd_schema(rep, args)
         elif args.command == "run":
