@@ -26,7 +26,8 @@ from conftest import (
 )
 
 from autobot.models import SendEach
-from autobot.runner import Runner, send_each_sets
+from autobot.prompts import send_each_sets
+from autobot.runner import Runner
 from autobot.screen import _mid_echo
 from autobot.session import HELD_GRACE, HeldPrompt, PromptHandler, Session
 

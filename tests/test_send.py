@@ -1483,7 +1483,7 @@ def test_p8_55_breakout_after_an_interrupt_in_the_settle_time_runs_at_once(sent:
     """Ctrl-C while a `cmd` waits out the settle time: the breakout that starts with a `cmd` finds the
     session at its prompt and runs at once. With the session taken for one that had sent the line, its
     prompt wait would wait for a prompt that is already there, without a Return, until its timeout."""
-    from autobot.runner import left
+    from autobot.report import left
 
     put_control, real = Session._put_control, time.sleep
 

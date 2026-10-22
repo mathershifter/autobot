@@ -34,7 +34,8 @@ from conftest import (
 )
 
 from autobot.log import ConsoleReporter
-from autobot.runner import BreakoutError, Runner
+from autobot.errors import BreakoutError
+from autobot.runner import Runner
 from autobot.session import PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 

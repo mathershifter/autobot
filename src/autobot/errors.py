@@ -32,3 +32,7 @@ class LineTooLong(RunError):
 
 class PartialLine(RunError):
     """A line that would be added to the part of an earlier one that is typed at the far side: it is not sent."""
+
+
+class BreakoutError(RunError):
+    """The script completed, and a breakout did not: what it was to undo, a login for one, may be left."""

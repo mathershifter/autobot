@@ -20,7 +20,8 @@ from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist
 from autobot import cli
 from autobot.errors import CommandError, RunError, ScriptError, StepFailure
 from autobot.registry import PluginError
-from autobot.runner import Runner, StepRef, trail
+from autobot.report import StepRef, trail
+from autobot.runner import Runner
 from autobot.steps import CmdExecutor
 
 PIN = {"name": "pin", "expect": ["PIN:"], "send": {"each": "vars.pins"}}

@@ -13,9 +13,8 @@ import yaml
 from conftest import BASH, RC_PROBE, ROOT, SHELL_ENV, SHELL_PROMPT, FakeDevice, SentLog, run_vars
 
 from autobot import models
-from autobot.errors import CommandError, StepFailure
+from autobot.errors import BreakoutError, CommandError, StepFailure
 from autobot.models import Config
-from autobot.runner import BreakoutError
 from autobot.session import PromptHandler, Session
 
 PCT_ERR = ["% .*"]

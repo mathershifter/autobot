@@ -14,8 +14,10 @@ import yaml
 from conftest import ROOT, SHELL_PROMPT, FakeDevice, SentLog, make_doc, run_vars
 
 from autobot.cli import UniqueKeyLoader
+from autobot.errors import BreakoutError
 from autobot.models import Config
-from autobot.runner import BreakoutError, Runner, left, trail
+from autobot.report import left, trail
+from autobot.runner import Runner
 from autobot.screen import ANSI_ESCAPE_RE, STRAY_RE
 from autobot.session import PromptHandler, Session
 

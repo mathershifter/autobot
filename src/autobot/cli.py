@@ -25,7 +25,10 @@ from .errors import RunError, ScriptError
 from .log import ERROR, OK, WARN, ConsoleReporter, OutputLost
 from .models import Config
 from .registry import PluginError, registry
-from .runner import BreakoutError, Runner, _kind, left, trail
+from .errors import BreakoutError
+from .prompts import yaml_kind
+from .report import left, trail
+from .runner import Runner
 from .types import text
 
 if TYPE_CHECKING:
@@ -219,7 +222,7 @@ def _got(type_: str, msg: str, value: object, loc: tuple = ()) -> str:
         if shown in msg:  # quoted in full, as a message that shows the value does: not a word that happens to match
             return ""
     else:
-        shown = _kind(value)
+        shown = yaml_kind(value)
     if len(shown) > GOT_MAX:
         shown = shown[:GOT_MAX] + "..."
     return f" (got {shown})"
