@@ -500,7 +500,7 @@ def test_p3_23_name_outside_the_context_is_undefined(template: str):
 def test_p3_23_undefined_name_in_a_step_and_in_an_env_default(sent: SentLog):
     """In a step the error comes when the step runs, with nothing sent; an `env` default is no template,
     so the name is its text."""
-    assert make_runner([], env={"AB_H": "{{ args.host }}"})._env == {"AB_H": "{{ args.host }}"}
+    assert make_runner([], env={"AB_H": "{{ args.host }}"}).env == {"AB_H": "{{ args.host }}"}
     with pytest.raises(ValueError) as ei:
         run_script([{"line": "echo {{ args.host }}"}])
     assert str(ei.value) == NO_ARGS and sent.lines() == []

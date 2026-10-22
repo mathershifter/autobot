@@ -104,7 +104,7 @@ def test_p5_65_what_prepare_sets_reaches_a_template_under_a_declared_name_alone(
         env={"AB_OS": "dflt", "AB_A": "dflt", "AB_B": "dflt-b", "AB_C": "dflt-c"},
     )
     assert r.render("{{ env.AB_OS }} {{ env.AB_A }} {{ env.AB_B }} {{ env.AB_C }}") == "prep prep dflt-b dflt-c"
-    assert list(r._env) == ["AB_OS", "AB_A", "AB_B", "AB_C"]
+    assert list(r.env) == ["AB_OS", "AB_A", "AB_B", "AB_C"]
     for name in ("AB_NEW", "AB_PLAIN", "PWD", "PATH"):
         with pytest.raises(ValueError, match=f"^template error: env has no key '{name}': the script's env section doesn't declare it$"):
             r.render("{{ env.%s }}" % name)
@@ -137,7 +137,7 @@ def test_p5_65_prepare_is_written_as_it_is(prepared, tmp_path: Path):
     text = "{{ env.AB_A }} {{ vars.v }} {{ nope }} {% endfor %} {# {{"
     r = prepared(f"AB_B='{text}'\necho \"$AB_B\" > {out}\n", env={"AB_A": "a", "AB_B": None}, vars={"v": "V"})
     assert out.read_text() == text + "\n"
-    assert r._env == {"AB_A": "a", "AB_B": text}
+    assert r.env == {"AB_A": "a", "AB_B": text}
 
 
 # -- P5-66: a value that isn't UTF-8 ----------------------------------------------
@@ -160,7 +160,7 @@ def test_p5_66_non_utf8_byte_of_a_value_prepare_sets_is_kept_as_the_environment_
     """SPEC "What `prepare` sets": the environment the shell leaves is decoded as Autobot's own is: a byte
     that isn't UTF-8 is a lone surrogate in the value; it is no error."""
     r = prepared("AB_A=$(printf 'caf\\351')\nAB_B=$(printf 'caf\\303\\251')\n", env={"AB_A": None, "AB_B": None})
-    assert r._env == {"AB_A": "caf\udce9", "AB_B": "caf\u00e9"}
+    assert r.env == {"AB_A": "caf\udce9", "AB_B": "caf\u00e9"}
 
 
 def test_p5_66_non_utf8_byte_of_a_value_prepare_sets_is_sent_with_replacement():
@@ -259,7 +259,7 @@ def test_p5_67_script_that_exits_zero_sets_its_variables_however_it_ends(prepare
     began = time.monotonic()
     r = prepared(shebang + script, env={"AB_A": "dflt"})
     assert time.monotonic() - began < 2
-    assert r._env == {"AB_A": "set"}
+    assert r.env == {"AB_A": "set"}
     assert progress(capsys.readouterr().err) == [">> prepare: running local script" if shebang else RUNNING, DONE]
 
 
@@ -277,7 +277,7 @@ def test_p5_68_what_the_script_prints_is_shown_and_not_read(prepared, capfd):
     out, err = capfd.readouterr()
     assert out == ""
     assert "AB_A=evil\nAB_B=evil\0chatter\nto-stderr\n" in err
-    assert r._env == {"AB_A": "S3CRET", "AB_B": "b"}
+    assert r.env == {"AB_A": "S3CRET", "AB_B": "b"}
     assert progress(err) == [RUNNING, DONE]
     assert "S3CRET" not in out + err
 
@@ -289,7 +289,7 @@ def test_p5_68_environment_the_shell_leaves_is_never_shown(prepared, capfd, monk
     monkeypatch.setenv("AB_OS", "S3CRET-os")
     for shebang in SHEBANGS:
         for script in ("AB_A=S3CRET\nexit 0\n", "f() { AB_A=S3CRET; exit 0; }\nf > /dev/null\n", "AB_A=S3CRET\n"):
-            assert prepared(shebang + script, env={"AB_A": None})._env == {"AB_A": "S3CRET"}
+            assert prepared(shebang + script, env={"AB_A": None}).env == {"AB_A": "S3CRET"}
     out, err = capfd.readouterr()
     assert out == "" and "S3CRET" not in err and "\0" not in err
 
@@ -320,7 +320,7 @@ def test_p5_69_shebang_picks_the_shell(prepared, prep_tmp: Path, tmp_path: Path,
     words, script, count = out.read_text().rsplit(None, 2)
     assert words == "y z" and count == "0"
     assert script.startswith(f"{prep_tmp}/_autobot_") and script.endswith(".sh")
-    assert r._env == {"AB_A": "Y"}
+    assert r.env == {"AB_A": "Y"}
     assert progress(capsys.readouterr().err) == [">> prepare: running local script", DONE]
 
 
@@ -334,7 +334,7 @@ def test_p5_69_each_shell_leaves_its_environment(prepared, tmp_path: Path, monke
     path = shutil.which(shell)
     for shebang in (f"#!{path}", f"#!/usr/bin/env {shell}", f"#!{path} -eu", f"#!/usr/bin/env -S {shell} -eu"):
         r = prepared(f"{shebang}\n{body}", env={"AB_A": None, "AB_B": None, "AB_OS": "dflt"})
-        assert r._env == {"AB_A": "plain", "AB_B": "two\nlines=", "AB_OS": "dflt"}
+        assert r.env == {"AB_A": "plain", "AB_B": "two\nlines=", "AB_OS": "dflt"}
         assert seen.read_text().strip() == shell
 
 
@@ -394,7 +394,7 @@ def test_p5_70_program_that_exits_zero_without_the_script_is_the_warning(prepare
     sources nothing leaves no environment to read: the warning, and the run goes on as without a `prepare`."""
     marker = tmp_path / "ran"
     r = prepared(f"#!/usr/bin/env true\nAB_A=set\ntouch {marker}\n", env={"AB_A": "dflt"})
-    assert r._env == {"AB_A": "dflt"} and not marker.exists()
+    assert r.env == {"AB_A": "dflt"} and not marker.exists()
     out, err = capfd.readouterr()
     assert out == "" and progress(err) == [">> prepare: running local script", UNREAD, DONE]
 
@@ -792,7 +792,7 @@ def test_p5_73_env_has_no_value_before_the_run():
     """SPEC "The order of a run": `env` is resolved by the run, once `prepare` has run, not when the runner
     is built: a required variable that only `prepare` gives is no error of the construction."""
     r = Runner(make_config([], prepare="AB_A=a\n", env={"AB_A": None}), {})
-    assert r._env == {}
+    assert r.env == {}
 
 
 @pytest.mark.parametrize(
@@ -1020,8 +1020,8 @@ def test_p5_98_assignment_sets_a_declared_variable_of_each_type(prepared, form: 
         "".join(form.format(name, value) + "\n" for name, value in values.items()),
         env={"AB_S": "s", "AB_B": False, "AB_I": 1, "AB_F": 0.5, "AB_R": None},
     )
-    assert r._env == {"AB_S": "text", "AB_B": True, "AB_I": -7, "AB_F": 2.5, "AB_R": "req"}
-    assert [type(v) for v in r._env.values()] == [str, bool, int, float, str]
+    assert r.env == {"AB_S": "text", "AB_B": True, "AB_I": -7, "AB_F": 2.5, "AB_R": "req"}
+    assert [type(v) for v in r.env.values()] == [str, bool, int, float, str]
 
 
 def test_p5_98_variables_of_a_sourced_file_and_of_a_command_substitution_count(prepared, tmp_path: Path):
@@ -1030,14 +1030,14 @@ def test_p5_98_variables_of_a_sourced_file_and_of_a_command_substitution_count(p
     creds = tmp_path / "credentials.sh"
     creds.write_text("AB_TOKEN='tok=en'\nexport AB_USER=admin\nAB_OTHER=x\n")
     r = prepared(f". {creds}\nAB_HOST=$(echo jump1)\n", env={"AB_HOST": None, "AB_TOKEN": None, "AB_USER": "nobody"})
-    assert r._env == {"AB_HOST": "jump1", "AB_TOKEN": "tok=en", "AB_USER": "admin"}
+    assert r.env == {"AB_HOST": "jump1", "AB_TOKEN": "tok=en", "AB_USER": "admin"}
 
 
 def test_p5_98_name_the_section_does_not_declare_is_not_taken(prepared, capfd):
     """SPEC "What `prepare` sets": a misspelled name sets nothing, and is no error; a required variable that
     nothing sets fails the run."""
     r = prepared("AB_HSOT=sw1\nexport ab_host=sw1 AB_NEW=new\n", env={"AB_HOST": "dflt"})
-    assert r._env == {"AB_HOST": "dflt"}
+    assert r.env == {"AB_HOST": "dflt"}
     assert progress(capfd.readouterr().err) == [RUNNING, DONE]
     with pytest.raises(ValueError, match="^env.AB_HOST is required: give it with --env AB_HOST=VALUE or in the environment$"):
         make_runner([], prepare="AB_HSOT=sw1\n", env={"AB_HOST": None}).run()
@@ -1096,7 +1096,7 @@ def test_p5_99_value_comes_from_env_option_then_the_environment_prepare_left_the
     if environ:
         monkeypatch.setenv("AB_A", "os")
     r = prepared(script + "true\n", env={"AB_A": "dflt"}, given={"AB_A": "cli"} if given else {})
-    assert r._env == {"AB_A": expected}
+    assert r.env == {"AB_A": expected}
 
 
 def test_p5_99_required_variable_the_script_unsets_has_no_value(timeline: Timeline, monkeypatch):
@@ -1113,7 +1113,7 @@ def test_p5_99_empty_value_from_prepare_is_set(prepared, monkeypatch):
     comes before the default, and satisfies a required variable."""
     monkeypatch.setenv("AB_A", "os")
     r = prepared("AB_A=\nAB_B=''\nexport AB_C=\n", env={"AB_A": "dflt", "AB_B": None, "AB_C": True})
-    assert r._env == {"AB_A": "", "AB_B": "", "AB_C": False}
+    assert r.env == {"AB_A": "", "AB_B": "", "AB_C": False}
 
 
 @pytest.mark.parametrize(("default", "kind"), [(3, "an integer"), (0.5, "a number")], ids=["integer", "number"])
@@ -1138,7 +1138,7 @@ def test_p5_99_name_the_shell_sets_for_itself_has_the_shells_value_after_a_prepa
         r = make_runner([], prepare=script, env={"PWD": "dflt"}, given=given)
         with pytest.raises(AttachRecorded):
             r.run()
-        return r._env["PWD"]
+        return r.env["PWD"]
 
     monkeypatch.delenv("PWD", raising=False)
     assert (pwd(None), pwd(f"{shebang}true\n")) == ("dflt", os.getcwd())
@@ -1159,7 +1159,7 @@ def test_p5_99_declared_variable_reads_the_environment_of_the_run_with_and_witho
     r = make_runner([], prepare=script, env={"TERM": "none", "NO_COLOR": 0, "AB_OS": "dflt"})
     with pytest.raises(AttachRecorded):
         r.run()
-    assert r._env == {"TERM": "dumb", "NO_COLOR": 1, "AB_OS": "os"}
+    assert r.env == {"TERM": "dumb", "NO_COLOR": 1, "AB_OS": "os"}
 
 
 @pytest.mark.parametrize(
@@ -1182,7 +1182,7 @@ def test_p5_99_name_that_is_no_shell_name_is_not_in_the_environment_dash_leaves(
     r = make_runner([], prepare=script, env={"MY.VAR": "dflt", "my-var": "dflt", "1X": "dflt"})
     with pytest.raises(AttachRecorded):
         r.run()
-    assert r._env == {"MY.VAR": expected, "my-var": expected, "1X": expected}
+    assert r.env == {"MY.VAR": expected, "my-var": expected, "1X": expected}
     assert r.render("{{ env['MY.VAR'] }}") == expected
 
 
@@ -1205,7 +1205,7 @@ def test_p5_100_value_is_taken_exactly(prepared, value: str, shebang: str):
     """SPEC "What `prepare` sets": a value is taken as the shell has it: line breaks, `=`, quotes, spaces at
     its ends; nothing in it is read as another variable, and nothing is rendered."""
     r = prepared(f"{shebang}AB_A={shlex.quote(value)}\n", env={"AB_A": None, "AB_B": "dflt"})
-    assert r._env == {"AB_A": value, "AB_B": "dflt"}
+    assert r.env == {"AB_A": value, "AB_B": "dflt"}
 
 
 def test_p5_102_text_from_prepare_that_is_not_of_the_type_names_the_environment(timeline: Timeline, tmp_path: Path):
@@ -1226,12 +1226,12 @@ def test_p5_102_text_from_prepare_that_is_not_of_the_type_names_the_environment(
     r = make_runner([], prepare=f"AB_A={SECRET}\n", env={"AB_A": 3}, given={"AB_A": "4"})
     with pytest.raises(AttachRecorded):
         r.run()
-    assert r._env == {"AB_A": 4}
+    assert r.env == {"AB_A": 4}
 
 
 def test_p5_102_required_variable_that_prepare_sets_is_satisfied(prepared):
     """SPEC "The environment in templates" (Required): `prepare` gives a required variable its value."""
-    assert prepared("AB_A='from prepare'\n", env={"AB_A": None})._env == {"AB_A": "from prepare"}
+    assert prepared("AB_A='from prepare'\n", env={"AB_A": None}).env == {"AB_A": "from prepare"}
 
 
 def test_p5_102_required_variable_nothing_gives_fails_after_prepare(tmp_path: Path):
@@ -1267,8 +1267,8 @@ def test_p5_103_prepare_sees_each_declared_variable_that_has_a_value(prepared, m
         env=env, given={"AB_CLI": " 7 ", "AB_BOTH": "cli {{ x }}"},
     )
     assert seen.read_text() == "[a {{ env.AB_I }} {% b][true][false][3][-7][0.5][3.0][1e+22][unset][ 7 ][os][cli {{ x }}][word][dumb]\n"
-    assert r._env == env | {"AB_REQ": "req", "AB_CLI": 7, "AB_OS": "os", "AB_BOTH": "cli {{ x }}", "AB_BAD": 4}
-    assert [type(v) for v in r._env.values()] == [str, bool, bool, int, int, float, float, float, str, int, str, str, int]
+    assert r.env == env | {"AB_REQ": "req", "AB_CLI": 7, "AB_OS": "os", "AB_BOTH": "cli {{ x }}", "AB_BAD": 4}
+    assert [type(v) for v in r.env.values()] == [str, bool, bool, int, int, float, float, float, str, int, str, str, int]
     # the spelling of a number is the one a template writes
     assert r.render("[{{ env.AB_I }}][{{ env.AB_NEG }}][{{ env.AB_R }}][{{ env.AB_R3 }}][{{ env.AB_E }}]") == "[3][-7][0.5][3.0][1e+22]"
 
@@ -1292,7 +1292,7 @@ def test_p5_103_process_left_running_does_not_hold_the_run(prepared, tmp_path: P
             f"bash -c 'sleep 1; echo AB_B=late; printf \"AB_B=late\\0\" >&{dump_fd()}; touch {late}; exec sleep 60' &\necho $! > {pid}\nAB_A=a\n",
             env={"AB_A": None, "AB_B": "dflt"},
         )
-        assert time.monotonic() - began < 5 and r._env == {"AB_A": "a", "AB_B": "dflt"}
+        assert time.monotonic() - began < 5 and r.env == {"AB_A": "a", "AB_B": "dflt"}
         while not late.exists():  # the process had the shell's descriptors, and wrote to them: it is the sleeper by then
             assert time.monotonic() - began < 15
             time.sleep(0.05)
@@ -1322,7 +1322,7 @@ def test_p5_104_environment_that_cannot_be_read_sets_nothing_and_is_a_warning(pr
     monkeypatch.setenv("AB_B", "os")
     script = script.replace("@TMP@", str(tmp_path)).replace("@FD@", str(dump_fd()))
     r = prepared(script, env={"AB_A": "dflt", "AB_B": "dflt", "AB_C": None}, given={"AB_C": "cli"})
-    assert r._env == {"AB_A": "dflt", "AB_B": "os", "AB_C": "cli"}
+    assert r.env == {"AB_A": "dflt", "AB_B": "os", "AB_C": "cli"}
     out, err = capfd.readouterr()
     assert out == "" and "\0" not in err
     assert progress(err) == [">> prepare: running local script" if script.startswith("#!") else RUNNING, UNREAD, DONE]
@@ -1515,7 +1515,7 @@ def test_p5_109_shell_of_any_name_sources_the_script(prepared, capsys, monkeypat
     rest = " ".join(["", *words])
     for shebang in (f"#!{shutil.which(program)}{rest}", f"#!/usr/bin/env {shell}", f"#!{shutil.which(program)}{rest} -eu"):
         r = prepared(f"{shebang}\nAB_A=plain\nexport AB_B='two\nlines='\nunset AB_OS\nexit 0\n", env={"AB_A": None, "AB_B": None, "AB_OS": "dflt"})
-        assert r._env == {"AB_A": "plain", "AB_B": "two\nlines=", "AB_OS": "dflt"}
+        assert r.env == {"AB_A": "plain", "AB_B": "two\nlines=", "AB_OS": "dflt"}
         assert progress(capsys.readouterr().err) == [">> prepare: running local script", DONE]
 
 
@@ -1525,7 +1525,7 @@ def test_p5_109_words_of_a_shebang_are_the_command(prepared, tmp_path: Path):
     environment of the shell it starts."""
     out = tmp_path / "out"
     r = prepared(f"#!/usr/bin/env AB_B=word bash --norc\nps -o args= -p $$ > {out}\nAB_A=${{BASH_VERSION:+bash}}\n", env={"AB_A": None, "AB_B": None})
-    assert r._env == {"AB_A": "bash", "AB_B": "word"}
+    assert r.env == {"AB_A": "bash", "AB_B": "word"}
     assert out.read_text().startswith("bash --norc -c set -a; trap ")
 
 
@@ -1536,7 +1536,7 @@ def test_p5_109_shebang_without_a_word_is_no_shebang(prepared, capsys, tmp_path:
     out = tmp_path / "out"
     r = prepared(f"{first}\nps -o args= -p $$ > {out}\nAB_A=set\n", env={"AB_A": None})
     assert out.read_text().startswith("/bin/sh -c set -a; trap ")
-    assert r._env == {"AB_A": "set"}
+    assert r.env == {"AB_A": "set"}
     assert progress(capsys.readouterr().err) == [RUNNING, DONE]
 
 
@@ -1559,11 +1559,11 @@ def test_p5_110_script_changes_unsets_and_sets_declared_variables(prepared, monk
         "AB_VERSION": "202511", "AB_IMAGE": None, "AB_KEPT": None, "AB_G": "g", "AB_H": 1,
     }
     r = prepared(script, env=env, given={"AB_VERSION": "202505", "AB_KEPT": "given", "AB_G": "cli", "AB_H": "8"})
-    assert r._env == {
+    assert r.env == {
         "AB_I": 42, "AB_T": False, "AB_R": 0.55, "AB_S": "s/more", "AB_U": "dflt", "AB_V": 5, "AB_BASE": "https://os.example",
         "AB_VERSION": "202505", "AB_IMAGE": "https://os.example/202505/sonic.swi", "AB_KEPT": "given", "AB_G": "cli", "AB_H": 8,
     }
-    assert [type(v) for v in r._env.values()] == [int, bool, float, str, str, int, str, str, str, str, str, int]
+    assert [type(v) for v in r.env.values()] == [int, bool, float, str, str, int, str, str, str, str, str, int]
 
 
 def test_p5_110_sonic_example_composes_its_image_unless_it_is_given(timeline, prep_tmp, monkeypatch):
@@ -1578,7 +1578,7 @@ def test_p5_110_sonic_example_composes_its_image_unless_it_is_given(timeline, pr
         r = Runner(config, {"DUT": "sw1", **given})
         with pytest.raises(AttachRecorded):
             r.run()
-        return r._env["SONIC_IMAGE"]
+        return r.env["SONIC_IMAGE"]
 
     assert image() == url.format("https://ci.corp.io", "202511")
     assert image(SONIC_VERSION="202505") == url.format("https://ci.corp.io", "202505")
@@ -1607,9 +1607,9 @@ def test_p5_111_default_comes_back_as_it_is_from_a_script_that_leaves_it_alone(p
     converts back to the same value of the same type: a string exactly, a boolean, an integer of any size
     (4300 digits is what Python writes), a number with its zero fraction, its exponent and its sign."""
     r = prepared(f"{shebang}true\n", env=ROUND_TRIP)
-    assert r._env == ROUND_TRIP and list(r._env) == list(ROUND_TRIP)
-    assert [type(v) for v in r._env.values()] == [type(v) for v in ROUND_TRIP.values()]
-    assert math.copysign(1, r._env["AB_NZ"]) == -1
+    assert r.env == ROUND_TRIP and list(r.env) == list(ROUND_TRIP)
+    assert [type(v) for v in r.env.values()] == [type(v) for v in ROUND_TRIP.values()]
+    assert math.copysign(1, r.env["AB_NZ"]) == -1
 
 
 @pytest.mark.parametrize("given", [{}, {"AB_A": "cli", "AB_N": " 9 ", "AB_REQ": ""}], ids=["none", "options"])
@@ -1629,7 +1629,7 @@ def test_p5_112_values_without_a_prepare_are_those_of_a_script_that_does_nothing
         try:
             r.run()
         except AttachRecorded:
-            results.append([(k, v, type(v)) for k, v in r._env.items()])
+            results.append([(k, v, type(v)) for k, v in r.env.items()])
         except ValueError as e:
             results.append(str(e))
     assert results[0] == results[1] == results[2]
@@ -1658,9 +1658,9 @@ def test_p5_113_declared_name_that_a_shell_or_an_environment_cannot_hold(timelin
         r = make_runner([], prepare=script and script.format(f'echo "$AB_OK" > {seen}'), env=ODD_NAMES, given=given)
         with pytest.raises(AttachRecorded):
             r.run()
-        assert r._env == ODD_NAMES | given | ({"1X": 8} if "1X" in given else {})
+        assert r.env == ODD_NAMES | given | ({"1X": 8} if "1X" in given else {})
         assert script is None or seen.read_text() == "ok\n"
-        assert r.render("{{ env['MY.VAR'] }} {{ env['A=B'] }}") == " ".join(r._env[k] for k in ("MY.VAR", "A=B"))
+        assert r.render("{{ env['MY.VAR'] }} {{ env['A=B'] }}") == " ".join(r.env[k] for k in ("MY.VAR", "A=B"))
 
 
 def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timeline, prep_tmp):
@@ -1675,7 +1675,7 @@ def test_p5_113_default_that_utf8_cannot_encode_fails_a_run_with_a_prepare(timel
     r = make_runner([], env=env)
     with pytest.raises(AttachRecorded):
         r.run()
-    assert r._env == env
+    assert r.env == env
 
 
 @pytest.mark.parametrize("shebang", EACH_SHELL)
@@ -1684,7 +1684,7 @@ def test_p5_113_default_with_a_surrogate_of_a_byte_comes_back_as_it_is(prepared,
     of a value that isn't UTF-8, so a default with one is in the script's environment as that byte, and
     comes back unchanged."""
     env = {"AB_A": "a\udcffb", "AB_B": "\udc80"}
-    assert prepared(f"{shebang}true\n", env=env)._env == env
+    assert prepared(f"{shebang}true\n", env=env).env == env
 
 
 def test_p5_113_cli_reports_a_default_that_utf8_cannot_encode_as_a_failed_run(prep_tmp: Path, tmp_path: Path, monkeypatch):
@@ -1729,7 +1729,7 @@ def test_p5_113_default_too_large_for_an_environment_fails_a_run_with_a_prepare(
         r = make_runner([], prepare=script, env={"AB_A": value})
         with pytest.raises(AttachRecorded):
             r.run()
-        assert r._env["AB_A"] == value
+        assert r.env["AB_A"] == value
 
 
 @pytest.mark.parametrize("script", [None, "AB_NEW=new\nAB_A=changed\nexport AB_OTHER=o\n"], ids=["no-prepare", "prepare"])

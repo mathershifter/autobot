@@ -102,6 +102,12 @@ class Runner:
         return self._vars
 
     @property
+    def env(self) -> Mapping[str, Any]:
+        """The run's `env` as templates read it (SPEC, The environment in templates): the declared variables
+        with their typed values, resolved by `run` once `prepare` has run; empty before that."""
+        return self._env
+
+    @property
     def errors(self) -> Sequence[str]:
         return self._errors
 
