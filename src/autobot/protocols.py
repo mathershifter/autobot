@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import MutableMapping, Sequence
+    from collections.abc import Mapping, MutableMapping, Sequence
     from contextlib import AbstractContextManager
 
     import pydantic
 
     from .log import OutputLost
     from .models import Config, Prompt, Step
-    from .session import PromptHandler, Session
+    from .session import PromptHandler
 
 
 class Reporter(Protocol):
@@ -47,9 +47,40 @@ class Reporter(Protocol):
         ...
 
 
+@runtime_checkable
+class SessionLike(Protocol):
+    """What a step does with the session (`autobot.session.Session` is one): the built-in steps and plugins
+    use these and nothing else. A prompt wait is `get_prompt`; `sendline` sends a line, `sendcontrol` a
+    control character; `check_rc` is the `$?` check; `sleep` waits while the child is read."""
+
+    @property
+    def ctx(self) -> Mapping[str, str]:
+        """`session.before` and `session.match` of the templates: what the last `after` or prompt wait set."""
+        ...
+
+    @property
+    def posix(self) -> bool:
+        """Whether the session is at a shell prompt of a `posix` prompt: the shell there has `$?`."""
+        ...
+
+    def get_prompt(
+        self, timeout: float = 300, errors: Sequence[str] | None = None, capture: bool = True, solicit: bool = True
+    ) -> str: ...
+
+    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300) -> None: ...
+
+    def sendcontrol(self, char: str, *, timeout: float = 300) -> None: ...
+
+    def check_rc(self, timeout: float = 300, *, posix: bool = False) -> int: ...
+
+    def sleep(self, seconds: float) -> None: ...
+
+
 class RunnerContext(Protocol):
     @property
-    def session(self) -> Session: ...
+    def session(self) -> SessionLike:
+        """The session of the run (see `SessionLike`)."""
+        ...
 
     @property
     def config(self) -> Config:
