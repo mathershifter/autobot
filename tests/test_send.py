@@ -1569,3 +1569,87 @@ def test_p8_59_control_byte_has_a_byte_for_the_keys_of_a_control_step():
             assert str(e) == f"{terminal_mod.CONTROL_NOTE}, got '{char}'"
         else:
             assert CONTROL_RE.fullmatch(char) is not None and len(byte) == 1, char
+
+
+# -- P8-60: a send of which the pty took nothing ------------------------------------------------------
+
+
+def _taking_nothing(monkeypatch: pytest.MonkeyPatch, error: type[BaseException]) -> None:
+    """The session's pty takes nothing of a write: `Pty.write` ends with `error` and 0 bytes done."""
+
+    def write(self, data, deadline, timeout, what, reader):
+        self.done = 0
+        raise error(f"timed out after {timeout}s while sending {what} (0 of {len(data)} bytes sent)")
+
+    monkeypatch.setattr(terminal_mod.Pty, "write", write)
+
+
+def _state(s: Session) -> tuple:
+    return (s._prompt.at_prompt, s._prompt.held, s._send.line, s._send.solicit, s._send.partial, s._send.unanswered)
+
+
+@pytest.mark.parametrize("send", ["line", "control"])
+@pytest.mark.parametrize("before", ["at-prompt", "after-a-command"])
+def test_p8_60_send_of_which_the_pty_took_nothing_leaves_the_session_where_it_was(
+    shell_session: Session, monkeypatch: pytest.MonkeyPatch, sent: SentLog, send: str, before: str
+):
+    """SPEC "The length of a sent line": a send of which the pty took nothing leaves no part of a line, and
+    none of what follows a failed send applies: the session is where it was. At its prompt, the next prompt
+    wait returns at once; after a command, the next wait still strips the command's echo, captures its
+    output and presses no Return. Before the fix a `TimeoutError` with 0 bytes sent left the session at no
+    prompt, after no line and without its solicit."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    if before == "after-a-command":
+        s.sendline("echo hi", timeout=5)
+    state = _state(s)
+    _taking_nothing(monkeypatch, TimeoutError)
+    with pytest.raises(TimeoutError, match=r"\(0 of \d+ bytes sent\)$"):
+        if send == "line":
+            s.sendline("echo never", timeout=5)
+        else:
+            s.sendcontrol("c", timeout=5)
+    monkeypatch.undo()
+    assert _state(s) == state
+    sent.clear()
+    if before == "at-prompt":
+        started = time.monotonic()
+        assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+    else:
+        assert s.get_prompt(timeout=5) == "hi\n"
+    assert sent == []  # no solicit newline
+
+
+def test_p8_60_real_write_that_takes_nothing_leaves_the_session_at_its_prompt(attach, monkeypatch: pytest.MonkeyPatch):
+    """The same through `Pty.write` itself: `os.write` takes nothing until the timeout (P8-53)."""
+    s = attach(BASH)
+    state = _state(s)
+    assert state[0] is True
+    _calls(monkeypatch, s, lambda n, fd, data, real: 0)
+    with pytest.raises(TimeoutError, match=r"^timed out after 0\.5s while sending a line \(0 of 5 bytes sent\)$"):
+        s.sendline("true", timeout=0.5)
+    monkeypatch.undo()
+    assert _state(s) == state
+    started = time.monotonic()
+    assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+
+
+def test_p8_60_send_of_which_the_pty_took_a_byte_is_a_failed_send(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """The line between the two: one byte taken, and the session is at no prompt, after no line, with part
+    of a line typed (P8-42, P8-48), and the count of writes has the send either way."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    writes = s._send.writes
+
+    def write(self, data, deadline, timeout, what, reader):
+        self.done = 1
+        raise TimeoutError(f"timed out after {timeout}s while sending {what} (1 of {len(data)} bytes sent)")
+
+    monkeypatch.setattr(terminal_mod.Pty, "write", write)
+    with pytest.raises(TimeoutError, match=r"\(1 of 10 bytes sent\)$"):
+        s.sendline("echo nine", timeout=5)
+    assert _state(s) == (False, None, None, False, True, False) and s._send.writes == writes + 1
+    _taking_nothing(monkeypatch, TimeoutError)
+    with pytest.raises(TimeoutError):
+        s.sendcontrol("c", timeout=5)
+    assert _state(s) == (False, None, None, False, True, False) and s._send.writes == writes + 2

@@ -174,7 +174,8 @@ class SendState:
     of them, until a control character is sent: no line is sent and no Return pressed while it is.
     `unanswered` is True only after a prompt whose answer could not be sent, until something is sent: no
     Return is pressed while it is. `control_at` is when the last control character was written (monotonic;
-    -inf before any). `writes` counts the sends that got as far as the write, over the life of the session."""
+    -inf before any). `writes` counts the sends that got as far as the write, over the life of the session,
+    and `took` is the bytes of the last of them that the pty took: 0 for a send that sent nothing at all."""
 
     line: str | None = None
     solicit: bool = True
@@ -182,6 +183,7 @@ class SendState:
     unanswered: bool = False
     control_at: float = -math.inf
     writes: int = 0
+    took: int = 0
 
 
 @dataclass
@@ -394,7 +396,7 @@ class Session:
     def _forget(self):
         """Drop what is known of a child: its prompt, the last line sent to it and whether to solicit."""
         self._prompt = PromptState()
-        self._send = SendState(writes=self._send.writes)  # the count is of the session, not of a child
+        self._send = SendState(writes=self._send.writes, took=self._send.took)  # the count is of the session, not of a child
 
     def attach(self, spawn: str, env: dict[str, str] | None = None, timeout: float = 300):
         # nothing of an earlier child applies to this one
@@ -657,11 +659,18 @@ class Session:
         self._send.solicit = solicit
         try:
             self._put_line(line, timeout)
-        except (LineTooLong, PartialLine, KeyboardInterrupt):
-            if self._send.writes == send.writes:  # it never got to the write: the session is where it was
-                self._prompt, self._send = prompt, send
+        except BaseException:
+            self._restore_if_nothing_sent(prompt, send)
             raise
         self._send.unanswered = False
+
+    def _restore_if_nothing_sent(self, prompt: PromptState, send: SendState):
+        """A send failed. One that never got to the write, or of which the pty took nothing, whatever ended
+        it, sent nothing at all: the session is where it was before it (SPEC: a send of which the pty took
+        nothing leaves no part of a line). The count of writes is the session's, and stays."""
+        if self._send.writes == send.writes or self._send.took == 0:
+            send.writes, send.took = self._send.writes, self._send.took
+            self._prompt, self._send = prompt, send
 
     def _put_line(self, line: str, timeout: float, of: float | None = None):
         """Write a line and its line break to the child. `of`: the timeout of the wait the send is part
@@ -725,7 +734,8 @@ class Session:
         What is read is read as a wait reads it, and is the start of what the next wait reads. A write
         that fails leaves the session at no prompt and after no line. The part that was written is on the
         child's input line: until a control character is sent, no prompt wait presses Return and no line
-        is sent, which would enter it.
+        is sent, which would enter it. `_send.took` says how much was written: a send of which the pty
+        took nothing is put back where it was by `sendline` and `sendcontrol`.
         """
         cld = self._cld
         assert cld
@@ -742,6 +752,8 @@ class Session:
             if isinstance(e, pexpect.EOF) or closed(e):
                 raise EOFError(f"connection closed while sending {what}") from e
             raise
+        finally:
+            self._send.took = pty.done
 
     def check_rc(self, timeout: float = 300, *, posix: bool = False) -> int:
         """`posix`: the check is made only because the prompt is a `posix` one. A timeout then names it."""
@@ -770,10 +782,15 @@ class Session:
         if not self._cld:
             raise RuntimeError("not attached")
         control_byte(char)  # refused before any state changes
+        prompt, send = copy.copy(self._prompt), copy.copy(self._send)
         self._prompt.at_prompt = False
         self._send.solicit = True
         self._prompt.held = None
-        self._put_control(char, timeout)
+        try:
+            self._put_control(char, timeout)
+        except BaseException:
+            self._restore_if_nothing_sent(prompt, send)
+            raise
         self._send.unanswered = False
 
     def sleep(self, seconds: float):
