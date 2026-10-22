@@ -59,6 +59,17 @@ def _error(type_: str, msg: str, loc: tuple, input_: Any) -> dict[str, Any]:
     return {"type": _custom(type_, msg), "loc": loc, "input": input_}
 
 
+class _Errors(list):
+    """The errors a model validator collects, raised together as one `ValidationError`."""
+
+    def add(self, type_: str, msg: str, loc: tuple, input_: Any) -> None:
+        self.append(_error(type_, msg, loc, input_))
+
+    def raise_for(self, model: type) -> None:
+        if self:
+            raise pydantic.ValidationError.from_exception_data(model.__name__, self)
+
+
 _EMPTY_REGEX = "a regex must not be empty: an empty regex matches at once, before any output"
 
 
@@ -245,50 +256,53 @@ class Prompt(pydantic.BaseModel):
     @classmethod
     def _check_expect(cls, data: Any, handler: pydantic.ModelWrapValidatorHandler[Prompt]) -> Prompt:
         self = handler(data)
-        # a single regex is reported at expect, an entry of a list at expect.<i>
-        single = isinstance(data, dict) and isinstance(data.get("expect"), str)
-        send = self.send if isinstance(self.send, SendEach) else None
-        errors = []
+        errors = _Errors()
         if self.is_shell_prompt and self.send is not None:
-            errors.append(_error(
+            errors.add(
                 "return_with_send",
                 "a return prompt is a shell prompt and sends nothing; remove send or return",
                 ("send",), self.model_dump(by_alias=True)["send"],
-            ))
+            )
         if self.posix and self.send is not None:
-            errors.append(_error(
+            errors.add(
                 "posix_with_send",
                 "posix marks the shell prompt of a POSIX shell, and a prompt with send is no shell prompt; "
                 "remove send or posix",
                 ("posix",), True,
-            ))
-        if send and send.fields:
+            )
+        # a single regex is reported at expect, an entry of a list at expect.<i>
+        self._expect_errors(errors, single=isinstance(data, dict) and isinstance(data.get("expect"), str))
+        errors.raise_for(cls)
+        return self
+
+    def _expect_errors(self, errors: _Errors, *, single: bool) -> None:
+        if isinstance(self.send, SendEach) and self.send.fields:
             if self.expect is not None:
-                errors.append(_error(
+                errors.add(
                     "expect_with_fields",
                     "a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes",
                     ("expect",), self.expect,
-                ))
-        elif self.expect is None:
+                )
+            return
+        if self.expect is None:
             errors.append({"type": "missing", "loc": ("expect",), "input": self.model_dump(by_alias=True)})
-        elif not self.expect:
-            errors.append(_error("too_short", "expect must be a regex or a non-empty list of regexes", ("expect",), []))
-        else:
-            for i, entry in enumerate(self.expect):
-                if isinstance(entry, list):
-                    errors.append(_error(
-                        "grouped_expect",
-                        "each expect entry is a single regex, and the regexes are alternatives; "
-                        "to answer a sequence of prompts such as a login, use sendEach with fields",
-                        ("expect", i), entry,
-                    ))
-                elif entry == "":
-                    errors.append(_error("string_too_short", _EMPTY_REGEX, ("expect",) if single else ("expect", i), ""))
-                elif msg := _regex_error(entry):
-                    errors.append(_error("invalid_regex", msg, ("expect",) if single else ("expect", i), entry))
-        if errors:
-            raise pydantic.ValidationError.from_exception_data(cls.__name__, errors)
-        return self
+            return
+        if not self.expect:
+            errors.add("too_short", "expect must be a regex or a non-empty list of regexes", ("expect",), [])
+            return
+        for i, entry in enumerate(self.expect):
+            at = ("expect",) if single else ("expect", i)
+            if isinstance(entry, list):
+                errors.add(
+                    "grouped_expect",
+                    "each expect entry is a single regex, and the regexes are alternatives; "
+                    "to answer a sequence of prompts such as a login, use sendEach with fields",
+                    ("expect", i), entry,
+                )
+            elif entry == "":
+                errors.add("string_too_short", _EMPTY_REGEX, at, "")
+            elif msg := _regex_error(entry):
+                errors.add("invalid_regex", msg, at, entry)
 
 
 class Function(pydantic.BaseModel):
