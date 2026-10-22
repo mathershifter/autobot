@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import re
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -197,13 +198,9 @@ class BlockExecutor:
 
     def execute(self, step: BlockStep, ctx: RunnerContext, timeout: float) -> None:
         ctx.reporter.say(f"block enter: {step.block.name}", "group")
-        if step.block.prompts:
-            saved_handlers = ctx.session.save_handlers()
-            block_handlers = [ctx.build_handler(p) for p in step.block.prompts]
-            ctx.session.restore_handlers(block_handlers)
-        else:
-            saved_handlers = None
-        try:
+        # a block without prompts leaves the session's as they are: no swap, no restore
+        swap = ctx.prompts(step.block.prompts) if step.block.prompts else contextlib.nullcontext()
+        with swap:
             try:
                 if step.block.enter:
                     ctx.run_steps(step.block.enter)
@@ -212,9 +209,6 @@ class BlockExecutor:
                 if step.block.breakout:
                     ctx.reporter.say(f"block breakout: {step.block.name}", "group")
                     ctx.run_breakout(step.block.breakout, "block breakout")
-        finally:
-            if saved_handlers is not None:
-                ctx.session.restore_handlers(saved_handlers)
         ctx.reporter.say(f"block completed: {step.block.name}", "ok")
 
 

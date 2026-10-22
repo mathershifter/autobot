@@ -10,7 +10,6 @@ if TYPE_CHECKING:
 
     from .log import OutputLost
     from .models import Config, Prompt, Step
-    from .session import PromptHandler
 
 
 class Reporter(Protocol):
@@ -115,7 +114,12 @@ class RunnerContext(Protocol):
 
     def run_breakout(self, steps: list, what: str = "breakout") -> None: ...
 
-    def build_handler(self, prompt: Prompt) -> PromptHandler: ...
+    def prompts(self, prompts: list[Prompt]) -> AbstractContextManager[None]:
+        """The session's prompts are those of `prompts` for the body, as in a block with `prompts`: the
+        handlers are built from the models on entry (a `sendEach` collection that can't be resolved is a
+        `ScriptError` there, and nothing is swapped), and the previous ones are restored on exit, whatever
+        ends the body (see SPEC, block, "Prompt state across a swap")."""
+        ...
 
 
 class StepExecutor(Protocol):

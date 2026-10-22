@@ -1,8 +1,7 @@
 """P4: ``get_prompt``, prompt forms and credential cycling.
 
 SPEC "prompts" and "Prompt Handling". Session-level tests build handlers through
-``Runner.build_handler`` (via ``make_runner``) so prompt models go through
-the real path. The device side is ``tests/fakes/device.py`` (fixture F2).
+the runner (via ``make_runner``) so prompt models go through the real path. The device side is ``tests/fakes/device.py`` (fixture F2).
 """
 
 from __future__ import annotations

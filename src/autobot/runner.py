@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import datetime
 import math
 import re
-from collections.abc import Callable, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -261,9 +262,22 @@ class Runner:
         return fn.script
 
     def _handlers(self) -> list[PromptHandler]:
-        return [self.build_handler(p) for p in self._config.prompts]
+        return [self._handler(p) for p in self._config.prompts]
 
-    def build_handler(self, prompt: Prompt) -> PromptHandler:
+    @contextlib.contextmanager
+    def prompts(self, prompts: list[Prompt]) -> Iterator[None]:
+        """Swap the session's prompts for those of `prompts` while the body runs, and restore the previous
+        ones on the way out, however the body ends: the block lifecycle's steps 1 and 5. The handlers are
+        built first, from the run's `vars` as they are now; an error there swaps nothing."""
+        handlers = [self._handler(p) for p in prompts]
+        saved = self._session.save_handlers()
+        self._session.restore_handlers(handlers)
+        try:
+            yield
+        finally:
+            self._session.restore_handlers(saved)
+
+    def _handler(self, prompt: Prompt) -> PromptHandler:
         send = prompt.send
         expect = [e for e in prompt.expect or [] if isinstance(e, str)]  # grouped entries are rejected
         if send is None:  # a shell prompt (a return prompt can't have send)

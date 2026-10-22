@@ -75,8 +75,6 @@ class PromptHandler:
         self.patterns = patterns
         # slot k: a match regex of fields entry k; None: an expect regex (sendEach without fields)
         self.slots = slots if slots is not None else [None] * len(patterns)
-        self.start = 0
-        self.end = len(patterns)
         self._sets = responses
         self.reset()
 
@@ -228,21 +226,22 @@ class PromptWait:
 
 class PatternTable:
     """The patterns of a prompt wait, in the order pexpect gets them: the line break, an escape sequence,
-    the regexes of each handler in turn (a handler's `start` to `end`), a run of stray characters, then
-    TIMEOUT and EOF. pexpect takes the earliest match, and the first of the list on a tie: a prompt regex
+    the regexes of each handler in turn, a run of stray characters, then TIMEOUT and EOF. The table keeps
+    where each handler's slice starts and ends; the handlers are not written to, so one can be in several
+    tables. pexpect takes the earliest match, and the first of the list on a tie: a prompt regex
     that itself starts at a leading `\\r` beats the stray run. The regexes are compiled once, as pexpect
     compiles a string (`re.DOTALL`). One that doesn't compile leaves them all as strings, so that the next
     prompt wait reports the error (SPEC: a prompt regex that isn't valid), and a scan finds nothing."""
 
     def __init__(self, handlers: list[PromptHandler]):
-        self._handlers = handlers
         patterns: list[str | re.Pattern[str]] = [r"\r\n", ANSI_ESCAPE_RE]
         self.line_break = 0
         self.escape = 1
+        self._slices: list[tuple[int, int, PromptHandler]] = []  # (start, end, handler), in table order
         for h in handlers:
-            h.start = len(patterns)
-            h.end = h.start + len(h.patterns)
+            start = len(patterns)
             patterns.extend(h.patterns)
+            self._slices.append((start, len(patterns), h))
         self.stray = len(patterns)
         patterns.append(STRAY_RE)
         self.timeout = len(patterns)
@@ -255,9 +254,13 @@ class PatternTable:
         # what a wait hands to pexpect
         self.patterns: list = [*(patterns if self.regexes is None else self.regexes), pexpect.TIMEOUT, pexpect.EOF]
 
-    def handler_for(self, i: int) -> PromptHandler | None:
-        """The handler whose regex is at index `i`, or None for a pattern of the engine's own."""
-        return next((h for h in self._handlers if h.start <= i < h.end), None)
+    def handler_for(self, i: int) -> tuple[PromptHandler, int] | None:
+        """The handler whose regex is at index `i`, with the index of that regex among the handler's own
+        patterns; None for a pattern of the engine's own."""
+        for start, end, h in self._slices:
+            if start <= i < end:
+                return h, i - start
+        return None
 
 
 class Session:
@@ -376,8 +379,9 @@ class Session:
             start, i, end = min(found)
             read += text[:start]
             held = False
-            h = table.handler_for(i)
-            if h is not None:
+            hit = table.handler_for(i)
+            if hit is not None:
+                h = hit[0]
                 if not (h.is_return and _mid_echo(read, sent)):
                     at_prompt = h.is_return and (not whole or end == len(text))
                     return ScanResult(at_prompt, None, h if h.is_return else None)
@@ -496,15 +500,16 @@ class Session:
                 wait.output.append(before)
             if i == table.eof:
                 raise EOFError(f"connection closed while waiting for {self._prompt_what()}")
-            h = table.handler_for(i)  # None: an escape sequence or stray characters, consumed
-            if h is None:
+            hit = table.handler_for(i)  # None: an escape sequence or stray characters, consumed
+            if hit is None:
                 continue
+            h, k = hit
             if h.is_return:
                 match = self._on_shell_prompt(wait, h, before)
                 if match is not None:
                     return self._finish(wait, match, errors, capture)
             else:
-                self._answer(wait, h, i)
+                self._answer(wait, h, k)
 
     def _begin_wait(self, timeout: float, solicit: bool) -> PromptWait:
         """Start a prompt wait. Takes the last line sent (`_send.line`, cleared: its echo is stripped from
@@ -563,13 +568,14 @@ class Session:
         self._prompt.text, self._prompt.handler = before + after, h
         return after
 
-    def _answer(self, wait: PromptWait, h: PromptHandler, i: int) -> None:
-        """A prompt with responses matched, at the regex of index `i`. Sends the response `h` picks for it,
-        within what is left of the wait (`wait.deadline`, `wait.timeout`). Sets `_send.unanswered` when the
-        response could not be sent (none left, or one that could not be rendered or sent): the prompt is
-        still waiting for one. Records a credentials prompt in `_login` as answered, open and pending."""
+    def _answer(self, wait: PromptWait, h: PromptHandler, k: int) -> None:
+        """A prompt with responses matched, at the regex of index `k` among `h`'s own. Sends the response
+        `h` picks for it, within what is left of the wait (`wait.deadline`, `wait.timeout`). Sets
+        `_send.unanswered` when the response could not be sent (none left, or one that could not be
+        rendered or sent): the prompt is still waiting for one. Records a credentials prompt in `_login`
+        as answered, open and pending."""
         try:
-            self._put_line(h.respond(i - h.start), wait.deadline - time.monotonic(), wait.timeout)
+            self._put_line(h.respond(k), wait.deadline - time.monotonic(), wait.timeout)
         except (LineTooLong, PartialLine) as e:
             self._send.unanswered = True
             raise type(e)(f"prompt '{h.name}': {e}") from None
