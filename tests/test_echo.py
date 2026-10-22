@@ -15,7 +15,7 @@ from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
 from autobot.errors import CommandError, LineTooLong
-from autobot.screen import _inside, _mid_echo, _shown, strip_echo
+from autobot.screen import _inside, _shown, mid_echo, strip_echo
 from autobot.session import HELD_GRACE, PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
@@ -809,7 +809,7 @@ def test_p8_56_first_bytes_of_a_character_taken_back(ch: str, blanks: int):
         text = read(raw + b"\r\nout\r\n")
         assert text.count(CUT) == 2 and text.count("\b") == 2 * (blanks + part)
         assert strip_echo(text, sent) == "out\n"
-        assert _mid_echo(read(raw), sent) and _mid_echo(read(raw[: raw.index(b"cd")]), sent)
+        assert mid_echo(read(raw), sent) and mid_echo(read(raw[: raw.index(b"cd")]), sent)
         # in the window of a scrolled line, which may start inside a character itself
         window = b"echo \r<" + ch.encode()[1:] + raw[5:] + b"\r\nout\r\n"
         assert strip_echo(read(window), f"echo {ch}{sent[5:]}") == "out\n"

@@ -28,7 +28,7 @@ from conftest import (
 from autobot.models import SendEach
 from autobot.prompts import send_each_sets
 from autobot.runner import Runner
-from autobot.screen import _mid_echo
+from autobot.screen import mid_echo
 from autobot.session import HELD_GRACE, HeldPrompt, PromptHandler, Session
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
@@ -1272,4 +1272,4 @@ def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
 )
 def test_p4_44_mid_echo(read: str, sent: str | None, expected: bool):
     """A prompt is held only while what was read since the send shows the start of the sent line."""
-    assert _mid_echo(read, sent) is expected
+    assert mid_echo(read, sent) is expected

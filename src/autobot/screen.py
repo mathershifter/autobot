@@ -167,9 +167,15 @@ def _write(target: str, readings: set[tuple[int, int]], part: str, rewrite: bool
     return new
 
 
-def _mid_echo(read: str, sent: str | None) -> bool:
+def mid_echo(read: str, sent: str | None) -> bool:
     """Whether `read`, all that came since the line `sent` went out, is its echo still being written:
-    no line break yet, and what it shows is the start of the line or all of it. Read as `strip_echo` reads."""
+    no line break yet, and what it shows is the start of the line or all of it. Read as `strip_echo` reads.
+
+    A prompt wait uses it for a shell prompt matched inside the echo (see `session`): with `sent` of
+    `show version`, a `read` of `show ver` is the echo so far (True), and so is `show version` whole
+    (True: a prompt written again at the end of the line may follow); `show version\\r\\n` has its line
+    break (False), `sho ver` shows no start of the line (False), and with `sent` None nothing was sent
+    (False)."""
     if not sent or "\n" in read:
         return False
     limit = ECHO_PART * len(sent) + 1024

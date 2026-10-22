@@ -14,7 +14,7 @@ import pexpect
 
 from .errors import CommandError, LineTooLong, PartialLine, RunError, ScriptError
 from .log import ConsoleReporter, OutputLost
-from .screen import ANSI_ESCAPE_RE, STRAY_RE, _mid_echo, strip_echo
+from .screen import ANSI_ESCAPE_RE, STRAY_RE, mid_echo, strip_echo
 from .terminal import LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte, run_environ
 from .transcript import CleanWriter
 
@@ -399,7 +399,7 @@ class Session:
             hit = table.handler_for(i)
             if hit is not None:
                 h = hit[0]
-                if not (h.is_return and _mid_echo(read, sent)):
+                if not (h.is_return and mid_echo(read, sent)):
                     at_prompt = h.is_return and (not whole or end == len(text))
                     return ScanResult(at_prompt, None, h if h.is_return else None)
                 read += "\r"  # a prompt that may be written again inside the echo: get_prompt holds it
@@ -580,7 +580,7 @@ class Session:
         cld = self._cld
         assert cld
         after = str(cld.after)
-        if _mid_echo("".join(wait.output), wait.sent):
+        if mid_echo("".join(wait.output), wait.sent):
             wait.output.append("\r")
             wait.held = HeldPrompt("", before + after, after, h)
             wait.held_at = len(wait.output)
