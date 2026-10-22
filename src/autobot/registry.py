@@ -7,6 +7,7 @@ import pydantic
 
 from .keys import BUILTIN_KEYS, COMMON_PROPS
 from .models import PluginStep
+from .steps import register_builtins
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -191,6 +192,7 @@ def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
 
 
 registry = StepRegistry()
+register_builtins(registry)
 
 
 def __getattr__(name: str) -> Any:

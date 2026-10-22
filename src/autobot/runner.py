@@ -14,7 +14,6 @@ from .prompts import build_handler
 from .registry import registry
 from .report import Left, RunOutcome, StepRef, step_ref, trail
 from .session import PromptHandler, Session
-from .steps import register_builtins
 from .terminal import run_environ
 from .templating import check_regex, check_template
 from .templating import render as render_template
@@ -22,9 +21,6 @@ from .types import text
 
 if TYPE_CHECKING:
     from .protocols import Reporter
-
-
-register_builtins(registry)
 
 
 def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dict[str, str]:
