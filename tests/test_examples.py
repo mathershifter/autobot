@@ -1,11 +1,13 @@
-"""P6-19/20, P6-74, P6-76, P6-112, P6-113: every example validates against the models and the schema, its shell prompt regexes read
-whole prompts and nothing else, and its breakout logs out and makes sure of it."""
+"""P6-19/20, P6-74, P6-76, P6-112, P6-113, P6-119, P6-120: every example validates against the models and the schema and
+writes back as the document it was read from, its shell prompt regexes read whole prompts and nothing else, and its
+breakout logs out and makes sure of it."""
 
 from __future__ import annotations
 
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,26 @@ def test_p6_20_examples_validate_schema(schema_validator: Any, path: Path):
     """SPEC "Architecture", "YAML Script Structure": examples are valid against the JSON schema."""
     errors = [e.message for e in schema_validator.iter_errors(load(path))]
     assert errors == []
+
+
+def dumped(config: Config) -> dict[str, Any]:
+    """`model_dump` as a document, with every warning an error: the step union's discriminator names the
+    member of a step that is a model already, so serialization never has to guess (`PydanticSerializationUnexpectedValue`)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        return config.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_120_examples_write_back_as_documents_without_a_warning(path: Path):
+    """SPEC "Python API": a `Config` is a pydantic model, so `model_dump` writes a document again. Each
+    example's document validates to a `Config` that dumps without a warning, to a document that validates to
+    an equal `Config` and dumps to the same document."""
+    config = Config.model_validate(load(path))
+    doc = dumped(config)
+    again = Config.model_validate(doc)
+    assert again == config
+    assert dumped(again) == doc
 
 
 def sent_lines(doc: Any) -> list[str]:
