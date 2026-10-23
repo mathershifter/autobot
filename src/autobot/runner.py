@@ -77,13 +77,11 @@ class Runner:
         self._typed = {key: typed(key, value, config.env[key], "--env") for key, value in given.items()}
         self._given = given
         self._env: dict[str, Any] = {}  # resolved by `run`, once `prepare` has run
-        self._errors = tuple(config.errors)
-        # the run's `vars`: a copy of the script's, taken again by each `run`, so that nothing a run
-        # registers or sets is seen by the next one, or written into the config
-        self._vars: dict[str, Any] = copy.deepcopy(config.vars)
+        # the run's `vars`: one mapping, filled from the script's again by each `run` (see `_start`)
+        self._vars: dict[str, Any] = {}
         # the top-level prompts are resolved here as well as at each run's start: a collection that can't
         # be, or a send template that doesn't parse, is an error before `prepare` runs
-        self._session = Session(self._handlers(), reporter=self._reporter, transcript=transcript, environ=self._environ)
+        self._session = Session(self._start(), reporter=self._reporter, transcript=transcript, environ=self._environ)
         self._stack: list[StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
@@ -99,6 +97,8 @@ class Runner:
 
     @property
     def vars(self) -> MutableMapping[str, Any]:
+        """The run's `vars`: the one mapping of this runner, which each `run` empties and fills again from
+        the script's section, so a reference taken before `run()` reads the run's values after it."""
         return self._vars
 
     @property
@@ -109,7 +109,8 @@ class Runner:
 
     @property
     def errors(self) -> Sequence[str]:
-        return self._errors
+        """The top-level `errors` patterns, read from the `Config` as it is now, like `vars` at a run's start."""
+        return tuple(self._config.errors)
 
     @property
     def reporter(self) -> Reporter:
@@ -126,7 +127,12 @@ class Runner:
             raise ValueError(f"undefined function: {name}")
         return fn.script
 
-    def _handlers(self) -> list[PromptHandler]:
+    def _start(self) -> list[PromptHandler]:
+        """A run's start, and the runner's: `vars` filled again, in place, with a copy of the script's section,
+        so that nothing a run registers or sets is seen by the next one or written into the config, and the
+        top-level prompts resolved from it."""
+        self._vars.clear()
+        self._vars.update(copy.deepcopy(self._config.vars))
         return [self._handler(p) for p in self._config.prompts]
 
     @contextlib.contextmanager
@@ -191,8 +197,7 @@ class Runner:
     def _run(self):
         attach = self._config.attach
         # the run's own `vars`, and the top-level prompts resolved from them, before `prepare` runs
-        self._vars = copy.deepcopy(self._config.vars)
-        self._session.restore_handlers(self._handlers())
+        self._session.restore_handlers(self._start())
         self._templater.check_template(attach.spawn)  # a syntax error stops the run before `prepare`
         timeout = self._get_timeout(attach)
         self._env = self._resolve_run_env()
