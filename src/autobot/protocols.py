@@ -131,7 +131,8 @@ class RunnerContext(Protocol):
         """The session's prompts are those of `prompts` for the body, as in a block with `prompts`: the
         handlers are built from the models on entry (a `sendEach` collection that can't be resolved is a
         `ScriptError` there, and nothing is swapped), and the previous ones are restored on exit, whatever
-        ends the body (see SPEC, block, "Prompt state across a swap")."""
+        ends the body (see SPEC, block, "Prompt state across a swap"). An empty list swaps the session's
+        prompts out for none, where a block without `prompts` swaps nothing."""
         ...
 
 
