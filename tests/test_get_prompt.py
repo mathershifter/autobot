@@ -1236,7 +1236,8 @@ def test_p4_44_output_without_an_echo_is_not_held(raw_device: Callable[..., Sess
     assert time.monotonic() - started < 3
 
 
-def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
+def test_p4_44_scan_reads_as_the_wait_does():
+    """`Session._scan` reads a line as a prompt wait would, with and without the line sent."""
     s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
     assert s._scan("x \rPROMPT$ ", whole=True).at_prompt
     assert not s._scan("x \rPROMPT$ ", whole=True, sent="x").at_prompt

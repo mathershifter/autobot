@@ -156,7 +156,8 @@ class PromptState:
     `at_prompt` is True from a wait that ended at a shell prompt, or an `after` wait that read one, until
     anything is sent, the child is forgotten, or a swap of the handlers no longer takes the prompt for one.
     `text` is the line of the last shell prompt reached, as matched, and `handler` the one of the current
-    handlers whose regex matched it, or None; it is read only while `at_prompt`. `held` is a prompt an
+    handlers whose regex matched it, or None; a swap of the handlers judges it again (`_rejudge_prompt`),
+    and it is meaningful only while `at_prompt`. `held` is a prompt an
     `after` wait handed on to the next prompt wait: it is set only while `at_prompt` is False, and anything
     sent drops it."""
 
@@ -561,6 +562,7 @@ class Session:
         if wait.held:
             if cld.buffer == unread:
                 self._prompt.text, self._prompt.handler = wait.held.line, wait.held.handler
+                # the match means "finished", an empty one too: the caller tests `is not None`
                 return wait.held.match
             return None
         if not (wait.solicited or self._send.partial or self._send.unanswered) and all(
@@ -586,7 +588,7 @@ class Session:
             wait.held_at = len(wait.output)
             return None
         self._prompt.text, self._prompt.handler = before + after, h
-        return after
+        return after  # the match means "finished", an empty one too: the caller tests `is not None`
 
     def _answer(self, wait: PromptWait, h: PromptHandler, k: int) -> None:
         """A prompt with responses matched, at the regex of index `k` among `h`'s own. Sends the response
