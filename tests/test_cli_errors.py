@@ -18,11 +18,11 @@ import yaml
 from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli
 
 from autobot import cli
+from autobot.errors import CommandError, RunError, ScriptError, StepFailure
 from autobot.registry import PluginError
-from autobot.runner import Runner, StepRef, trail
-from autobot.session import CommandError
-from autobot.steps import CmdExecutor, StepFailure
-from autobot.types import RunError, ScriptError
+from autobot.report import StepRef, trail
+from autobot.runner import Runner
+from autobot.steps import CmdExecutor
 
 PIN = {"name": "pin", "expect": ["PIN:"], "send": {"each": "vars.pins"}}
 BOOLEAN = (
@@ -305,7 +305,7 @@ def test_p6_84_unexpected_error_outside_a_run_is_reported_the_same_way(
     assert code == 70
     assert err.startswith("Unexpected error in Autobot: ") and err.rstrip().endswith("KeyError: 'loading'")
 
-    monkeypatch.setattr(cli, "load_schema", boom)
+    monkeypatch.setattr(cli.schema, "load_schema", boom)
     code, out, err = _main(monkeypatch, capsys, "schema")
     assert (code, out) == (70, "")
     assert err.startswith("Unexpected error in Autobot: ") and "Traceback (most recent call last):" in err
@@ -436,7 +436,7 @@ def test_p6_85_trail_is_set_once_by_the_innermost_step(monkeypatch: pytest.Monke
     script = [{"block": {"name": "b", "script": [{"call": "f"}]}}]
     runner = Runner(make_config(script, fn={"f": {"script": [{"cmd": "true"}]}}), {})
     with pytest.raises(StepFailure) as ei:
-        runner.run_steps(runner.config.script)
+        runner.run_steps(runner.config.script, path="script")
     assert trail(ei.value) == (
         StepRef("script.0", "block", "block: b"),
         StepRef("script.0.block.script.0", "call", "call: f"),
@@ -685,7 +685,7 @@ def test_p6_87_traceback_flag_shows_the_traceback_of_an_expected_failure(tmp_pat
         assert lines[0] == "Traceback (most recent call last):"
         assert "jinja2.exceptions.UndefinedError: 'dict object' has no attribute 'nope'" in lines
         assert "The above exception was the direct cause of the following exception:" in lines
-        assert "autobot.types.ScriptError: template error: 'dict object' has no attribute 'nope'" in lines
+        assert "autobot.errors.ScriptError: template error: 'dict object' has no attribute 'nope'" in lines
         assert lines[-2:] == _lines(plain)
     assert "Traceback" not in plain.stderr
 
@@ -810,9 +810,9 @@ def test_p6_88_ctrl_c_while_loading_is_interrupted_too(
     def interrupt(*_args: object, **_kwargs: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.yaml, "load", interrupt)
+    monkeypatch.setattr(cli.loader.yaml, "load", interrupt)
     killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(cli.signals.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     handler = signal.getsignal(signal.SIGINT)
     try:
         # the process signals itself; where that returns (here: replaced), it exits with status 130
@@ -821,6 +821,63 @@ def test_p6_88_ctrl_c_while_loading_is_interrupted_too(
         assert signal.getsignal(signal.SIGINT) is signal.SIG_DFL  # nothing of Python's stands in the signal's way
     finally:
         signal.signal(signal.SIGINT, handler)
+
+
+def test_p6_88_ctrl_c_while_the_arguments_are_parsed_is_interrupted_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """An interrupt while the command line is parsed is one before the run as well: `Interrupted` alone, no
+    traceback, and the process signals itself. Before the fix the arguments were parsed outside the `try`,
+    and the interrupt left `main` with a traceback."""
+    def interrupt(self, *_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.argparse.ArgumentParser, "parse_args", interrupt)
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli.signals.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    handler = signal.getsignal(signal.SIGINT)
+    try:
+        argv = ["autobot", str(_script(tmp_path))]
+        monkeypatch.setattr(sys, "argv", list(argv))
+        with pytest.raises(SystemExit) as ei:
+            cli.main()
+        out = capsys.readouterr()
+        assert (ei.value.code, out.out, out.err) == (130, "", "Interrupted\n")
+        assert killed == [(os.getpid(), signal.SIGINT)]
+        assert sys.argv == argv  # `run` went into the arguments the parser got, not into the process's own
+    finally:
+        signal.signal(signal.SIGINT, handler)
+
+
+def test_p6_118_main_takes_its_arguments_and_leaves_sys_argv_alone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+):
+    """`cli.main(argv)` parses `argv`, the arguments after the command's name, as the console script
+    parses `sys.argv[1:]`: a script alone is `run <script>`, `validate` takes its options anywhere. Neither
+    form changes `sys.argv`. Before the fix `main` took no arguments and put `run` into `sys.argv`."""
+    path = _script(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["autobot", "--not-an-option-of-autobot"])
+
+    def run(*argv: str) -> tuple[Any, str, str]:
+        code = None
+        try:
+            cli.main(list(argv))
+        except SystemExit as e:
+            code = e.code
+        out = capsys.readouterr()
+        return code, out.out, out.err
+
+    code, out, err = run(str(path))  # `run <script>`: a run of the script's `cmd: true`
+    assert code is None and "PROMPT$ " in out and err.splitlines()[-1] == ">> run completed"
+    assert run("validate", str(path), "-q") == (None, "", "")
+    assert run("validate", str(path), str(path)) == (None, "", f"{path}: valid\n{path}: valid\n")
+    code, out, err = run("-h")
+    assert code == 0 and out.startswith("usage: autobot [-h] {run,validate,schema}") and err == ""
+    code, out, err = run()
+    assert code == 1 and out.startswith("usage: autobot [-h] {run,validate,schema}") and err == ""
+    code, out, err = run("run", "--bogus", str(path))
+    assert code == 2 and out == "" and "unrecognized arguments: --bogus" in err
+    assert sys.argv == ["autobot", "--not-an-option-of-autobot"]
 
 
 def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):

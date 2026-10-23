@@ -5,13 +5,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pydantic
 import pytest
-from conftest import make_doc, plugin_dist, run_cli
+from conftest import make_doc, make_runner, plugin_dist, run_cli
 
-from autobot.models import Config
+from autobot import models
+from autobot.models import PLUGINS, Config, PluginStep
 from autobot.registry import StepRegistry
+from autobot.runner import Runner
+from autobot.steps import register_builtins
 
 PLUGIN = '''
 from __future__ import annotations
@@ -81,6 +85,72 @@ def test_discovery_is_lazy_and_idempotent(
         )
     reg.discover()
     assert reg.discover_calls == 1  # type: ignore[attr-defined]
+
+
+class _Counting:
+    """A plugin lookup over a registry that counts what validation asks of it."""
+
+    def __init__(self, reg: StepRegistry) -> None:
+        self._has, self._validate = reg.has, reg.validate_plugin_step  # bound now: the test patches the registry
+        self.validated, self.asked = 0, []
+
+    def has(self, key: str) -> bool:
+        self.asked.append(key)
+        return self._has(key)
+
+    def validate_plugin_step(self, step: Any) -> Any:
+        self.validated += 1
+        return self._validate(step)
+
+
+def test_plugin_context_and_default_registry_agree(isolated_registry: StepRegistry, probe, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "As a library": `Config.model_validate(doc)` checks the plugin steps against the default registry,
+    and `context={PLUGINS: lookup}` against the lookup given. With the same plugins both give the same
+    `Config`, and either way the plugin's model is validated once per step, at load."""
+    doc = make_doc([{"probe": "a", "timeout": "5s"}, {"probe": "b"}], timeout=None)
+    counted = _Counting(isolated_registry)
+    monkeypatch.setattr(isolated_registry, "validate_plugin_step", counted.validate_plugin_step)
+    by_default = Config.model_validate(doc)
+    assert counted.validated == 2
+    by_context = Config.model_validate(doc, context={PLUGINS: counted})
+    assert counted.validated == 4
+    assert by_default == by_context
+    assert [s.plugin_key_ for s in by_context.script] == ["probe", "probe"]  # type: ignore[union-attr]
+    assert "probe" in counted.asked
+    assert models._plugins.get() is None  # the context's lookup is the validation's alone
+
+
+def test_with_plugins_runs_outermost_so_the_lookup_is_set_while_the_model_is_built(isolated_registry: StepRegistry):
+    """Review #87: the bridge relies on pydantic running the last-defined wrap validator (`_with_plugins`)
+    outermost, so the ContextVar is set before the rest of the model is built. A field validator records
+    whether it was set when it ran."""
+    seen: list[Any] = []
+
+    class Recording(Config):
+        @pydantic.field_validator("autobot")
+        @classmethod
+        def _record(cls, v: str) -> str:
+            seen.append(models._plugins.get())
+            return v
+
+    Recording.model_validate(make_doc([]), context={PLUGINS: isolated_registry})
+    assert seen[-1] is isolated_registry  # set during field validation, so _with_plugins ran first
+    assert models._plugins.get() is None  # and was reset when validation ended
+
+
+def test_plugin_context_decides_what_a_plugin_step_is(isolated_registry: StepRegistry, probe):
+    """The lookup given decides which keys are plugin steps, and the plugin's own fields are checked
+    against it, at the step's path, as with the default registry."""
+    doc = make_doc([{"probe": "a"}], timeout=None)
+    builtins_only = StepRegistry()
+    register_builtins(builtins_only)
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(doc, context={PLUGINS: builtins_only})
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("invalid_step", ("script", 0))]
+    assert Config.model_validate(doc).script[0].plugin_key_ == "probe"  # type: ignore[union-attr]
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(make_doc([{"probe": "a", "prob": 1}], timeout=None), context={PLUGINS: isolated_registry})
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("extra_forbidden", ("script", 0, "prob"))]
 
 
 def test_p7_07_schema_command_includes_plugin_defs(plugin_path: Path):
@@ -257,3 +327,78 @@ def test_p7_08_recursive_call_is_accepted():
     Config.model_validate(
         make_doc([{"call": "a"}], fn={"a": {"script": [{"call": "b"}]}, "b": {"script": [{"call": "a"}]}})
     )
+
+
+# -- P7-29: a plugin step's model is validated once ----------------------------------------------------
+
+
+class CountingStep(pydantic.BaseModel):
+    """A plugin model whose validator counts its runs, as one with a cost or a side effect would show them."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+    counting: str
+    validations: ClassVar[list[str]] = []
+
+    @pydantic.field_validator("counting")
+    @classmethod
+    def _count(cls, v: str) -> str:
+        cls.validations.append(v)
+        return v
+
+
+class CountingExecutor:
+    key = "counting"
+    model = CountingStep
+
+    def __init__(self) -> None:
+        self.seen: list[CountingStep] = []
+
+    def execute(self, step: CountingStep, ctx: Any, timeout: float) -> None:
+        self.seen.append(step)
+
+
+def test_p7_29_plugin_model_is_validated_once_at_load_and_not_again_when_it_runs(isolated_registry: StepRegistry, register_plugin):
+    """SPEC "Common Step Properties", "As a library": a plugin step's fields are validated against the
+    plugin's model once, when the script is loaded; the model that passed is the one `execute` receives,
+    in this run and the next. Before the fix the runner validated the step again at every run."""
+    executor = register_plugin(CountingExecutor())
+    CountingStep.validations.clear()
+    config = Config.model_validate(make_doc([{"counting": "x"}]))
+    assert CountingStep.validations == ["x"]
+    runner = Runner(config, {})
+    runner.run()
+    runner.run()
+    assert CountingStep.validations == ["x"]
+    step = config.script[0]
+    assert isinstance(step, PluginStep)
+    assert len(executor.seen) == 2 and executor.seen[0] is executor.seen[1] is step.validated(isolated_registry)
+    assert executor.seen[0].counting == "x"
+    assert "_plugin_model" not in step.model_dump() and "_plugin_model" not in step.model_dump(exclude_unset=True)
+
+
+def test_p7_29_plugin_step_built_in_code_is_validated_once_when_it_first_runs(isolated_registry: StepRegistry, register_plugin):
+    """A `PluginStep` that no `Config` validated, one a plugin builds for `ctx.run_steps`, is validated the
+    first time it runs, and not again."""
+    executor = register_plugin(CountingExecutor())
+    CountingStep.validations.clear()
+    step = PluginStep.model_validate({"counting": "y"})
+    assert step.plugin_key_ == "counting" and CountingStep.validations == []
+    runner = make_runner([])
+    runner.run_steps([step])
+    runner.run_steps([step])
+    assert CountingStep.validations == ["y"]
+    assert len(executor.seen) == 2 and executor.seen[0] is executor.seen[1]
+    assert executor.seen[0].counting == "y"
+
+
+def test_p7_29_plugin_step_that_fails_validation_keeps_no_model(isolated_registry: StepRegistry, register_plugin):
+    """A step whose fields the plugin's model rejects is the validation error, at load and when built in
+    code; nothing is kept for a later run."""
+    register_plugin(CountingExecutor())
+    with pytest.raises(pydantic.ValidationError) as ei:
+        Config.model_validate(make_doc([{"counting": 1}]))
+    assert [(e["type"], e["loc"]) for e in ei.value.errors()] == [("string_type", ("script", 0, "counting"))]
+    step = PluginStep.model_validate({"counting": 1})
+    for _ in range(2):
+        with pytest.raises(pydantic.ValidationError):
+            step.validated(isolated_registry)

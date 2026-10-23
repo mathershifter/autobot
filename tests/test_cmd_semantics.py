@@ -25,9 +25,9 @@ from conftest import (
     steps,
 )
 
+from autobot.errors import CommandError, StepFailure
 from autobot.runner import Runner
-from autobot.session import CommandError, PromptHandler, Session
-from autobot.steps import StepFailure
+from autobot.session import PromptHandler, Session
 
 PCT_ERR = ["% .*"]
 

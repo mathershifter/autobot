@@ -23,7 +23,7 @@ from test_models import (
     SIMPLE_OK,
 )
 
-from autobot import models
+from autobot import keys, models
 from autobot.models import Config
 
 MIN: dict[str, Any] = {"autobot": "2026-10", "attach": {"spawn": "ssh host"}, "script": []}
@@ -355,7 +355,7 @@ def test_p6_42_omitted_optional_field_gets_default(
     assert getattr(get(Config.model_validate(doc)), name) == default
 
 
-@pytest.mark.parametrize("key", sorted(models._COMMON_PROPS - {"plugin_key_"}))
+@pytest.mark.parametrize("key", sorted(keys.COMMON_PROPS - {"plugin_key_"}))
 def test_p6_43_null_plugin_common_prop(both_validate: Callable, probe: Any, key: str):
     """SPEC "Common Step Properties" apply to plugin steps, and an explicit null is rejected there too.
 
@@ -728,11 +728,11 @@ def test_p6_69_schema_duration_maximum_is_the_largest_double(schema: dict[str, A
     """SPEC "Duration Format": the schema's bound and the model's are the same number."""
     import sys
 
-    from autobot import types
+    from autobot import duration
 
     [number] = [alt for alt in schema["$defs"]["duration"]["oneOf"] if alt["type"] == "number"]
     assert number == {"type": "number", "minimum": 0, "maximum": sys.float_info.max}
-    assert types.DURATION_MAX == sys.float_info.max == FLOAT_MAX
+    assert duration.DURATION_MAX == sys.float_info.max == FLOAT_MAX
 
 
 @pytest.mark.parametrize("field", list(DURATION_FIELDS))

@@ -15,8 +15,8 @@ from conftest import BASH, RC_PROBE, SentLog, Timeline, steps
 from conftest import run_vars as run
 
 import autobot.steps
-from autobot.session import CommandError, Session
-from autobot.steps import StepFailure
+from autobot.errors import CommandError, StepFailure
+from autobot.session import Session
 
 GENERIC = r"[>#\$] ?$"
 

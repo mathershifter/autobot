@@ -2,15 +2,51 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Annotated, Any
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Annotated, Any
 
 import pexpect
 import pydantic
 from pydantic_core import PydanticCustomError
 
+from .keys import BUILTIN_KEYS, COMMON_PROPS
+from .terminal import CONTROL_NOTE
 from .types import Duration, NotNull, Omittable, StringOrArray, ensure_list, text
 
+if TYPE_CHECKING:
+    from .protocols import PluginLookup
+
 VERSION = "2026-10"
+
+PLUGINS = "autobot.plugins"
+"""The validation context key of the plugins a script is checked against:
+`Config.model_validate(doc, context={PLUGINS: lookup})`, with a `PluginLookup` (`autobot.protocols`).
+Without it, the default registry, `autobot.registry.registry`, which discovers the installed plugins.
+The key is honored by `Config.model_validate` alone (its `_with_plugins` wrap validator sets the lookup
+for the whole validation); `Function`, `Block` and `PluginStep` validated on their own ignore a context."""
+
+# the lookup of the validation under way; pydantic's Discriminator callable gets no context, so it is kept here
+_plugins: ContextVar[PluginLookup | None] = ContextVar("autobot.models.plugins", default=None)
+
+
+def _lookup() -> PluginLookup:
+    lookup = _plugins.get()
+    return lookup if lookup is not None else _default_plugins()
+
+
+def _default_plugins() -> PluginLookup:
+    # imported here, not at the top: the registry imports the models
+    from . import registry
+
+    return registry.registry
+
+
+def plugin_key_of(data: dict[str, Any], plugins: PluginLookup) -> str | None:
+    """The first key of a step that a plugin registers, or None; a common step property is never one."""
+    for key in data:
+        if key not in COMMON_PROPS and plugins.has(key):
+            return key
+    return None
 
 
 # strict: a value has the type the schema names, so YAML's !!binary isn't a string
@@ -24,6 +60,17 @@ def _custom(type_: str, msg: str) -> PydanticCustomError:
 
 def _error(type_: str, msg: str, loc: tuple, input_: Any) -> dict[str, Any]:
     return {"type": _custom(type_, msg), "loc": loc, "input": input_}
+
+
+class _Errors(list):
+    """The errors a model validator collects, raised together as one `ValidationError`."""
+
+    def add(self, type_: str, msg: str, loc: tuple, input_: Any) -> None:
+        self.append(_error(type_, msg, loc, input_))
+
+    def raise_for(self, model: type) -> None:
+        if self:
+            raise pydantic.ValidationError.from_exception_data(model.__name__, self)
 
 
 _EMPTY_REGEX = "a regex must not be empty: an empty regex matches at once, before any output"
@@ -212,50 +259,53 @@ class Prompt(pydantic.BaseModel):
     @classmethod
     def _check_expect(cls, data: Any, handler: pydantic.ModelWrapValidatorHandler[Prompt]) -> Prompt:
         self = handler(data)
-        # a single regex is reported at expect, an entry of a list at expect.<i>
-        single = isinstance(data, dict) and isinstance(data.get("expect"), str)
-        send = self.send if isinstance(self.send, SendEach) else None
-        errors = []
+        errors = _Errors()
         if self.is_shell_prompt and self.send is not None:
-            errors.append(_error(
+            errors.add(
                 "return_with_send",
                 "a return prompt is a shell prompt and sends nothing; remove send or return",
                 ("send",), self.model_dump(by_alias=True)["send"],
-            ))
+            )
         if self.posix and self.send is not None:
-            errors.append(_error(
+            errors.add(
                 "posix_with_send",
                 "posix marks the shell prompt of a POSIX shell, and a prompt with send is no shell prompt; "
                 "remove send or posix",
                 ("posix",), True,
-            ))
-        if send and send.fields:
+            )
+        # a single regex is reported at expect, an entry of a list at expect.<i>
+        self._expect_errors(errors, single=isinstance(data, dict) and isinstance(data.get("expect"), str))
+        errors.raise_for(cls)
+        return self
+
+    def _expect_errors(self, errors: _Errors, *, single: bool) -> None:
+        if isinstance(self.send, SendEach) and self.send.fields:
             if self.expect is not None:
-                errors.append(_error(
+                errors.add(
                     "expect_with_fields",
                     "a prompt whose sendEach has fields has no expect: the patterns are the fields' match regexes",
                     ("expect",), self.expect,
-                ))
-        elif self.expect is None:
+                )
+            return
+        if self.expect is None:
             errors.append({"type": "missing", "loc": ("expect",), "input": self.model_dump(by_alias=True)})
-        elif not self.expect:
-            errors.append(_error("too_short", "expect must be a regex or a non-empty list of regexes", ("expect",), []))
-        else:
-            for i, entry in enumerate(self.expect):
-                if isinstance(entry, list):
-                    errors.append(_error(
-                        "grouped_expect",
-                        "each expect entry is a single regex, and the regexes are alternatives; "
-                        "to answer a sequence of prompts such as a login, use sendEach with fields",
-                        ("expect", i), entry,
-                    ))
-                elif entry == "":
-                    errors.append(_error("string_too_short", _EMPTY_REGEX, ("expect",) if single else ("expect", i), ""))
-                elif msg := _regex_error(entry):
-                    errors.append(_error("invalid_regex", msg, ("expect",) if single else ("expect", i), entry))
-        if errors:
-            raise pydantic.ValidationError.from_exception_data(cls.__name__, errors)
-        return self
+            return
+        if not self.expect:
+            errors.add("too_short", "expect must be a regex or a non-empty list of regexes", ("expect",), [])
+            return
+        for i, entry in enumerate(self.expect):
+            at = ("expect",) if single else ("expect", i)
+            if isinstance(entry, list):
+                errors.add(
+                    "grouped_expect",
+                    "each expect entry is a single regex, and the regexes are alternatives; "
+                    "to answer a sequence of prompts such as a login, use sendEach with fields",
+                    ("expect", i), entry,
+                )
+            elif entry == "":
+                errors.add("string_too_short", _EMPTY_REGEX, at, "")
+            elif msg := _regex_error(entry):
+                errors.add("invalid_regex", msg, at, entry)
 
 
 class Function(pydantic.BaseModel):
@@ -351,7 +401,7 @@ class ReturnStep(pydantic.BaseModel):
     delay_after: Omittable[Duration] = None
 
 
-# what sendcontrol maps to a control character: Ctrl+A..Z in either case, and the punctuation keys
+# the keys `terminal.control_byte` has a control character for: Ctrl+A..Z in either case, and the punctuation keys
 CONTROL_RE = re.compile(r"[A-Za-z@`\[{\\|\]}^~_?]")
 
 
@@ -369,10 +419,7 @@ class ControlStep(pydantic.BaseModel):
     def _control(cls, v: StringOrArray) -> StringOrArray:
         for char in ensure_list(v):
             if not CONTROL_RE.fullmatch(char):
-                raise _custom(
-                    "control_char",
-                    f"a control value is one character, a letter or one of @ ` [ {{ \\ | ] }} ^ ~ _ ?, got '{char}'",
-                )
+                raise _custom("control_char", f"{CONTROL_NOTE}, got '{char}'")
         return v
 
 
@@ -401,36 +448,35 @@ class PluginStep(pydantic.BaseModel):
     delay_before: Omittable[Duration] = None
     delay_after: Omittable[Duration] = None
     timeout: Omittable[Duration] = None
+    # the plugin's own model of the step, once validated (see `validated`)
+    _plugin_model: Any = pydantic.PrivateAttr(default=None)
 
     @pydantic.model_validator(mode="before")
     @classmethod
     def _capture_plugin_key(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            from .registry import registry
+        if not isinstance(data, dict):
+            return data
+        if "plugin_key_" in data:
+            raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
+        key = plugin_key_of(data, _lookup())
+        return {**data, "plugin_key_": key} if key else data
 
-            if "plugin_key_" in data:
-                raise _custom("extra_forbidden", "plugin_key_ is internal and can't be set in a script")
-            for key in data:
-                if key not in _COMMON_PROPS and registry.has(key):
-                    return {**data, "plugin_key_": key}
-        return data
-
-
-_BUILTIN_KEYS = ("cmd", "sleep", "call", "block", "line", "return", "control", "set")
-_COMMON_PROPS = {"after", "when", "delay_before", "delay_after", "timeout", "plugin_key_"}
+    def validated(self, plugins: PluginLookup) -> Any:
+        """The plugin's own model of this step, validated once: when the script was loaded (`Config`
+        validates every plugin step), or now, for a step built in code that no `Config` holds. The same
+        object every time, so what the plugin's `execute` gets is what passed."""
+        if self._plugin_model is None:
+            self._plugin_model = plugins.validate_plugin_step(self)
+        return self._plugin_model
 
 
 def _step_discriminator(v: Any) -> str | None:
-    if isinstance(v, dict):
-        for key in _BUILTIN_KEYS:
-            if key in v:
-                return key
-        from .registry import registry
-
-        for key in v:
-            if key not in _COMMON_PROPS and registry.has(key):
-                return "plugin"
-    return None
+    if not isinstance(v, dict):
+        return None
+    for key in BUILTIN_KEYS:
+        if key in v:
+            return key
+    return "plugin" if plugin_key_of(v, _lookup()) else None
 
 
 Step = Annotated[
@@ -448,7 +494,7 @@ Step = Annotated[
         custom_error_type="invalid_step",
         custom_error_message=(
             "cannot determine step type; expected one of "
-            f"{', '.join(_BUILTIN_KEYS)} or a registered plugin step"
+            f"{', '.join(BUILTIN_KEYS)} or a registered plugin step"
         ),
     ),
 ]
@@ -498,8 +544,7 @@ class Config(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="after")
     def _check_steps(self) -> Config:
-        from .registry import registry
-
+        plugins = _lookup()
         roots: list[tuple[tuple, list[Step]]] = [
             (("attach", "script"), self.attach.script),
             (("script",), self.script),
@@ -523,13 +568,13 @@ class Config(pydantic.BaseModel):
                 elif isinstance(step, PluginStep):
                     # the step's other keys reach the first plugin's model as fields, and an extra="allow"
                     # model would take a second plugin's key as data, so that step would never run
-                    keys = [k for k in step.model_extra or {} if registry.has(k)]
+                    keys = [k for k in step.model_extra or {} if plugins.has(k)]
                     if len(keys) > 1:
                         msg = f"step has more than one plugin key: {', '.join(keys)}"
                         errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
                         continue
                     try:
-                        registry.validate_plugin_step(step)
+                        step.validated(plugins)
                     except pydantic.ValidationError as e:
                         errors += [
                             {
@@ -545,3 +590,20 @@ class Config(pydantic.BaseModel):
         if errors:
             raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
         return self
+
+    # defined last: pydantic runs the last-defined wrap validator outermost, so the lookup is set before the
+    # steps are discriminated and `_check_steps` runs, and before any nested `Config.model_validate` a plugin
+    # validator makes with no context of its own, which then inherits this one through the ContextVar
+    @pydantic.model_validator(mode="wrap")
+    @classmethod
+    def _with_plugins(
+        cls, data: Any, handler: pydantic.ModelWrapValidatorHandler[Config], info: pydantic.ValidationInfo
+    ) -> Config:
+        lookup = (info.context or {}).get(PLUGINS)
+        if lookup is None:
+            return handler(data)
+        token = _plugins.set(lookup)
+        try:
+            return handler(data)
+        finally:
+            _plugins.reset(token)

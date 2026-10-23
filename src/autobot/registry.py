@@ -1,3 +1,13 @@
+"""The step registry: the built-in executors and the plugins of the `autobot.steps` entry-point group.
+
+`registry` is the default instance, with the built-ins registered; the CLI and the runner use it, and a
+`Config.model_validate(doc)` without a plugins context checks its plugin steps against it (see
+`autobot.models.PLUGINS`). Its public methods are reachable on this module as well, through the module
+`__getattr__` at the bottom: `from autobot import registry; registry.register(...)` registers on the
+instance, as SPEC documents (Common Step Properties). Code that needs the object itself, e.g. for
+`isinstance`, uses `autobot.registry.registry`.
+"""
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -5,7 +15,9 @@ from typing import TYPE_CHECKING, Any
 
 import pydantic
 
-from .models import _BUILTIN_KEYS, _COMMON_PROPS, PluginStep
+from .keys import BUILTIN_KEYS, COMMON_PROPS
+from .models import PluginStep
+from .steps import register_builtins
 
 if TYPE_CHECKING:
     from .protocols import StepExecutor
@@ -41,7 +53,7 @@ class StepRegistry:
         # discriminator never routes them, or a built-in key, to a plugin: such a name could never be set
         key, model = executor.key, executor.model
         who = _describe(executor, origin)
-        if key in _COMMON_PROPS or key in _BUILTIN_KEYS or key in self._builtins:
+        if key in COMMON_PROPS or key in BUILTIN_KEYS or key in self._builtins:
             raise PluginError(
                 f"plugin {who}: step key {key!r} is reserved (a built-in step or a common step property)"
             )
@@ -66,7 +78,7 @@ class StepRegistry:
         clashes = [
             name if name == field else f"{name} (field {field!r})"
             for field, info in model.model_fields.items()
-            for name in sorted(_input_names(field, info) & _COMMON_PROPS)
+            for name in sorted(_input_names(field, info) & COMMON_PROPS)
         ]
         if clashes:
             raise PluginError(
@@ -190,11 +202,11 @@ def _input_names(field: str, info: pydantic.fields.FieldInfo) -> set[str]:
 
 
 registry = StepRegistry()
+register_builtins(registry)
 
 
 def __getattr__(name: str) -> Any:
-    # `from autobot import registry` gives this module: the instance's public methods are reachable on
-    # it, so `registry.register(...)` registers on the instance
+    # the instance's public methods on the module (see the module docstring); anything else is a module error
     if not name.startswith("_") and hasattr(StepRegistry, name):
         return getattr(registry, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

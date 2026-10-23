@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -59,7 +60,7 @@ def test_p5_20_string_default_is_a_literal(default: str):
     render it either."""
     Runner(make_config([], env={"AB_A": "a", "AB_B": default}, vars={"v": "V"}), {})  # no default is checked
     r = make_runner([], env={"AB_A": "a", "AB_B": default}, vars={"v": "V"})
-    assert r._env == {"AB_A": "a", "AB_B": default}
+    assert r.env == {"AB_A": "a", "AB_B": default}
     assert r.render("[{{ env.AB_B }}]") == f"[{default}]"
 
 
@@ -141,7 +142,7 @@ def test_p5_64_mapping_holds_the_declared_keys_in_the_order_written(environ: dic
     """SPEC "The environment in templates": one mapping of the declared variables, typed, in the section's order."""
     r = make_runner([], env={"AB_Y": "oy", "AB_B": "unused", "AB_N": 3, "AB_F": True, "AB_R": 0.5})
     values = {"AB_Y": "oy", "AB_B": "os-b", "AB_N": 3, "AB_F": True, "AB_R": 0.5}
-    assert r._env == values and list(r._env) == list(values)
+    assert r.env == values and list(r.env) == list(values)
     assert r.render("{{ env | length }} {{ env.keys() | join(',') }}") == "5 " + ",".join(values)
     assert r.render("{% for k, v in env | items %}{{ k }}={{ v | string }};{% endfor %}") == "".join(f"{k}={v};" for k, v in values.items())
     assert json.loads(r.render("{{ env | tojson }}")) == values
@@ -161,7 +162,10 @@ def test_p5_64_env_holds_nothing_but_its_keys(name: str):
     r = make_runner([], env={"AB_A": "a"})
     with pytest.raises(ValueError, match="^template error: "):
         r.render(f"{{{{ env.{name} }}}}")
-    assert [a for a in dir(r._env) if not a.startswith("__")] == [a for a in dir({}) if not a.startswith("__")]
+    # `Runner.env` is a read-only view of the mapping: it has no attribute a plain one lacks, and no mutator
+    assert [a for a in dir(r.env) if not a.startswith("__")] == [a for a in dir(MappingProxyType({})) if not a.startswith("__")]
+    with pytest.raises(TypeError):
+        r.env["AB_A"] = "x"  # type: ignore[index]
 
 
 # -- P5-94: the type of a variable is the type of its default -------------------
@@ -189,7 +193,7 @@ def test_p5_94_given_text_becomes_a_value_of_the_type_of_the_default(monkeypatch
         if source == "environment":
             monkeypatch.setenv("AB_A", text)
         r = make_runner([], env={"AB_A": default}, given={"AB_A": text} if source == "option" else {})
-        assert r._env["AB_A"] == value and type(r._env["AB_A"]) is type(value), text
+        assert r.env["AB_A"] == value and type(r.env["AB_A"]) is type(value), text
 
 
 REJECTED = {
@@ -223,8 +227,8 @@ def test_p5_94_default_is_not_converted():
     """SPEC "Top-level fields" (`env`): a default has the type YAML gave it: a quoted number is a string, and
     a boolean is not an integer."""
     r = make_runner([], env={"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True})
-    assert r._env == {"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True}
-    assert [type(v) for v in r._env.values()] == [str, str, int, float, bool]
+    assert r.env == {"AB_S": "7", "AB_T": "true", "AB_I": 7, "AB_F": 7.0, "AB_B": True}
+    assert [type(v) for v in r.env.values()] == [str, str, int, float, bool]
 
 
 def test_p5_94_cli_reports_no_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -280,7 +284,7 @@ def test_p5_95_required_variable_is_a_string_and_is_checked_in_order(monkeypatch
         make_runner([], env={"AB_A": None, "AB_B": None}, given={"AB_A": "x"})
     monkeypatch.setenv("AB_B", " 0 ")
     r = make_runner([], env={"AB_A": None, "AB_B": None}, given={"AB_A": "true"})
-    assert r._env == {"AB_A": "true", "AB_B": " 0 "}
+    assert r.env == {"AB_A": "true", "AB_B": " 0 "}
 
 
 # -- P5-96: --env ---------------------------------------------------------------

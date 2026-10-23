@@ -22,12 +22,13 @@ import yaml
 from conftest import ROOT, make_doc, plugin_dist
 
 from autobot import cli, prepare
+from autobot import runner as runner_mod
 from autobot.runner import Runner
 from autobot.screen import ANSI_ESCAPE_RE
 
 ESC = "\x1b"
 # the program's name is whatever the interpreter prints: `autobot` when installed, and under
-# `python -m autobot.cli` `cli.py` up to Python 3.13 and `python -m autobot.cli` from 3.14
+# `python -m autobot.cli` `__main__.py` up to Python 3.13 and `python -m autobot.cli` from 3.14
 USAGE = re.compile(r"usage: \S[^\n]*? validate \[-h\] \[-q\] \[--traceback\]\s+script \[script \.\.\.\]\n")
 EXAMPLES = sorted((ROOT / "examples").glob("*.autobot.yaml"))
 STEP = {"cmd": "true"}
@@ -140,7 +141,7 @@ def test_p6_93_validate_reaches_no_spawn_no_prepare_and_no_subprocess(
         raise AssertionError("validate ran something")
 
     for owner, name in (
-        (pexpect, "spawn"), (subprocess, "Popen"), (prepare, "run"), (Runner, "_run_prepare"), (Runner, "run"),
+        (pexpect, "spawn"), (subprocess, "Popen"), (prepare, "run"), (runner_mod, "run_prepare"), (Runner, "run"),
         (prepare.tempfile, "NamedTemporaryFile"), (os, "fork"), (os, "forkpty"),
     ):
         monkeypatch.setattr(owner, name, never)
@@ -474,7 +475,7 @@ def test_p6_108_send_syntax_error_names_its_prompt(m: Markers):
     """`run` reports the first script error, and a prompt's says which prompt it is about: two prompts with
     the same mistake give different messages, like the error of a `sendEach` and of rendering a `send`."""
     from autobot.models import Config
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
     end = "template error: unexpected end of template, expected 'end of print statement'."
     sh = {"name": "sh", "expect": [r"\$ "], "return": True}
@@ -504,7 +505,7 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
     """The prompts of a block are loaded on entering it: the same message, as a failed run."""
     from conftest import SHELL_PROMPT, run_script
 
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
     block = {"name": "b", "prompts": [SHELL_PROMPT, {"name": "more", "expect": ["--More--"], "send": "{{ x "}], "script": [STEP]}
     with pytest.raises(ScriptError) as ei:
@@ -513,15 +514,20 @@ def test_p6_108_block_prompt_send_syntax_error_names_its_prompt():
 
 
 def test_p6_108_runner_raises_the_first_script_error():
-    """`Runner(config, given)` takes the configuration and the `--env` values, and raises the first script
-    error that depends on no value: an `--env` key, the type of an `--env` value, then the prompts in their
-    order. An `env` default is no template and is not checked; a variable without a value is the run's."""
+    """`Runner(config, given)` takes the configuration and the `--env` values, and what the run is wired to
+    (`registry`, `reporter`, `transcript`, `environ`, `prepare`, `templater`) by keyword alone, each with
+    a default, and raises the first script error that depends on no value: an `--env` key, the type of an
+    `--env` value, then the prompts in their order. An `env` default is no template and is not checked; a
+    variable without a value is the run's."""
     import inspect
 
     from autobot.models import Config
-    from autobot.types import ScriptError
+    from autobot.errors import ScriptError
 
-    assert list(inspect.signature(Runner).parameters) == ["config", "given"]
+    params = inspect.signature(Runner).parameters
+    assert list(params) == ["config", "given", "registry", "reporter", "transcript", "environ", "prepare", "templater"]
+    for name in list(params)[2:]:
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY and params[name].default is None, name
     typed = SEVERAL | {"env": {"C": "{{ 1/", "N": 3, "B": None}}
     with pytest.raises(ScriptError, match="^--env NOPE: the script's env section declares no variable 'NOPE'$"):
         Runner(Config.model_validate(make_doc([STEP], **typed)), {"N": "three", "NOPE": "x"})
@@ -551,14 +557,14 @@ def test_p6_98_unexpected_error_keeps_its_traceback_and_ends_the_command(
 ):
     """A bug is no verdict on the script: status 70 with the traceback, and the scripts after it aren't checked."""
     first, boom, last = m.write("first"), m.write("boom"), m.write("last")
-    real = cli._load
+    real = cli.loader.load
 
-    def load(path: str) -> object:
+    def load(rep: Any, path: str) -> object:
         if path == str(boom):
             raise KeyError("x")
-        return real(path)
+        return real(rep, path)
 
-    monkeypatch.setattr(cli, "_load", load)
+    monkeypatch.setattr(cli.loader, "load", load)
     code, out, err = _main(monkeypatch, capsys, "validate", first, boom, last)
     lines = err.splitlines()
     assert (code, out) == (70, "")
@@ -616,14 +622,14 @@ def test_p6_106_unexpected_error_names_the_script_being_checked(m: Markers, tmp_
 def test_p6_98_interrupt_while_validating_is_interrupted(
     m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    def interrupt(path: str) -> object:
+    def interrupt(rep: Any, path: str) -> object:
         raise KeyboardInterrupt
 
     def ended() -> None:
         raise SystemExit(130)
 
-    monkeypatch.setattr(cli, "_load", interrupt)
-    monkeypatch.setattr(cli, "_interrupted", ended)
+    monkeypatch.setattr(cli.loader, "load", interrupt)
+    monkeypatch.setattr(cli.signals, "interrupted", ended)
     assert _main(monkeypatch, capsys, "validate", m.write("s")) == (130, "", "Interrupted\n")
 
 
@@ -806,7 +812,7 @@ def test_p6_102_validate_exits_0_exactly_when_run_gets_past_validation(
     class Validated(BaseException):  # not an `Exception`, which `main` would report as a bug
         pass
 
-    def after_validation(args: Any, config: Any) -> Runner:
+    def after_validation(rep: Any, args: Any, config: Any) -> Runner:
         reached.append(config)
         raise Validated
 
@@ -1067,10 +1073,10 @@ def test_p6_107_every_report_shows_the_path_escaped(m: Markers, case: str, char:
 def test_p6_107_unexpected_error_shows_the_path_escaped(
     m: Markers, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    def load(path: str) -> object:
+    def load(rep: Any, path: str) -> object:
         raise KeyError("x")
 
-    monkeypatch.setattr(cli, "_load", load)
+    monkeypatch.setattr(cli.loader, "load", load)
     code, _, err = _main(monkeypatch, capsys, "validate", "a\nb\x1b[31m.yaml")
     assert code == 70 and err.splitlines()[1] == "  while checking a\\nb\\x1b[31m.yaml" and ESC not in err
 

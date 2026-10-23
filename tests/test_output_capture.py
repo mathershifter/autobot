@@ -8,8 +8,10 @@ import pytest
 from conftest import BASH, make_doc, run_cli
 from conftest import run_vars as run
 
-from autobot import screen as screen_mod
-from autobot.screen import ANSI_ESCAPE_RE, CleanWriter, strip_echo
+from autobot import transcript
+from autobot.log import ConsoleReporter
+from autobot.screen import ANSI_ESCAPE_RE, strip_echo
+from autobot.transcript import CleanWriter
 
 
 def test_newlines_preserved():
@@ -178,7 +180,7 @@ def test_p8_16_log_lines_are_not_wrapped(tmp_path: Path):
     assert f">> cmd: {cmd}" in res.stderr.splitlines()
 
 
-# -- P8-21: the operator echo (screen.CleanWriter) ---------------------------
+# -- P8-21: the operator echo (transcript.CleanWriter) -----------------------
 
 ESC = "\x1b"
 COLORED = f"ab{ESC}[31mcd{ESC}[0m ef{ESC}[?2004h{ESC}M gh{ESC}[1;32;4mij\r\n"
@@ -187,7 +189,7 @@ PLAIN = "abcd ef gh" "ij\r\n"
 
 def echoed(*chunks: str, close: bool = False) -> str:
     out = io.StringIO()
-    w = CleanWriter(out)
+    w = CleanWriter(out, ConsoleReporter())
     for chunk in chunks:
         w.write(chunk)
         w.flush()  # pexpect flushes the log after every read
@@ -229,7 +231,7 @@ def test_p8_21_echo_held_start_is_written_on_close(tail: str):
     assert echoed(f"ab{tail}", close=True) == f"ab{tail}"
     # closing twice, or with nothing held, writes nothing more
     out = io.StringIO()
-    w = CleanWriter(out)
+    w = CleanWriter(out, ConsoleReporter())
     w.write(f"ab{tail}")
     w.close()
     w.close()
@@ -259,10 +261,10 @@ def test_p8_21_echo_keeps_what_the_stripping_regex_keeps(chunks: tuple[str, ...]
 
 def test_p8_21_echo_held_start_is_bounded():
     """Garbage after an ESC can't grow the held text without limit: past the bound it is written out."""
-    ESCAPE_HOLD = screen_mod.ESCAPE_HOLD
+    ESCAPE_HOLD = transcript.ESCAPE_HOLD
     assert 16 <= ESCAPE_HOLD <= 256
     out = io.StringIO()
-    w = CleanWriter(out)
+    w = CleanWriter(out, ConsoleReporter())
     for _ in range(1000):
         w.write("0" if w._held or out.getvalue() else f"{ESC}[")
         assert len(w._held) <= ESCAPE_HOLD

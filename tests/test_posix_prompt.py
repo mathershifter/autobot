@@ -13,10 +13,9 @@ import yaml
 from conftest import BASH, RC_PROBE, ROOT, SHELL_ENV, SHELL_PROMPT, FakeDevice, SentLog, run_vars
 
 from autobot import models
+from autobot.errors import BreakoutError, CommandError, StepFailure
 from autobot.models import Config
-from autobot.runner import BreakoutError
-from autobot.session import CommandError, PromptHandler, Session
-from autobot.steps import StepFailure
+from autobot.session import PromptHandler, Session
 
 PCT_ERR = ["% .*"]
 POSIX = [{**SHELL_PROMPT, "posix": True}]
@@ -437,7 +436,7 @@ def test_p1_33_swap_to_other_handlers_reads_the_prompt_with_the_rest_of_its_line
     s.attach(spawn, env=dict(SHELL_ENV), timeout=5)
     try:
         s.get_prompt(timeout=5)
-        assert (s._prompt, s._cld.buffer) == ("switch#", " ")  # type: ignore[union-attr]
+        assert (s._prompt.text, s._cld.buffer) == ("switch#", " ")  # type: ignore[union-attr]
         for _ in range(2):  # into a block, and out of it
             assert (s._shell(), s.posix) == (s._handlers[1], False)
             s.restore_handlers(bash_then_cli())

@@ -6,13 +6,13 @@ from typing import Any
 
 import pytest
 
-from autobot.types import (
-    _jinja_env,
-    check_template,
-    ensure_list,
-    parse_duration,
-    render,
-)
+from autobot.duration import parse_duration
+from autobot.templating import templater
+from autobot.types import ensure_list
+
+# the default templater's methods, which the engine's own templating is (the free functions are gone)
+render = templater.render
+check_template = templater.check_template
 
 
 @pytest.mark.parametrize(
@@ -56,7 +56,7 @@ def test_p8_03_render_passthrough_and_filters():
     assert render(5, {}) == 5
     assert render(None, {}) is None
     assert render(["{{ x }}"], {}) == ["{{ x }}"]
-    assert {"contains", "search"} <= set(_jinja_env.filters)
+    assert all({"contains", "search"} <= set(env.filters) for env in (templater.text, templater.condition, templater.value))
 
 
 def test_p8_04_render_trailing_newline_dropped():

@@ -248,6 +248,7 @@ def test_p8_58_set_yaml_collections_are_stored_as_written(tmp_path: Path):
     """SPEC "set" (Values): `!!omap`, `!!pairs` and `!!set` are no list or mapping of the script, and
     nothing inside them is rendered."""
     from autobot import cli
+    from autobot.log import ConsoleReporter
 
     path = tmp_path / "s.autobot.yaml"
     path.write_text(
@@ -257,7 +258,7 @@ def test_p8_58_set_yaml_collections_are_stored_as_written(tmp_path: Path):
         "      s: !!set {'{{ x }}': null}\n"
     )
     r = make_runner([])
-    step = Config.model_validate(cli._load(str(path))).script
+    step = Config.model_validate(cli.loader.load(ConsoleReporter(), str(path))).script
     r.run_steps(step)
     assert r.vars == {"o": [("a", "{{ x }}"), ("b", 2)], "p": [("a", "{{ x }}"), ("a", 3)], "s": {"{{ x }}"}}
 

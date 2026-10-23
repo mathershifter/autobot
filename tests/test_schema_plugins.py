@@ -15,9 +15,10 @@ import pytest
 from conftest import ProbeExecutor, model_ok
 
 from autobot import models
-from autobot.cli import add_plugin_steps
+from autobot.cli.schema import add_plugin_steps
+from autobot.keys import COMMON_PROPS
 
-COMMON = sorted(models._COMMON_PROPS - {"plugin_key_"})
+COMMON = sorted(COMMON_PROPS - {"plugin_key_"})
 
 
 class Opts(pydantic.BaseModel):

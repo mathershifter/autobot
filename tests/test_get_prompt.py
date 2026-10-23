@@ -1,8 +1,7 @@
 """P4: ``get_prompt``, prompt forms and credential cycling.
 
 SPEC "prompts" and "Prompt Handling". Session-level tests build handlers through
-``Runner.build_handler`` (via ``make_runner``) so prompt models go through
-the real path. The device side is ``tests/fakes/device.py`` (fixture F2).
+the runner (via ``make_runner``) so prompt models go through the real path. The device side is ``tests/fakes/device.py`` (fixture F2).
 """
 
 from __future__ import annotations
@@ -27,9 +26,10 @@ from conftest import (
 )
 
 from autobot.models import SendEach
-from autobot.runner import Runner, send_each_sets
-from autobot.screen import _mid_echo
-from autobot.session import HELD_GRACE, PromptHandler, Session
+from autobot.prompts import send_each_sets
+from autobot.runner import Runner
+from autobot.screen import mid_echo
+from autobot.session import HELD_GRACE, HeldPrompt, PromptHandler, Session
 
 # sendEach fields entries: each pairs a regex (or alternatives) with an item field
 UP_FIELDS = [{"match": "login:", "field": "username"}, {"match": "Password:", "field": "password"}]
@@ -301,7 +301,7 @@ def test_p4_45_no_return_is_pressed_at_a_prompt_that_ran_out_of_responses(device
     r, log = device([SHELL_PROMPT, LOGIN_EACH], vars=creds("bad"), kick=False)
     with pytest.raises(RuntimeError, match=r"^prompt 'login': responses exhausted$"):
         r.session.get_prompt(timeout=10)
-    assert r.session._unanswered is True
+    assert r.session._send.unanswered is True
     answered = ["LOGIN=admin", "PASSWORD=bad"]
     for _ in range(2):
         r.session.reset_handlers()  # as a breakout does
@@ -309,7 +309,7 @@ def test_p4_45_no_return_is_pressed_at_a_prompt_that_ran_out_of_responses(device
             r.session.get_prompt(timeout=6)
     assert log_of(log) == answered and sent.lines() == ["admin", "bad"]
     r.session.sendcontrol("u", timeout=5)
-    assert r.session._unanswered is False
+    assert r.session._send.unanswered is False
 
 
 @pytest.mark.slow
@@ -350,7 +350,7 @@ def test_p4_45_send_template_that_fails_leaves_its_prompt_unanswered(fake_device
     try:
         with pytest.raises(ValueError, match="^prompt 'pw': template error"):
             r.session.get_prompt(timeout=5)
-        assert r.session._unanswered is True and sent == [] and log_of(log) == []
+        assert r.session._send.unanswered is True and sent == [] and log_of(log) == []
     finally:
         r.session.detach()
 
@@ -520,7 +520,7 @@ PROMPT_TEXTS: dict[str, tuple[Callable[[], list[PromptHandler]], str, bool]] = {
 def test_p4_32_prompt_text_checked_like_a_prompt_wait(case: str):
     """SPEC "Prompt state across a swap": earliest match wins, ties by order, breaks and escapes skipped."""
     handlers, text, expected = PROMPT_TEXTS[case]
-    assert Session(handlers())._is_shell_prompt(text) is expected
+    assert Session(handlers())._scan(text).at_prompt is expected
 
 
 # case -> (handlers after the swap, still at the prompt)
@@ -946,16 +946,16 @@ def test_p4_42_line_feed_through_a_pty_is_a_line_break(raw_device: Callable[...,
     ids=repr,
 )
 def test_p4_42_prompt_swap_reads_the_prompt_the_same_way(text: str, expected: bool):
-    """`_is_shell_prompt` (a block's prompt swap) discards what `get_prompt` discards."""
+    """`_scan` (a block's prompt swap) discards what `get_prompt` discards."""
     s = Session([PromptHandler("sh", [ANCHORED], [], True)])
-    assert s._is_shell_prompt(text) is expected
+    assert s._scan(text).at_prompt is expected
 
 
 def test_p4_42_prompt_regex_wins_a_tie_with_the_stray_characters():
     """A prompt regex that itself starts at a leading CR still matches there (ties go to the prompts)."""
     s = Session([PromptHandler("login", [r"\rlogin: $"], [["x"]], False), PromptHandler("sh", [r"^\$ $"], [], True)])
-    assert s._is_shell_prompt("\rlogin: ") is False  # the login prompt, not a shell prompt
-    assert s._is_shell_prompt("\r$ ") is True
+    assert s._scan("\rlogin: ").at_prompt is False  # the login prompt, not a shell prompt
+    assert s._scan("\r$ ").at_prompt is True
 
 
 # -- P4-44: a prompt written again inside the echo of the line that was sent (the device is sent `x`) --
@@ -1019,7 +1019,7 @@ def test_p4_44_held_prompt_is_the_prompt_when_nothing_comes(
     assert s.get_prompt(timeout=20) == ""
     assert GRACE[0] < time.monotonic() - started < GRACE[1]
     assert s.ctx["match"].startswith("PROMPT$")
-    assert s._at_prompt
+    assert s._prompt.at_prompt
     # a wait that follows no command, as after a `line`
     s.sendline("x", solicit=True)
     started = time.monotonic()
@@ -1094,20 +1094,20 @@ def test_p4_44_after_that_ends_at_a_held_prompt_hands_it_to_the_prompt_wait(raw_
     that follows takes the prompt after one quiet poll, without reading or sending anything."""
     s = raw_device("xPROMPT$ ", regex=UNANCHORED)
     s.expect([r"PROMPT\$ $"], timeout=3)
-    assert not s._at_prompt
+    assert not s._prompt.at_prompt
     [handler] = s._handlers
-    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", handler)
+    assert s._prompt.held == HeldPrompt("x\r", "xPROMPT$ ", "PROMPT$ ", handler)
     started = time.monotonic()
     assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
     assert GRACE[0] < time.monotonic() - started < GRACE[1]
-    assert s._at_prompt and s._held is None
+    assert s._prompt.at_prompt and s._prompt.held is None
     assert s._shell() is handler  # the held prompt's handler is the one the session is at
 
 
 def test_p4_44_after_that_ends_at_a_redrawn_prompt_reads_on(raw_device: Callable[..., Session]):
     s = raw_device("x \r\x1b[APROMPT$ ", "x\r\nout\r\nPROMPT$ ", regex=r"^PROMPT\$ $")
     s.expect([r"PROMPT\$ $"], timeout=3)
-    assert not s._at_prompt and s._held is not None
+    assert not s._prompt.at_prompt and s._prompt.held is not None
     assert s.get_prompt(timeout=3) == "out\n"
 
 
@@ -1115,9 +1115,9 @@ def test_p4_44_after_that_ends_at_a_redrawn_prompt_reads_on(raw_device: Callable
 def test_p4_44_prompt_handed_on_by_after_is_dropped_by_a_send(raw_device: Callable[..., Session], send: str):
     s = raw_device("xPROMPT$ ", regex=UNANCHORED)
     s.expect([r"PROMPT\$ $"], timeout=3)
-    assert s._held is not None
+    assert s._prompt.held is not None
     s.sendline("y") if send == "line" else s.sendcontrol("a")
-    assert s._held is None
+    assert s._prompt.held is None
 
 
 def raw_spawn(tmp_path: Path, *chunks: str) -> str:
@@ -1171,9 +1171,9 @@ def test_p4_46_held_prompt_is_judged_again_when_the_handlers_change(raw_device: 
     new = PromptHandler("sh", [UNANCHORED], [], True)
     s.restore_handlers([old])
     s.expect([r"PROMPT\$ $"], timeout=3)
-    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", old)
+    assert s._prompt.held == HeldPrompt("x\r", "xPROMPT$ ", "PROMPT$ ", old)
     s.restore_handlers([new])
-    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", new)
+    assert s._prompt.held == HeldPrompt("x\r", "xPROMPT$ ", "PROMPT$ ", new)
     started = time.monotonic()
     assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
     assert GRACE[0] < time.monotonic() - started < GRACE[1]
@@ -1188,7 +1188,7 @@ def test_p4_46_held_prompt_that_the_new_handlers_hold_for_no_echo(raw_device: Ca
     s.expect([r"PROMPT\$ $"], timeout=3)
     new = PromptHandler("blk", [r"^xPROMPT\$ $"], [], True, posix=True)
     s.restore_handlers([new])
-    assert s._held == ("x\r", "xPROMPT$ ", "PROMPT$ ", new) and not s._at_prompt
+    assert s._prompt.held == HeldPrompt("x\r", "xPROMPT$ ", "PROMPT$ ", new) and not s._prompt.at_prompt
     assert s.posix is False
     started = time.monotonic()
     assert s.get_prompt(timeout=20, capture=False, solicit=False) == ""
@@ -1203,7 +1203,7 @@ def test_p4_46_held_prompt_that_is_no_prompt_of_the_new_handlers_is_dropped(
     s = raw_device("xPROMPT$ ", regex=UNANCHORED)
     s.expect([r"PROMPT\$ $"], timeout=3)
     s.restore_handlers([PromptHandler("blk", [r"BLK\$ $"], [], True, posix=True)])
-    assert s._held is None and not s._at_prompt
+    assert s._prompt.held is None and not s._prompt.at_prompt
     with pytest.raises(TimeoutError):
         s.get_prompt(timeout=2, capture=False, solicit=False)
     assert s.posix is False
@@ -1236,15 +1236,16 @@ def test_p4_44_output_without_an_echo_is_not_held(raw_device: Callable[..., Sess
     assert time.monotonic() - started < 3
 
 
-def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
+def test_p4_44_scan_reads_as_the_wait_does():
+    """`Session._scan` reads a line as a prompt wait would, with and without the line sent."""
     s = Session([PromptHandler("sh", [r"PROMPT\$ "], [], True)])
-    assert s._is_shell_prompt("x \rPROMPT$ ", whole=True)
-    assert not s._is_shell_prompt("x \rPROMPT$ ", whole=True, sent="x")
-    assert not s._is_shell_prompt("ec\rPROMPT$ ", whole=True, sent="echo hi")
-    assert s._is_shell_prompt("x \rPROMPT$ x\r\nPROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("y\rPROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("PROMPT$ ", whole=True, sent="x")
-    assert s._is_shell_prompt("x\r\nPROMPT$ ", whole=True, sent="x")
+    assert s._scan("x \rPROMPT$ ", whole=True).at_prompt
+    assert not s._scan("x \rPROMPT$ ", whole=True, sent="x").at_prompt
+    assert not s._scan("ec\rPROMPT$ ", whole=True, sent="echo hi").at_prompt
+    assert s._scan("x \rPROMPT$ x\r\nPROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("y\rPROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("PROMPT$ ", whole=True, sent="x").at_prompt
+    assert s._scan("x\r\nPROMPT$ ", whole=True, sent="x").at_prompt
 
 
 @pytest.mark.parametrize(
@@ -1272,4 +1273,4 @@ def test_p4_44_is_shell_prompt_reads_as_the_wait_does():
 )
 def test_p4_44_mid_echo(read: str, sent: str | None, expected: bool):
     """A prompt is held only while what was read since the send shows the start of the sent line."""
-    assert _mid_echo(read, sent) is expected
+    assert mid_echo(read, sent) is expected

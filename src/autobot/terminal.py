@@ -56,15 +56,18 @@ def canon_limit(fd: int) -> int | None:
 
 
 _CONTROL_KEYS = {"@": 0, "`": 0, "[": 27, "{": 27, "\\": 28, "|": 28, "]": 29, "}": 29, "^": 30, "~": 30, "_": 31, "?": 127}
+# the keys that have a control character (SPEC, control): what the `control` step takes, and `control_byte`
+CONTROL_NOTE = "a control value is one character, a letter or one of @ ` [ { \\ | ] } ^ ~ _ ?"
 
 
 def control_byte(char: str) -> bytes:
-    """The control character of a key: Ctrl+A to Ctrl+Z in either case, and the punctuation keys. Empty for
-    any other key."""
-    char = char.lower()
-    if len(char) == 1 and "a" <= char <= "z":
-        return bytes([ord(char) - ord("a") + 1])
-    return bytes([_CONTROL_KEYS[char]]) if char in _CONTROL_KEYS else b""
+    """The control character of a key: Ctrl+A to Ctrl+Z in either case, and the punctuation keys. Any
+    other key has none and is a ValueError, with the message of the `control` step's validation error."""
+    if len(char) == 1 and char.isascii() and char.isalpha():
+        return bytes([ord(char.lower()) - ord("a") + 1])
+    if char in _CONTROL_KEYS:
+        return bytes([_CONTROL_KEYS[char]])
+    raise ValueError(f"{CONTROL_NOTE}, got '{char}'")
 
 
 def run_environ() -> dict[str, str]:

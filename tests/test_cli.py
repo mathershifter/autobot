@@ -15,6 +15,7 @@ import yaml
 from conftest import FakeDevice, make_doc, run_cli
 
 from autobot import cli
+from autobot.log import ConsoleReporter
 
 # the echoed command shows `$((1+1))` literally; only the output has `got-2-`
 GOT = {"cmd": 'echo "got-$((1+1))-{{ env.MSG }}"'}
@@ -189,9 +190,9 @@ def test_p6_30_cli_load_does_not_swallow_keyboard_interrupt(monkeypatch: pytest.
 
     path = tmp_path / "script.autobot.yaml"
     path.write_text("autobot: 2026-10\n")
-    monkeypatch.setattr(cli.yaml, "load", interrupt)
+    monkeypatch.setattr(cli.loader.yaml, "load", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        cli._load(str(path))
+        cli.loader.load(ConsoleReporter(), str(path))
 
 
 # -- Runner construction: env and prompt send templates -----------------------
@@ -324,7 +325,7 @@ def test_p6_33_cli_duplicate_key_is_clean_error(tmp_path: Path, tail: str, where
 def test_p6_34_duplicate_key_rejected_at_any_level(raw: str, key: str, line: int):
     """SPEC.md: keys are unique in every mapping, including inside `<<` merge sources; one `<<` per mapping."""
     with pytest.raises(yaml.constructor.ConstructorError) as exc:
-        yaml.load(raw, Loader=cli.UniqueKeyLoader)
+        yaml.load(raw, Loader=cli.loader.UniqueKeyLoader)
     assert exc.value.problem == f"found duplicate key '{key}'"
     assert exc.value.problem_mark.line + 1 == line
     assert exc.value.context == "first defined"
@@ -351,7 +352,7 @@ def test_p6_35_cli_merge_key_override_is_accepted(tmp_path: Path):
 )
 def test_p6_36_merge_keys_load_like_safe_load(raw: str):
     """Keys without duplicates load exactly as `yaml.safe_load` loads them, `<<` merges included."""
-    assert yaml.load(raw, Loader=cli.UniqueKeyLoader) == yaml.safe_load(raw)
+    assert yaml.load(raw, Loader=cli.loader.UniqueKeyLoader) == yaml.safe_load(raw)
 
 
 def test_p6_37_cli_keys_that_only_look_alike_are_accepted(tmp_path: Path):
@@ -642,8 +643,8 @@ def test_p6_80_packaged_schema_is_the_one_in_schemas():
     assert packaged.is_file()
     assert packaged.read_bytes() == canonical.read_bytes()
     assert json.loads(packaged.read_text(encoding="utf-8"))["$id"] == f"schemas/{SCHEMA_NAME}"  # not the link's text
-    assert cli.load_schema() == json.loads(canonical.read_text())
-    assert cli.load_schema()["$id"] == f"schemas/{SCHEMA_NAME}"
+    assert cli.schema.load_schema() == json.loads(canonical.read_text())
+    assert cli.schema.load_schema()["$id"] == f"schemas/{SCHEMA_NAME}"
     # in the source tree the packaged file is a link to the canonical one, not a second copy
     link = ROOT / "src" / "autobot" / SCHEMA_NAME
     assert link.is_symlink() and link.resolve() == canonical.resolve()
@@ -651,9 +652,9 @@ def test_p6_80_packaged_schema_is_the_one_in_schemas():
 
 def test_p6_80_load_schema_returns_a_fresh_copy():
     """`add_plugin_steps` changes the schema it is given, so every caller gets its own."""
-    first = cli.load_schema()
+    first = cli.schema.load_schema()
     first["$defs"]["step"]["oneOf"].clear()
-    assert cli.load_schema()["$defs"]["step"]["oneOf"]
+    assert cli.schema.load_schema()["$defs"]["step"]["oneOf"]
 
 
 def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: pytest.CaptureFixture[str], schema: dict[str, Any]):
@@ -661,7 +662,7 @@ def test_p6_80_schema_command_needs_no_network(no_network: list[str], capsys: py
 
     An installed package used to download it from the `main` branch on GitHub.
     """
-    cli._cmd_schema()
+    cli._cmd_schema(ConsoleReporter())
     out = capsys.readouterr()
     assert json.loads(out.out) == schema  # no plugins are installed here
     assert out.err == ""
@@ -674,7 +675,7 @@ def test_p6_80_source_tree_without_the_packaged_file_reads_schemas(monkeypatch: 
 
     monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
     assert not (tmp_path / SCHEMA_NAME).exists()
-    assert cli.load_schema() == schema
+    assert cli.schema.load_schema() == schema
 
 
 @pytest.mark.parametrize(
@@ -694,8 +695,8 @@ def test_p6_81_packaged_file_that_is_not_the_schema_falls_back_to_schemas(
 
     (tmp_path / SCHEMA_NAME).write_bytes(content)
     monkeypatch.setattr(importlib.resources, "files", lambda package: tmp_path)
-    assert cli.load_schema() == schema
-    cli._cmd_schema()
+    assert cli.schema.load_schema() == schema
+    cli._cmd_schema(ConsoleReporter())
     out = capsys.readouterr()
     assert json.loads(out.out) == schema
     assert out.err == ""
@@ -709,11 +710,11 @@ def test_p6_81_no_schema_anywhere_is_a_clean_error(monkeypatch: pytest.MonkeyPat
     package.mkdir(parents=True)
     (package / SCHEMA_NAME).write_text("../../schemas/autobot.2026-10.json")
     monkeypatch.setattr(importlib.resources, "files", lambda name: package)
-    monkeypatch.setattr(cli, "__file__", str(package / "cli.py"))
-    with pytest.raises(cli.SchemaError):
-        cli.load_schema()
+    monkeypatch.setattr(cli.schema, "__file__", str(package / "cli" / "schema.py"))
+    with pytest.raises(cli.schema.SchemaError):
+        cli.schema.load_schema()
     with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
+        cli._cmd_schema(ConsoleReporter())
     assert ei.value.code == 1
     out = capsys.readouterr()
     assert out.out == ""
@@ -723,11 +724,30 @@ def test_p6_81_no_schema_anywhere_is_a_clean_error(monkeypatch: pytest.MonkeyPat
     )
 
 
+def test_console_script_entry_point_is_cli_main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    """`pyproject.toml` names `autobot.cli:main` as the `autobot` command: the entry point resolves to
+    `cli.main` with `cli` a package, and `--help` prints the usage and exits with status 0."""
+    import importlib.metadata
+    import tomllib
+
+    pyproject = tomllib.loads((Path(cli.__file__).parents[3] / "pyproject.toml").read_text())
+    target = pyproject["project"]["scripts"]["autobot"]
+    assert target == "autobot.cli:main"
+    assert importlib.metadata.EntryPoint("autobot", target, "console_scripts").load() is cli.main
+    assert Path(cli.__file__).name == "__init__.py"
+    monkeypatch.setattr(sys, "argv", ["autobot", "--help"])
+    with pytest.raises(SystemExit) as ei:
+        cli.main()
+    out = capsys.readouterr()
+    assert ei.value.code == 0 and out.out.startswith("usage: autobot [-h] {run,validate,schema}") and out.err == ""
+
+
 def test_p6_80_cli_has_no_download_left():
     """Nothing in the CLI can reach the network: no `urlopen`, no URL of the schema."""
-    source = Path(cli.__file__).read_text()
-    for gone in ("urlopen", "urllib.request", "raw.githubusercontent", "http.client", "SCHEMA_URL", "Cannot download"):
-        assert gone not in source, gone
+    for module in Path(cli.__file__).parent.glob("*.py"):
+        source = module.read_text()
+        for gone in ("urlopen", "urllib.request", "raw.githubusercontent", "http.client", "SCHEMA_URL", "Cannot download"):
+            assert gone not in source, (module.name, gone)
 
 
 def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
@@ -743,9 +763,9 @@ def test_p6_80_broken_plugin_is_reported_before_the_schema_is_read(
         raise AssertionError("the schema was read")
 
     monkeypatch.setattr(cli.registry, "discover", discover)
-    monkeypatch.setattr(cli, "load_schema", load_schema)
+    monkeypatch.setattr(cli.schema, "load_schema", load_schema)
     with pytest.raises(SystemExit) as ei:
-        cli._cmd_schema()
+        cli._cmd_schema(ConsoleReporter())
     assert ei.value.code == 1
     out = capsys.readouterr()
     assert out.err == (

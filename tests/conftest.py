@@ -22,13 +22,15 @@ import pytest
 import yaml
 
 import autobot.registry as registry_mod
-import autobot.runner as runner_mod
-from autobot.cli import load_schema
+from autobot.cli.schema import load_schema
+from autobot.errors import LineTooLong, PartialLine
 from autobot.models import Config
+from autobot.protocols import Reporter
 from autobot.registry import StepRegistry
 from autobot.runner import Runner
-from autobot.session import LineTooLong, PartialLine, PromptHandler, Session
+from autobot.session import PromptHandler, Session
 from autobot.steps import register_builtins
+from autobot.terminal import run_environ
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -112,15 +114,26 @@ def make_config(script: list[dict[str, Any]], **kw: Any) -> Config:
     return Config.model_validate(make_doc(script, **kw))
 
 
-def make_runner(script: list[dict[str, Any]], *, given: dict[str, str] | None = None, **kw: Any) -> Runner:
-    """``given``: the ``--env`` values; ``env``: the script's ``env`` section.
+def make_runner(
+    script: list[dict[str, Any]],
+    *,
+    given: dict[str, str] | None = None,
+    reporter: Reporter | None = None,
+    environ: dict[str, str] | None = None,
+    **kw: Any,
+) -> Runner:
+    """``given``: the ``--env`` values; ``env``: the script's ``env`` section; ``reporter``: the runner's,
+    where a test reads the lost output or shares one reporter between a runner and a session; ``environ``:
+    the environment the run starts from, the suite's own on a plain terminal (``run_environ()``) by default.
 
-    A run resolves ``env`` once ``prepare`` has run. Without a ``prepare`` it is resolved here as well,
-    so that a test can render a template, or see an error of ``env``, without a run.
+    A run resolves ``env`` once ``prepare`` has run. Without a ``prepare`` it is resolved here as well, from
+    ``environ``, so that a test can render a template, or see an error of ``env``, without a run; that
+    needs the runner's ``_resolve_env`` and ``_env``, the one private seam the fixtures keep.
     """
-    runner = Runner(make_config(script, **kw), given or {})
+    environ = run_environ() if environ is None else environ
+    runner = Runner(make_config(script, **kw), given or {}, reporter=reporter, environ=environ)
     if runner.config.prepare is None:
-        runner._env = runner._resolve_env(runner._environ)
+        runner._env = runner._resolve_env(environ)
     return runner
 
 
@@ -234,6 +247,11 @@ class SentLog(list):
 
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> SentLog:
+    """Every line and control character a session sends, in order, whoever sends it: a step, a prompt's
+    answer, the solicit newline, the `$?` check. It wraps the session's two private write methods on the
+    class, so the sessions a run builds are covered too; a public hook would have to be threaded through
+    every `Runner` and `Session` the suite builds for the same coverage. A send that is refused before the
+    write (a line the terminal would cut, a line while part of one is typed) is taken out again."""
     log = SentLog()
     orig_line = Session._put_line
     orig_ctrl = Session._put_control
@@ -405,11 +423,15 @@ class ProbeExecutor:
 @pytest.fixture
 def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> StepRegistry:
     """A fresh registry with builtins, and a counted ``entry_points``."""
+    import autobot.cli
+
     reg = StepRegistry()
     register_builtins(reg)
     reg.discover_calls = 0  # type: ignore[attr-defined]
     monkeypatch.setattr(registry_mod, "registry", reg)
-    monkeypatch.setattr(runner_mod, "registry", reg)
+    # cli/__init__.py binds the registry at import for its `context={PLUGINS: registry}`; patch it too,
+    # so an in-process `cli.main()` validates against this registry
+    monkeypatch.setattr(autobot.cli, "registry", reg)
     real = importlib.metadata.entry_points
 
     def entry_points(**kw):

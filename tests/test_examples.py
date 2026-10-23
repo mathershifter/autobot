@@ -13,9 +13,11 @@ import pytest
 import yaml
 from conftest import ROOT, SHELL_PROMPT, FakeDevice, SentLog, make_doc, run_vars
 
-from autobot.cli import UniqueKeyLoader
+from autobot.cli.loader import UniqueKeyLoader
+from autobot.errors import BreakoutError
 from autobot.models import Config
-from autobot.runner import BreakoutError, Runner, left, trail
+from autobot.report import left, trail
+from autobot.runner import Runner
 from autobot.screen import ANSI_ESCAPE_RE, STRAY_RE
 from autobot.session import PromptHandler, Session
 
@@ -37,6 +39,41 @@ def test_p6_20_examples_validate_schema(schema_validator: Any, path: Path):
     """SPEC "Architecture", "YAML Script Structure": examples are valid against the JSON schema."""
     errors = [e.message for e in schema_validator.iter_errors(load(path))]
     assert errors == []
+
+
+def sent_lines(doc: Any) -> list[str]:
+    """Every line a `cmd` of the document sends, as written (templates included), wherever the step is."""
+    lines: list[str] = []
+
+    def walk(steps: list[dict[str, Any]]) -> None:
+        for step in steps:
+            if "cmd" in step:
+                cmd = step["cmd"]
+                items = cmd if isinstance(cmd, list) else [cmd]
+                for item in items:
+                    lines.extend(item.splitlines() if "\n" in item and not item.startswith("#!") else [item])
+            if "block" in step:
+                for key in ("enter", "script", "breakout"):
+                    walk(step["block"].get(key) or [])
+
+    walk(doc["attach"].get("script") or [])
+    walk(doc["script"])
+    walk(doc["attach"].get("breakout") or [])
+    for fn in (doc.get("fn") or {}).values():
+        walk(fn["script"])
+    return lines
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.name)
+def test_p6_119_examples_send_no_line_their_own_errors_patterns_match(path: Path):
+    """SPEC "Captured output": where the echo of a sent line is not recognized it stays in the captured
+    output, and an `errors` pattern can match it. So no example sends a line that one of its own patterns
+    matches (the EOS example sent `! lab switches ...` comment lines, which its `^! .*` would match)."""
+    doc = load(path)
+    lines = sent_lines(doc)
+    assert lines, path.name
+    matched = [(pattern, line) for pattern in doc.get("errors") or [] for line in lines if re.search(pattern, line.strip(), re.MULTILINE)]
+    assert matched == []
 
 
 # -- the examples' shell prompt regexes ---------------------------------------
@@ -204,8 +241,8 @@ def test_p6_74_eos_prompt_after_a_control_character_is_still_a_prompt(prompt: st
 def test_p6_74_eos_prompts_through_the_engine(prompt: str, lead: str):
     """The engine itself, not this file's copy of its reading: `^` finds each prompt behind what the engine consumes."""
     s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
-    assert s._is_shell_prompt(lead + prompt) is True
-    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+    assert s._scan(lead + prompt).at_prompt is True
+    assert s._scan(f"{lead}{prompt}echo hi").at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -217,7 +254,7 @@ def test_p6_74_eos_prompt_behind_text_on_its_line_is_not_a_prompt(text: str):
     """What `^` costs: a prompt with text before it on its line, also text ended by a CR, NUL or BEL, isn't matched."""
     assert read_prompt(shell_regexes("eos-bootstrap.autobot.yaml"), text) is None
     s = Session([PromptHandler("cli", shell_regexes("eos-bootstrap.autobot.yaml"), [], True)])
-    assert s._is_shell_prompt(text) is False
+    assert s._scan(text).at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -264,8 +301,8 @@ def test_p6_76_sonic_prompts_through_the_engine(prompt: str, lead: str):
     """`^` finds each prompt behind what the engine consumes or discards: line breaks, escape sequences, stray CR, NUL, BEL."""
     assert read_prompt(shell_regexes(SONIC), f"output\r\n{lead}{prompt}") == (prompt, "")
     s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
-    assert s._is_shell_prompt(lead + prompt) is True
-    assert s._is_shell_prompt(f"{lead}{prompt}echo hi") is False
+    assert s._scan(lead + prompt).at_prompt is True
+    assert s._scan(f"{lead}{prompt}echo hi").at_prompt is False
 
 
 @pytest.mark.parametrize(
@@ -288,7 +325,7 @@ def test_p6_76_sonic_prompt_behind_text_on_its_line(text: str):
     expected = text.startswith("fooadmin")
     assert (read_prompt(shell_regexes(SONIC), text) is not None) is expected
     s = Session([PromptHandler("cli", shell_regexes(SONIC), [], True)])
-    assert s._is_shell_prompt(text) is expected
+    assert s._scan(text).at_prompt is expected
 
 
 def test_p6_76_sonic_regex_starts_at_the_line():

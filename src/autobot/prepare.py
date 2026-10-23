@@ -1,4 +1,7 @@
-"""`prepare`: source the local script in a shell, and read the environment that shell leaves."""
+"""`prepare`: source the local script in a shell, and read the environment that shell leaves.
+
+Nothing is said here: the runner reports what `run` gives back (`PrepareResult`).
+"""
 
 from __future__ import annotations
 
@@ -11,9 +14,9 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator
+from dataclasses import dataclass
 
-from . import log
-from .types import RunError
+from .errors import RunError
 
 # Stripped before looking for a shebang: whitespace, a BOM, and the zero-width characters of copy and paste.
 _JUNK = " \t\r\n﻿​⁠"
@@ -68,13 +71,26 @@ def _terminable() -> Iterator[None]:
                 signal.signal(sig, signal.SIG_DFL)
 
 
-def run(script: str, environ: dict[str, str]) -> dict[str, str]:
-    """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves;
-    `environ` itself when it left none to read. The shell is the words of the shebang, whatever program
-    they name, and `/bin/sh` without any."""
+@dataclass(frozen=True)
+class PrepareResult:
+    """What `run` gives back: the environment the shell left (`environ` as given when it left none to read),
+    and whether it could be read."""
+
+    environ: dict[str, str]
+    read: bool
+
+
+def shebang(script: str) -> list[str]:
+    """The words of the script's shebang, whatever program they name; empty when it has none."""
     script = script.lstrip(_JUNK)
-    command = script.partition("\n")[0][2:].split() if script.startswith("#!") else []
-    log.say("prepare: running local script" + ("" if command else " (no shebang, using /bin/sh)"))
+    return script.partition("\n")[0][2:].split() if script.startswith("#!") else []
+
+
+def run(script: str, environ: dict[str, str]) -> PrepareResult:
+    """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves.
+    The shell is the words of the shebang, whatever program they name, and `/bin/sh` without any."""
+    script = script.lstrip(_JUNK)
+    command = shebang(script)
     # a file, not a pipe: a process the script leaves running would keep a pipe open; the shell's stdout is stderr
     with _terminable(), tempfile.TemporaryFile() as tmp, open(_dump(tmp.fileno()), "rb") as out:
         fd = out.fileno()
@@ -96,10 +112,9 @@ def run(script: str, environ: dict[str, str]) -> dict[str, str]:
         os.ftruncate(fd, 0)
     if result.returncode != 0:
         raise RunError(f"prepare script failed with exit code {result.returncode}")
-    if data.endswith(b"\0"):
+    read = data.endswith(b"\0")
+    if read:
         # decoded as `os.environ` is; a name is the text before the first `=`
         environ = dict(entry.partition("=")[::2] for entry in os.fsdecode(data).split("\0")[:-1])
-    else:  # the script replaced the shell or its EXIT trap, or left no `env` to run
-        log.say("prepare: its environment could not be read", "warn")
-    log.say("prepare: done", "ok")
-    return environ
+    # else the script replaced the shell or its EXIT trap, or left no `env` to run
+    return PrepareResult(environ, read)
