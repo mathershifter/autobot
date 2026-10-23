@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from typing import Any
 
 import pydantic
@@ -159,6 +160,43 @@ def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plu
     assert [type(s) for s in cfg.script] == [c[1] for c in cases]
     assert cfg.script[-1].plugin_key_ == "probe"  # type: ignore[union-attr]
     assert "extra_forbidden" in error_types(with_("script", [{"cmd": "a", "line": "b"}]))
+
+
+def test_p6_120_every_step_kind_writes_back_without_a_warning(isolated_registry: StepRegistry, register_plugin):
+    """SPEC "Step Types", "Python API": a step is a member of a discriminated union, and the discriminator
+    names the member of a step that is a model already, as it names a document's by its key. So a `Config`
+    with every kind of step, a plugin step and a block of steps among them, dumps without a
+    `PydanticSerializationUnexpectedValue` warning, to a document that validates to an equal `Config`; a
+    plugin step writes its own keys and not the internal `plugin_key_`."""
+    register_plugin(ProbeExecutor())
+    script: list[dict[str, Any]] = [
+        {"cmd": ["x", "y"], "register": "r", "assert": "ok", "after": "go", "timeout": "5s", "ignore_error": True},
+        {"sleep": "500ms"},
+        {"call": "f", "when": "{{ vars.x }}", "delay_after": 1},
+        {
+            "block": {
+                "name": "b",
+                "prompts": [{"name": "p", "expect": ["x"], "send": "y"}, {"name": "q", "expect": "z", "return": True}],
+                "enter": [{"line": "e"}],
+                "script": [{"return": 2}, {"set": {"a": 1, "b": [1, "two"]}}],
+                "breakout": [{"control": "c"}],
+            }
+        },
+        {"probe": "x", "delay_before": "1s"},
+    ]
+    base = with_("fn", {"f": {"script": [{"cmd": "y"}]}})
+    config = Config.model_validate(with_("script", script, base))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        doc = config.model_dump(mode="json", exclude_none=True, by_alias=True)
+    assert doc["script"][-1] == {"probe": "x", "delay_before": 1.0}
+    assert doc["script"][3]["block"]["script"][0] == {"return": 2}
+    again = Config.model_validate(doc)
+    assert [type(s) for s in again.script] == [type(s) for s in config.script]
+    assert again == config
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert again.model_dump(mode="json", exclude_none=True, by_alias=True) == doc
 
 
 SEND_OK = {

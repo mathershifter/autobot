@@ -1,5 +1,5 @@
-"""P5-18..20, P5-31, P5-61..64, P5-94..97: the `env` section and `--env` (SPEC "Top-level fields",
-"The environment in templates", "CLI")."""
+"""P5-18..20, P5-31, P5-61..64, P5-94..97, P5-118: the `env` section and `--env` (SPEC "Top-level fields",
+"The environment in templates", "CLI", "Python API")."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from conftest import SpawnLog, SpawnRecorded, make_config, make_doc, make_runner, run_cli, run_script
 
+from autobot.errors import ScriptError
 from autobot.runner import Runner
 
 SECRET = "S3CRET-value"
@@ -365,3 +366,15 @@ def test_p5_97_number_is_a_number_in_an_expression_and_its_digits_as_text(monkey
     r = make_runner([], env={"AB_N": 3, "AB_R": 0.5, "AB_S": "3"}, given={"AB_R": "2"})
     assert r.render("{{ env.AB_N }} {{ env.AB_N + 1 }} {{ env.AB_R }} {{ env.AB_R * 2 }} {{ env.AB_S * 2 }}") == "10 11 2.0 4.0 33"
     assert r.render("{{ 'many' if env.AB_N > 9 else 'few' }} {{ range(env.AB_N) | length }}") == "many 10"
+
+
+@pytest.mark.parametrize("value", [5, 1.5, True, None, ["5"], b"5"], ids=lambda v: type(v).__name__)
+@pytest.mark.parametrize("default", ["s", None, True, 3, 0.5], ids=["string", "required", "boolean", "integer", "number"])
+def test_p5_118_given_value_that_is_not_text_is_an_error_naming_the_key(default: Any, value: Any):
+    """SPEC "Python API" (Constructing a `Runner`): `given` is `{name: text}`, as `--env` gives it. A value
+    that isn't text is a `ScriptError` when the runner is built, whatever the type of the variable's
+    default, which names the key and the value's type and not the value, which may be a secret."""
+    with pytest.raises(ScriptError) as ei:
+        Runner(make_config([], env={"AB_A": default}), {"AB_A": value})
+    assert str(ei.value) == f"--env AB_A: the value must be text, not {type(value).__name__}"
+    assert ei.value.__cause__ is None
