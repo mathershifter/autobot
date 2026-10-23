@@ -37,7 +37,8 @@ class CleanWriter:
             self._reporter.echoed(data)
 
     def _out(self, data: str = ""):
-        """Write `data` and flush. A failure ends the run (`log.OutputLost`), and no write is tried after it."""
+        """Write `data` and flush. A failure ends the run (the reporter raises `autobot.log.OutputLost`), and no
+        write is tried after it."""
         with self._reporter.writing(self._stream):
             if data:
                 self._write(data)

@@ -24,7 +24,6 @@ import yaml
 import autobot.registry as registry_mod
 from autobot.cli.schema import load_schema
 from autobot.errors import LineTooLong, PartialLine
-from autobot.log import ConsoleReporter
 from autobot.models import Config
 from autobot.protocols import Reporter
 from autobot.registry import StepRegistry
@@ -179,12 +178,6 @@ def attached_runner() -> Iterator[Callable[..., Runner]]:
     yield factory
     for r in runners:
         r.session.detach()
-
-
-@pytest.fixture
-def reporter() -> ConsoleReporter:
-    """A reporter of the test's own: its messages go to the captured stderr, and it keeps no loss of another test."""
-    return ConsoleReporter()
 
 
 @pytest.fixture
