@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping, Sequence
+
     import pydantic
 
-    from .models import Config, Prompt
+    from .models import Config, Prompt, Step
     from .session import PromptHandler, Session
 
 
@@ -14,7 +16,24 @@ class RunnerContext(Protocol):
     def session(self) -> Session: ...
 
     @property
-    def config(self) -> Config: ...
+    def config(self) -> Config:
+        """The script as loaded. It is read, never written: what a run changes is in `vars`."""
+        ...
+
+    @property
+    def vars(self) -> MutableMapping[str, Any]:
+        """The run's `vars`: what templates read, and what `register` and `set` write. Each run starts
+        with a copy of the script's `vars`."""
+        ...
+
+    @property
+    def errors(self) -> Sequence[str]:
+        """The top-level `errors` patterns."""
+        ...
+
+    def function(self, name: str) -> list[Step]:
+        """The steps of `fn.<name>`; `ValueError` when the script defines no such function."""
+        ...
 
     def render(
         self, template: Any, extra_ctx: dict | None = None, *, condition: bool = False, keep_newline: bool = False

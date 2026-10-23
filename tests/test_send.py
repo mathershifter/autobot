@@ -677,7 +677,7 @@ def test_p8_43_line_past_the_limit_is_refused_and_nothing_is_sent(spawn: str, nb
     with pytest.raises(LineTooLong) as ei:
         runner.run()
     assert str(ei.value) == too_long(nbytes)
-    assert runner.config.vars == {"first": "first", "clean": "clean"}
+    assert runner.vars == {"first": "first", "clean": "clean"}
     assert sent.commands() == ["echo first", "echo clean"]
     err = capsys.readouterr().err
     assert f">> step failed (LineTooLong): {too_long(nbytes)}\n" in err and "long line" not in err
@@ -707,7 +707,7 @@ def test_p8_43_line_typed_at_a_running_read_is_refused():
     with pytest.raises(LineTooLong) as ei:
         runner.run()
     assert str(ei.value) == too_long(CANON + 1)
-    assert runner.config.vars == {"n": "1"}
+    assert runner.vars == {"n": "1"}
 
 
 @linux

@@ -45,7 +45,7 @@ class CmdExecutor:
         if isinstance(step.cmd, str) and step.cmd.startswith("#!"):
             self._execute_script(step, ctx, timeout)
             return
-        errors = ctx.config.errors or None
+        errors = ctx.errors or None
         output: list[str] = []
         items = ensure_list(step.cmd)
         # `cmd: []` sends nothing: a prompt wait could press Return or answer a prompt
@@ -103,14 +103,14 @@ class CmdExecutor:
                 check_regex(p, "assert")
             if not any(re.search(p, output) for p in rendered):
                 raise StepFailure(f"assertion failed: expected {rendered}")
-        elif probe and (shell or not ctx.config.errors or ctx.session.posix):
-            rc = ctx.session.check_rc(timeout=timeout, posix=bool(ctx.config.errors) and not shell)
+        elif probe and (shell or not ctx.errors or ctx.session.posix):
+            rc = ctx.session.check_rc(timeout=timeout, posix=bool(ctx.errors) and not shell)
             if rc != 0:
                 raise StepFailure(f"command returned exit code {rc}")
 
     def _register(self, step: CmdStep, ctx: RunnerContext, output: str) -> None:
         if step.register_:
-            ctx.config.vars[step.register_] = output.strip()
+            ctx.vars[step.register_] = output.strip()
             log.say(f"register: vars.{step.register_}", "detail")
 
     def _execute_script(self, step: CmdStep, ctx: RunnerContext, timeout: float) -> None:
@@ -127,7 +127,7 @@ class CmdExecutor:
             self._upload(ctx, script.encode(), tmp, timeout)
             log.say(f"script: executing {tmp}", "detail")
             ctx.session.sendline(tmp, timeout=timeout)
-            output = ctx.session.get_prompt(timeout=timeout, errors=ctx.config.errors or None)
+            output = ctx.session.get_prompt(timeout=timeout, errors=ctx.errors or None)
             self._check(step, ctx, output, timeout, shell=True)
         except (CommandError, StepFailure) as e:
             if isinstance(e, CommandError):
@@ -192,11 +192,9 @@ class CallExecutor:
     model = CallStep
 
     def execute(self, step: CallStep, ctx: RunnerContext, timeout: float) -> None:
-        fn = ctx.config.fn.get(step.call)
-        if not fn:
-            raise ValueError(f"undefined function: {step.call}")
+        steps = ctx.function(step.call)
         log.say(f"call: {step.call}", "group")
-        ctx.run_steps(fn.script)
+        ctx.run_steps(steps)
 
 
 class BlockExecutor:
@@ -262,11 +260,11 @@ class SetExecutor:
 
     def execute(self, step: SetStep, ctx: RunnerContext, timeout: float) -> None:
         # in the order written, on a copy: a later key reads an earlier one, and a failure assigns nothing
-        work = dict(ctx.config.vars)
+        work = dict(ctx.vars)
         for name, value in step.set_.items():
             work[name] = self._render(value, ctx, {"vars": work})
         for name in step.set_:
-            ctx.config.vars[name] = work[name]
+            ctx.vars[name] = work[name]
         # the names, not the values: they may be secrets
         log.say(f"set: {', '.join(f'vars.{name}' for name in step.set_)}")
 

@@ -5,7 +5,7 @@ import re
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pexpect
 
@@ -349,7 +349,7 @@ class Session:
     def get_prompt(
         self,
         timeout: float = 300,
-        errors: list[str] | None = None,
+        errors: Sequence[str] | None = None,
         capture: bool = True,
         solicit: bool = True,
     ) -> str:
@@ -435,7 +435,7 @@ class Session:
         return f"a shell prompt ({names})"
 
     def _finish(
-        self, output: list[str], sent: str | None, errors: list[str] | None, capture: bool, match: str
+        self, output: list[str], sent: str | None, errors: Sequence[str] | None, capture: bool, match: str
     ) -> str:
         self._at_prompt = True
         self._pending = False

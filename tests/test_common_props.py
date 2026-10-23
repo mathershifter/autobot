@@ -262,7 +262,7 @@ def test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error(sent: SentLog
         r.run()
     assert sent.lines() == []
     assert "expect" not in timeline.names() and "get_prompt" not in timeline.names()
-    assert r.config.vars["out"] == "unset"
+    assert r.vars["out"] == "unset"
 
 
 @pytest.mark.parametrize("step", [{"line": "echo hi"}, {"return": 1}, {"control": "c"}, {"call": "f"}, {"block": {"name": "b"}}, {"set": {"a": "x"}}], ids=lambda s: next(iter(s)))
