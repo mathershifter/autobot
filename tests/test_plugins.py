@@ -120,6 +120,24 @@ def test_plugin_context_and_default_registry_agree(isolated_registry: StepRegist
     assert models._plugins.get() is None  # the context's lookup is the validation's alone
 
 
+def test_with_plugins_runs_outermost_so_the_lookup_is_set_while_the_model_is_built(isolated_registry: StepRegistry):
+    """Review #87: the bridge relies on pydantic running the last-defined wrap validator (`_with_plugins`)
+    outermost, so the ContextVar is set before the rest of the model is built. A field validator records
+    whether it was set when it ran."""
+    seen: list[Any] = []
+
+    class Recording(Config):
+        @pydantic.field_validator("autobot")
+        @classmethod
+        def _record(cls, v: str) -> str:
+            seen.append(models._plugins.get())
+            return v
+
+    Recording.model_validate(make_doc([]), context={PLUGINS: isolated_registry})
+    assert seen[-1] is isolated_registry  # set during field validation, so _with_plugins ran first
+    assert models._plugins.get() is None  # and was reset when validation ended
+
+
 def test_plugin_context_decides_what_a_plugin_step_is(isolated_registry: StepRegistry, probe):
     """The lookup given decides which keys are plugin steps, and the plugin's own fields are checked
     against it, at the step's path, as with the default registry."""

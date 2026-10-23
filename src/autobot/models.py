@@ -18,10 +18,12 @@ if TYPE_CHECKING:
 
 VERSION = "2026-10"
 
-PLUGINS = "plugins"
+PLUGINS = "autobot.plugins"
 """The validation context key of the plugins a script is checked against:
 `Config.model_validate(doc, context={PLUGINS: lookup})`, with a `PluginLookup` (`autobot.protocols`).
-Without it, the default registry, `autobot.registry.registry`, which discovers the installed plugins."""
+Without it, the default registry, `autobot.registry.registry`, which discovers the installed plugins.
+The key is honored by `Config.model_validate` alone (its `_with_plugins` wrap validator sets the lookup
+for the whole validation); `Function`, `Block` and `PluginStep` validated on their own ignore a context."""
 
 # the lookup of the validation under way; pydantic's Discriminator callable gets no context, so it is kept here
 _plugins: ContextVar[PluginLookup | None] = ContextVar("autobot.models.plugins", default=None)
@@ -589,8 +591,9 @@ class Config(pydantic.BaseModel):
             raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
         return self
 
-    # defined last: the outermost validator, so that the lookup is set while the steps are discriminated
-    # and `_check_steps` runs
+    # defined last: pydantic runs the last-defined wrap validator outermost, so the lookup is set before the
+    # steps are discriminated and `_check_steps` runs, and before any nested `Config.model_validate` a plugin
+    # validator makes with no context of its own, which then inherits this one through the ContextVar
     @pydantic.model_validator(mode="wrap")
     @classmethod
     def _with_plugins(

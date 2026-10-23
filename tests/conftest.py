@@ -423,10 +423,15 @@ class ProbeExecutor:
 @pytest.fixture
 def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> StepRegistry:
     """A fresh registry with builtins, and a counted ``entry_points``."""
+    import autobot.cli
+
     reg = StepRegistry()
     register_builtins(reg)
     reg.discover_calls = 0  # type: ignore[attr-defined]
     monkeypatch.setattr(registry_mod, "registry", reg)
+    # cli/__init__.py binds the registry at import for its `context={PLUGINS: registry}`; patch it too,
+    # so an in-process `cli.main()` validates against this registry
+    monkeypatch.setattr(autobot.cli, "registry", reg)
     real = importlib.metadata.entry_points
 
     def entry_points(**kw):
