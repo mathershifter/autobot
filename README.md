@@ -554,6 +554,25 @@ A plugin adds a step type. It is an executor class registered in the `autobot.st
 
 A plugin's key can't be a built-in step key or a common step property name. See [SPEC.md](SPEC.md#common-step-properties).
 
+## Python API
+
+A program can hold the session open and decide what to send as it goes. `Runner.attached()` does what a run does up to `attach.script` on entry, and the breakout and the close on exit, however the body ended; `run.steps(doc)` validates step dicts as a script's `script` is validated.
+
+```python
+import yaml
+from autobot import Config, Runner
+
+config = Config.model_validate(yaml.safe_load(open("switch.autobot.yaml")))
+with Runner(config, {"HOST": "sw1"}).attached() as run:
+    run.run_steps(run.steps([{"cmd": "show version", "register": "ver"}]))
+    if "4.32" in run.vars["ver"]:
+        run.run_steps(run.steps([{"cmd": "show inventory"}]))
+    run.session.sendline("show clock")
+    print(run.session.get_prompt())
+```
+
+`Runner.run()` is the same lifecycle around the script's own steps. The errors, the report annotations (`autobot.trail`, `autobot.left`) and the rest are in [SPEC.md](SPEC.md#python-api).
+
 ## Schema and reference
 
 The JSON Schema is in [`schemas/autobot.2026-10.json`](schemas/autobot.2026-10.json). `autobot schema` prints it with a definition for each installed plugin step, and needs no network.

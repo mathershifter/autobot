@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -514,6 +514,69 @@ def _walk_steps(loc: tuple, steps: list[Step]) -> Iterator[tuple[tuple, Step]]:
             yield from _walk_steps((*here, "breakout"), block.breakout)
 
 
+def _check_step_lists(
+    roots: list[tuple[tuple, list[Step]]], fn: Mapping[str, Function], plugins: PluginLookup, title: str
+) -> None:
+    """What holds across the steps once each is a model, blocks walked into: a `call` names a function of
+    `fn`, and a plugin step has one plugin key and passes its plugin's model (validated once, and kept on
+    the step). Every error at once, as one `ValidationError` titled `title`."""
+    errors: list[Any] = []
+    for root, steps in roots:
+        for loc, step in _walk_steps(root, steps):
+            if isinstance(step, CallStep) and step.call not in fn:
+                errors.append({
+                    "type": PydanticCustomError(
+                        "undefined_function",
+                        "call to undefined function '{name}'",
+                        {"name": step.call},
+                    ),
+                    "loc": (*loc, "call"),
+                    "input": step.call,
+                })
+            elif isinstance(step, PluginStep):
+                # the step's other keys reach the first plugin's model as fields, and an extra="allow"
+                # model would take a second plugin's key as data, so that step would never run
+                keys = [k for k in step.model_extra or {} if plugins.has(k)]
+                if len(keys) > 1:
+                    msg = f"step has more than one plugin key: {', '.join(keys)}"
+                    errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
+                    continue
+                try:
+                    step.validated(plugins)
+                except pydantic.ValidationError as e:
+                    errors += [
+                        {
+                            # the plugin's text goes through ctx, so braces in it survive
+                            "type": PydanticCustomError(
+                                err["type"], "{msg}", {"msg": err["msg"]}
+                            ),
+                            "loc": (*loc, *err["loc"]),
+                            "input": err["input"],
+                        }
+                        for err in e.errors()
+                    ]
+    if errors:
+        raise pydantic.ValidationError.from_exception_data(title, errors)
+
+
+# a list of steps as `Config.script` is one: strict, so only a list is one
+_STEPS = pydantic.TypeAdapter(list[Step], config=pydantic.ConfigDict(strict=True, title="steps"))
+
+
+def validate_steps(doc: Any, *, fn: Mapping[str, Function], plugins: PluginLookup) -> list[Step]:
+    """A list of step documents validated as `Config` validates its `script` (SPEC, Python API): each step
+    discriminated by its key and checked by its model, a `call` against `fn`, a plugin step against
+    `plugins`, which the discriminator asks as well. Raises `pydantic.ValidationError`, with locations
+    that start at the list (`(0, 'call')` where `Config` has `('script', 0, 'call')`)."""
+    token = _plugins.set(plugins)
+    try:
+        steps = _STEPS.validate_python(doc)
+        _check_step_lists([((), steps)], fn, plugins, "steps")
+    finally:
+        _plugins.reset(token)
+    return steps
+
+
 class Config(pydantic.BaseModel):
     model_config = _STRICT
     autobot: str
@@ -544,51 +607,13 @@ class Config(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="after")
     def _check_steps(self) -> Config:
-        plugins = _lookup()
         roots: list[tuple[tuple, list[Step]]] = [
             (("attach", "script"), self.attach.script),
             (("script",), self.script),
             (("attach", "breakout"), self.attach.breakout),
         ]
         roots += [(("fn", name, "script"), f.script) for name, f in self.fn.items()]
-
-        errors: list[Any] = []
-        for root, steps in roots:
-            for loc, step in _walk_steps(root, steps):
-                if isinstance(step, CallStep) and step.call not in self.fn:
-                    errors.append({
-                        "type": PydanticCustomError(
-                            "undefined_function",
-                            "call to undefined function '{name}'",
-                            {"name": step.call},
-                        ),
-                        "loc": (*loc, "call"),
-                        "input": step.call,
-                    })
-                elif isinstance(step, PluginStep):
-                    # the step's other keys reach the first plugin's model as fields, and an extra="allow"
-                    # model would take a second plugin's key as data, so that step would never run
-                    keys = [k for k in step.model_extra or {} if plugins.has(k)]
-                    if len(keys) > 1:
-                        msg = f"step has more than one plugin key: {', '.join(keys)}"
-                        errors.append(_error("invalid_step", msg, loc, step.model_dump(exclude_unset=True)))
-                        continue
-                    try:
-                        step.validated(plugins)
-                    except pydantic.ValidationError as e:
-                        errors += [
-                            {
-                                # the plugin's text goes through ctx, so braces in it survive
-                                "type": PydanticCustomError(
-                                    err["type"], "{msg}", {"msg": err["msg"]}
-                                ),
-                                "loc": (*loc, *err["loc"]),
-                                "input": err["input"],
-                            }
-                            for err in e.errors()
-                        ]
-        if errors:
-            raise pydantic.ValidationError.from_exception_data(type(self).__name__, errors)
+        _check_step_lists(roots, self.fn, _lookup(), type(self).__name__)
         return self
 
     # defined last: pydantic runs the last-defined wrap validator outermost, so the lookup is set before the

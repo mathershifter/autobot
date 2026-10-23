@@ -12,7 +12,7 @@ from . import prepare as prepare_mod  # `prepare` is a constructor kwarg; the mo
 from . import registry as registry_mod
 from .environment import resolve_env, typed
 from .log import ConsoleReporter, OutputLost
-from .models import Config, PluginStep, Prompt, Step, names_command
+from .models import Config, PluginStep, Prompt, Step, names_command, validate_steps
 from .prompts import build_handler
 from .session import PromptHandler, Session
 from .templating import Templater, check_regex
@@ -85,6 +85,7 @@ class Runner:
         self._session = Session(self._start(), reporter=self._reporter, transcript=transcript, environ=self._environ)
         self._stack: list[report.StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
+        self._attached = False  # inside `attached()` (so inside `run()`), from its entry to its exit
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
         self.before_attach: Callable[[], None] | None = None
 
@@ -185,19 +186,46 @@ class Runner:
         return spawn
 
     def run(self):
-        self._unfinished = []  # nothing of an earlier run of this runner counts for this one
-        self._reporter.clear()
-        try:
-            self._run()
-        finally:
-            # lost output is the run's, and gone with it. It is what ended the run, whatever came after it
-            # on the way out (an interrupt)
-            lost = self._reporter.clear()
-            if lost:
-                self._mark(lost)
-                raise lost
+        """Run the script as the CLI does: `attached()` around `script` (SPEC, Python API)."""
+        with self.attached():
+            self.run_steps(self._config.script, path="script")
 
-    def _run(self):
+    def steps(self, doc: Any) -> list[Step]:
+        """`doc`, a list of step documents as YAML reads them, validated as a script's `script` list is: the
+        plugin steps against this runner's registry, the `call` targets against the `Config`'s `fn` (SPEC,
+        Python API). Raises `pydantic.ValidationError`; gives the models `run_steps` takes."""
+        return validate_steps(doc, fn=self._config.fn, plugins=self._registry)
+
+    @contextlib.contextmanager
+    def attached(self) -> Iterator[Runner]:
+        """The lifecycle of a run around a body of the program's own (SPEC, Python API). Entry is what
+        `run()` does up to and including `attach.script`; the runner is yielded, and `run_steps`, `session`,
+        `vars` and the rest work as they do for a plugin's `ctx`. Exit is what `run()` does after `script`,
+        however the body ended: `attach.breakout`, the no-logout warning, the close, and the error the run
+        ends with, annotated for the report."""
+        if self._attached:
+            raise RuntimeError(
+                "the runner is attached already: attached() and run() don't nest (run steps inside the body with run_steps)"
+            )
+        self._attached = True
+        try:
+            self._unfinished = []  # nothing of an earlier run of this runner counts for this one
+            self._reporter.clear()
+            try:
+                yield from self._lifecycle()
+            finally:
+                # lost output is the run's, and gone with it. It is what ended the run, whatever came after it
+                # on the way out (an interrupt)
+                lost = self._reporter.clear()
+                if lost:
+                    self._mark(lost)
+                    raise lost
+        finally:
+            self._attached = False
+
+    def _lifecycle(self) -> Iterator[Runner]:
+        """Spawn, run `attach.script` and yield; then `attach.breakout` however the body ended, the warning
+        for credentials no breakout followed, and the close (the attach lifecycle)."""
         attach = self._config.attach
         # the run's own `vars`, and the top-level prompts resolved from them, before `prepare` runs
         self._session.restore_handlers(self._start())
@@ -210,7 +238,17 @@ class Runner:
             self.before_attach()
         self._reporter.say(f"attach: {spawn}")
         try:
-            self._attach_and_run(spawn, timeout)
+            # no `env=`: the session falls back to its own `environ`, the one it was built with (`self._environ`)
+            self._session.attach(spawn, timeout=timeout)
+            try:
+                if attach.script:
+                    self.run_steps(attach.script, path="attach.script")
+                yield self
+            finally:
+                if attach.breakout:
+                    self._reporter.say("breakout: detaching", "group")
+                    self.run_breakout(attach.breakout, path="attach.breakout")
+                self._warn_no_logout()
         except BaseException as e:
             self._session.detach(failing=True)  # a close that fails must not replace this error
             self._mark(e)
@@ -233,22 +271,6 @@ class Runner:
             fit = {k: v for k, v in environ.items() if k and "=" not in k and "\0" not in k + v}
             environ = self._prepare(self._config.prepare, fit, self._reporter)
         return self._resolve_env(environ)
-
-    def _attach_and_run(self, spawn: str, timeout: float):
-        """Spawn the process and run `attach.script` and `script`; `attach.breakout` runs after them however
-        they end, and then the warning for credentials no breakout followed."""
-        attach = self._config.attach
-        # no `env=`: the session falls back to its own `environ`, the one it was built with (`self._environ`)
-        self._session.attach(spawn, timeout=timeout)
-        try:
-            if attach.script:
-                self.run_steps(attach.script, path="attach.script")
-            self.run_steps(self._config.script, path="script")
-        finally:
-            if attach.breakout:
-                self._reporter.say("breakout: detaching", "group")
-                self.run_breakout(attach.breakout, path="attach.breakout")
-            self._warn_no_logout()
 
     def _warn_no_logout(self):
         names = self._session.logins_open

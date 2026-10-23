@@ -104,7 +104,7 @@ class _Counting:
 
 
 def test_plugin_context_and_default_registry_agree(isolated_registry: StepRegistry, probe, monkeypatch: pytest.MonkeyPatch):
-    """SPEC "As a library": `Config.model_validate(doc)` checks the plugin steps against the default registry,
+    """SPEC "Python API": `Config.model_validate(doc)` checks the plugin steps against the default registry,
     and `context={PLUGINS: lookup}` against the lookup given. With the same plugins both give the same
     `Config`, and either way the plugin's model is validated once per step, at load."""
     doc = make_doc([{"probe": "a", "timeout": "5s"}, {"probe": "b"}], timeout=None)
@@ -358,7 +358,7 @@ class CountingExecutor:
 
 
 def test_p7_29_plugin_model_is_validated_once_at_load_and_not_again_when_it_runs(isolated_registry: StepRegistry, register_plugin):
-    """SPEC "Common Step Properties", "As a library": a plugin step's fields are validated against the
+    """SPEC "Common Step Properties", "Python API": a plugin step's fields are validated against the
     plugin's model once, when the script is loaded; the model that passed is the one `execute` receives,
     in this run and the next. Before the fix the runner validated the step again at every run."""
     executor = register_plugin(CountingExecutor())

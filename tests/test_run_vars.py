@@ -98,7 +98,7 @@ def test_two_runners_over_one_config_share_nothing():
 
 
 def test_runner_vars_is_one_mapping_filled_again_by_each_run():
-    """SPEC "As a library": `Runner.vars` is one mapping, emptied and filled again at each run's start, so a
+    """SPEC "Python API": `Runner.vars` is one mapping, emptied and filled again at each run's start, so a
     reference taken before `run()` reads the run's values after it."""
     runner = make_runner([ECHO_OUT], vars={"keep": 1})
     before = runner.vars
@@ -111,7 +111,7 @@ def test_runner_vars_is_one_mapping_filled_again_by_each_run():
 
 
 def test_runner_errors_read_the_config_as_vars_do(register_plugin):
-    """SPEC "As a library": `errors` is read from the `Config` as it is, as `vars` is copied from it at each
+    """SPEC "Python API": `errors` is read from the `Config` as it is, as `vars` is copied from it at each
     run's start, so a change to the `Config` between runs is seen by the next run either way."""
     ex = register_plugin(LookExecutor())
     runner = make_runner([{"look": "f"}], fn={"f": {"script": []}}, errors=["^ERR"], vars={"a": 1})
