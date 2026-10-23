@@ -470,7 +470,24 @@ class PluginStep(pydantic.BaseModel):
         return self._plugin_model
 
 
+# each member of `Step` and its tag: what the discriminator answers for a step that is a model already,
+# as every step is when a `Config` is serialized (pydantic asks the same callable then)
+_STEP_TAGS: dict[type[pydantic.BaseModel], str] = {
+    CmdStep: "cmd",
+    SleepStep: "sleep",
+    CallStep: "call",
+    BlockStep: "block",
+    LineStep: "line",
+    ReturnStep: "return",
+    ControlStep: "control",
+    SetStep: "set",
+    PluginStep: "plugin",
+}
+
+
 def _step_discriminator(v: Any) -> str | None:
+    if isinstance(v, pydantic.BaseModel):
+        return next((tag for cls, tag in _STEP_TAGS.items() if isinstance(v, cls)), None)
     if not isinstance(v, dict):
         return None
     for key in BUILTIN_KEYS:

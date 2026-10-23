@@ -71,9 +71,11 @@ class Runner:
         self._default_timeout = 300
         # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
         self._environ = run_environ() if environ is None else dict(environ)
-        for key in given:
+        for key, value in given.items():
             if key not in config.env:
                 raise errors.ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
+            if not isinstance(value, str):  # `given` is text, as `--env` gives it; `typed` reads text
+                raise errors.ScriptError(f"--env {key}: the value must be text, not {type(value).__name__}")
         # an `--env` value depends on nothing `prepare` does, so it gets its type before anything runs
         self._typed = {key: typed(key, value, config.env[key], "--env") for key, value in given.items()}
         self._given = given
@@ -106,8 +108,9 @@ class Runner:
     @property
     def env(self) -> Mapping[str, Any]:
         """The run's `env` as templates read it (SPEC, The environment in templates): the declared variables
-        with their typed values, resolved by `run` once `prepare` has run; empty before that. Read-only: a
-        view of the live mapping."""
+        with their typed values, resolved by each run once `prepare` has run: empty before the first run,
+        and a run's values stay readable after it until the next run resolves them again. Read-only: a view
+        of the live mapping."""
         return MappingProxyType(self._env)
 
     @property
