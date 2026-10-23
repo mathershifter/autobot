@@ -571,7 +571,27 @@ with Runner(config, {"HOST": "sw1"}).attached() as run:
     print(run.session.get_prompt())
 ```
 
-`Runner.run()` is the same lifecycle around the script's own steps. The errors, the report annotations (`autobot.trail`, `autobot.left`) and the rest are in [SPEC.md](SPEC.md#python-api).
+A script can be written in Python as well. `Config.model_validate` takes the document a YAML file would hold, as dicts and lists, and checks it as `autobot validate` does; an invalid one raises `pydantic.ValidationError`. Templates are Jinja2 strings as in YAML. `Runner(config, given).run()` runs it as the CLI would, with `given` as the `-e KEY=VALUE` pairs, and `runner.vars` then holds what `register` and `set` stored.
+
+```python
+from autobot import Config, Runner
+
+config = Config.model_validate({
+    "autobot": "2026-10",
+    "env": {"HOST": None},
+    "prompts": [{"name": "cli", "expect": r"^\w+@[\w.-]+:[^\r\n]*[$#] ?$", "return": True}],
+    "attach": {"spawn": "ssh admin@{{ env.HOST }}"},
+    "script": [
+        {"cmd": "show version", "register": "version"},
+        {"cmd": "show interfaces status", "assert": "Ethernet0"},
+    ],
+})
+runner = Runner(config, {"HOST": "sw1"})
+runner.run()
+print(runner.vars["version"])
+```
+
+The errors of a run, the report annotations (`autobot.trail`, `autobot.left`) and the rest are in [SPEC.md](SPEC.md#python-api); see [Building a script in Python](SPEC.md#building-a-script-in-python) for what validating a Python document checks.
 
 ## Schema and reference
 
