@@ -8,8 +8,7 @@ from typing import Any
 import pydantic
 
 from ..log import ConsoleReporter
-from ..prompts import yaml_kind
-from ..types import text
+from ..types import text, yaml_kind
 from .report import visible
 
 GOT_MAX = 60

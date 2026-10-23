@@ -41,14 +41,14 @@ class Env(dict):  # holds its keys and nothing else: a template reads attributes
         return StrictUndefined(hint=f"env has no key {key!r}: the script's env section doesn't declare it")
 
 
-def resolve_env(declared: dict[str, Any], given: dict[str, Any], environ: dict[str, str]) -> Env:
+def resolve_env(declared: dict[str, Any], typed_given: dict[str, Any], environ: dict[str, str]) -> Env:
     """`env` in templates: the variables `declared` (the `env` section: name to default), and nothing else.
-    Each has the value of `given` (`--env`, typed already), else the one of `environ` (the environment
+    Each has the value of `typed_given` (`--env`, typed already), else the one of `environ` (the environment
     `prepare` left, or the one it would have been given), as the type of its default, else its default."""
     env = Env()
     for key, default in declared.items():
-        if key in given:
-            env[key] = given[key]
+        if key in typed_given:
+            env[key] = typed_given[key]
         elif key in environ:
             env[key] = typed(key, environ[key], default, "the environment")
         elif default is None:

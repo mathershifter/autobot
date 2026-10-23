@@ -3,7 +3,6 @@ the credential sets of a `sendEach` collection (see SPEC, Prompt Handling)."""
 
 from __future__ import annotations
 
-import datetime
 from collections.abc import Callable
 from typing import Any
 
@@ -11,17 +10,7 @@ from .errors import ScriptError
 from .models import Prompt, SendEach
 from .session import PromptHandler, SimpleHandler
 from .templating import check_template
-from .types import text
-
-_KINDS = {
-    dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
-    datetime.date: "a timestamp", datetime.datetime: "a timestamp", bytes: "binary data", set: "a set",
-}
-
-
-def yaml_kind(value: Any) -> str:
-    """What a value of the script is, as YAML names it: `a mapping`, `a timestamp`, `null`."""
-    return "null" if value is None else _KINDS.get(type(value), f"a {type(value).__name__}")
+from .types import text, yaml_kind
 
 
 def _scalar(value: Any) -> bool:

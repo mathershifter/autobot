@@ -118,8 +118,9 @@ class RunnerContext(Protocol):
 
     def run_steps(self, steps: list, *, path: str | None = None) -> None:
         """Run `steps` as `call` and `block` run theirs. `path` names the list in a report: `call` passes
-        `fn.<name>.script`, `block` `<ctx.path>.block.enter`; without it the steps are named after the
-        running step, `<ctx.path>.<key>.<index>`, as those a plugin builds in code are."""
+        `fn.<name>.script`, `block` `<ctx.path>.block.enter`; without it a function's own script list
+        (`ctx.function(name)`) is named `fn.<name>.script`, and any other list is named after the running
+        step, `<ctx.path>.<key>.<index>`, as those a plugin builds in code are."""
         ...
 
     def run_breakout(self, steps: list, what: str = "breakout", *, path: str | None = None) -> None:

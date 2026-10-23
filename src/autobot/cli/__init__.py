@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import sys
 from collections.abc import Sequence
 from typing import Any
@@ -35,25 +34,6 @@ from .report import (
 __all__ = [
     "EXIT_BREAKOUT", "EXIT_INTERRUPTED", "EXIT_LOAD", "EXIT_RUN", "EXIT_UNEXPECTED", "EXPECTED", "LoadError", "main",
 ]
-
-
-def _discard_unwritten() -> bool:
-    """Before the process exits: what a stream still holds and can't be written is discarded, by pointing
-    its file descriptor to /dev/null, and the answer is whether there was any. The interpreter flushes
-    the streams as it exits, and a flush that fails there prints a traceback of its own and turns the
-    exit status into 120."""
-    failed = False
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except (AttributeError, OSError, ValueError) as e:
-            failed = failed or isinstance(e, OSError)
-            with contextlib.suppress(AttributeError, OSError, ValueError):
-                null = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(null, stream.fileno())
-                os.close(null)
-                stream.flush()
-    return failed
 
 
 def _discover(rep: ConsoleReporter, args: argparse.Namespace | None = None) -> None:
@@ -183,7 +163,7 @@ def main(argv: Sequence[str] | None = None, reporter: ConsoleReporter | None = N
         code = 0 if e.code is None else e.code
     finally:
         # output that could not be written is a failure of any command that had not failed already
-        if _discard_unwritten() and not code:
+        if signals.discard_unwritten() and not code:
             code = EXIT_RUN
         rep.clear()
     if code is not None:
@@ -191,7 +171,7 @@ def main(argv: Sequence[str] | None = None, reporter: ConsoleReporter | None = N
 
 
 def _main(rep: ConsoleReporter, argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(description="Autobot console robot.")
+    parser = argparse.ArgumentParser(prog="autobot", description="Autobot console robot.")
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Execute an autobot script")

@@ -47,11 +47,31 @@ class LookExecutor:
     def __init__(self) -> None:
         self.errors: Any = None
         self.fn: Any = None
+        self.inner_path: Any = None
 
     def execute(self, step: LookStep, ctx: Any, timeout: float) -> None:
         self.errors = ctx.errors
         self.fn = ctx.function(step.look)
         ctx.run_steps(self.fn)
+        self.inner_path = ctx.path  # the step's path again, now the function's steps are done
+
+
+class WhereStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    where: str
+
+
+class WhereExecutor:
+    """Records the path it runs at, so a test can see what `run_steps` named the list."""
+
+    key = "where"
+    model = WhereStep
+
+    def __init__(self) -> None:
+        self.path: Any = None
+
+    def execute(self, step: WhereStep, ctx: Any, timeout: float) -> None:
+        self.path = ctx.path
 
 
 def test_a_runner_that_runs_again_starts_with_the_scripts_vars():
@@ -138,6 +158,20 @@ def test_ctx_errors_and_ctx_function(register_plugin):
         ex.errors[0] = "x"  # type: ignore[index]
     assert ex.fn is runner.config.fn["f"].script
     assert runner.vars["from_f"] == "yes"
+
+
+def test_run_steps_of_a_function_list_without_path_is_named_fn_name_script(register_plugin):
+    """Review #86: a plugin that runs `ctx.function(name)` without `path=` names the list `fn.<name>.script`,
+    as `call` does, not `<ctx.path>.<key>`. Any other list is named after the step."""
+    look = register_plugin(LookExecutor())
+    where = register_plugin(WhereExecutor())
+    fn = {"f": {"script": [{"where": "in-fn"}]}}
+    make_runner([{"look": "f"}], fn=fn).run()
+    assert where.path == "fn.f.script.0"
+
+    where.path = None
+    make_runner([{"where": "top"}]).run()  # run() gives config.script the path "script"
+    assert where.path == "script.0"
 
 
 def test_ctx_function_of_an_undefined_name_is_a_value_error():

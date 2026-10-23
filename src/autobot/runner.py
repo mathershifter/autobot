@@ -5,14 +5,12 @@ import copy
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, Any, TextIO
 
-from . import prepare
+from . import errors, prepare, report
 from . import registry as registry_mod
 from .environment import resolve_env, typed
-from .errors import BreakoutError, ScriptError
 from .log import ConsoleReporter, OutputLost
 from .models import Config, PluginStep, Prompt, Step, names_command
 from .prompts import build_handler
-from .report import Left, RunOutcome, StepRef, step_ref, trail
 from .session import PromptHandler, Session
 from .templating import Templater, check_regex
 from .templating import templater as default_templater
@@ -72,7 +70,7 @@ class Runner:
         self._environ = run_environ() if environ is None else dict(environ)
         for key in given:
             if key not in config.env:
-                raise ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
+                raise errors.ScriptError(f"--env {key}: the script's env section declares no variable {key!r}")
         # an `--env` value depends on nothing `prepare` does, so it gets its type before anything runs
         self._typed = {key: typed(key, value, config.env[key], "--env") for key, value in given.items()}
         self._given = given
@@ -82,7 +80,7 @@ class Runner:
         # the top-level prompts are resolved here as well as at each run's start: a collection that can't
         # be, or a send template that doesn't parse, is an error before `prepare` runs
         self._session = Session(self._start(), reporter=self._reporter, transcript=transcript, environ=self._environ)
-        self._stack: list[StepRef] = []
+        self._stack: list[report.StepRef] = []
         self._unfinished: list[BaseException] = []  # what ended each breakout that did not finish
         # called when `prepare` has run and the process is about to be spawned, if set: the CLI's
         self.before_attach: Callable[[], None] | None = None
@@ -176,9 +174,9 @@ class Runner:
         # pexpect takes leading whitespace for an empty first word, e.g. from a template that renders to nothing
         spawn = self.render(attach.spawn).lstrip()
         if not names_command(spawn):
-            raise ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
+            raise errors.ScriptError(f"attach.spawn rendered to an empty command: {attach.spawn!r}")
         if "\0" in spawn:
-            raise ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
+            raise errors.ScriptError(f"attach.spawn rendered to a command line with a NUL character: {attach.spawn!r}")
         return spawn
 
     def run(self):
@@ -261,15 +259,15 @@ class Runner:
         first breakout that did not."""
         if self._unfinished:
             first = self._unfinished[0]
-            error = BreakoutError(f"a breakout did not finish ({type(first).__name__}): {first}")
-            RunOutcome.of(error).trail = trail(first)
+            error = errors.BreakoutError(f"a breakout did not finish ({type(first).__name__}): {first}")
+            report.RunOutcome.of(error).trail = report.trail(first)
             self._mark(error)
             raise error
 
     def _mark(self, error: BaseException):
         """Note on `error`, the one that ends the run, what the run may have left behind, for the CLI's report."""
         if self._unfinished:
-            RunOutcome.of(error).left = Left(tuple(self._unfinished), self._session.logins, self._session.login_pending)
+            report.RunOutcome.of(error).left = report.Left(tuple(self._unfinished), self._session.logins, self._session.login_pending)
 
     def run_breakout(self, steps: list[Step], what: str = "breakout", *, path: str | None = None):
         """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
@@ -290,26 +288,36 @@ class Runner:
 
     def run_steps(self, steps: list[Step], *, path: str | None = None):
         """Run `steps` in order. `path` is the list's path in the script, for the report (`script`,
-        `fn.<name>.script`, `<block's path>.block.enter`); without it the list is one built in code, e.g.
-        by a plugin, and is named after the step that runs it."""
+        `fn.<name>.script`, `<block's path>.block.enter`); without it a function's own script list is
+        named `fn.<name>.script`, and any other list is named after the step that runs it
+        (`<ctx.path>.<key>.<index>`, or `steps.<index>` outside any step)."""
         if path is None:
-            path = f"{self._stack[-1].path}.{self._stack[-1].key}" if self._stack else "steps"
+            path = self._default_path(steps)
         for i, step in enumerate(steps):
             self._run_step(step, f"{path}.{i}")
+
+    def _default_path(self, steps: list[Step]) -> str:
+        """The path for a `run_steps` with no `path`: a function's own script list keeps its name, so a
+        plugin that runs `ctx.function(name)` names it as `call` does; any other list is named after the
+        running step, or `steps` outside any step."""
+        for name, fn in self._config.fn.items():
+            if fn.script is steps:
+                return f"fn.{name}.script"
+        return f"{self._stack[-1].path}.{self._stack[-1].key}" if self._stack else "steps"
 
     def _get_timeout(self, step: Any) -> float:
         timeout = getattr(step, "timeout", None)
         return timeout if timeout is not None else self._default_timeout
 
     def _run_step(self, step: Step, path: str = "steps.0"):
-        self._stack.append(step_ref(step, path))
+        self._stack.append(report.step_ref(step, path))
         self._reporter.depth = len(self._stack) - 1
         try:
             self._step(step)
         except BaseException as e:
             # where it failed, for the CLI's report: set once, by the innermost step, which also says so
             # at once, before any breakout runs
-            outcome = RunOutcome.of(e)
+            outcome = report.RunOutcome.of(e)
             if outcome.trail is None:
                 outcome.trail = tuple(self._stack)
                 if isinstance(e, KeyboardInterrupt):
@@ -328,7 +336,7 @@ class Runner:
         if after is not None:
             pattern = self.render(after)
             if not pattern:
-                raise ScriptError("after: the pattern rendered to an empty regex, which matches at once")
+                raise errors.ScriptError("after: the pattern rendered to an empty regex, which matches at once")
             check_regex(pattern, "after")
             self._session.expect([pattern], timeout=timeout, what=f"the after pattern '{pattern}'")
 
