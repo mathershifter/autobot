@@ -15,7 +15,7 @@ import pexpect
 from .errors import CommandError, LineTooLong, PartialLine, RunError, ScriptError
 from .log import ConsoleReporter, OutputLost
 from .screen import ANSI_ESCAPE_RE, STRAY_RE, mid_echo, strip_echo
-from .terminal import LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte, run_environ
+from .terminal import DEFAULT_ENV, LINUX_CANON, PTY_COLS, PTY_ROWS, Pty, closed, control_byte, run_environ
 from .transcript import CleanWriter
 
 if TYPE_CHECKING:
@@ -282,7 +282,8 @@ class Session:
         runner's, or one of the session's own on stderr. `transcript`: the stream the session's output is
         written to as the device sent it (SPEC, Output); the process's stdout, as it is at each attach,
         when none is given. `environ`: the environment a child is spawned in when `attach` gets no `env`
-        of its own; that of a run (`terminal.run_environ`), taken at each attach, when none is given."""
+        of its own; that of a run (`terminal.run_environ`), taken at each attach, when none is given.
+        `TERM=dumb` and `NO_COLOR=1` are always set over it for the spawn, whatever it holds."""
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._transcript = transcript
         self._environ = environ
@@ -420,7 +421,11 @@ class Session:
         self._ctx["before"] = self._ctx["match"] = ""
         self._login = LoginState()
         if env is None:
-            env = run_environ() if self._environ is None else dict(self._environ)
+            # the session's own `environ` (the run's), or this process's; `TERM=dumb` and `NO_COLOR=1` are
+            # always set over it for the spawn (SPEC, The environment of the spawned process), as
+            # `run_environ` already sets them. An explicit `env` of a caller's own is used as it is.
+            base = run_environ() if self._environ is None else self._environ
+            env = {**base, **DEFAULT_ENV}
         self._cld = pexpect.spawn(
             spawn,
             timeout=timeout,

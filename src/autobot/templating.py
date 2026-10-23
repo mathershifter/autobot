@@ -1,8 +1,9 @@
-"""Jinja2 templating: the environments the engine renders with and their filters (`Templater`), `render`, and
-the checks of a template's syntax and of a rendered regex (see SPEC, Jinja2 Templating).
+"""Jinja2 templating: the environments the engine renders with and their filters (`Templater`), and the
+checks of a template's syntax and of a rendered regex (see SPEC, Jinja2 Templating).
 
-`templater` is the default instance: the free functions `render` and `check_template` are its, for the
-models' validators and for a runner built without a templater of its own.
+`templater` is the default instance, which a runner built without a templater of its own renders with, and
+whose `check_template` is the default syntax check of `prompts.build_handler`. `check_regex` is a free
+function: the runner and the steps check a rendered pattern with it, with no templater involved.
 """
 
 from __future__ import annotations
@@ -84,16 +85,6 @@ class Templater:
 
 
 templater = Templater()
-
-
-def render(template: Any, ctx: dict, *, condition: bool = False, keep_newline: bool = False) -> Any:
-    """`templater.render`: see `Templater.render`."""
-    return templater.render(template, ctx, condition=condition, keep_newline=keep_newline)
-
-
-def check_template(template: str) -> None:
-    """`templater.check_template`: see `Templater.check_template`."""
-    templater.check_template(template)
 
 
 def check_regex(pattern: str, what: str) -> None:

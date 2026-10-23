@@ -7,8 +7,12 @@ from typing import Any
 import pytest
 
 from autobot.duration import parse_duration
-from autobot.templating import check_template, render, templater
+from autobot.templating import templater
 from autobot.types import ensure_list
+
+# the default templater's methods, which the engine's own templating is (the free functions are gone)
+render = templater.render
+check_template = templater.check_template
 
 
 @pytest.mark.parametrize(

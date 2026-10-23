@@ -5,7 +5,10 @@ import copy
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, Any, TextIO
 
-from . import errors, prepare, report
+from types import MappingProxyType
+
+from . import errors, report
+from . import prepare as prepare_mod  # `prepare` is a constructor kwarg; the module is `prepare_mod`
 from . import registry as registry_mod
 from .environment import resolve_env, typed
 from .log import ConsoleReporter, OutputLost
@@ -29,8 +32,8 @@ Prepare = Callable[[str, dict[str, str], "Reporter"], dict[str, str]]
 
 def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dict[str, str]:
     """Run the `prepare` script in `environ`, saying what happens, and give the environment it leaves."""
-    reporter.say("prepare: running local script" + ("" if prepare.shebang(script) else " (no shebang, using /bin/sh)"))
-    result = prepare.run(script, environ)
+    reporter.say("prepare: running local script" + ("" if prepare_mod.shebang(script) else " (no shebang, using /bin/sh)"))
+    result = prepare_mod.run(script, environ)
     if not result.read:
         reporter.say("prepare: its environment could not be read", "warn")
     reporter.say("prepare: done", "ok")
@@ -102,8 +105,9 @@ class Runner:
     @property
     def env(self) -> Mapping[str, Any]:
         """The run's `env` as templates read it (SPEC, The environment in templates): the declared variables
-        with their typed values, resolved by `run` once `prepare` has run; empty before that."""
-        return self._env
+        with their typed values, resolved by `run` once `prepare` has run; empty before that. Read-only: a
+        view of the live mapping."""
+        return MappingProxyType(self._env)
 
     @property
     def errors(self) -> Sequence[str]:
@@ -147,7 +151,8 @@ class Runner:
             self._session.restore_handlers(saved)
 
     def _handler(self, prompt: Prompt) -> PromptHandler:
-        return build_handler(prompt, self._vars, self.render)
+        # the send is syntax-checked with the same templater it is rendered with
+        return build_handler(prompt, self._vars, self.render, check=self._templater.check_template)
 
     def _resolve_env(self, environ: dict[str, str]) -> dict[str, Any]:
         """`env` in templates, from the `env` section, the typed `--env` values and `environ`, the environment
@@ -233,7 +238,8 @@ class Runner:
         """Spawn the process and run `attach.script` and `script`; `attach.breakout` runs after them however
         they end, and then the warning for credentials no breakout followed."""
         attach = self._config.attach
-        self._session.attach(spawn, env=self._environ, timeout=timeout)
+        # no `env=`: the session falls back to its own `environ`, the one it was built with (`self._environ`)
+        self._session.attach(spawn, timeout=timeout)
         try:
             if attach.script:
                 self.run_steps(attach.script, path="attach.script")
@@ -354,7 +360,13 @@ class Runner:
         executor = self._registry.get(key)
         # plugin models don't carry the common properties; keep `step` intact. The plugin's model is the
         # one that passed when the script was loaded, validated once (SPEC, Common Step Properties)
-        model = step.validated(self._registry) if isinstance(step, PluginStep) else step
+        model = step
+        if isinstance(step, PluginStep):
+            model = step.validated(self._registry)
+            # the cached model may be from another registry that registered this key with a different
+            # model; validate against this runner's registry so the executor gets its own model, and keep it
+            if not isinstance(model, executor.model):
+                model = step._plugin_model = self._registry.validate_plugin_step(step)
         executor.execute(model, self, timeout)
 
         delay_after = getattr(step, "delay_after", None)

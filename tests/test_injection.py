@@ -47,14 +47,15 @@ def test_runner_hands_the_transcript_to_its_session(capsys: pytest.CaptureFixtur
 
 
 def test_session_environ_is_the_default_of_attach(spawned, monkeypatch: pytest.MonkeyPatch):
-    """An `attach` without `env` spawns in the session's `environ` as it was given, with nothing added; an
-    `env` of the call's own still wins; without either the run's environment is taken at the attach, not
-    when the session is built."""
+    """An `attach` without `env` spawns in the session's `environ`, with `TERM=dumb` and `NO_COLOR=1` always
+    set over it for the spawn (SPEC, The environment of the spawned process); an `env` of the call's own
+    still wins and is used verbatim; without either the run's environment is taken at the attach, not when
+    the session is built."""
     monkeypatch.setenv("TERM", "xterm")
     spawned.stop = True
     with pytest.raises(SpawnRecorded):
         Session([], environ={"A": "b", "TERM": "vt100"}).attach("true")
-    assert spawned[-1][1]["env"] == {"A": "b", "TERM": "vt100"}
+    assert spawned[-1][1]["env"] == {"A": "b", "TERM": "dumb", "NO_COLOR": "1"}
     with pytest.raises(SpawnRecorded):
         Session([], environ={"A": "b"}).attach("true", env={"C": "d"})
     assert spawned[-1][1]["env"] == {"C": "d"}
@@ -79,7 +80,8 @@ def test_runner_environ_is_the_runs_environment(spawned, monkeypatch: pytest.Mon
     runner.run()
     assert runner.env == {"AB_A": "from-environ", "AB_P": "from-environ-prepared"}
     assert runner.vars["a"] == "from-environ"
-    assert spawned[-1][1]["env"] == environ
+    # the spawn gets `TERM=dumb` and `NO_COLOR=1` over the injected environ (which already has TERM=dumb)
+    assert spawned[-1][1]["env"] == {**environ, "NO_COLOR": "1"}
 
 
 def test_runner_prepare_runs_the_script():
@@ -137,3 +139,37 @@ def test_runner_registry_dispatches_the_steps():
     assert seen == [("script.0", "a"), ("script.2", "b")]
     with pytest.raises(ValueError, match="^unknown step type: noted$"):
         Runner(config, {}).run()
+
+
+class NotedIntStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    noted: int
+
+
+def test_runner_revalidates_a_step_of_another_registrys_model():
+    """Review #89 (A1): a `Config` validated with one registry, run with another that registers the step's
+    key with a different model, gives the executor its own model, not the cached one of the other registry."""
+    seen: list[Any] = []
+
+    def executor(key: str, model: type) -> Any:
+        class Executor:
+            def execute(self, step: Any, ctx: Any, timeout: float) -> None:
+                seen.append(step.noted)
+
+        Executor.key = key
+        Executor.model = model
+        return Executor()
+
+    reg_str = StepRegistry()
+    register_builtins(reg_str)
+    reg_str.register(executor("noted", NotedStep))
+    reg_int = StepRegistry()
+    register_builtins(reg_int)
+    reg_int.register(executor("noted", NotedIntStep))
+
+    doc = make_doc([{"noted": "7"}])
+    config = Config.model_validate(doc, context={PLUGINS: reg_str})  # validated as a str: "7"
+    assert config.script[0].validated(reg_str).noted == "7"  # type: ignore[union-attr]
+    Runner(config, {}, registry=reg_int).run()  # run with the int registry
+    assert seen == [7] and type(seen[0]) is int  # the int registry's model, revalidated and cached
+    assert config.script[0].validated(reg_int).noted == 7  # type: ignore[union-attr]
