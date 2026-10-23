@@ -118,8 +118,9 @@ class RunnerContext(Protocol):
 
     def run_steps(self, steps: list, *, path: str | None = None) -> None:
         """Run `steps` as `call` and `block` run theirs. `path` names the list in a report: `call` passes
-        `fn.<name>.script`, `block` `<ctx.path>.block.enter`; without it the steps are named after the
-        running step, `<ctx.path>.<key>.<index>`, as those a plugin builds in code are."""
+        `fn.<name>.script`, `block` `<ctx.path>.block.enter`; without it a function's own script list
+        (`ctx.function(name)`) is named `fn.<name>.script`, and any other list is named after the running
+        step, `<ctx.path>.<key>.<index>`, as those a plugin builds in code are."""
         ...
 
     def run_breakout(self, steps: list, what: str = "breakout", *, path: str | None = None) -> None:
@@ -131,7 +132,8 @@ class RunnerContext(Protocol):
         """The session's prompts are those of `prompts` for the body, as in a block with `prompts`: the
         handlers are built from the models on entry (a `sendEach` collection that can't be resolved is a
         `ScriptError` there, and nothing is swapped), and the previous ones are restored on exit, whatever
-        ends the body (see SPEC, block, "Prompt state across a swap")."""
+        ends the body (see SPEC, block, "Prompt state across a swap"). An empty list swaps the session's
+        prompts out for none, where a block without `prompts` swaps nothing."""
         ...
 
 

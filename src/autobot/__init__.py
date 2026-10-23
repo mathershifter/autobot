@@ -43,3 +43,8 @@ def __getattr__(name: str) -> Any:
     if name in _HOME:
         return getattr(importlib.import_module(_HOME[name], __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    # the lazy names of `__all__` as well as what is already a module attribute, so `dir(autobot)` lists them
+    return sorted(set(globals()) | set(__all__))

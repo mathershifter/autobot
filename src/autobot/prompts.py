@@ -3,25 +3,14 @@ the credential sets of a `sendEach` collection (see SPEC, Prompt Handling)."""
 
 from __future__ import annotations
 
-import datetime
 from collections.abc import Callable
 from typing import Any
 
 from .errors import ScriptError
 from .models import Prompt, SendEach
 from .session import PromptHandler, SimpleHandler
-from .templating import check_template
-from .types import text
-
-_KINDS = {
-    dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
-    datetime.date: "a timestamp", datetime.datetime: "a timestamp", bytes: "binary data", set: "a set",
-}
-
-
-def yaml_kind(value: Any) -> str:
-    """What a value of the script is, as YAML names it: `a mapping`, `a timestamp`, `null`."""
-    return "null" if value is None else _KINDS.get(type(value), f"a {type(value).__name__}")
+from .templating import templater
+from .types import text, yaml_kind
 
 
 def _scalar(value: Any) -> bool:
@@ -76,9 +65,16 @@ def send_each_sets(name: str, send: SendEach, vars: dict[str, Any]) -> list[list
     return sets
 
 
-def build_handler(prompt: Prompt, vars: dict[str, Any], render: Callable[[str], str]) -> PromptHandler:
+def build_handler(
+    prompt: Prompt,
+    vars: dict[str, Any],
+    render: Callable[[str], str],
+    *,
+    check: Callable[[str], None] = templater.check_template,
+) -> PromptHandler:
     """The session's handler for `prompt`: a shell prompt, a `send` template rendered by `render` each time it
-    is sent, or a `sendEach` with its credential sets resolved from `vars` as they are now."""
+    is sent, or a `sendEach` with its credential sets resolved from `vars` as they are now. `check` syntax-checks
+    a `send` template; the caller passes the one of the templater `render` renders with, so the two agree."""
     send = prompt.send
     expect = [e for e in prompt.expect or [] if isinstance(e, str)]  # grouped entries are rejected
     if send is None:  # a shell prompt (a return prompt can't have send)
@@ -86,7 +82,7 @@ def build_handler(prompt: Prompt, vars: dict[str, Any], render: Callable[[str], 
     if isinstance(send, str):
         # a literal send is a template, rendered each time it is sent
         try:
-            check_template(send)
+            check(send)
         except ScriptError as e:  # named like the error of rendering it, and of a sendEach
             raise ScriptError(f"prompt '{prompt.name}': {e}") from e
         return SimpleHandler(prompt.name, expect, send, render)

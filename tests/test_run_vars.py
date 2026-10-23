@@ -13,7 +13,8 @@ from conftest import SHELL_PROMPT, make_config, make_runner
 
 from autobot.runner import Runner
 
-ECHO_OUT = {"cmd": "echo {{ vars.out | default('UNSET') }}", "register": "out"}
+# accumulates: a run that starts with the run before it's `out` registers one `x` more than it did
+ECHO_OUT = {"cmd": "echo {{ vars.out | default('') }}x", "register": "out"}
 
 
 class PokeStep(pydantic.BaseModel):
@@ -46,20 +47,40 @@ class LookExecutor:
     def __init__(self) -> None:
         self.errors: Any = None
         self.fn: Any = None
+        self.inner_path: Any = None
 
     def execute(self, step: LookStep, ctx: Any, timeout: float) -> None:
         self.errors = ctx.errors
         self.fn = ctx.function(step.look)
         ctx.run_steps(self.fn)
+        self.inner_path = ctx.path  # the step's path again, now the function's steps are done
+
+
+class WhereStep(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="forbid")
+    where: str
+
+
+class WhereExecutor:
+    """Records the path it runs at, so a test can see what `run_steps` named the list."""
+
+    key = "where"
+    model = WhereStep
+
+    def __init__(self) -> None:
+        self.path: Any = None
+
+    def execute(self, step: WhereStep, ctx: Any, timeout: float) -> None:
+        self.path = ctx.path
 
 
 def test_a_runner_that_runs_again_starts_with_the_scripts_vars():
     """The second run of a `Runner` sees neither what the first registered nor what it set."""
-    runner = make_runner([ECHO_OUT, {"set": {"made": "{{ vars.out }}-x"}}], vars={"keep": 1})
+    runner = make_runner([ECHO_OUT, {"set": {"made": "{{ vars.out }}-y"}}], vars={"keep": 1})
     runner.run()
-    assert runner.vars == {"keep": 1, "out": "UNSET", "made": "UNSET-x"}
+    assert runner.vars == {"keep": 1, "out": "x", "made": "x-y"}
     runner.run()
-    assert runner.vars == {"keep": 1, "out": "UNSET", "made": "UNSET-x"}
+    assert runner.vars == {"keep": 1, "out": "x", "made": "x-y"}  # not `xx`: the second run saw no `out`
     assert runner.config.vars == {"keep": 1}
 
 
@@ -71,9 +92,35 @@ def test_two_runners_over_one_config_share_nothing():
     first.run()
     second = Runner(config, {})
     second.run()
-    assert first.vars["out"] == second.vars["out"] == "UNSET"
+    assert first.vars["out"] == second.vars["out"] == "x"
     assert first.vars is not second.vars
     assert config.vars == before
+
+
+def test_runner_vars_is_one_mapping_filled_again_by_each_run():
+    """SPEC "As a library": `Runner.vars` is one mapping, emptied and filled again at each run's start, so a
+    reference taken before `run()` reads the run's values after it."""
+    runner = make_runner([ECHO_OUT], vars={"keep": 1})
+    before = runner.vars
+    assert before == {"keep": 1}
+    runner.run()
+    assert runner.vars is before and before == {"keep": 1, "out": "x"}
+    before["stale"] = True
+    runner.run()
+    assert runner.vars is before and before == {"keep": 1, "out": "x"}
+
+
+def test_runner_errors_read_the_config_as_vars_do(register_plugin):
+    """SPEC "As a library": `errors` is read from the `Config` as it is, as `vars` is copied from it at each
+    run's start, so a change to the `Config` between runs is seen by the next run either way."""
+    ex = register_plugin(LookExecutor())
+    runner = make_runner([{"look": "f"}], fn={"f": {"script": []}}, errors=["^ERR"], vars={"a": 1})
+    runner.run()
+    assert list(ex.errors) == ["^ERR"] and runner.vars == {"a": 1}
+    runner.config.errors.append("^FAIL")
+    runner.config.vars["b"] = 2
+    runner.run()
+    assert list(ex.errors) == list(runner.errors) == ["^ERR", "^FAIL"] and runner.vars == {"a": 1, "b": 2}
 
 
 def test_the_config_is_not_changed_by_a_run_even_inside_a_value(register_plugin):
@@ -95,7 +142,7 @@ def test_ctx_vars_is_the_templating_context(register_plugin):
     register_plugin(PokeExecutor())
     runner = make_runner([ECHO_OUT, {"poke": "b"}, {"set": {"s": "{{ vars.poked }}"}}], vars={"items": []})
     runner.run()
-    assert runner.render("{{ vars.out }} {{ vars.poked }} {{ vars.s }}") == "UNSET b b"
+    assert runner.render("{{ vars.out }} {{ vars.poked }} {{ vars.s }}") == "x b b"
 
 
 def test_ctx_errors_and_ctx_function(register_plugin):
@@ -111,6 +158,20 @@ def test_ctx_errors_and_ctx_function(register_plugin):
         ex.errors[0] = "x"  # type: ignore[index]
     assert ex.fn is runner.config.fn["f"].script
     assert runner.vars["from_f"] == "yes"
+
+
+def test_run_steps_of_a_function_list_without_path_is_named_fn_name_script(register_plugin):
+    """Review #86: a plugin that runs `ctx.function(name)` without `path=` names the list `fn.<name>.script`,
+    as `call` does, not `<ctx.path>.<key>`. Any other list is named after the step."""
+    look = register_plugin(LookExecutor())
+    where = register_plugin(WhereExecutor())
+    fn = {"f": {"script": [{"where": "in-fn"}]}}
+    make_runner([{"look": "f"}], fn=fn).run()
+    assert where.path == "fn.f.script.0"
+
+    where.path = None
+    make_runner([{"where": "top"}]).run()  # run() gives config.script the path "script"
+    assert where.path == "script.0"
 
 
 def test_ctx_function_of_an_undefined_name_is_a_value_error():

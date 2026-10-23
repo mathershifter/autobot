@@ -15,6 +15,25 @@ from ..log import ConsoleReporter
 from .report import EXIT_INTERRUPTED, UNCLEAN
 
 
+def discard_unwritten() -> bool:
+    """Before the process exits: what a stream still holds and can't be written is discarded, by pointing
+    its file descriptor to /dev/null, and the answer is whether there was any. The interpreter flushes
+    the streams as it exits, and a flush that fails there prints a traceback of its own and turns the
+    exit status into 120."""
+    failed = False
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError) as e:
+            failed = failed or isinstance(e, OSError)
+            with contextlib.suppress(AttributeError, OSError, ValueError):
+                null = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(null, stream.fileno())
+                os.close(null)
+                stream.flush()
+    return failed
+
+
 def interrupted() -> NoReturn:
     """End as a process that SIGINT killed: a shell reports status 130, and a loop around autobot stops,
     which it wouldn't for a process that exits with a status of its own."""

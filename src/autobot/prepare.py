@@ -74,11 +74,10 @@ def _terminable() -> Iterator[None]:
 @dataclass(frozen=True)
 class PrepareResult:
     """What `run` gives back: the environment the shell left (`environ` as given when it left none to read),
-    whether it could be read, and the shell that ran the script."""
+    and whether it could be read."""
 
     environ: dict[str, str]
     read: bool
-    shell: list[str]
 
 
 def shebang(script: str) -> list[str]:
@@ -118,4 +117,4 @@ def run(script: str, environ: dict[str, str]) -> PrepareResult:
         # decoded as `os.environ` is; a name is the text before the first `=`
         environ = dict(entry.partition("=")[::2] for entry in os.fsdecode(data).split("\0")[:-1])
     # else the script replaced the shell or its EXIT trap, or left no `env` to run
-    return PrepareResult(environ, read, command or ["/bin/sh"])
+    return PrepareResult(environ, read)

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -161,7 +162,10 @@ def test_p5_64_env_holds_nothing_but_its_keys(name: str):
     r = make_runner([], env={"AB_A": "a"})
     with pytest.raises(ValueError, match="^template error: "):
         r.render(f"{{{{ env.{name} }}}}")
-    assert [a for a in dir(r.env) if not a.startswith("__")] == [a for a in dir({}) if not a.startswith("__")]
+    # `Runner.env` is a read-only view of the mapping: it has no attribute a plain one lacks, and no mutator
+    assert [a for a in dir(r.env) if not a.startswith("__")] == [a for a in dir(MappingProxyType({})) if not a.startswith("__")]
+    with pytest.raises(TypeError):
+        r.env["AB_A"] = "x"  # type: ignore[index]
 
 
 # -- P5-94: the type of a variable is the type of its default -------------------

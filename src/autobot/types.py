@@ -3,6 +3,7 @@ reads as text."""
 
 from __future__ import annotations
 
+import datetime
 from typing import Annotated, Any
 
 import pydantic
@@ -14,6 +15,17 @@ from .duration import parse_duration
 def text(value: Any) -> str:
     """A scalar of the script as text: a boolean as YAML writes it, `true` or `false`."""
     return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+_KINDS = {
+    dict: "a mapping", list: "a list", str: "a string", int: "a number", float: "a number", bool: "a boolean",
+    datetime.date: "a timestamp", datetime.datetime: "a timestamp", bytes: "binary data", set: "a set",
+}
+
+
+def yaml_kind(value: Any) -> str:
+    """What a value of the script is, as YAML names it: `a mapping`, `a timestamp`, `null`."""
+    return "null" if value is None else _KINDS.get(type(value), f"a {type(value).__name__}")
 
 
 def reject_null(value: Any) -> Any:

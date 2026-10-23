@@ -93,22 +93,22 @@ class ConsoleReporter:
         self.console = _console()
         self.depth = 0  # how deep the running step is nested in blocks and calls; the runner keeps it
         self._open_line = False  # the session echo on stdout stopped in the middle of a line, as after every prompt
-        # The first write that failed, until the run is over: the stream and its error, and from the first
-        # `check` on the `OutputLost` that is made of them
-        self._lost: OutputLost | tuple[object, BaseException] | None = None
+        # The first write that failed, until the run is over: the stream and its error as `writing` kept them
+        # (`_failed`), and from the first `check` on the `OutputLost` made of them (`_lost`)
+        self._failed: tuple[object, BaseException] | None = None
+        self._lost: OutputLost | None = None
 
     @property
     def lost(self) -> OutputLost | None:
         """The `OutputLost` of this run, if a write has failed: nothing is written or sent after it."""
-        if isinstance(self._lost, tuple):
-            self._lost = OutputLost(*self._lost)
         return self._lost
 
     def check(self) -> None:
-        """Raise the `OutputLost` of this run again, if there is one."""
-        lost = self.lost
-        if lost:
-            raise lost
+        """Raise the `OutputLost` of this run again, if there is one; a write that failed becomes it here."""
+        if self._failed:
+            self._lost, self._failed = OutputLost(*self._failed), None
+        if self._lost:
+            raise self._lost
 
     def clear(self) -> OutputLost | None:
         """Forget the lost output, of a run that is over or about to start, and return it if there was one."""
@@ -117,7 +117,7 @@ class ConsoleReporter:
         except OutputLost as e:
             return e
         finally:
-            self._lost = None
+            self._lost = self._failed = None
         return None
 
     @contextlib.contextmanager
@@ -128,9 +128,9 @@ class ConsoleReporter:
         try:
             yield
         except (OSError, ValueError) as e:
-            kept, self._lost = self._lost, (stream, e)  # kept in one step, before anything an interrupt can come in at
+            self._failed = (stream, e)  # kept in one step, before anything an interrupt can come in at
             if not isinstance(e, OSError) and not getattr(stream, "closed", False):
-                self._lost = kept
+                self._failed = None
                 raise  # not what a closed stream raises: a bug
             self.check()
 

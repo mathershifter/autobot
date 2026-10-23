@@ -100,6 +100,19 @@ assert callable(main)
     assert "autobot.cli" in _modules(code)
 
 
+def test_dir_autobot_lists_the_lazy_names():
+    """`__dir__` beside the PEP 562 `__getattr__` lists the lazy names of `__all__`, so `dir(autobot)`
+    has `Config` and the rest, which a bare `__getattr__` would omit."""
+    code = """
+import autobot
+names = dir(autobot)
+assert names == sorted(names)
+assert "Config" in names and "Runner" in names and "registry" in names
+assert set(autobot.__all__) <= set(names)
+"""
+    _modules(code)
+
+
 @pytest.mark.parametrize("command", ["module", "script"])
 def test_cli_help_runs(command: str):
     """`python -m autobot.cli --help` and the installed console script `autobot --help` both run."""
