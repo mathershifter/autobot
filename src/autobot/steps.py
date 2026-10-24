@@ -13,6 +13,7 @@ from .models import (
     CmdStep,
     ControlStep,
     LineStep,
+    RawStep,
     ReturnStep,
     SetStep,
     SleepStep,
@@ -244,6 +245,23 @@ class ControlExecutor:
             ctx.reporter.say(f"control sent: ^{char.upper()}")
 
 
+class RawExecutor:
+    key = "raw"
+    model = RawStep
+
+    def execute(self, step: RawStep, ctx: RunnerContext, timeout: float) -> None:
+        for piece in step.raw:
+            # classified as written, before templating: a piece of exactly `^` and one more character is
+            # a control key, every other string is text (a `^a` that a template renders to is still text)
+            if len(piece) == 2 and piece[0] == "^":
+                char = piece[1]
+                ctx.session.sendcontrol(char, timeout=timeout)
+                ctx.reporter.say(f"raw sent: ^{char.upper()}")
+            else:
+                ctx.session.send(ctx.render(piece), timeout=timeout)
+                ctx.reporter.say("raw sent")  # not the text: it may be a password, which the session doesn't echo
+
+
 class SetExecutor:
     key = "set"
     model = SetStep
@@ -279,6 +297,7 @@ def register_builtins(reg: StepRegistry):
         LineExecutor,
         ReturnExecutor,
         ControlExecutor,
+        RawExecutor,
         SetExecutor,
     ):
         reg.register(cls(), builtin=True)

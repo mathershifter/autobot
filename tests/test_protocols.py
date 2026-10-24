@@ -15,7 +15,7 @@ from autobot.models import Prompt
 from autobot.runner import Runner
 from autobot.session import PatternTable, PromptHandler, Session
 
-SESSION_LIKE = {"ctx", "posix", "get_prompt", "sendline", "sendcontrol", "check_rc", "sleep"}
+SESSION_LIKE = {"ctx", "posix", "get_prompt", "sendline", "sendcontrol", "send", "check_rc", "sleep"}
 
 
 def _members(proto: type) -> set[str]:

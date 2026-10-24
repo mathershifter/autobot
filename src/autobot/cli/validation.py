@@ -79,15 +79,15 @@ def one_per_value(errors: list[Any]) -> list[Any]:
 
 def sent(loc: tuple) -> bool:
     """Whether an error at `loc` is about text that is sent to the device or is a value of `env`, which may
-    be a password: a prompt's `send` and what is in it, a `line` step, an `env` value, the values of a `set`
-    step."""
+    be a password: a prompt's `send` and what is in it, a `line` or `raw` step, an `env` value, the values
+    of a `set` step."""
     if loc[:1] == ("env",):
         return True
     for i, key in enumerate(loc):
         if key == "send" and "prompts" in loc[:i]:
             return True
         # a step's type tag follows its index, and the step's own field the tag: `script.0.line.line`
-        if key in ("line", "set") and i and isinstance(loc[i - 1], int) and loc[i + 1 : i + 2] == (key,):
+        if key in ("line", "raw", "set") and i and isinstance(loc[i - 1], int) and loc[i + 1 : i + 2] == (key,):
             return True
     return False
 

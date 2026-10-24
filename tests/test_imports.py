@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "autobot"
-BUILTINS = ["block", "call", "cmd", "control", "line", "return", "set", "sleep"]
+BUILTINS = ["block", "call", "cmd", "control", "line", "raw", "return", "set", "sleep"]
 
 
 def _modules(code: str) -> set[str]:

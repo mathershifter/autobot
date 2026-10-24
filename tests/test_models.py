@@ -18,6 +18,7 @@ from autobot.models import (
     ControlStep,
     LineStep,
     PluginStep,
+    RawStep,
     ReturnStep,
     SleepStep,
 )
@@ -86,6 +87,7 @@ EXTRA_CASES = {
     "line": with_("script", [{"line": "x", "bogus": 1}]),
     "return": with_("script", [{"return": 1, "bogus": 1}]),
     "control": with_("script", [{"control": "c", "bogus": 1}]),
+    "raw": with_("script", [{"raw": ["x"], "bogus": 1}]),
 }
 
 
@@ -153,6 +155,7 @@ def test_p6_06_step_discrimination(isolated_registry: StepRegistry, register_plu
         ({"line": "x"}, LineStep),
         ({"return": 1}, ReturnStep),
         ({"control": "c"}, ControlStep),
+        ({"raw": ["x"]}, RawStep),
         ({"probe": "x"}, PluginStep),
     ]
     base = with_("fn", {"f": {"script": []}})

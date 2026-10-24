@@ -818,6 +818,36 @@ class Session:
             raise
         self._send.unanswered = False
 
+    def send(self, text: str = "", *, timeout: float = 300):
+        """Send `text` verbatim, no line break, within `timeout`: the keystrokes of a `raw` step, or a
+        plugin's own. Unlike a line, it does no canonical-mode length check and waits out no control
+        settle (a `raw` piece goes out at once), and it leaves the partial-line flag alone and never
+        raises `PartialLine`: what was typed is the author's to finish. It ends the at-a-shell-prompt
+        state and solicits next, as `sendcontrol` does, since the far side is no longer at a known prompt;
+        a text piece leaves no control settle pending for the next line. A send the pty took nothing of
+        puts the session back (see `_restore_if_nothing_sent`)."""
+        if not self._cld:
+            raise RuntimeError("not attached")
+        prompt, send = copy.copy(self._prompt), copy.copy(self._send)
+        self._prompt.at_prompt = False
+        self._send.solicit = True
+        self._prompt.held = None
+        try:
+            self._put_text(text, timeout)
+        except BaseException:
+            self._restore_if_nothing_sent(prompt, send)
+            raise
+        self._send.unanswered = False
+
+    def _put_text(self, text: str, timeout: float):
+        cld = self._cld
+        assert cld
+        if not text:
+            return  # an empty piece sends nothing
+        data = text.encode(cld.encoding, cld.codec_errors)
+        self._write(data, time.monotonic() + timeout, timeout, "raw text")
+        self._send.control_at = -math.inf  # a text piece is no control character: the next line waits out no settle
+
     def sleep(self, seconds: float):
         if not self._cld:
             raise RuntimeError("not attached")

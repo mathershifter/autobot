@@ -120,6 +120,7 @@
         { "$ref": "#/$defs/lineStep" },
         { "$ref": "#/$defs/returnStep" },
         { "$ref": "#/$defs/controlStep" },
+        { "$ref": "#/$defs/rawStep" },
         { "$ref": "#/$defs/setStep" },
         { "$ref": "#/$defs/pluginStep" }
       ]
@@ -244,6 +245,19 @@
         "timeout": { "$ref": "#/$defs/duration" }
       }
     },
+    "rawStep": {
+      "type": "object",
+      "required": ["raw"],
+      "additionalProperties": false,
+      "properties": {
+        "raw": { "type": "array", "items": { "$ref": "#/$defs/rawPiece" } },
+        "after": { "type": "string", "minLength": 1 },
+        "when": { "type": "string" },
+        "delay_before": { "$ref": "#/$defs/duration" },
+        "delay_after": { "$ref": "#/$defs/duration" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
     "setStep": {
       "type": "object",
       "required": ["set"],
@@ -274,6 +288,7 @@
           { "required": ["line"] },
           { "required": ["return"] },
           { "required": ["control"] },
+          { "required": ["raw"] },
           { "required": ["set"] }
         ]
       }
@@ -315,6 +330,10 @@
       "type": "string",
       "maxLength": 1,
       "pattern": "[A-Za-z@`\\[{\\\\|\\]}^~_?]"
+    },
+    "rawPiece": {
+      "type": "string",
+      "not": { "pattern": "^\\^[^A-Za-z@`\\[{\\\\|\\]}^~_?]$" }
     },
     "duration": {
       "oneOf": [

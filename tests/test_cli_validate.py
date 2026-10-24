@@ -411,7 +411,7 @@ def _mixed(m: Markers) -> tuple[list[Path], str]:
     report = (
         f"{ok}: valid\n"
         "Validation errors:\n"
-        "  script.0: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control, set "
+        "  script.0: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control, raw, set "
         "or a registered plugin step (got a mapping with the key cmdd) [invalid_step]\n"
         f"{typo}: invalid\n"
         f"Cannot read script {missing}: No such file or directory\n"

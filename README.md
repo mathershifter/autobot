@@ -292,9 +292,10 @@ Without `fields`, each item is a string or number, sent in answer to the prompt'
 | Step | What it does |
 |------|--------------|
 | [`cmd`](#cmd) | Waits for a shell prompt, sends a command, waits for the next prompt, and checks the result |
-| [`line`](#line-return-and-control) | Sends text without waiting for a prompt |
-| [`return`](#line-return-and-control) | Sends empty newlines |
-| [`control`](#line-return-and-control) | Sends control characters |
+| [`line`](#line-return-control-and-raw) | Sends text without waiting for a prompt |
+| [`return`](#line-return-control-and-raw) | Sends empty newlines |
+| [`control`](#line-return-control-and-raw) | Sends control characters |
+| [`raw`](#line-return-control-and-raw) | Sends keystrokes with no Return and no prompt wait |
 | `sleep` | Pauses: `- sleep: 60s` |
 | `call` | Runs a function: `- call: check_boot`. See [Functions](#functions) |
 | [`block`](#block) | A named group of steps with its own setup, cleanup and prompts |
@@ -348,7 +349,7 @@ Several commands, as a list or as a multiline string:
 
 See [Embedded scripts](SPEC.md#embedded-scripts), and [The length of a sent line](SPEC.md#the-length-of-a-sent-line) for very long commands.
 
-### `line`, `return` and `control`
+### `line`, `return`, `control` and `raw`
 
 These send at once, without waiting for a prompt before or after.
 
@@ -358,9 +359,13 @@ These send at once, without waiting for a prompt before or after.
 - return: 3                 # three empty newlines
 - control: "]"              # Ctrl-]
 - control: [a, x]           # Ctrl-A, then Ctrl-X
+- raw: ['^a', 'b']          # Ctrl-A then a plain b, back to back, no Return
+- raw: ['^[', ':wq']        # Escape, then the text :wq (follow with `return: 1` to enter it)
 ```
 
 A `control` value is one letter or one of ``@ ` [ { \ | ] } ^ ~ _ ?``. Ctrl-C, Ctrl-\\ and Ctrl-Z make the far side discard input it has not read yet, so give such a step an `after` or a `delay_before` when it follows a `line`. See [SPEC.md](SPEC.md#control--send-control-characters).
+
+A `raw` step types a list of pieces with no Return and no prompt wait. A piece of exactly `^` and one more character is a control key (the same keys as `control`); every other piece is text, a template rendered like a `line` and sent verbatim. See [SPEC.md](SPEC.md#raw--send-keystrokes-no-return-no-prompt-wait).
 
 ### `block`
 
@@ -546,6 +551,7 @@ A plugin adds a step type. It is an executor class registered in the `autobot.st
 
 - `ctx.session.sendline(text, timeout=timeout)` sends a command; follow it with `ctx.session.get_prompt(...)`. With `solicit=True` it is a raw send, like a `line` step.
 - `ctx.session.sendcontrol(char, timeout=timeout)` sends a control character; `char` is a key the `control` step takes, and any other is a `ValueError`.
+- `ctx.session.send(text, timeout=timeout)` sends text verbatim with no line break, the keystrokes of a `raw` step; its control keys go through `sendcontrol`.
 - `ctx.session.posix` is true while the session is at a `posix` shell prompt, and false once anything is sent.
 - `with ctx.prompts(prompts):` makes a list of `Prompt` models (`autobot.models`) the session's prompts for the body and restores the previous ones on exit, as a block with `prompts` does.
 - `ctx.vars[name] = value` stores a value, as `register` and `set` do, for the templates after it. Each run starts with a copy of the script's `vars`; `ctx.config` is the script as loaded, to read.

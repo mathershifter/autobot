@@ -60,7 +60,7 @@ SHELL_ENV = {"TERM": "dumb", "PS1": PS1, "PATH": os.environ["PATH"]}
 SHELL_PROMPT = {"name": "sh", "expect": [r"PROMPT\$ "], "return": True}
 RC_PROBE = "echo __AUTOBOT_RC=$?"
 
-_TIMEOUT_STEPS = ("cmd", "call", "block", "control")
+_TIMEOUT_STEPS = ("cmd", "call", "block", "control", "raw")
 _DEFAULT = object()
 
 
