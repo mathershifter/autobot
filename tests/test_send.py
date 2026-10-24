@@ -146,6 +146,37 @@ def test_p8_36_cli_reports_a_failed_run_at_the_step(tmp_path: Path):
     assert "Traceback" not in res.stderr
 
 
+def test_p8_61_raw_text_to_a_child_that_stops_reading_times_out(attach):
+    """SPEC "raw", "The length of a sent line": the text of a `raw` step is written the same bounded way as
+    a line: a far side that stops reading ends the send at the timeout, with `while sending raw text` and
+    the count of its bytes (no line break among them)."""
+    s = attach(typed("--stop", 1000))
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"^timed out after 2s while sending raw text \(\d+ of 200000 bytes sent\)$") as ei:
+        s.send("x" * LONG, timeout=2)
+    assert 2 <= time.monotonic() - started < 3.5
+    assert 0 < sent_bytes(ei.value, LONG) < LONG
+    assert _state(s) == (False, None, None, False, True, False)
+
+
+def test_p8_61_cli_reports_a_failed_raw_step_without_its_text(tmp_path: Path):
+    """SPEC "raw", "Errors while the script runs": the step's `timeout` bounds the send of its text, and the
+    run fails at the step, named `(raw)` with nothing of what it typed."""
+    doc = make_doc([{"raw": ["^k", "x" * LONG], "timeout": "2s"}], spawn=typed("--stop", 1000))
+    res = run_cli(doc, tmp_path)
+    assert res.returncode == 3, res.stderr
+    report = [line for line in res.stderr.splitlines() if not line.startswith(">> ") and "RuntimeWarning" not in line]
+    assert re.fullmatch(
+        rf"Run failed in {re.escape(str(tmp_path / 'script.autobot.yaml'))}: "
+        r"timed out after 2\.0s while sending raw text \(\d+ of 200000 bytes sent\)",
+        report[0],
+    )
+    assert report[1] == "  at script.0 (raw)"
+    assert ">> raw sent: ^K" in res.stderr and ">> raw sent\n" not in res.stderr
+    assert ">> step failed (TimeoutError): timed out after 2.0s while sending raw text" in res.stderr
+    assert "xxxx" not in res.stderr and "Traceback" not in res.stderr
+
+
 def test_p8_36_one_blocking_write_to_that_child_never_returns():
     """A guard for the tests above: the child they use does stall a writer that writes the line in one
     blocking write and reads nothing, as `pexpect.spawn.sendline` does. Killed from outside."""
@@ -1090,10 +1121,11 @@ def test_p8_50_long_line_to_a_child_that_runs_is_still_refused(attach):
 
 def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
     """SPEC "The length of a sent line": a `cmd` line, the `$?` check, the upload and run lines of an
-    embedded script and its cleanup, a `control`, and the runner's default for a `line` and a `return`
-    (300 s; 77 here, to tell it from the session's own default)."""
+    embedded script and its cleanup, a `control`, each piece of a `raw` (its control keys and its text), and
+    the runner's default for a `line` and a `return` (300 s; 77 here, to tell it from the session's own
+    default)."""
     seen: list[tuple[str, str, float]] = []
-    put_line, put_control = Session._put_line, Session._put_control
+    put_line, put_control, put_text = Session._put_line, Session._put_control, Session._put_text
 
     def line(self, text, timeout, of=None):
         if of is None:  # not a send of a prompt wait
@@ -1104,14 +1136,21 @@ def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
         seen.append(("ctrl", char, timeout))
         return put_control(self, char, timeout)
 
+    def raw(self, text, timeout):
+        seen.append(("raw", text, timeout))
+        return put_text(self, text, timeout)
+
     monkeypatch.setattr(Session, "_put_line", line)
     monkeypatch.setattr(Session, "_put_control", control)
+    monkeypatch.setattr(Session, "_put_text", raw)
 
     def kinds() -> dict[str, set[float]]:
         found: dict[str, set[float]] = {}
         for kind, text, timeout in seen:
             if kind == "ctrl":
                 name = f"^{text}"
+            elif kind == "raw":
+                name = f"raw:{text}"
             elif text.startswith("(umask"):
                 name = "upload"
             elif text.startswith("rm -f /tmp/_autobot_"):
@@ -1125,6 +1164,7 @@ def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
 
     runner = make_runner([
         {"cmd": "echo a", "timeout": "12s"},
+        {"raw": ["^k", "abc"], "timeout": "8s"},  # Ctrl+K, the text; the `control: u` then clears the line
         {"control": "u", "timeout": "9s"},
         {"cmd": "#!/bin/sh\necho s\n", "timeout": "13s"},
         {"line": "true"},
@@ -1134,8 +1174,8 @@ def test_p8_51_step_timeout_reaches_every_send(monkeypatch: pytest.MonkeyPatch):
     runner._default_timeout = 77
     runner.run()
     assert kinds() == {
-        "echo a": {12.0}, "^u": {9.0}, "upload": {13.0}, "run": {13.0}, "rc": {12.0, 13.0}, "rm": {10.0},
-        "true": {77}, "return": {77},
+        "echo a": {12.0}, "^k": {8.0}, "raw:abc": {8.0}, "^u": {9.0}, "upload": {13.0}, "run": {13.0},
+        "rc": {12.0, 13.0}, "rm": {10.0}, "true": {77}, "return": {77},
     }  # fmt: skip
     seen.clear()
     with pytest.raises(TimeoutError, match="waiting for a shell prompt"):
@@ -1588,7 +1628,7 @@ def _state(s: Session) -> tuple:
     return (s._prompt.at_prompt, s._prompt.held, s._send.line, s._send.solicit, s._send.partial, s._send.unanswered)
 
 
-@pytest.mark.parametrize("send", ["line", "control"])
+@pytest.mark.parametrize("send", ["line", "control", "raw"])
 @pytest.mark.parametrize("before", ["at-prompt", "after-a-command"])
 def test_p8_60_send_of_which_the_pty_took_nothing_leaves_the_session_where_it_was(
     shell_session: Session, monkeypatch: pytest.MonkeyPatch, sent: SentLog, send: str, before: str
@@ -1596,8 +1636,9 @@ def test_p8_60_send_of_which_the_pty_took_nothing_leaves_the_session_where_it_wa
     """SPEC "The length of a sent line": a send of which the pty took nothing leaves no part of a line, and
     none of what follows a failed send applies: the session is where it was. At its prompt, the next prompt
     wait returns at once; after a command, the next wait still strips the command's echo, captures its
-    output and presses no Return. Before the fix a `TimeoutError` with 0 bytes sent left the session at no
-    prompt, after no line and without its solicit."""
+    output and presses no Return. The same for the raw text of a `raw` step (`session.send`). Before the
+    fix a `TimeoutError` with 0 bytes sent left the session at no prompt, after no line and without its
+    solicit."""
     s = shell_session
     s.get_prompt(timeout=5)
     if before == "after-a-command":
@@ -1607,8 +1648,10 @@ def test_p8_60_send_of_which_the_pty_took_nothing_leaves_the_session_where_it_wa
     with pytest.raises(TimeoutError, match=r"\(0 of \d+ bytes sent\)$"):
         if send == "line":
             s.sendline("echo never", timeout=5)
-        else:
+        elif send == "control":
             s.sendcontrol("c", timeout=5)
+        else:
+            s.send("never", timeout=5)
     monkeypatch.undo()
     assert _state(s) == state
     sent.clear()
@@ -1653,3 +1696,24 @@ def test_p8_60_send_of_which_the_pty_took_a_byte_is_a_failed_send(shell_session:
     with pytest.raises(TimeoutError):
         s.sendcontrol("c", timeout=5)
     assert _state(s) == (False, None, None, False, True, False) and s._send.writes == writes + 2
+
+
+def test_p8_60_raw_text_of_which_the_pty_took_a_byte_is_a_failed_send(shell_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """SPEC "raw": a `session.send` that fails partway leaves the session as a failed `line` does: at no
+    prompt, after no line, without its solicit and with part of a line typed; the message names raw text
+    and counts its bytes, with no line break among them."""
+    s = shell_session
+    s.get_prompt(timeout=5)
+    writes = s._send.writes
+
+    def write(self, data, deadline, timeout, what, reader):
+        self.done = 1
+        raise TimeoutError(f"timed out after {timeout}s while sending {what} (1 of {len(data)} bytes sent)")
+
+    monkeypatch.setattr(terminal_mod.Pty, "write", write)
+    with pytest.raises(TimeoutError, match=r"^timed out after 5s while sending raw text \(1 of 3 bytes sent\)$"):
+        s.send("abc", timeout=5)
+    assert _state(s) == (False, None, None, False, True, False) and s._send.writes == writes + 1
+    monkeypatch.undo()
+    s.sendcontrol("c", timeout=5)  # clear the part of a line for the fixture's teardown
+    s.get_prompt(timeout=5)

@@ -333,7 +333,7 @@
     },
     "rawPiece": {
       "type": "string",
-      "not": { "pattern": "^\\^[^A-Za-z@`\\[{\\\\|\\]}^~_?]$" }
+      "not": { "allOf": [{ "maxLength": 2 }, { "pattern": "^\\^[^A-Za-z@`\\[{\\\\|\\]}^~_?]" }] }
     },
     "duration": {
       "oneOf": [

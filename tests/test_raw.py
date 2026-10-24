@@ -167,13 +167,73 @@ def test_p8_61_empty_list_sends_nothing(attached_runner, monkeypatch):
     assert times == []
 
 
-def test_p8_61_empty_string_piece_sends_nothing(shell_session: Session, monkeypatch):
-    """SPEC "raw": an empty string piece sends nothing."""
+def _state(s: Session) -> tuple:
+    return (s._prompt.at_prompt, s._prompt.held, s._send.unanswered, s._send.solicit, s._send.line, s._send.partial)
+
+
+@pytest.mark.parametrize("before", ["at-prompt", "after-a-command"])
+def test_p8_61_empty_string_piece_sends_nothing_and_changes_nothing(shell_session: Session, monkeypatch, before: str):
+    """SPEC "raw": an empty string piece sends nothing and changes nothing: the session is where it was,
+    at its prompt or after its command, and the next prompt wait is as it would have been (no solicit
+    newline, the echo of the command still stripped). Before the fix `send("")` ended the at-a-prompt
+    state and set the solicit before it found there was nothing to send."""
     s = shell_session
     s.get_prompt(timeout=5)
+    if before == "after-a-command":
+        s.sendline("echo hi", timeout=5)
+    state = _state(s)
+    assert state[0] is (before == "at-prompt") and state[3] is (before == "at-prompt")
     times = _recorder(s, monkeypatch)
     s.send("", timeout=5)
     assert times == []
+    assert _state(s) == state
+    started = time.monotonic()
+    if before == "at-prompt":
+        assert s.get_prompt(timeout=5) == "" and time.monotonic() - started < 0.2
+    else:
+        assert s.get_prompt(timeout=5) == "hi\n"
+    assert times == []  # no solicit newline
+
+
+def test_p8_61_empty_string_piece_keeps_a_held_prompt_and_an_unanswered_one(shell_session: Session, monkeypatch):
+    """The same for the two flags only a send drops: a prompt handed on by an `after` wait stays handed
+    on, and a prompt that got no answer stays unanswered, as nothing was sent."""
+    from autobot.session import HeldPrompt
+
+    s = shell_session
+    s.get_prompt(timeout=5)
+    s.sendline("true", timeout=5)
+    s._prompt.held = held = HeldPrompt("", "PROMPT$ ", "PROMPT$ ", s.save_handlers()[0])
+    s._send.unanswered = True
+    state = _state(s)
+    times = _recorder(s, monkeypatch)
+    s.send("", timeout=5)
+    assert times == [] and _state(s) == state and s._prompt.held is held and s._send.unanswered is True
+    s._prompt.held, s._send.unanswered = None, False  # back to a state the fixture's teardown can leave
+    s.get_prompt(timeout=5)
+
+
+# -- the schema agrees with the models on what a piece is ---------------------------------------------
+
+
+RAW_ACCEPTED = ["", "^", "^a", "^^", "^abc", "a^b", "^a\n", "^1\n", "x\n", "é"]
+RAW_REJECTED = ["^1", "^ ", "^\n", "^é", "^\t"]
+
+
+@pytest.mark.parametrize("piece", RAW_ACCEPTED, ids=repr)
+def test_p8_61_parity_raw_piece_accepted(both_validate, piece: str):
+    """SPEC "raw": the schema and the models accept the same pieces: text of any length, a control key,
+    and a `^`-and-one-character piece with a line break after it (what a YAML block scalar yields), which
+    is three characters and so text. Before the fix the schema's `$`-anchored pattern, run by Python's
+    `re`, matched before the trailing newline and rejected `"^1\\n"` while the models took it for text."""
+    assert both_validate(_doc({"raw": [piece]})) == (True, True)
+
+
+@pytest.mark.parametrize("piece", RAW_REJECTED, ids=repr)
+def test_p8_61_parity_raw_piece_rejected(both_validate, piece: str):
+    """SPEC "raw": both reject exactly two characters, `^` and one that is no control key."""
+    assert both_validate(_doc({"raw": [piece]})) == (False, False)
+    assert both_validate(_doc({"raw": ["ok", piece]})) == (False, False)
 
 
 # -- the partial-line flag is left alone --------------------------------------------------------------
