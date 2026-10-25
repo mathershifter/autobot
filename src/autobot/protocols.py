@@ -50,7 +50,8 @@ class Reporter(Protocol):
 class SessionLike(Protocol):
     """What a step does with the session (`autobot.session.Session` is one): the built-in steps and plugins
     use these and nothing else. A prompt wait is `get_prompt`; `sendline` sends a line, `sendcontrol` a
-    control character; `check_rc` is the `$?` check; `sleep` waits while the child is read."""
+    control character, `send` text with no line break (the keystrokes of a `raw` step); `check_rc` is
+    the `$?` check; `sleep` waits while the child is read."""
 
     @property
     def ctx(self) -> Mapping[str, str]:
@@ -69,6 +70,8 @@ class SessionLike(Protocol):
     def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300) -> None: ...
 
     def sendcontrol(self, char: str, *, timeout: float = 300) -> None: ...
+
+    def send(self, text: str = "", *, timeout: float = 300) -> None: ...
 
     def check_rc(self, timeout: float = 300, *, posix: bool = False) -> int: ...
 

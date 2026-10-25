@@ -423,6 +423,26 @@ class ControlStep(pydantic.BaseModel):
         return v
 
 
+class RawStep(pydantic.BaseModel):
+    model_config = _STRICT
+    raw: list[str]
+    after: Omittable[After] = None
+    when: Omittable[str] = None
+    delay_before: Omittable[Duration] = None
+    delay_after: Omittable[Duration] = None
+    timeout: Omittable[Duration] = None
+
+    @pydantic.field_validator("raw")
+    @classmethod
+    def _raw(cls, v: list[str]) -> list[str]:
+        # a piece that is exactly `^` and one more character is a control key; the key uses the same table
+        # as `control`, and a bad one is the same `control_char` error. Every other string is text.
+        for piece in v:
+            if len(piece) == 2 and piece[0] == "^" and not CONTROL_RE.fullmatch(piece[1]):
+                raise _custom("control_char", f"{CONTROL_NOTE}, got '{piece[1]}'")
+        return v
+
+
 class SetStep(pydantic.BaseModel):
     model_config = _STRICT
     # values are data, like those of `vars`: their strings are rendered when the step runs
@@ -480,6 +500,7 @@ _STEP_TAGS: dict[type[pydantic.BaseModel], str] = {
     LineStep: "line",
     ReturnStep: "return",
     ControlStep: "control",
+    RawStep: "raw",
     SetStep: "set",
     PluginStep: "plugin",
 }
@@ -504,6 +525,7 @@ Step = Annotated[
     | Annotated[LineStep, pydantic.Tag("line")]
     | Annotated[ReturnStep, pydantic.Tag("return")]
     | Annotated[ControlStep, pydantic.Tag("control")]
+    | Annotated[RawStep, pydantic.Tag("raw")]
     | Annotated[SetStep, pydantic.Tag("set")]
     | Annotated[PluginStep, pydantic.Tag("plugin")],
     pydantic.Discriminator(

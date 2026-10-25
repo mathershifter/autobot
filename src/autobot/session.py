@@ -178,8 +178,9 @@ class SendState:
     of them, until a control character is sent: no line is sent and no Return pressed while it is.
     `unanswered` is True only after a prompt whose answer could not be sent, until something is sent: no
     Return is pressed while it is. `control_at` is when the last control character was written (monotonic;
-    -inf before any). `writes` counts the sends that got as far as the write, over the life of the session,
-    and `took` is the bytes of the last of them that the pty took: 0 for a send that sent nothing at all."""
+    -inf before any, and -inf again once raw text was sent after it). `writes` counts the sends that got as
+    far as the write, over the life of the session, and `took` is the bytes of the last of them that the pty
+    took: 0 for a send that sent nothing at all."""
 
     line: str | None = None
     solicit: bool = True
@@ -817,6 +818,37 @@ class Session:
             self._restore_if_nothing_sent(prompt, send)
             raise
         self._send.unanswered = False
+
+    def send(self, text: str = "", *, timeout: float = 300):
+        """Send `text` verbatim, no line break, within `timeout`: the keystrokes of a `raw` step, or a
+        plugin's own. Unlike a line, it does no canonical-mode length check and waits out no control
+        settle (a `raw` piece goes out at once), and it leaves the partial-line flag alone and never
+        raises `PartialLine`: what was typed is the author's to finish. It ends the at-a-shell-prompt
+        state and solicits next, as `sendcontrol` does, since the far side is no longer at a known prompt;
+        a text piece leaves no control settle pending for the next line. A send the pty took nothing of
+        puts the session back (see `_restore_if_nothing_sent`), and an empty `text` sends nothing and
+        changes nothing."""
+        if not self._cld:
+            raise RuntimeError("not attached")
+        if not text:
+            return  # an empty piece sends nothing: the session is where it was
+        prompt, send = copy.copy(self._prompt), copy.copy(self._send)
+        self._prompt.at_prompt = False
+        self._send.solicit = True
+        self._prompt.held = None
+        try:
+            self._put_text(text, timeout)
+        except BaseException:
+            self._restore_if_nothing_sent(prompt, send)
+            raise
+        self._send.unanswered = False
+
+    def _put_text(self, text: str, timeout: float):
+        cld = self._cld
+        assert cld and text
+        data = text.encode(cld.encoding, cld.codec_errors)
+        self._write(data, time.monotonic() + timeout, timeout, "raw text")
+        self._send.control_at = -math.inf  # a text piece is no control character: the next line waits out no settle
 
     def sleep(self, seconds: float):
         if not self._cld:

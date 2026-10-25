@@ -35,11 +35,11 @@ from autobot.models import (
 )
 from autobot.registry import PluginError, StepRegistry
 
-BUILTINS = {"cmd", "sleep", "call", "block", "line", "return", "control", "set"}
+BUILTINS = {"cmd", "sleep", "call", "block", "line", "return", "control", "raw", "set"}
 
 
 def test_p7_01_builtins_registered_and_not_plugins(isolated_registry: StepRegistry):
-    """The eight builtin step types are registered and are not plugins."""
+    """The nine builtin step types are registered and are not plugins."""
     reg = isolated_registry
     assert BUILTINS <= set(reg.keys())
     assert not {e.key for e in reg.plugin_executors()} & BUILTINS
@@ -380,7 +380,7 @@ def test_p7_26_two_plugins_may_share_a_model(isolated_registry: StepRegistry):
     assert reg.get("nap") is nap and reg.get("snooze") is snooze
     assert [e.key for e in reg.plugin_executors()] == ["nap", "snooze"]
     # only built-in steps are found by their model; a plugin's model is in no dispatch table
-    assert sorted(reg._model_keys.values()) == sorted(["cmd", "sleep", "call", "block", "line", "return", "control", "set"])
+    assert sorted(reg._model_keys.values()) == sorted(["cmd", "sleep", "call", "block", "line", "return", "control", "raw", "set"])
     with pytest.raises(ValueError, match="^no executor for step: "):
         reg.key_for_step(RestStep(nap="a"))
     run_script([{"nap": "a"}, {"snooze": "b"}, {"nap": "c", "when": "true"}, {"sleep": "10ms"}])

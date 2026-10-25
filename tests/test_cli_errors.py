@@ -54,6 +54,12 @@ RUN_FAILURES: dict[str, tuple[list, dict[str, Any], str, str | None]] = {
         "timed out after 1.0s waiting for the after pattern 'NEVER'",
         "script.0 (control)",
     ),
+    "after-timeout-raw": (
+        [{"raw": ["^[", "hunter2-secret"], "after": "NEVER", "timeout": "1s"}],
+        {},
+        "timed out after 1.0s waiting for the after pattern 'NEVER'",
+        "script.0 (raw)",
+    ),
     "connection-closed": (
         [{"line": "exit"}, {"cmd": "true"}],
         {},

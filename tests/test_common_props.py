@@ -176,9 +176,10 @@ def test_p3_12_line_and_return_reject_timeout(both_validate: Callable, step: dic
         ({"line": "x"}, False),
         ({"return": 1}, False),
         ({"control": "c"}, True),
+        ({"raw": ["x"]}, True),
         ({"set": {"a": "x"}}, False),
     ],
-    ids=["cmd", "call", "block", "line", "return", "control", "set"],
+    ids=["cmd", "call", "block", "line", "return", "control", "raw", "set"],
 )
 def test_p3_13_non_sleep_steps_accept_common_props(
     both_validate: Callable, step: dict[str, Any], timeout: bool
@@ -265,7 +266,7 @@ def test_p3_21_after_rendering_to_an_empty_regex_is_a_script_error(sent: SentLog
     assert r.vars["out"] == "unset"
 
 
-@pytest.mark.parametrize("step", [{"line": "echo hi"}, {"return": 1}, {"control": "c"}, {"call": "f"}, {"block": {"name": "b"}}, {"set": {"a": "x"}}], ids=lambda s: next(iter(s)))
+@pytest.mark.parametrize("step", [{"line": "echo hi"}, {"return": 1}, {"control": "c"}, {"raw": ["x"]}, {"call": "f"}, {"block": {"name": "b"}}, {"set": {"a": "x"}}], ids=lambda s: next(iter(s)))
 def test_p3_21_empty_rendered_after_aborts_every_step_type(sent: SentLog, step: dict[str, Any]):
     """The runner checks `after` before any step type runs, and `when` isn't evaluated first."""
     with pytest.raises(ValueError, match=r"^after: the pattern rendered to an empty regex"):

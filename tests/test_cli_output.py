@@ -653,7 +653,7 @@ REPORT = [
     "  attach.spawn: spawn must be a command, not an empty or blank string (got '') [empty_command]",
     "  attach.timeout: invalid duration: 5 minutes [value_error]",
     "  script.0.cmd.timout: Extra inputs are not permitted [extra_forbidden]",
-    "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control, set or a "
+    "  script.1: cannot determine step type; expected one of cmd, sleep, call, block, line, return, control, raw, set or a "
     "registered plugin step (got a mapping with the key cmdd) [invalid_step]",
     "  script.2.block.block.script.0.control.control: a control value is one character, a letter or one of "
     "@ ` [ { \\ | ] } ^ ~ _ ?, got 'ab' [control_char]",
@@ -732,6 +732,10 @@ SECRETS = {
     "line-number": {"script": [{"line": 20240917}]},
     "line-list-item": {"script": [{"line": ["enable", 20240917]}]},
     "line-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"line": 20240917}]}}]},
+    "raw-number": {"script": [{"raw": 20240917}]},
+    "raw-string": {"script": [{"raw": "hunter2-secret"}]},
+    "raw-list-item": {"script": [{"raw": ["^a", 20240917]}]},
+    "raw-in-a-block": {"script": [{"block": {"name": "b", "enter": [{"raw": 20240917}]}}]},
     "env-value": {"env": {"PASSWORD": [20240917]}},
     "env-mapping-value": {"env": {"PASSWORD": {"hunter2-secret": 20240917}}},
     "env-not-a-mapping": {"env": "hunter2-secret"},
@@ -751,6 +755,21 @@ def test_p8_28_value_that_would_be_sent_is_never_in_the_report(tmp_path: Path, c
     lines = res.stderr.splitlines()
     assert res.returncode == 1 and lines[0] == "Validation errors:" and len(lines) > 1
     assert "hunter2" not in res.stderr and "20240917" not in res.stderr and "(got" not in res.stderr
+
+
+@pytest.mark.parametrize("command", ["run", "validate"])
+def test_p8_28_raw_pieces_are_not_in_the_report_of_another_error_of_the_step(tmp_path: Path, command: str):
+    """SPEC "raw", "CLI": a `raw` step with an unknown key is reported at that key, and the report shows
+    nothing of the pieces, which may be a password. The same for `run` and `validate`."""
+    path = tmp_path / "script.autobot.yaml"
+    path.write_text(yaml.safe_dump(make_doc([]) | {"script": [{"raw": ["hunter2-secret", "^a"], "bogus": 1}]}))
+    argv = [sys.executable, "-W", "ignore", "-m", "autobot.cli", *(["validate"] if command == "validate" else []), str(path)]
+    res = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=120, env=_env())
+    assert res.returncode == 1 and res.stdout == ""
+    lines = res.stderr.splitlines()
+    verdict = [f"{path}: invalid"] if command == "validate" else []
+    assert lines == ["Validation errors:", "  script.0.raw.bogus: Extra inputs are not permitted [extra_forbidden]", *verdict]
+    assert "hunter2" not in res.stderr and "^a" not in res.stderr
 
 
 def test_p8_28_other_values_are_still_shown(tmp_path: Path):

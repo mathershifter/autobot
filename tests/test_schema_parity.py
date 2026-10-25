@@ -85,6 +85,7 @@ ACCEPT = {
             {"line": ["a", "b"]},
             {"return": 2},
             {"control": ["a", "x"]},
+            {"raw": ["^a", "b"]},
         ],
     ),
     "send-string": prompt(send="yes"),
@@ -297,6 +298,7 @@ HOSTS: dict[type[pydantic.BaseModel], tuple[Build, Get]] = {
     models.LineStep: _step_host({"line": "x"}),
     models.ReturnStep: _step_host({"return": 1}),
     models.ControlStep: _step_host({"control": "c"}),
+    models.RawStep: _step_host({"raw": ["x"]}),
     models.SetStep: _step_host({"set": {"a": "x"}}),
 }
 
@@ -623,6 +625,7 @@ STILL_ACCEPTED = {
     "cmd-empty-string": s({"cmd": ""}),
     "line-empty-list": s({"line": []}),
     "control-empty-list": s({"control": []}),
+    "raw-empty-list": s({"raw": []}),
     "errors-empty-list": d(errors=[]),
     "assert-blank": s({"cmd": "x", "assert": " "}),
     "assert-template-of-invalid-regex": s({"cmd": "x", "assert": "{{ '(' }}"}),
@@ -984,7 +987,7 @@ def test_p6_73_schema_after_is_non_empty_everywhere(schema: dict[str, Any]):
         if "after" in definition.get("properties", {})
     ]
     assert sorted(name for name, _ in found) == [
-        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "returnStep", "setStep", "stepCommon",
+        "blockStep", "callStep", "cmdStep", "controlStep", "lineStep", "rawStep", "returnStep", "setStep", "stepCommon",
     ]
     assert all(prop == {"type": "string", "minLength": 1} for _, prop in found)
 

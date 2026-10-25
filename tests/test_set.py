@@ -113,7 +113,7 @@ def test_p8_58_set_in_the_invalid_step_message():
     """SPEC "CLI": the list of step types names set."""
     [(loc, type_, msg)] = errors(doc({"sett": {"a": 1}}))
     assert type_ == "invalid_step"
-    assert "cmd, sleep, call, block, line, return, control, set or a registered plugin step" in msg
+    assert "cmd, sleep, call, block, line, return, control, raw, set or a registered plugin step" in msg
 
 
 def test_p8_58_set_is_a_builtin_and_a_reserved_plugin_key():
