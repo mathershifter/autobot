@@ -252,7 +252,8 @@ def test_p8_61_raw_leaves_the_partial_line_flag_alone(shell_session: Session, mo
     s.send("more", timeout=5)  # no PartialLine
     assert [data for _, data in times] == [b"more"]
     assert s._send.partial is True
-    s.sendcontrol("c", timeout=5)  # clear it for the fixture's teardown
+    s.expect(["more"], timeout=5)  # the shell has the text, and shows it
+    s.sendcontrol("c", timeout=5)  # drops it, for the fixture's teardown
     s.get_prompt(timeout=5)
 
 
