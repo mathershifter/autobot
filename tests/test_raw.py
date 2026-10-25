@@ -100,11 +100,14 @@ def test_p8_61_trailing_control_key_settles_the_next_line(shell_session: Session
     s = shell_session
     s.get_prompt(timeout=5)
     times = _recorder(s, monkeypatch)
-    # last piece text: control_at is cleared, so the following line is sent at once
+    # last piece text: the control key before it set control_at, the text clears it, so the following
+    # line is sent at once
+    s.sendcontrol("u", timeout=5)
+    assert s._send.control_at != -math.inf
     s.send("x", timeout=5)
-    s.sendline("echo one", solicit=True, timeout=5)
     assert s._send.control_at == -math.inf
-    (text_at, _), (line1_at, _) = times[0], times[1]
+    s.sendline("echo one", solicit=True, timeout=5)
+    (text_at, _), (line1_at, _) = times[1], times[2]
     assert line1_at - text_at < session_mod.CONTROL_SETTLE
     # last piece a control key: control_at is set, so the following line waits out the settle
     times.clear()
@@ -270,3 +273,12 @@ def test_p8_61_raw_runs_through_the_executor_and_reports(capsys):
     assert isinstance(out, Runner)
     err = capsys.readouterr().err
     assert ">> raw sent: ^A" in err and ">> raw sent\n" in err
+
+
+def test_p8_61_an_empty_piece_is_not_reported(capsys):
+    """SPEC "raw"/Output: `raw sent` is printed for each text piece the step sends; an empty piece sends
+    nothing, so it gets no line, whether written empty or rendered to empty."""
+    out = run_script([{"raw": ["", "^a", "{{ '' }}"]}], attach_script=[])
+    assert isinstance(out, Runner)
+    err = capsys.readouterr().err
+    assert err.count(">> raw sent") == 1 and ">> raw sent: ^A" in err

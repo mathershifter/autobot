@@ -438,7 +438,7 @@ A duration is a number of seconds (`5`, `0.5`) or a number with a unit: `500ms`,
 
 ## Templating
 
-These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, the values of a [`set`](#set) step, a prompt's `send` string and `attach.spawn`. Other values, such as `prepare`, the `env` defaults, the top-level `vars`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
+These values are [Jinja2](https://jinja.palletsprojects.com/) templates: `cmd`, `assert`, `line`, `after`, `when`, the text pieces of a [`raw`](#line-return-control-and-raw) step (its control-key pieces are not), the values of a [`set`](#set) step, a prompt's `send` string and `attach.spawn`. Other values, such as `prepare`, the `env` defaults, the top-level `vars`, `expect` and `errors`, are used as written. So are the values a `sendEach` takes from `vars`: `password: '{{ env.PW }}'` in `vars.creds` is sent literally.
 
 ```yaml
 env:

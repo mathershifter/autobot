@@ -258,7 +258,10 @@ class RawExecutor:
                 ctx.session.sendcontrol(char, timeout=timeout)
                 ctx.reporter.say(f"raw sent: ^{char.upper()}")
             else:
-                ctx.session.send(ctx.render(piece), timeout=timeout)
+                text = ctx.render(piece)
+                if not text:
+                    continue  # an empty piece sends nothing and changes nothing, so there is nothing to report
+                ctx.session.send(text, timeout=timeout)
                 ctx.reporter.say("raw sent")  # not the text: it may be a password, which the session doesn't echo
 
 
