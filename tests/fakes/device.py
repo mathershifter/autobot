@@ -18,7 +18,10 @@ the login is accepted, ``--banner-delay`` seconds after it and before ``--post-a
 ``--split-banner SECS`` it writes ``Last login: ``, waits, and writes the rest, as a slow line delivers
 it. With ``--lower-password`` the password prompt is ``password: ``. With ``--escape`` a
 Ctrl-] typed at any of the device's own prompts ends the device, as it leaves the client of a console
-server: it logs ``DETACH=``.
+server: it logs ``DETACH=``. With ``--countdown SECS`` the device is a boot loader after its banner: it
+writes ``Hit any key to stop autoboot: `` and then one number a second, with no line break, for SECS
+seconds, and any byte that arrives in that time stops the boot: it logs ``ABORT=<hex>``, prints a ``=> ``
+prompt and stays there. Otherwise it writes a line break and goes on as usual.
 """
 
 from __future__ import annotations
@@ -103,6 +106,29 @@ class Device:
             termios.tcsetattr(0, termios.TCSANOW, saved)
         self.log("RAW", data.hex())
         self.write(f"\nRAW={data.hex()}\n")
+
+    def countdown(self, secs: int) -> None:
+        """A boot loader's countdown: a number a second with no line break, and any key stops the boot."""
+        saved = termios.tcgetattr(0)
+        attrs = termios.tcgetattr(0)
+        attrs[3] &= ~(termios.ICANON | termios.ECHO)  # any byte, as it arrives, and no echo of it
+        termios.tcsetattr(0, termios.TCSANOW, attrs)
+        try:
+            self.write("Hit any key to stop autoboot: ")
+            for n in range(secs, 0, -1):
+                self.write(f"{n} ")
+                if select.select([0], [], [], 1.0)[0]:
+                    data = os.read(0, 4096)
+                    if not data:  # the session closed: a hangup, not a key
+                        sys.exit(0)
+                    self.log("ABORT", data.hex())
+                    self.write("\n=> ")
+                    while os.read(0, 4096):  # sits at the boot loader prompt until the session closes
+                        pass
+                    sys.exit(0)
+            self.write("\n")
+        finally:
+            termios.tcsetattr(0, termios.TCSANOW, saved)
 
     def console(self) -> None:
         """The shell or the prompt loop until it is logged out of, then the login again, without end."""
@@ -193,6 +219,8 @@ class Device:
             first_written = bool(self.order)
         else:
             self.write(f"{BANNER}\n")
+        if a.countdown:
+            self.countdown(a.countdown)
         if a.wait_enter:
             self.log("ENTER", self.readline())
         if a.exit_after_banner:
@@ -242,6 +270,7 @@ def main() -> None:
     p.add_argument("--banner-delay", type=float, default=0)
     p.add_argument("--split-banner", type=float, default=0)
     p.add_argument("--lower-password", action="store_true")
+    p.add_argument("--countdown", type=int, default=0)
     Device(p.parse_args()).run()
 
 

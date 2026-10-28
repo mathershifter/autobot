@@ -785,6 +785,41 @@ def test_p4_40_solicit_after_a_timed_out_rc_check(device, sent: SentLog):
     assert sent.lines() == [""]
 
 
+# -- P4-47: the solicit newline goes to a silent console, not to one that prints with no line break --
+
+COUNTDOWN = "Hit any key to stop autoboot: 7 6 5 4 3 2 1 \n"  # a number a second, no line break until the end
+
+
+@pytest.mark.slow
+def test_p4_47_no_solicit_while_a_boot_loader_counts_down(device, sent: SentLog):
+    """SPEC get_prompt step 3: a console that printed anything during the poll isn't idle; no Return is pressed.
+
+    The boot loader takes any key for the interrupt: the Return pressed at the first 5-second poll
+    timeout, with the countdown on the screen and nothing matched, left the device at its `=> ` prompt.
+    """
+    r, log = device([SHELL_PROMPT], "--countdown", "7", "--order", "none", "--then", "prompt", kick=False)
+    assert r.session.get_prompt(timeout=15) == f"Welcome\n{COUNTDOWN}"
+    assert sent.lines() == []
+    assert log_of(log) == []  # no ABORT
+
+
+@pytest.mark.slow
+def test_p4_47_poll_with_unmatched_output_keeps_the_solicit_for_a_silent_one(device, sent: SentLog):
+    """SPEC get_prompt step 3: a poll in which something arrived doesn't use up the one solicit newline.
+
+    After the countdown the device waits for Return (`--wait-enter`): the next poll is silent for 5 s,
+    and that one sends the newline. P4-05 covers the silent console that gets it once and no more.
+    """
+    r, log = device(
+        [SHELL_PROMPT], "--countdown", "7", "--wait-enter", "--order", "none", "--then", "prompt", kick=False
+    )
+    start = time.monotonic()
+    r.session.get_prompt(timeout=20)
+    assert time.monotonic() - start >= 12  # 7 s of countdown, then a silent poll of 5 s
+    assert sent.lines() == [""]
+    assert log_of(log) == ["ENTER="]
+
+
 # -- P4-42: `^` in a prompt regex is the start of a line -------------------------
 
 RAW_DEVICE = """

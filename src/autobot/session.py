@@ -25,8 +25,9 @@ if TYPE_CHECKING:
     from .protocols import Reporter
 
 
-# How long a prompt wait reads for a match before it looks at the time: after the first such period with no
-# match it sends its one solicit newline, if it may (SPEC: the engine polls in 5-second intervals).
+# How long a prompt wait reads for a match before it looks at the time: after the first such period in which
+# nothing at all arrived it sends its one solicit newline, if it may (SPEC: the engine polls in 5-second
+# intervals).
 POLL = 5.0
 
 # How long a prompt wait holds a shell prompt that may be one the line editor wrote again inside its echo:
@@ -498,7 +499,7 @@ class Session:
         Each poll ends at the earliest match among the table's patterns. A line break, an escape sequence
         and stray characters are consumed, the text before them captured; a prompt with responses is
         answered; a shell prompt ends the wait, or is held when it may be inside the echo of the line sent;
-        a poll with no match takes a held prompt for the prompt, or sends the one solicit newline.
+        a poll in which nothing arrived takes a held prompt for the prompt, or sends the one solicit newline.
         """
         if not self._cld:
             raise RuntimeError("not attached")
@@ -560,9 +561,11 @@ class Session:
         Reads `wait.held` and the child's buffer against `unread`, what it held before the poll: a held
         prompt after which nothing at all arrived was the prompt, so `_prompt.text` and `_prompt.handler`
         are set to it and its match is returned. Otherwise None: no Return is pressed while a prompt is
-        held; with none held, the one solicit newline is sent (`wait.solicited`) when the wait may, no
-        handler has fired, no part of a line is typed at the far side (`_send.partial`) and no prompt is
-        waiting for an answer (`_send.unanswered`)."""
+        held; with none held, the one solicit newline is sent (`wait.solicited`) when nothing at all
+        arrived during the poll (a console that prints is not idle: a boot loader's countdown has no line
+        break, and takes the Return for its "any key"), the wait may, no handler has fired, no part of a
+        line is typed at the far side (`_send.partial`) and no prompt is waiting for an answer
+        (`_send.unanswered`). A poll in which something arrived leaves the solicit for a later, silent one."""
         cld = self._cld
         assert cld
         if wait.held:
@@ -571,8 +574,10 @@ class Session:
                 # the match means "finished", an empty one too: the caller tests `is not None`
                 return wait.held.match
             return None
-        if not (wait.solicited or self._send.partial or self._send.unanswered) and all(
-            h.is_fresh for h in self._handlers
+        if (
+            cld.buffer == unread
+            and not (wait.solicited or self._send.partial or self._send.unanswered)
+            and all(h.is_fresh for h in self._handlers)
         ):
             self._put_line("", wait.deadline - time.monotonic(), wait.timeout)
             wait.solicited = True
