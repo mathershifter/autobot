@@ -321,7 +321,7 @@ After the last line, the step checks the result. With `assert`, the output must 
 
 The output is what the command printed: the prompt, ANSI escape sequences and, where it is recognized, the echo of the command are removed. Text printed without a final newline shares a line with the prompt and is not captured. See [Captured output](SPEC.md#captured-output).
 
-A `cmd` blocks until a shell prompt comes back. For a command that doesn't return one (`reboot`, `exit`, connecting to an idle console), use `line`.
+A `cmd` blocks until a shell prompt comes back. For a command that doesn't return one (`reboot`, `exit`, connecting to an idle console), use `line`. The prompt wait presses Return once if the console is silent for 5 seconds, so after a reboot of a device whose boot loader stops on any key, give the next `cmd` an `after` with something printed late in the boot: a `cmd` with `after` never presses Return.
 
 Several commands, as a list or as a multiline string:
 
@@ -535,9 +535,13 @@ script:
   - call: is_system_running
   - cmd: sonic-installer install -y image.swi
   - line: sudo reboot now
-    delay_after: 10s
+  - cmd: "true"
+    after: Debian GNU/Linux    # printed just before the login prompt
+    timeout: 10m
   - call: is_system_running
 ```
+
+The `cmd` after the reboot waits for that line, then for the shell prompt (the login prompt is answered by `prompts` on the way). With `after` it never presses Return into the boot: a prompt wait presses Return once if the console is silent for 5 seconds, which a boot loader with an "any key to stop autoboot" check would take for the key.
 
 ## Plugins
 
