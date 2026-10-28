@@ -119,6 +119,8 @@ class Device:
                 self.write(f"{n} ")
                 if select.select([0], [], [], 1.0)[0]:
                     data = os.read(0, 4096)
+                    if not data:  # the session closed: a hangup, not a key
+                        sys.exit(0)
                     self.log("ABORT", data.hex())
                     self.write("\n=> ")
                     while os.read(0, 4096):  # sits at the boot loader prompt until the session closes
