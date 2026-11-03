@@ -559,27 +559,31 @@ class Session:
     def _on_timeout(self, wait: PromptWait, unread: str) -> str | None:
         """A poll ended with no match (the unmatched text stays buffered). `unread` is the child's buffer before
         the poll: equal now means nothing at all arrived. A held prompt after a silent poll was the prompt: it
-        is set as the prompt and its match returned. Otherwise None. No Return is pressed while a prompt is
-        held; with none held, the one solicit newline goes out after a silent poll (a console that prints is
-        not idle: a boot loader's countdown has no line break, and takes the Return for its "any key") if the
-        wait may, no handler has fired, no part of a line is typed at the far side and no prompt waits for an
-        answer."""
+        is set as the prompt and its match returned. Otherwise None, after the solicit newline when the poll was
+        silent and the wait `_may_solicit`."""
         cld = self._cld
         assert cld
+        silent = cld.buffer == unread
         if wait.held:
-            if cld.buffer == unread:
+            if silent:
                 self._prompt.text, self._prompt.handler = wait.held.line, wait.held.handler
                 # the match means "finished", an empty one too: the caller tests `is not None`
                 return wait.held.match
             return None
-        if (
-            cld.buffer == unread
-            and not (wait.solicited or self._send.partial or self._send.unanswered)
-            and all(h.is_fresh for h in self._handlers)
-        ):
+        if silent and self._may_solicit(wait):
             self._put_line("", wait.deadline - time.monotonic(), wait.timeout)
             wait.solicited = True
         return None
+
+    def _may_solicit(self, wait: PromptWait) -> bool:
+        """Whether the solicit newline may go out in this wait (SPEC "Prompt Handling", the solicit rules). The
+        caller sends it only after a silent poll: a console that prints is not idle."""
+        held = wait.held is not None  # a prompt is held: a Return would be taken by what is running
+        spent = wait.solicited  # the one newline went out, or the wait must not send it (it follows a command)
+        typed = self._send.partial  # part of a line is on the far side's input line
+        unanswered = self._send.unanswered  # a prompt waits for an answer: a Return would be an empty one
+        fired = not all(h.is_fresh for h in self._handlers)  # a handler has fired: the console is not idle
+        return not (held or spent or typed or unanswered or fired)
 
     def _on_shell_prompt(self, wait: PromptWait, h: PromptHandler, before: str) -> str | None:
         """A shell prompt regex of `h` matched after `before`. When the output so far is the start of the line
