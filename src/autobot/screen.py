@@ -81,8 +81,7 @@ def _strip(text: str, sent: str, cut: bool) -> str:
     for k, line in enumerate(lines):
         if not line:
             continue
-        # readline horizontal-scroll mode (e.g. TERM=dumb) redraws only the
-        # visible tail of a long line, prefixed with '<'
+        # readline's horizontal-scroll mode (e.g. TERM=dumb) redraws only the visible tail of a long line, after a `<`
         tail = line.rpartition("\r")[2]
         inside = False
         if ends == {0} and len(tail) <= limit:
@@ -229,17 +228,15 @@ def _classify(text: str, sent: str, cut: bool) -> tuple[str, str | set[int]]:
 def echo_split(buf: str, sent: str) -> tuple[str, bool]:
     """Read the start of `buf` as the echo of the line `sent`, for the operator transcript.
 
-    Returns ``(emit, waiting)``. While `buf` may still be an unfinished echo, ``("", True)``: keep it back,
-    nothing is written yet. Once decided, ``(emit, False)``: `emit` is `buf` without the echo when it is
-    recognized (the echo ends at a line break), or `buf` unchanged when the start is no echo (echo disabled,
-    text after it on its line, the forms `strip_echo` doesn't recognize), or when the hold has reached its
-    bound (`ECHO_HOLD_LINES` lines, `ECHO_HOLD_CHARS` characters over the part limit). The caller writes
-    `emit` and stops holding. `buf` is the text read since the line was sent, with escape sequences already
-    removed, as the transcript writes it; `sent` is compared the same way.
+    Returns ``(emit, waiting)``: ``("", True)`` while `buf` may still be an unfinished echo (keep it back),
+    else ``(emit, False)``, where `emit` is `buf` without the echo once it is recognized (it ends at a line
+    break), or `buf` unchanged when its start is no echo (echo disabled, text after it on its line, a form
+    `strip_echo` doesn't know) or the hold has reached its bound (`ECHO_HOLD_LINES` lines, `ECHO_HOLD_CHARS`
+    characters over the part limit). `buf` is what was read since the line was sent, escape sequences
+    removed as the transcript writes it; `sent` is compared the same way.
 
-    The whole lines are read as `strip_echo` reads them, with every variant it tries (a text with U+FFFD
-    is read once more for characters that came in parts); the line that has no break yet is held while it
-    shows nothing, or while what it shows goes on from where the whole lines left the echo.
+    The whole lines are read as `strip_echo` reads them, with every variant it tries; the line with no break
+    yet is held while it shows nothing, or goes on from where the whole lines left the echo.
     """
     if not buf:
         return "", True

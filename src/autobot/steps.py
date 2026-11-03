@@ -26,10 +26,9 @@ if TYPE_CHECKING:
     from .registry import StepRegistry
 
 
-# base64 chars per upload line; keeps each line (~600 chars) under the
-# smallest common canonical-mode line limit (MAX_CANON 1024 on BSD/macOS,
-# 4095 on Linux), which the session refuses to send past, and small enough
-# for slow serial/terminal-server consoles.
+# base64 characters per upload line: each line (~600 bytes) stays under the smallest common canonical-mode
+# limit (MAX_CANON 1024 on BSD/macOS, 4095 on Linux), which the session refuses to send past, and short
+# enough for a slow serial or console-server line
 SCRIPT_CHUNK = 512
 SCRIPT_CLEANUP_TIMEOUT = 10.0
 
@@ -51,8 +50,8 @@ class CmdExecutor:
         # render before splitting: a Jinja block may span lines or add lines
         lines = [l for item in items for l in self._lines(ctx.render(item))]
         if items:
-            # one progress line for the whole step, as rendered, before anything is sent; the echo of each
-            # line is then left out of the transcript (strip_echo), since this line already shows it
+            # one progress line for the step, as rendered, before anything is sent; it shows each line, so
+            # their echoes are left out of the transcript (strip_echo)
             self._report(ctx, lines)
         try:
             for i, cmd in enumerate(lines):
@@ -129,8 +128,7 @@ class CmdExecutor:
         script = ctx.render(str(step.cmd))
         if not script.endswith("\n"):
             script += "\n"  # jinja drops the trailing newline
-        # one progress line for the step, showing the script as rendered, like any cmd; the `script:` detail
-        # lines below say what the upload does
+        # the step's progress line shows the script as rendered; the `script:` detail lines say what the upload does
         self._report(ctx, script.rstrip("\n").split("\n"))
         try:
             ctx.reporter.say(f"script: writing to {tmp}", "detail")
@@ -155,9 +153,8 @@ class CmdExecutor:
 
     @staticmethod
     def _upload(ctx: RunnerContext, script: bytes, tmp: str, timeout: float) -> None:
-        # One line per chunk, no heredoc: nothing triggers PS2, and the base64
-        # alphabet needs no quoting and contains none of '>', '#', '$', which
-        # prompt regexes commonly end with.
+        # one line per chunk, no heredoc: nothing triggers PS2, and the base64 alphabet needs no quoting and
+        # has none of the `>`, `#`, `$` that prompt regexes commonly end with
         b64 = base64.b64encode(script).decode()
         for i in range(0, len(b64), SCRIPT_CHUNK):
             ctx.session.sendline(

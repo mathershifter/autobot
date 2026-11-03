@@ -29,11 +29,10 @@ class CleanWriter:
         self._echo_buf = ""
 
     def expect_echo(self, sent: str) -> None:
-        """Leave the echo of the line `sent` out of the transcript: the text read next, up to and including
-        the echo, is held back and dropped once it is recognized (SPEC, The echo of a sent line). Where it is
-        no echo, or where none is recognized, the text is written as it is. Escape sequences are compared
-        removed, as the transcript writes them. Whatever is still held for an earlier line is written first:
-        it was no echo of that line, and belongs before anything read after this one."""
+        """Leave the echo of the line `sent` out of the transcript: what is read next is held back until the echo
+        is recognized and dropped (SPEC, The echo of a sent line), or written as it is once it is no echo. Escape
+        sequences are compared removed, as the transcript writes them. Whatever is still held for an earlier line
+        is written first: it was no echo of that line."""
         self.cancel_echo()
         self._echo_sent = ANSI_ESCAPE_RE.sub("", sent)
 
@@ -85,9 +84,8 @@ class CleanWriter:
         self._out()
 
     def close(self):
-        """Write out what is still held: nothing more will come to complete it. The stream stays open.
-        Nothing is written to a stream that could not be written before: that has ended the run already. An
-        echo that never finished is no echo: what was held back for it is written out too."""
+        """Write out what is still held, an unfinished echo included: nothing more will come to complete it.
+        The stream stays open. Nothing is written to a stream a write has failed on: that ended the run already."""
         held = self._echo_buf + self._held
         self._held = self._echo_buf = ""
         self._echo_sent = None
