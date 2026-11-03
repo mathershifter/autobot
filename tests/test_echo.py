@@ -1218,3 +1218,5 @@ def test_p8_62_hold_is_bounded_and_writes_through_past_the_bound():
     assert (emit, waiting) == ("\r\n" * (ECHO_HOLD_LINES + 1), False)
     assert echo_split("\r\n" * ECHO_HOLD_LINES, "ls") == ("", True)
     assert echo_split("x" * 20000, "ls") == ("x" * 20000, False)  # past the character bound
+    # the bound applies to a hold that is still undecided: a read that completes the echo past it drops the echo
+    assert echo_split("\r\n" * (ECHO_HOLD_LINES + 1) + "ls\r\nout\r\n", "ls") == ("out\r\n", False)

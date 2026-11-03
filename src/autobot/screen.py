@@ -244,8 +244,6 @@ def echo_split(buf: str, sent: str) -> tuple[str, bool]:
     if not buf:
         return "", True
     limit = ECHO_PART * len(sent) + 1024
-    if len(buf) > limit + ECHO_HOLD_CHARS or buf.count("\n") > ECHO_HOLD_LINES + len(sent) // 20:
-        return buf, False  # past the bound: what is held is written, whatever it is
     variants = (False, True) if ("\ufffd" in buf or "\ufffd" in sent) else (False,)
     nl = buf.rfind("\n")
     complete, partial = (buf[: nl + 1], buf[nl + 1 :]) if nl >= 0 else ("", buf)
@@ -267,4 +265,6 @@ def echo_split(buf: str, sent: str) -> tuple[str, bool]:
         # goes on from where the whole lines left the echo: still the echo, possibly
         if not shown or (ends == {0} and shown[0] == "<") or _extend(target, ends, partial, limit, cut):
             maybe = True
+    if maybe and (len(buf) > limit + ECHO_HOLD_CHARS or buf.count("\n") > ECHO_HOLD_LINES + len(sent) // 20):
+        return buf, False  # past the bound and still undecided: what is held is written, whatever it is
     return ("", True) if maybe else (buf, False)

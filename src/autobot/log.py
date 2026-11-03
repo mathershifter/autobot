@@ -183,8 +183,9 @@ class ConsoleReporter:
         parts = [(MARK, mark), indent, (label + sep, label_style), (first_rest, rest_style)]
         pad = " " * (len(indent) + len(label) + len(sep))  # under the text of the first line
         for line in rest:
-            # an empty line (a blank line of an embedded script) is the marker alone, with no trailing blanks
-            parts += ["\n", (MARK, mark)] + ([(pad, rest_style), (line, rest_style)] if line else [])
+            # an empty line (a blank line of an embedded script) is `>> ` alone: the marker and its blank, so
+            # `grep '^>> '` still finds every line, and no further pad
+            parts += ["\n", (MARK, mark), " "] + ([(pad[1:], rest_style), (line, rest_style)] if line else [])
         self._print(Text.assemble(*parts))
 
     def error(self, head: str, detail: str | None = None, style: str = ERROR) -> None:

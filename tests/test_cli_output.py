@@ -239,6 +239,14 @@ def test_p8_62_multiline_cmd_prints_one_progress_line_with_continuations(capsys:
     assert capsys.readouterr().err == ">> cmd: echo a\n>>      echo b\n>>      echo c\n"
 
 
+def test_p8_62_empty_continuation_line_is_the_marker_and_its_blank(capsys: pytest.CaptureFixture[str]):
+    """A blank line of the block (an embedded script's) prints `>> ` alone: `grep '^>> '` still matches every
+    progress line, and no pad trails it."""
+    rep = ConsoleReporter()
+    rep.block("cmd: #!/bin/sh\n\necho a")
+    assert capsys.readouterr().err == ">> cmd: #!/bin/sh\n>> \n>>      echo a\n"
+
+
 def test_p8_62_multiline_cmd_continuations_are_indented_under_a_block(capsys: pytest.CaptureFixture[str]):
     """The continuation lines keep the step's nesting indentation and align under the text of the first."""
     rep = ConsoleReporter()
