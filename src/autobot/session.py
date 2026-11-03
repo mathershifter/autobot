@@ -338,13 +338,23 @@ class Session:
         self._prompt.at_prompt = self._prompt.at_prompt and found.at_prompt
         if any(h is self._prompt.handler for h in self._handlers):
             return
-        # the old handler is gone: the new one is the one a wait would stop at in the prompt's line. The text
-        # ends where its match ended, so a regex ending in `$` may match it where it wouldn't match the output:
-        # it is read with the unread rest of the line first, and alone (as for `at_prompt`) only when nothing
-        # matches that
-        rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
-        line = self._scan(self._prompt.text + rest).handler if rest else None
-        self._prompt.handler = (line or found.handler) if found.at_prompt else None
+        # the old handler is gone: the new one is the one a wait would stop at in the prompt's line
+        if not found.at_prompt:
+            self._prompt.handler = None
+        elif (rest := self._unread_line()) and (h := self._handler_in(self._prompt.text + rest)):
+            self._prompt.handler = h  # the line as the output has it
+        else:
+            # the text alone, as for `at_prompt`: it ends where its match ended, so a regex ending in `$` may
+            # match it where it wouldn't match the output
+            self._prompt.handler = found.handler
+
+    def _unread_line(self) -> str:
+        """What is unread of the line on screen: the child's buffer up to its first line break."""
+        return (self._cld.buffer if self._cld else "").partition("\r\n")[0]
+
+    def _handler_in(self, line: str) -> PromptHandler | None:
+        """The handler of the shell prompt a wait would stop at in `line`, or None."""
+        return self._scan(line).handler
 
     def _rejudge_held(self):
         """A held prompt is judged again by the new handlers, against the line sent before it: it stays held,
@@ -665,19 +675,26 @@ class Session:
                 self._echo.cancel_echo()  # as at the end of a prompt wait: nothing is held back past a wait
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
-        # a match that ends at a shell prompt with nothing read after it puts the session at that prompt
-        _, line_break, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
-        if not self._prompt.at_prompt and not self._cld.buffer:
-            # the echo of the line sent can be in the line only when no line break came before it
-            sent = self._send.line if line_break == "" else None
-            found = self._scan(line, whole=True, sent=sent)
-            if found.at_prompt:
-                self._prompt.at_prompt, self._prompt.text, self._prompt.handler = True, line, found.handler
-                self._login.pending = False
-            elif found.read is not None and found.handler:
-                # the prompt may be one written again inside the echo: the next prompt wait holds it
-                self._prompt.held = HeldPrompt(found.read, line, self._ctx["match"], found.handler)
+        self._note_prompt_at(self._ctx["before"], self._ctx["match"])
         return idx
+
+    def _note_prompt_at(self, before: str, match: str) -> None:
+        """A match of `expect` that ends at a shell prompt with nothing read after it puts the session at that
+        prompt; one at a prompt that may be written again inside the echo is held for the next prompt wait
+        (SPEC, A prompt inside the echo)."""
+        cld = self._cld
+        assert cld
+        if self._prompt.at_prompt or cld.buffer:
+            return
+        _, line_break, line = (before + match).rpartition("\r\n")
+        # the echo of the line sent can be in the line only when no line break came before it
+        sent = self._send.line if line_break == "" else None
+        found = self._scan(line, whole=True, sent=sent)
+        if found.at_prompt:
+            self._prompt.at_prompt, self._prompt.text, self._prompt.handler = True, line, found.handler
+            self._login.pending = False
+        elif found.read is not None and found.handler:
+            self._prompt.held = HeldPrompt(found.read, line, match, found.handler)
 
     def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300, strip_echo: bool = False):
         """Send a line, within `timeout`. `solicit` lets the next prompt wait send its solicit newline: for
