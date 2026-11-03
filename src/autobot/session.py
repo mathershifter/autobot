@@ -25,20 +25,19 @@ if TYPE_CHECKING:
     from .protocols import Reporter
 
 
-# How long a prompt wait reads for a match before it looks at the time: after the first such period in which
-# nothing at all arrived it sends its one solicit newline, if it may (SPEC: the engine polls in 5-second
-# intervals).
+# One poll of a prompt wait (SPEC: the engine polls in 5-second intervals). After the first poll in which
+# nothing at all arrived, the wait sends its one solicit newline, if it may.
 POLL = 5.0
 
-# How long a prompt wait holds a shell prompt that may be one the line editor wrote again inside its echo:
-# the prompt is taken for the prompt once nothing arrives for this long. Readline writes the prompt and the
-# rest of the line in one write; the time is for a slow line between a device and its console server.
+# How long nothing must arrive before a held shell prompt (one that may be the line editor's rewrite inside
+# its echo) is taken for the prompt. Readline writes the prompt and the rest of the line in one write; the
+# time is for a slow line between a device and its console server.
 HELD_GRACE = 1.0
 
-# How long after a control character a line is sent at the earliest. A shell or a CLI drops the line it is
-# reading when it gets round to the interrupt, and what it has read of the next line by then goes with
-# it: `logout` sent in the same breath as Ctrl-C arrives as `ogout`. Nothing shows when the far side is
-# done, so the line waits this long; it is no guarantee on a far side that is slower than that.
+# The least time between a control character and the next line. A shell or CLI drops the line it is reading
+# when it gets round to the interrupt, and what it has read of the next line by then goes with it: `logout`
+# sent in the same breath as Ctrl-C arrives as `ogout`. Nothing shows when the far side is done, so this is
+# a wait, not a guarantee.
 CONTROL_SETTLE = 0.5
 
 
@@ -139,10 +138,10 @@ class SimpleHandler(PromptHandler):
 
 @dataclass
 class HeldPrompt:
-    """A shell prompt that a prompt wait holds: one that may be the prompt the line editor wrote again
-    inside its echo (see HELD_GRACE). `read` is what an `after` wait read up to it, which the prompt wait
-    that takes the prompt up starts its output with (empty for a prompt the wait read itself); `line` is
-    the prompt's line as it was matched, `match` the match and `handler` the handler whose regex matched it."""
+    """A shell prompt a prompt wait holds because it may be the line editor's rewrite inside the echo (see
+    HELD_GRACE). `read`: what an `after` wait read up to it, which the next prompt wait starts its output
+    with (empty when the wait read the prompt itself). `line`: the prompt's line as matched; `match`: the
+    match; `handler`: the handler whose regex matched."""
 
     read: str
     line: str
@@ -154,12 +153,11 @@ class HeldPrompt:
 class PromptState:
     """What the session knows of the shell prompt on screen.
 
-    `at_prompt` is True from a wait that ended at a shell prompt, or an `after` wait that read one, until
-    anything is sent, the child is forgotten, or a swap of the handlers no longer takes the prompt for one.
-    `text` is the line of the last shell prompt reached, as matched, and `handler` the one of the current
-    handlers whose regex matched it, or None; a swap of the handlers judges it again (`_rejudge_prompt`),
-    and it is meaningful only while `at_prompt`. `held` is a prompt an
-    `after` wait handed on to the next prompt wait: it is set only while `at_prompt` is False, and anything
+    `at_prompt`: True from a wait that ended at a shell prompt, or an `after` wait that read one, until
+    anything is sent, the child is forgotten, or a handler swap no longer takes the prompt for one. `text`:
+    the line of the last shell prompt reached, as matched. `handler`: the current handler whose regex matched
+    it, or None; a swap judges it again (`_rejudge_prompt`); meaningful only while `at_prompt`. `held`: a
+    prompt an `after` wait handed on to the next prompt wait; set only while not `at_prompt`, and anything
     sent drops it."""
 
     at_prompt: bool = False
@@ -172,16 +170,15 @@ class PromptState:
 class SendState:
     """What the session knows of the last send.
 
-    `line` is the last line sent, until the next prompt wait takes it to strip its echo, or a write fails.
-    `solicit` is whether the next prompt wait may press Return for a prompt: False after a command (a
-    sendline without `solicit`) or a failed write, until a prompt wait starts, a control character is sent
-    or a `$?` check fails. `partial` is True only after a write of which the pty took some bytes but not all
-    of them, until a control character is sent: no line is sent and no Return pressed while it is.
-    `unanswered` is True only after a prompt whose answer could not be sent, until something is sent: no
-    Return is pressed while it is. `control_at` is when the last control character was written (monotonic;
-    -inf before any, and -inf again once raw text was sent after it). `writes` counts the sends that got as
-    far as the write, over the life of the session, and `took` is the bytes of the last of them that the pty
-    took: 0 for a send that sent nothing at all."""
+    `line`: the last line sent, until the next prompt wait takes it to strip its echo, or a write fails.
+    `solicit`: whether the next prompt wait may press Return for a prompt; False after a command (a sendline
+    without `solicit`) or a failed write, until a prompt wait starts, a control character, raw text or a
+    `sendline(..., solicit=True)` line is sent, or a `$?` check fails. `partial`: the pty took some bytes of
+    a write but not all, and no control character was sent since; no line is sent and no Return pressed while
+    it is set. `unanswered`: a prompt's answer could not be sent and nothing was sent since; no Return is
+    pressed while it is set. `control_at`: when the last control character was written (monotonic; -inf
+    before any, and again once raw text followed it). `writes`: the sends that got as far as the write, over
+    the session's life. `took`: the bytes of the last of them the pty took, 0 for one that sent nothing."""
 
     line: str | None = None
     solicit: bool = True
@@ -217,11 +214,10 @@ class ScanResult:
 
 @dataclass
 class PromptWait:
-    """One prompt wait (`get_prompt`) while it reads. `sent` is the line sent before it, whose echo is
-    stripped from the output; `solicited`: the one solicit newline was sent, or must not be; `deadline` and
-    `timeout` are the wait's; `output` is what was read so far, as captured; `held` is a shell prompt that
-    may be inside the echo, and `held_at` the size of `output` when it was held: once more is read, the
-    echo went on and the prompt is dropped."""
+    """One prompt wait (`get_prompt`) while it reads. `sent`: the line sent before it, whose echo is stripped
+    from the output. `solicited`: the one solicit newline was sent, or must not be. `output`: what was read
+    so far, as captured. `held`: a shell prompt that may be inside the echo; `held_at`: the size of `output`
+    when it was held, so more read since means the echo went on and the prompt is dropped."""
 
     sent: str | None
     solicited: bool
@@ -233,13 +229,13 @@ class PromptWait:
 
 
 class PatternTable:
-    """The patterns of a prompt wait, in the order pexpect gets them: the line break, an escape sequence,
-    the regexes of each handler in turn, a run of stray characters, then TIMEOUT and EOF. The table keeps
-    where each handler's slice starts and ends; the handlers are not written to, so one can be in several
-    tables. pexpect takes the earliest match, and the first of the list on a tie: a prompt regex
-    that itself starts at a leading `\\r` beats the stray run. The regexes are compiled once, as pexpect
-    compiles a string (`re.DOTALL`). One that doesn't compile leaves them all as strings, so that the next
-    prompt wait reports the error (SPEC: a prompt regex that isn't valid), and a scan finds nothing."""
+    """The patterns of a prompt wait, in the order pexpect gets them: line break, escape sequence, each
+    handler's regexes in turn, a run of stray characters, then TIMEOUT and EOF. pexpect takes the earliest
+    match, and the first in the list on a tie: a prompt regex that starts at a leading `\\r` beats the
+    stray run. The handlers are not written to, so one can be in several tables. The regexes are compiled
+    once, as pexpect compiles a string (`re.DOTALL`); one that doesn't compile leaves them all as strings,
+    so the next prompt wait reports the error (SPEC: a prompt regex that isn't valid) and a scan finds
+    nothing."""
 
     def __init__(self, handlers: list[PromptHandler]):
         patterns: list[str | re.Pattern[str]] = [r"\r\n", ANSI_ESCAPE_RE]
@@ -280,12 +276,11 @@ class Session:
         transcript: TextIO | None = None,
         environ: Mapping[str, str] | None = None,
     ):
-        """`reporter`: where the session says what it does, and what keeps the run's lost output; the
-        runner's, or one of the session's own on stderr. `transcript`: the stream the session's output is
-        written to as the device sent it (SPEC, Output); the process's stdout, as it is at each attach,
-        when none is given. `environ`: the environment a child is spawned in when `attach` gets no `env`
-        of its own; that of a run (`terminal.run_environ`), taken at each attach, when none is given.
-        `TERM=dumb` and `NO_COLOR=1` are always set over it for the spawn, whatever it holds."""
+        """`reporter`: where the session says what it does and keeps the run's lost output; its own on stderr
+        when none is given. `transcript`: where the session's output goes as the device sent it (SPEC, Output);
+        the process's stdout, as it is at each attach, when none is given. `environ`: what a child is spawned
+        in when `attach` gets no `env`; `terminal.run_environ()`, taken at each attach, when none is given.
+        `TERM=dumb` and `NO_COLOR=1` are set over it for the spawn either way."""
         self._reporter: Reporter = reporter if reporter is not None else ConsoleReporter()
         self._transcript = transcript
         self._environ = environ
@@ -337,27 +332,24 @@ class Session:
         self._rejudge_held()
 
     def _rejudge_prompt(self):
-        """The prompt on screen still counts only if the new handlers take it for a shell prompt. Reads
-        `_prompt.text`, `_prompt.at_prompt` and the unread rest of the prompt's line; sets `_prompt.at_prompt`
-        (never to True) and `_prompt.handler`, which is kept when it is among the new handlers."""
+        """The prompt on screen still counts only if the new handlers take it for a shell prompt. Sets
+        `_prompt.at_prompt` (never to True) and `_prompt.handler`, kept when it is among the new handlers."""
         found = self._scan(self._prompt.text)
         self._prompt.at_prompt = self._prompt.at_prompt and found.at_prompt
         if any(h is self._prompt.handler for h in self._handlers):
             return
-        # the handler that matched the prompt is gone, and no wait matched the new regexes: the handler
-        # is the one a wait would stop at in the prompt's line. The prompt's text ends where its match
-        # ended, so a regex that ends with `$` may match it where it does not match the output: it is
-        # read with the rest of the line, which is unread. Only when nothing matches that is the text
-        # read alone, as it is for `at_prompt`
+        # the old handler is gone: the new one is the one a wait would stop at in the prompt's line. The text
+        # ends where its match ended, so a regex ending in `$` may match it where it wouldn't match the output:
+        # it is read with the unread rest of the line first, and alone (as for `at_prompt`) only when nothing
+        # matches that
         rest = (self._cld.buffer if self._cld else "").partition("\r\n")[0]
         line = self._scan(self._prompt.text + rest).handler if rest else None
         self._prompt.handler = (line or found.handler) if found.at_prompt else None
 
     def _rejudge_held(self):
-        """A prompt an `after` wait handed on was judged by the old handlers, and is judged again as it was,
-        against the line sent before it. Reads `_prompt.held` and `_send.line`; sets `_prompt.held`: the
-        prompt stays held, for its new handler and with what the new handlers read up to it, if its line
-        still ends with a shell prompt, and is dropped otherwise."""
+        """A held prompt is judged again by the new handlers, against the line sent before it: it stays held,
+        with its new handler and what they read up to it, if its line still ends with a shell prompt, and is
+        dropped otherwise."""
         held = self._prompt.held
         if not held:
             return
@@ -423,9 +415,9 @@ class Session:
         self._ctx["before"] = self._ctx["match"] = ""
         self._login = LoginState()
         if env is None:
-            # the session's own `environ` (the run's), or this process's; `TERM=dumb` and `NO_COLOR=1` are
-            # always set over it for the spawn (SPEC, The environment of the spawned process), as
-            # `run_environ` already sets them. An explicit `env` of a caller's own is used as it is.
+            # `TERM=dumb` and `NO_COLOR=1` over the session's `environ` or this process's (SPEC, The environment
+            # of the spawned process): `run_environ` sets them already, so this matters only for a caller-given
+            # `environ`; a caller's own `env` is used as it is
             base = run_environ() if self._environ is None else self._environ
             env = {**base, **DEFAULT_ENV}
         self._cld = pexpect.spawn(
@@ -508,8 +500,7 @@ class Session:
         try:
             return self._wait_for_prompt(timeout, errors, capture, solicit)
         finally:
-            # however the wait ends, the transcript holds nothing back past it: an echo ends before its
-            # prompt, so what is still held was no echo and is written where it belongs
+            # an echo ends before its prompt: whatever the transcript still holds was no echo, and is written out
             if self._echo is not None:
                 self._echo.cancel_echo()
 
@@ -550,11 +541,10 @@ class Session:
                 self._answer(wait, h, k)
 
     def _begin_wait(self, timeout: float, solicit: bool) -> PromptWait:
-        """Start a prompt wait. Takes the last line sent (`_send.line`, cleared: its echo is stripped from
-        the output) and whether the wait may solicit (`_send.solicit`, set back to True: a command that is
-        still running would answer a solicit newline with a second prompt); takes up a prompt an `after`
-        wait handed on (`_prompt.held`, cleared), with what was read up to it, as if the wait had read it;
-        and starts the handlers' response selection over."""
+        """Start a prompt wait: take the last line sent (its echo is stripped from the output) and whether the
+        wait may solicit, the line cleared, the flag set back to True (a command still running would answer a
+        solicit newline with a second prompt); take up a held prompt with what was read up to it, as if this
+        wait had read it; and start the handlers' response selection over."""
         sent, self._send.line = self._send.line, None
         solicited, self._send.solicit = not (self._send.solicit and solicit), True
         for h in self._handlers:
@@ -567,15 +557,13 @@ class Session:
         return wait
 
     def _on_timeout(self, wait: PromptWait, unread: str) -> str | None:
-        """A poll ended with no match; the unmatched text stays buffered and comes back with the next match.
-        Reads `wait.held` and the child's buffer against `unread`, what it held before the poll: a held
-        prompt after which nothing at all arrived was the prompt, so `_prompt.text` and `_prompt.handler`
-        are set to it and its match is returned. Otherwise None: no Return is pressed while a prompt is
-        held; with none held, the one solicit newline is sent (`wait.solicited`) when nothing at all
-        arrived during the poll (a console that prints is not idle: a boot loader's countdown has no line
-        break, and takes the Return for its "any key"), the wait may, no handler has fired, no part of a
-        line is typed at the far side (`_send.partial`) and no prompt is waiting for an answer
-        (`_send.unanswered`). A poll in which something arrived leaves the solicit for a later, silent one."""
+        """A poll ended with no match (the unmatched text stays buffered). `unread` is the child's buffer before
+        the poll: equal now means nothing at all arrived. A held prompt after a silent poll was the prompt: it
+        is set as the prompt and its match returned. Otherwise None. No Return is pressed while a prompt is
+        held; with none held, the one solicit newline goes out after a silent poll (a console that prints is
+        not idle: a boot loader's countdown has no line break, and takes the Return for its "any key") if the
+        wait may, no handler has fired, no part of a line is typed at the far side and no prompt waits for an
+        answer."""
         cld = self._cld
         assert cld
         if wait.held:
@@ -594,12 +582,10 @@ class Session:
         return None
 
     def _on_shell_prompt(self, wait: PromptWait, h: PromptHandler, before: str) -> str | None:
-        """A shell prompt regex of `h` matched, `before` being what this read had before it. Reads
-        `wait.output` and `wait.sent`: when the output so far is the start of the line sent, the line editor
-        may have written the prompt again while echoing the line (readline does, for a line that ends at
-        the right margin), so the prompt is held (`wait.held`, `wait.held_at`), a `\\r` goes into the output,
-        from which the echo goes on, and None is returned. Otherwise the session is at the prompt:
-        `_prompt.text` and `_prompt.handler` are set and the match is returned."""
+        """A shell prompt regex of `h` matched after `before`. When the output so far is the start of the line
+        sent, the line editor may have written the prompt again while echoing it (readline does, for a line that
+        ends at the right margin): the prompt is held, a `\\r` goes into the output for the echo to go on from,
+        and None is returned. Otherwise the prompt is set as the session's and its match returned."""
         cld = self._cld
         assert cld
         after = str(cld.after)
@@ -612,11 +598,9 @@ class Session:
         return after  # the match means "finished", an empty one too: the caller tests `is not None`
 
     def _answer(self, wait: PromptWait, h: PromptHandler, k: int) -> None:
-        """A prompt with responses matched, at the regex of index `k` among `h`'s own. Sends the response
-        `h` picks for it, within what is left of the wait (`wait.deadline`, `wait.timeout`). Sets
-        `_send.unanswered` when the response could not be sent (none left, or one that could not be
-        rendered or sent): the prompt is still waiting for one. Records a credentials prompt in `_login`
-        as answered, open and pending."""
+        """Regex `k` of the prompt `h` matched: send the response `h` picks, within what is left of the wait.
+        A response that can't be sent (none left, or one that can't be rendered or written) leaves the prompt
+        `unanswered`. A credentials prompt is recorded as answered, open and pending."""
         try:
             self._put_line(h.respond(k), wait.deadline - time.monotonic(), wait.timeout)
         except (LineTooLong, PartialLine) as e:
@@ -637,10 +621,10 @@ class Session:
         return f"a shell prompt ({names})"
 
     def _finish(self, wait: PromptWait, match: str, errors: Sequence[str] | None, capture: bool) -> str:
-        """The wait ended at a shell prompt (`_prompt.text` and `_prompt.handler` are set): the session is at
-        it (`_prompt.at_prompt`) and no login is pending. The captured output is what was read up to its
-        last line break, less the echo of the line sent (`wait.sent`); `capture` stores it and `match` in
-        `ctx`. An `errors` pattern that matches the output is a CommandError."""
+        """End the wait at the shell prompt `_on_shell_prompt` or `_on_timeout` set: the session is at it and no
+        login is pending. The captured output is what was read up to its last line break, less the echo of the
+        line sent; `capture` stores it and `match` in `ctx`. An `errors` pattern that matches it is a
+        CommandError."""
         self._prompt.at_prompt = True
         self._login.pending = False
         text = "".join(wait.output)
@@ -677,8 +661,7 @@ class Session:
                 self._echo.cancel_echo()  # as at the end of a prompt wait: nothing is held back past a wait
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
-        # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
-        # session is at it, as after a prompt wait
+        # a match that ends at a shell prompt with nothing read after it puts the session at that prompt
         _, line_break, line = (self._ctx["before"] + self._ctx["match"]).rpartition("\r\n")
         if not self._prompt.at_prompt and not self._cld.buffer:
             # the echo of the line sent can be in the line only when no line break came before it
@@ -716,9 +699,9 @@ class Session:
         self._send.unanswered = False
 
     def _restore_if_nothing_sent(self, prompt: PromptState, send: SendState):
-        """A send failed. One that never got to the write, or of which the pty took nothing, whatever ended
-        it, sent nothing at all: the session is where it was before it (SPEC: a send of which the pty took
-        nothing leaves no part of a line). The count of writes is the session's, and stays."""
+        """After a failed send: one that never got to the write, or of which the pty took nothing, sent nothing
+        at all, and the session goes back to where it was (SPEC: a send of which the pty took nothing leaves no
+        part of a line). The write count is the session's and stays."""
         if self._send.writes == send.writes or self._send.took == 0:
             send.writes, send.took = self._send.writes, self._send.took
             self._prompt, self._send = prompt, send
@@ -741,11 +724,11 @@ class Session:
         self._write(data, deadline, timeout if of is None else of, "a line")
 
     def _check_length(self, data: bytes):
-        """Refuse a line that the child's terminal would cut, and say so once when a terminal further on may.
+        """Refuse a line the child's terminal would cut, and warn once when a terminal further on may.
 
-        A terminal in canonical mode keeps a line for the program until its line break, and only so many
-        bytes of it: it drops the rest without a sign, while it echoes them all. The mode is the one the
-        terminal is in now, when the line is about to be typed on it.
+        A terminal in canonical mode keeps a line for the program until its line break, and only so many bytes
+        of it: it echoes them all and drops the rest without a sign. The mode is read now, as the line is about
+        to be typed.
         """
         cld = self._cld
         assert cld
@@ -779,14 +762,13 @@ class Session:
         self._send.control_at = time.monotonic()
 
     def _write(self, data: bytes, deadline: float, timeout: float, what: str):
-        """Write `data` to the child, by `deadline`, reading what the child writes whenever the pty takes
-        no more: a child that echoes stops reading once nobody reads its echo.
+        """Write `data` to the child by `deadline`, reading what it writes whenever the pty takes no more: a
+        child that echoes stops reading once nobody reads its echo. What is read goes where a wait's reads go.
 
-        What is read is read as a wait reads it, and is the start of what the next wait reads. A write
-        that fails leaves the session at no prompt and after no line. The part that was written is on the
-        child's input line: until a control character is sent, no prompt wait presses Return and no line
-        is sent, which would enter it. `_send.took` says how much was written: a send of which the pty
-        took nothing is put back where it was by `sendline` and `sendcontrol`.
+        A write that fails leaves the session at no prompt and after no line; what was written is on the
+        child's input line, so until a control character is sent no prompt wait presses Return and no line is
+        sent. `_send.took` is how much was written; a send the pty took nothing of is put back by `sendline`,
+        `sendcontrol` and `send`, not by a response or solicit newline sent inside a wait.
         """
         cld = self._cld
         assert cld
@@ -845,18 +827,15 @@ class Session:
         self._send.unanswered = False
 
     def send(self, text: str = "", *, timeout: float = 300):
-        """Send `text` verbatim, no line break, within `timeout`: the keystrokes of a `raw` step, or a
-        plugin's own. Unlike a line, it does no canonical-mode length check and waits out no control
-        settle (a `raw` piece goes out at once), and it leaves the partial-line flag alone and never
-        raises `PartialLine`: what was typed is the author's to finish. It ends the at-a-shell-prompt
-        state and solicits next, as `sendcontrol` does, since the far side is no longer at a known prompt;
-        a text piece leaves no control settle pending for the next line. A send the pty took nothing of
-        puts the session back (see `_restore_if_nothing_sent`), and an empty `text` sends nothing and
-        changes nothing."""
+        """Send `text` verbatim, no line break, within `timeout`: the keystrokes of a `raw` step. Unlike a
+        line it makes no canonical-mode length check, waits out no control settle, leaves the partial-line
+        flag alone and never raises `PartialLine`: what was typed is the author's to finish. Like a control
+        character it ends the at-a-shell-prompt state and makes the next wait solicit. An empty `text` sends
+        nothing and changes nothing; a send the pty took nothing of puts the session back."""
         if not self._cld:
             raise RuntimeError("not attached")
         if not text:
-            return  # an empty piece sends nothing: the session is where it was
+            return
         prompt, send = copy.copy(self._prompt), copy.copy(self._send)
         self._prompt.at_prompt = False
         self._send.solicit = True

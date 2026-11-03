@@ -25,8 +25,7 @@ if TYPE_CHECKING:
     from .registry import StepRegistry
 
 
-# what runs the `prepare` script: given the script, the environment it runs in and the reporter, it gives
-# the environment the script leaves (see `run_prepare`, the runner's default)
+# runs the `prepare` script in an environment and gives the one it leaves; `run_prepare` is the default
 Prepare = Callable[[str, dict[str, str], "Reporter"], dict[str, str]]
 
 
@@ -53,15 +52,12 @@ class Runner:
         prepare: Prepare | None = None,
         templater: Templater | None = None,
     ):
-        """`given`: the `--env` values, which come before those of the environment. The keyword arguments
-        are what the run is wired to, each with the default a run has when none is given. `registry`: the
-        steps the run dispatches to, `autobot.registry.registry` by default. `reporter`: where the run says
-        what it does; the CLI's, or one of the runner's own on stderr. `transcript`: where the session's
-        output goes, as the device sent it; the process's stdout. `environ`: the environment the run starts
-        from, which `prepare` runs in, the `env` section reads and the process is spawned in; that of this
-        process, on a plain terminal (`terminal.run_environ`). `prepare`: what runs the `prepare` script,
-        `run_prepare`. `templater`: the Jinja2 environments templates are rendered with,
-        `autobot.templating.templater`."""
+        """`given`: the `--env` values, which come before the environment's. The keyword arguments are what
+        the run is wired to, with their defaults: `registry`, the steps it dispatches to
+        (`autobot.registry.registry`); `reporter`, where it says what it does (its own, on stderr);
+        `transcript`, where the session's output goes (stdout); `environ`, what `prepare` runs in, `env` reads
+        and the process is spawned in (`terminal.run_environ()`); `prepare`, what runs the `prepare` script
+        (`run_prepare`); `templater`, what renders templates (`autobot.templating.templater`)."""
         self._registry: StepRegistry = registry if registry is not None else registry_mod.registry
         self._registry.discover()
         self._config = config
@@ -69,7 +65,7 @@ class Runner:
         self._prepare: Prepare = prepare if prepare is not None else run_prepare
         self._templater: Templater = templater if templater is not None else default_templater
         self._default_timeout = 300
-        # the environment of the spawned process, autobot's own, plain; `prepare` and `env` get it between the defaults and `--env`
+        # the spawned process's environment, `run_environ()` by default; `prepare` and `env` read it between the defaults and `--env`
         self._environ = run_environ() if environ is None else dict(environ)
         for key, value in given.items():
             if key not in config.env:
@@ -107,10 +103,9 @@ class Runner:
 
     @property
     def env(self) -> Mapping[str, Any]:
-        """The run's `env` as templates read it (SPEC, The environment in templates): the declared variables
-        with their typed values, resolved by each run once `prepare` has run: empty before the first run,
-        and a run's values stay readable after it until the next run resolves them again. Read-only: a view
-        of the live mapping."""
+        """The run's `env` as templates read it (SPEC, The environment in templates), resolved by each run once
+        `prepare` has run: empty before the first run, and kept after one until the next resolves it again. A
+        read-only view of the live mapping."""
         return MappingProxyType(self._env)
 
     @property
@@ -134,9 +129,8 @@ class Runner:
         return fn.script
 
     def _start(self) -> list[PromptHandler]:
-        """A run's start, and the runner's: `vars` filled again, in place, with a copy of the script's section,
-        so that nothing a run registers or sets is seen by the next one or written into the config, and the
-        top-level prompts resolved from it."""
+        """`vars` refilled in place with a copy of the script's section, so nothing a run sets is seen by the
+        next one or written into the config, and the top-level prompts resolved from it."""
         self._vars.clear()
         self._vars.update(copy.deepcopy(self._config.vars))
         return [self._handler(p) for p in self._config.prompts]
@@ -217,8 +211,8 @@ class Runner:
             try:
                 yield from self._lifecycle()
             finally:
-                # lost output is the run's, and gone with it. It is what ended the run, whatever came after it
-                # on the way out (an interrupt)
+                # lost output is the run's and gone with it (`clear`): it is what ended the run, whatever came
+                # after it on the way out (an interrupt)
                 lost = self._reporter.clear()
                 if lost:
                     self._mark(lost)
@@ -241,7 +235,7 @@ class Runner:
             self.before_attach()
         self._reporter.say(f"attach: {spawn}")
         try:
-            # no `env=`: the session falls back to its own `environ`, the one it was built with (`self._environ`)
+            # no `env=`: the session uses the `environ` it was built with
             self._session.attach(spawn, timeout=timeout)
             try:
                 if attach.script:
@@ -301,10 +295,9 @@ class Runner:
             report.RunOutcome.of(error).left = report.Left(tuple(self._unfinished), self._session.logins, self._session.login_pending)
 
     def run_breakout(self, steps: list[Step], what: str = "breakout", *, path: str | None = None):
-        """Run the steps of a breakout, best-effort: an error ends the breakout and is logged, not raised,
-        so what comes after it still runs. It is kept, since the run can't count as completed. An interrupt
-        ends the breakout as well, and so does lost output: they are kept, and go on. No breakout runs once
-        the run's output is lost. `path` names the list as `run_steps` does."""
+        """Run a breakout, best-effort: an error ends it and is logged, not raised, so what follows still runs;
+        it is kept, since the run can't count as completed. An interrupt or lost output ends it too, is kept,
+        and goes on. No breakout runs once the run's output is lost. `path` as for `run_steps`."""
         self._reporter.check()
         try:
             self._session.reset_handlers()
@@ -388,8 +381,8 @@ class Runner:
         model = step
         if isinstance(step, PluginStep):
             model = step.validated(self._registry)
-            # the cached model may be from another registry that registered this key with a different
-            # model; validate against this runner's registry so the executor gets its own model, and keep it
+            # the cached model may be another registry's, for a different model of this key: validate against
+            # this runner's and keep that
             if not isinstance(model, executor.model):
                 model = step._plugin_model = self._registry.validate_plugin_step(step)
         executor.execute(model, self, timeout)
