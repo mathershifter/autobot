@@ -53,7 +53,7 @@ class CmdExecutor:
         if items:
             # one progress line for the whole step, as rendered, before anything is sent; the echo of each
             # line is then left out of the transcript (strip_echo), since this line already shows it
-            ctx.reporter.block("cmd: " + "\n".join(lines))
+            self._report(ctx, lines)
         try:
             for i, cmd in enumerate(lines):
                 if i > 0:
@@ -83,6 +83,13 @@ class CmdExecutor:
             raise TimeoutError(
                 f"{e} after the after pattern matched (a cmd is sent at a shell prompt; use line to send without one)"
             ) from e
+
+    @staticmethod
+    def _report(ctx: RunnerContext, lines: list[str]) -> None:
+        """The step's one `>> cmd:` line, the lines after the first under it (`Reporter.block`). A reporter of
+        a program's own that has no `block` gets the text through `say` (SPEC, Python API)."""
+        block = getattr(ctx.reporter, "block", None)
+        (block if callable(block) else ctx.reporter.say)("cmd: " + "\n".join(lines))
 
     @staticmethod
     def _lines(text: str) -> list[str]:
@@ -124,7 +131,7 @@ class CmdExecutor:
             script += "\n"  # jinja drops the trailing newline
         # one progress line for the step, showing the script as rendered, like any cmd; the `script:` detail
         # lines below say what the upload does
-        ctx.reporter.block("cmd: " + script.rstrip("\n"))
+        self._report(ctx, script.rstrip("\n").split("\n"))
         try:
             ctx.reporter.say(f"script: writing to {tmp}", "detail")
             self._upload(ctx, script.encode(), tmp, timeout)

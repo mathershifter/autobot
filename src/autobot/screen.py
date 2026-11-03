@@ -186,10 +186,17 @@ def mid_echo(read: str, sent: str | None) -> bool:
     return False
 
 
-def _classify(text: str, sent: str, cut: bool) -> tuple[str, str]:
+# What the transcript holds back at most for an echo that hasn't ended: complete lines, plus one per
+# 20 characters of the sent line for one that wraps row by row, and characters over the part limit.
+ECHO_HOLD_LINES = 64
+ECHO_HOLD_CHARS = 8192
+
+
+def _classify(text: str, sent: str, cut: bool) -> tuple[str, str | set[int]]:
     """`_strip`, but it says what it found: ``("done", remainder)`` when the echo of `sent` is at the start
     of `text` and ends at a line break in it (remainder is what follows), ``("no", text)`` when the start
-    is ruled out as the echo, and ``("maybe", "")`` when `text` could still be an echo that isn't finished.
+    is ruled out as the echo, and ``("maybe", ends)`` when `text` could still be an echo that isn't
+    finished, `ends` being how much of the line it may show so far (`{0}`: nothing yet).
 
     `text` is whole lines only: the caller holds back the line that has no break yet, so a completion here
     is always at a line break.
@@ -216,7 +223,7 @@ def _classify(text: str, sent: str, cut: bool) -> tuple[str, str]:
             return "done", "\n".join(lines[k + 1 :])
         if not ends:
             return "no", text
-    return "maybe", ""
+    return "maybe", ends
 
 
 def echo_split(buf: str, sent: str) -> tuple[str, bool]:
@@ -225,23 +232,39 @@ def echo_split(buf: str, sent: str) -> tuple[str, bool]:
     Returns ``(emit, waiting)``. While `buf` may still be an unfinished echo, ``("", True)``: keep it back,
     nothing is written yet. Once decided, ``(emit, False)``: `emit` is `buf` without the echo when it is
     recognized (the echo ends at a line break), or `buf` unchanged when the start is no echo (echo disabled,
-    text after it on its line, the forms `strip_echo` doesn't recognize). The caller writes `emit` and stops
-    holding. `buf` is the text read since the line was sent, with escape sequences already removed, as the
-    transcript writes it; `sent` is compared the same way.
+    text after it on its line, the forms `strip_echo` doesn't recognize), or when the hold has reached its
+    bound (`ECHO_HOLD_LINES` lines, `ECHO_HOLD_CHARS` characters over the part limit). The caller writes
+    `emit` and stops holding. `buf` is the text read since the line was sent, with escape sequences already
+    removed, as the transcript writes it; `sent` is compared the same way.
+
+    The whole lines are read as `strip_echo` reads them, with every variant it tries (a text with U+FFFD
+    is read once more for characters that came in parts); the line that has no break yet is held while it
+    shows nothing, or while what it shows goes on from where the whole lines left the echo.
     """
     if not buf:
         return "", True
+    limit = ECHO_PART * len(sent) + 1024
+    if len(buf) > limit + ECHO_HOLD_CHARS or buf.count("\n") > ECHO_HOLD_LINES + len(sent) // 20:
+        return buf, False  # past the bound: what is held is written, whatever it is
     variants = (False, True) if ("\ufffd" in buf or "\ufffd" in sent) else (False,)
     nl = buf.rfind("\n")
     complete, partial = (buf[: nl + 1], buf[nl + 1 :]) if nl >= 0 else ("", buf)
-    if complete:
-        for cut in variants:
-            status, rest = _classify(complete, sent, cut)
+    maybe = False
+    for cut in variants:
+        ends: set[int] = {0}
+        if complete:
+            status, value = _classify(complete, sent, cut)
             if status == "done":
-                return rest + partial, False
+                return str(value) + partial, False
             if status == "no":
-                return buf, False
-        return "", True  # the whole lines so far are a consistent prefix: wait for more
-    # nothing but a partial line yet: hold it while it could still grow into the echo
-    return ("", True) if mid_echo(partial, sent) else (buf, False)
-
+                continue
+            ends = value  # type: ignore[assignment]
+        target = _shown(sent, cut)
+        if not target:
+            continue
+        shown = _shown(partial, cut)
+        # nothing shown yet (a CR, control characters), a line readline scrolled sideways, or text that
+        # goes on from where the whole lines left the echo: still the echo, possibly
+        if not shown or (ends == {0} and shown[0] == "<") or _extend(target, ends, partial, limit, cut):
+            maybe = True
+    return ("", True) if maybe else (buf, False)

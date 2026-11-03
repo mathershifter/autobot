@@ -32,13 +32,15 @@ class CleanWriter:
         """Leave the echo of the line `sent` out of the transcript: the text read next, up to and including
         the echo, is held back and dropped once it is recognized (SPEC, The echo of a sent line). Where it is
         no echo, or where none is recognized, the text is written as it is. Escape sequences are compared
-        removed, as the transcript writes them."""
+        removed, as the transcript writes them. Whatever is still held for an earlier line is written first:
+        it was no echo of that line, and belongs before anything read after this one."""
+        self.cancel_echo()
         self._echo_sent = ANSI_ESCAPE_RE.sub("", sent)
-        self._echo_buf = ""
 
     def cancel_echo(self) -> None:
-        """Stop leaving an echo out and write back what was held for it. For a send that failed, whose echo
-        (if any) is the device's to show."""
+        """Stop leaving an echo out and write back what was held for it, in its place in the transcript: at
+        the end of a prompt wait (the echo, if it was one, ended before the prompt), and for a send that
+        failed, whose echo (if any) is the device's to show."""
         buf, self._echo_buf, self._echo_sent = self._echo_buf, "", None
         if buf and not self._reporter.lost:
             self._out(buf)

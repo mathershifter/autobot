@@ -1128,3 +1128,93 @@ def test_p8_62_multiline_block_echo_is_left_out(capsys: pytest.CaptureFixture[st
     captured = capsys.readouterr()
     assert "aa\r\n" in captured.out and "bb\r\n" in captured.out
     assert "echo aa" not in captured.out and "echo bb" not in captured.out
+
+
+# -- P8-62, review of PR #101: what the hold does with text that isn't the echo ------------------------
+
+
+def _writer():
+    """A CleanWriter on a StringIO, with a reporter that keeps nothing lost."""
+    from io import StringIO
+
+    from autobot.log import ConsoleReporter
+    from autobot.transcript import CleanWriter
+
+    out = StringIO()
+    return CleanWriter(out, ConsoleReporter()), out
+
+
+def test_p8_62_arming_a_second_line_writes_out_what_the_first_held():
+    """Finding 1: text held for one line (blank lines the echo never followed) is written, in its place,
+    when the next line is armed, not dropped."""
+    w, out = _writer()
+    w.expect_echo("first")
+    w.write("\r\n\r\n")
+    w.expect_echo("second")
+    w.write("second\r\nok\r\n")
+    w.close()
+    assert out.getvalue() == "\r\n\r\nok\r\n"
+
+
+def test_p8_62_a_prompt_on_the_partial_line_ends_the_hold_at_once():
+    """Finding 1: with the whole lines showing nothing, the line that has no break yet is read too: a
+    prompt there is no echo, so everything held is written then, not at the next line."""
+    assert echo_split("\r\n\r\nPROMPT$ ", "printf '\\n\\n'") == ("\r\n\r\nPROMPT$ ", False)
+    assert echo_split("\r\n\r\n", "printf '\\n\\n'") == ("", True)  # nothing shown yet: still possible
+
+
+def test_p8_62_end_to_end_held_prompt_is_written_before_the_next_message(capsys: pytest.CaptureFixture[str]):
+    """Finding 2: echo off, a command that prints blank lines only and no `$?` probe (errors defined): the
+    prompt after it reaches stdout, and nothing of a later step's output goes missing."""
+    out = run(
+        [
+            {"cmd": "stty -echo"},
+            {"cmd": "printf '\\n\\n'"},
+            {"cmd": "echo next", "register": "next"},
+            {"cmd": "stty echo"},
+        ],
+        errors=["NOPE"],
+    )
+    assert out["next"] == "next"
+    text = capsys.readouterr().out.replace("\r\n", "\n")
+    assert text.count("PROMPT$ ") == 5  # the first prompt and one after each of the four commands
+    # printf's two line breaks, the prompt that followed them (held for a while, written in its place), then
+    # the next command's output: nothing dropped, nothing out of order
+    assert "\n\nPROMPT$ next\n" in text
+
+
+def test_p8_62_echo_split_tries_every_variant_as_strip_echo_does():
+    """Finding 3: a character that came in parts (U+FFFD and backspaces) is read again with `cut`, so the
+    echo is recognized where `strip_echo` recognizes it."""
+    text = "ab�\b\b€\r\nout\r\n"
+    assert strip_echo(text, "ab€") == "out\r\n"
+    assert echo_split(text, "ab€") == ("out\r\n", False)
+
+
+def test_p8_62_control_characters_before_the_echo_are_held():
+    """Finding 4: a read that ends after a NUL or a CR shows nothing yet; the hold goes on, as the captured
+    output drops such characters before the echo."""
+    assert echo_split("\x00", "ls") == ("", True)
+    assert echo_split("\r", "ls") == ("", True)
+    assert echo_split("\x00ls\r\nout\r\n", "ls") == ("out\r\n", False)
+    assert strip_echo("\x00ls\nout\n", "ls") == "out\n"
+
+
+def test_p8_62_hold_is_bounded_and_writes_through_past_the_bound():
+    """Finding 5: lines that show nothing are held up to the bound, then everything is written and the
+    hold ends; the work per write stays small."""
+    from autobot.screen import ECHO_HOLD_LINES
+
+    w, out = _writer()
+    w.expect_echo("ls")
+    blank = "\r\n" * 20
+    start = time.monotonic()
+    for _ in range(3000):
+        w.write(blank)
+    assert time.monotonic() - start < 3
+    assert len(out.getvalue()) == 3000 * len(blank)  # all of it written, nothing lost
+    # the bound: one line more than the limit ends the hold with everything written
+    emit, waiting = echo_split("\r\n" * (ECHO_HOLD_LINES + 1), "ls")
+    assert (emit, waiting) == ("\r\n" * (ECHO_HOLD_LINES + 1), False)
+    assert echo_split("\r\n" * ECHO_HOLD_LINES, "ls") == ("", True)
+    assert echo_split("x" * 20000, "ls") == ("x" * 20000, False)  # past the character bound
