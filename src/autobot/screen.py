@@ -104,8 +104,9 @@ def _read_echo(text: str, sent: str, cut: bool) -> EchoRead:
     for k, line in enumerate(lines):
         if not line:
             continue
-        # readline's horizontal-scroll mode (e.g. TERM=dumb) redraws only the visible tail of a long line, after a `<`
-        tail = line.rpartition("\r")[2]
+        # readline's horizontal-scroll mode (e.g. TERM=dumb) redraws only the visible tail of a long line, after a `<`;
+        # a `\r` at the end of the line is the CR of a CRLF, which the capture drops and the transcript keeps
+        tail = line.rstrip("\r").rpartition("\r")[2]
         inside = False
         if ends == {0} and len(tail) <= limit:
             tail = _shown(tail, cut)
