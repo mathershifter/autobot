@@ -32,7 +32,8 @@ class CleanWriter:
         """Leave the echo of the line `sent` out of the transcript: what is read next is held back until the echo
         is recognized and dropped (SPEC, The echo of a sent line), or written as it is once it is no echo. Escape
         sequences are compared removed, as the transcript writes them. Whatever is still held for an earlier line
-        is written first: it was no echo of that line."""
+        is written first, ruled out or not: it was no echo of that line, and belongs before anything read after
+        this one."""
         self.cancel_echo()
         self._echo_sent = ANSI_ESCAPE_RE.sub("", sent)
 

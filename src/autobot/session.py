@@ -172,13 +172,13 @@ class SendState:
 
     `line`: the last line sent, until the next prompt wait takes it to strip its echo, or a write fails.
     `solicit`: whether the next prompt wait may press Return for a prompt; False after a command (a sendline
-    without `solicit`) or a failed write, until a prompt wait starts, a control character or raw text is
-    sent, or a `$?` check fails. `partial`: the pty took some bytes of a write but not all, and no control
-    character was sent since; no line is sent and no Return pressed while it is set. `unanswered`: a prompt's
-    answer could not be sent and nothing was sent since; no Return is pressed while it is set. `control_at`:
-    when the last control character was written (monotonic; -inf before any, and again once raw text
-    followed it). `writes`: the sends that got as far as the write, over the session's life. `took`: the
-    bytes of the last of them the pty took, 0 for one that sent nothing."""
+    without `solicit`) or a failed write, until a prompt wait starts, a control character, raw text or a
+    `sendline(..., solicit=True)` line is sent, or a `$?` check fails. `partial`: the pty took some bytes of
+    a write but not all, and no control character was sent since; no line is sent and no Return pressed while
+    it is set. `unanswered`: a prompt's answer could not be sent and nothing was sent since; no Return is
+    pressed while it is set. `control_at`: when the last control character was written (monotonic; -inf
+    before any, and again once raw text followed it). `writes`: the sends that got as far as the write, over
+    the session's life. `took`: the bytes of the last of them the pty took, 0 for one that sent nothing."""
 
     line: str | None = None
     solicit: bool = True
@@ -416,7 +416,8 @@ class Session:
         self._login = LoginState()
         if env is None:
             # `TERM=dumb` and `NO_COLOR=1` over the session's `environ` or this process's (SPEC, The environment
-            # of the spawned process); a caller's own `env` is used as it is
+            # of the spawned process): `run_environ` sets them already, so this matters only for a caller-given
+            # `environ`; a caller's own `env` is used as it is
             base = run_environ() if self._environ is None else self._environ
             env = {**base, **DEFAULT_ENV}
         self._cld = pexpect.spawn(
@@ -541,9 +542,9 @@ class Session:
 
     def _begin_wait(self, timeout: float, solicit: bool) -> PromptWait:
         """Start a prompt wait: take the last line sent (its echo is stripped from the output) and whether the
-        wait may solicit, both cleared (a command still running would answer a solicit newline with a second
-        prompt); take up a held prompt with what was read up to it, as if this wait had read it; and start the
-        handlers' response selection over."""
+        wait may solicit, the line cleared, the flag set back to True (a command still running would answer a
+        solicit newline with a second prompt); take up a held prompt with what was read up to it, as if this
+        wait had read it; and start the handlers' response selection over."""
         sent, self._send.line = self._send.line, None
         solicited, self._send.solicit = not (self._send.solicit and solicit), True
         for h in self._handlers:
@@ -766,7 +767,8 @@ class Session:
 
         A write that fails leaves the session at no prompt and after no line; what was written is on the
         child's input line, so until a control character is sent no prompt wait presses Return and no line is
-        sent. `_send.took` is how much was written; a send the pty took nothing of is put back by its caller.
+        sent. `_send.took` is how much was written; a send the pty took nothing of is put back by `sendline`,
+        `sendcontrol` and `send`, not by a response or solicit newline sent inside a wait.
         """
         cld = self._cld
         assert cld

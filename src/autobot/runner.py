@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 # runs the `prepare` script in an environment and gives the one it leaves; `run_prepare` is the default
-Prepare =Callable[[str, dict[str, str], "Reporter"], dict[str, str]]
+Prepare = Callable[[str, dict[str, str], "Reporter"], dict[str, str]]
 
 
 def run_prepare(script: str, environ: dict[str, str], reporter: Reporter) -> dict[str, str]:
@@ -65,7 +65,7 @@ class Runner:
         self._prepare: Prepare = prepare if prepare is not None else run_prepare
         self._templater: Templater = templater if templater is not None else default_templater
         self._default_timeout = 300
-        # the spawned process's environment, this one's on a plain terminal by default; `prepare` and `env` read it between the defaults and `--env`
+        # the spawned process's environment, `run_environ()` by default; `prepare` and `env` read it between the defaults and `--env`
         self._environ = run_environ() if environ is None else dict(environ)
         for key, value in given.items():
             if key not in config.env:
@@ -211,7 +211,8 @@ class Runner:
             try:
                 yield from self._lifecycle()
             finally:
-                # lost output is what ended the run, whatever came after it on the way out (an interrupt)
+                # lost output is the run's and gone with it (`clear`): it is what ended the run, whatever came
+                # after it on the way out (an interrupt)
                 lost = self._reporter.clear()
                 if lost:
                     self._mark(lost)
