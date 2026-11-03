@@ -86,30 +86,41 @@ def shebang(script: str) -> list[str]:
     return script.partition("\n")[0][2:].split() if script.startswith("#!") else []
 
 
+def _run_shell(command: list[str], script: str, fd: int, environ: dict[str, str]) -> subprocess.CompletedProcess:
+    """Source `script` from a temp file in the shell `command`, with `fd` passed for the environment dump and
+    the shell's stdout on stderr. The temp file is removed, whatever fails."""
+    shown = subprocess.DEVNULL if sys.stderr is None else 2  # no descriptor 2: it is closed, or some other file by now
+    f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
+    try:
+        with f:
+            f.write(script)  # may fail: a lone surrogate can't be encoded
+        try:
+            return subprocess.run([*command, "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
+        except OSError as e:
+            first = script.partition("\n")[0].rstrip()
+            raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
+    finally:
+        with contextlib.suppress(FileNotFoundError):  # the script may remove itself
+            os.unlink(f.name)
+
+
+def _read_dump(fd: int) -> bytes:
+    """What the shell wrote to the file of `fd`: read at its own offset, and emptied, since a process the
+    script left running has the descriptor too."""
+    data = os.pread(fd, os.fstat(fd).st_size, 0)
+    os.ftruncate(fd, 0)
+    return data
+
+
 def run(script: str, environ: dict[str, str]) -> PrepareResult:
     """Source the `prepare` script in its shell, in `environ`, and give the environment that shell leaves.
     The shell is the words of the shebang, whatever program they name, and `/bin/sh` without any."""
     script = script.lstrip(_JUNK)
-    command = shebang(script)
-    # a file, not a pipe: a process the script leaves running would keep a pipe open; the shell's stdout is stderr
+    command = shebang(script) or ["/bin/sh"]
+    # a file, not a pipe: a process the script leaves running would keep a pipe open
     with _terminable(), tempfile.TemporaryFile() as tmp, open(_dump(tmp.fileno()), "rb") as out:
-        fd = out.fileno()
-        shown = subprocess.DEVNULL if sys.stderr is None else 2  # no descriptor 2: it is closed, or some other file by now
-        f = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="_autobot_", suffix=".sh", delete=False)
-        try:  # the temp file is removed, whatever fails
-            with f:
-                f.write(script)  # may fail: a lone surrogate can't be encoded
-            try:
-                result = subprocess.run([*(command or ["/bin/sh"]), "-c", _WRAPPER % fd, f.name], check=False, env=environ, stdout=shown, stderr=shown, pass_fds=[fd])
-            except OSError as e:
-                first = script.partition("\n")[0].rstrip()
-                raise RunError(f"prepare script could not run ({first!r}): [Errno {e.errno}] {e.strerror}") from e
-        finally:
-            with contextlib.suppress(FileNotFoundError):  # the script may remove itself
-                os.unlink(f.name)
-        # read at its own offset, and emptied: a process the script left running has the descriptor too
-        data = os.pread(fd, os.fstat(fd).st_size, 0)
-        os.ftruncate(fd, 0)
+        result = _run_shell(command, script, out.fileno(), environ)
+        data = _read_dump(out.fileno())
     if result.returncode != 0:
         raise RunError(f"prepare script failed with exit code {result.returncode}")
     read = data.endswith(b"\0")

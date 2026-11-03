@@ -3,7 +3,7 @@ without a value that may be a password (see SPEC, CLI)."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import pydantic
 
@@ -25,55 +25,65 @@ def _is_list_member(key: object) -> bool:
     return isinstance(key, str) and key.startswith("list[")
 
 
+class Member(NamedTuple):
+    """An error under one alternative of a string-or-list field: the error, the alternative's key in its
+    location (`str` or `list[str]`), and the rest of the location under that key."""
+
+    err: Any
+    key: object
+    rest: tuple
+
+
+def _member(err: Any) -> tuple[tuple, Member] | None:
+    """The field's location and the member, for an error under an alternative; None for any other error."""
+    loc = err["loc"]
+    for i, key in enumerate(loc):
+        if key == "str" or _is_list_member(key):
+            return loc[:i], Member(err, key, loc[i + 1 :])
+    return None
+
+
+def _union(members: list[Member]) -> tuple[Member, list[Member]] | None:
+    """The member at the string alternative itself and those under the list alternative, when `members` are
+    the errors of one string-or-list union: one `string_type` error at `str`, every other under `list[str]`.
+    None otherwise, e.g. for keys of a mapping that have these names."""
+    whole = [m for m in members if m.key == "str" and not m.rest]
+    lists = [m for m in members if _is_list_member(m.key)]
+    if len(whole) == 1 and whole[0].err["type"] == "string_type" and len(whole) + len(lists) == len(members):
+        return whole[0], lists
+    return None
+
+
 def one_per_value(errors: list[Any]) -> list[Any]:
     """A field that takes a string or a list of strings reports a wrong value once for each of the two, at
     `<field>.str` and `<field>.list[str]`. Make that one error: at the field, saying what it takes, for a
-    value that is neither; at the item, for a list with a wrong item.
-
-    For `cmd: 5` pydantic reports two errors, which become one at the field, with what it takes:
-
-        {"type": "string_type", "loc": ("script", 0, "cmd", "cmd", "str"), "input": 5, ...}
-        {"type": "list_type", "loc": ("script", 0, "cmd", "cmd", "list[str]"), "input": 5, ...}
-        -> {"type": "string_type", "loc": ("script", 0, "cmd", "cmd"), "input": 5,
-            "msg": "Input should be a string or a list of strings"}
-
-    For `cmd: ["ok", 5]` the list alternative reports the item, and the item is the one error, at its index:
-
-        {"type": "string_type", "loc": ("script", 0, "cmd", "cmd", "str"), "input": ["ok", 5], ...}
-        {"type": "string_type", "loc": ("script", 0, "cmd", "cmd", "list[str]", 1), "input": 5, ...}
-        -> {"type": "string_type", "loc": ("script", 0, "cmd", "cmd", 1), "input": 5, ...}
-
-    Any other error is kept as it is, in its place.
+    value that is neither (`cmd: 5`: one `string_type` error at `script.0.cmd.cmd`, with `EITHER` as its
+    message); at the item, for a list with a wrong item (`cmd: ["ok", 5]`: the `list[str]` alternative's
+    error for item 1, moved to `script.0.cmd.cmd.1`). Any other error is kept as it is, in its place.
     """
-    def split(loc: tuple) -> tuple[tuple, object, tuple] | None:
-        for i, key in enumerate(loc):
-            if key == "str" or _is_list_member(key):
-                return loc[:i], key, loc[i + 1 :]
-        return None
-
-    groups: dict[tuple, list[tuple[Any, object, tuple]]] = {}
+    groups: dict[tuple, list[Member]] = {}
     for err in errors:
-        if parts := split(err["loc"]):
-            groups.setdefault(parts[0], []).append((err, parts[1], parts[2]))
+        if found := _member(err):
+            base, member = found
+            groups.setdefault(base, []).append(member)
     replace: dict[int, list[Any]] = {}
     for base, members in groups.items():
-        whole = [err for err, key, rest in members if key == "str" and not rest]
-        lists = [(err, rest) for err, key, rest in members if _is_list_member(key)]
-        if len(whole) != 1 or whole[0]["type"] != "string_type" or len(whole) + len(lists) != len(members):
-            continue  # not the two members of one union: e.g. keys of a mapping that have these names
-        value = whole[0]["input"]
+        if not (union := _union(members)):
+            continue
+        whole, lists = union
+        value = whole.err["input"]
         if isinstance(value, list):
-            if not lists or not all(rest and isinstance(rest[0], int) for _, rest in lists):
+            if not lists or not all(m.rest and isinstance(m.rest[0], int) for m in lists):
                 continue
-            new = [{**err, "loc": (*base, *rest)} for err, rest in lists]
-        elif len(lists) == 1 and not lists[0][1] and lists[0][0]["type"] == "list_type":
+            new = [{**m.err, "loc": (*base, *m.rest)} for m in lists]
+        elif len(lists) == 1 and not lists[0].rest and lists[0].err["type"] == "list_type":
             # an entry of `expect` is typed like these fields, but a list there is an error of its own
             # (`grouped_expect`): only a string will do
-            new = [{**whole[0], "loc": base, **({} if "expect" in base else {"msg": EITHER})}]
+            new = [{**whole.err, "loc": base, **({} if "expect" in base else {"msg": EITHER})}]
         else:
             continue
-        replace[id(whole[0])] = new
-        replace.update({id(err): [] for err, _ in lists})
+        replace[id(whole.err)] = new
+        replace.update({id(m.err): [] for m in lists})
     return [new for err in errors for new in replace.get(id(err), [err])]
 
 

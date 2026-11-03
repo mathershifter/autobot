@@ -180,13 +180,17 @@ class ConsoleReporter:
         first, *rest = text.split("\n")
         label, sep, first_rest = first.partition(": ")
         indent = " " + INDENT * min(self.depth, MAX_INDENT)
+        pad = " " * (len(indent) + len(label) + len(sep) - 1)  # under the text of the first line, after the marker's blank
         parts = [(MARK, mark), indent, (label + sep, label_style), (first_rest, rest_style)]
-        pad = " " * (len(indent) + len(label) + len(sep))  # under the text of the first line
         for line in rest:
-            # an empty line (a blank line of an embedded script) is `>> ` alone: the marker and its blank, so
-            # `grep '^>> '` still finds every line, and no further pad
-            parts += ["\n", (MARK, mark), " "] + ([(pad[1:], rest_style), (line, rest_style)] if line else [])
+            parts += self._continuation(line, mark, pad, rest_style)
         self._print(Text.assemble(*parts))
+
+    @staticmethod
+    def _continuation(line: str, mark: str, pad: str, style: str) -> list:
+        """A further line of a block: a line break, the marker and its blank, then `pad` and `line`. An empty
+        line (a blank line of an embedded script) is `>> ` alone, so `grep '^>> '` still finds every line."""
+        return ["\n", (MARK, mark), " "] + ([(pad, style), (line, style)] if line else [])
 
     def error(self, head: str, detail: str | None = None, style: str = ERROR) -> None:
         """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""

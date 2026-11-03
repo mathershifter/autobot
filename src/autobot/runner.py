@@ -21,7 +21,7 @@ from .terminal import run_environ
 from .types import text
 
 if TYPE_CHECKING:
-    from .protocols import Reporter
+    from .protocols import Reporter, StepExecutor
     from .registry import StepRegistry
 
 
@@ -376,17 +376,18 @@ class Runner:
 
         key = self._registry.key_for_step(step)
         executor = self._registry.get(key)
-        # plugin models don't carry the common properties; keep `step` intact. The plugin's model is the
-        # one that passed when the script was loaded, validated once (SPEC, Common Step Properties)
-        model = step
-        if isinstance(step, PluginStep):
-            model = step.validated(self._registry)
-            # the cached model may be another registry's, for a different model of this key: validate against
-            # this runner's and keep that
-            if not isinstance(model, executor.model):
-                model = step._plugin_model = self._registry.validate_plugin_step(step)
+        # plugin models don't carry the common properties; keep `step` intact
+        model = self._plugin_model_for(step, executor) if isinstance(step, PluginStep) else step
         executor.execute(model, self, timeout)
 
         delay_after = getattr(step, "delay_after", None)
         if delay_after:
             self._session.sleep(delay_after)
+
+    def _plugin_model_for(self, step: PluginStep, executor: StepExecutor) -> Any:
+        """The plugin's model that passed when the script was loaded, validated once (SPEC, Common Step
+        Properties); validated again, and kept, when the cached one is another registry's model of this key."""
+        model = step.validated(self._registry)
+        if not isinstance(model, executor.model):
+            model = step._plugin_model = self._registry.validate_plugin_step(step)
+        return model
