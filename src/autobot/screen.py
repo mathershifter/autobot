@@ -5,7 +5,9 @@ Only text is read here. The terminal device itself is in `terminal`, and the wai
 
 from __future__ import annotations
 
+import enum
 import re
+from typing import NamedTuple
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -65,19 +67,40 @@ def strip_echo(text: str, sent: str) -> str:
     captured line already shows of it. Text with a U+FFFD that is no echo with every backspace a cell
     is read once more, for characters that came in parts (`_CUT_RE`).
     """
-    out = _strip(text, sent, False)
+    out = _read_echo(text, sent, False).rest
     if out is text and ("\ufffd" in text or "\ufffd" in sent):
-        out = _strip(text, sent, True)
+        out = _read_echo(text, sent, True).rest
     return out
 
 
-def _strip(text: str, sent: str, cut: bool) -> str:
+class Echo(enum.Enum):
+    """What the lines read so far make of the start of the text: the echo, ending at a line break (DONE),
+    ruled out (NO), or possibly an echo that isn't finished (MAYBE)."""
+
+    DONE = enum.auto()
+    NO = enum.auto()
+    MAYBE = enum.auto()
+
+
+class EchoRead(NamedTuple):
+    """`state`; `rest`: the text after the echo when DONE, else the text as it is; `ends`: how much of the
+    sent line the lines read may show so far, for MAYBE (`{0}`: nothing yet)."""
+
+    state: Echo
+    rest: str
+    ends: set[int]
+
+
+def _read_echo(text: str, sent: str, cut: bool) -> EchoRead:
+    """Walk the lines of `text` as the echo of `sent` at its start, in the forms `strip_echo` describes.
+    `echo_split` passes whole lines only (it holds back the one with no break yet), so for it DONE is always
+    at a line break."""
     target = _shown(sent, cut)
     if not target:
-        return text
+        return EchoRead(Echo.NO, text, set())  # the sent line shows nothing: there is no echo to leave out
     limit = ECHO_PART * len(sent) + 1024
     lines = text.split("\n")
-    ends = {0}  # how much of `target` the lines read so far may show
+    ends = {0}
     for k, line in enumerate(lines):
         if not line:
             continue
@@ -88,14 +111,14 @@ def _strip(text: str, sent: str, cut: bool) -> str:
             tail = _shown(tail, cut)
             if len(tail) > 1 and tail[0] == "<":
                 if target.endswith(tail[1:]):
-                    return "\n".join(lines[k + 1 :])
+                    return EchoRead(Echo.DONE, "\n".join(lines[k + 1 :]), ends)
                 inside = _inside(target, tail[1:])
         ends = _extend(target, ends, line, limit, cut)
         if len(target) in ends or (inside and not ends):
-            return "\n".join(lines[k + 1 :])
+            return EchoRead(Echo.DONE, "\n".join(lines[k + 1 :]), ends)
         if not ends:
-            break
-    return text
+            return EchoRead(Echo.NO, text, ends)
+    return EchoRead(Echo.MAYBE, text, ends)
 
 
 def _inside(target: str, tail: str) -> bool:
@@ -124,7 +147,7 @@ def _extend(target: str, starts: set[int], line: str, limit: int, cut: bool = Fa
     Empty when the line is no part of an echo of it, or is past the bounds: a part longer than `limit`,
     or more parts than an echo of `target` has rows.
     """
-    readings = {(start, start) for start in starts}  # where the line began, and how much is shown
+    readings = {Reading(start, start) for start in starts}
     rewrite = False
     count = 0
     for raw in line.split("\r"):
@@ -139,30 +162,38 @@ def _extend(target: str, starts: set[int], line: str, limit: int, cut: bool = Fa
             if not readings:
                 return set()
         rewrite = True
-    return {end for _, end in readings}
+    return {r.end for r in readings}
 
 
-def _write(target: str, readings: set[tuple[int, int]], part: str, rewrite: bool) -> set[tuple[int, int]]:
+class Reading(NamedTuple):
+    """One way a captured line reads as part of the echo: how much of the sent line was shown where the
+    captured line began (`start`), and how much is shown so far (`end`)."""
+
+    start: int
+    end: int
+
+
+def _write(target: str, readings: set[Reading], part: str, rewrite: bool) -> set[Reading]:
     """The readings after `part` is written: at the end of what is shown, or, after a `\\r` (`rewrite`),
     over text of its line that is shown, where it is the same text."""
     size = len(part)
-    new: set[tuple[int, int]] = set()
-    for start, end in readings:
-        if target.startswith(part, end):
-            new.add((start, end + size))
+    new: set[Reading] = set()
+    for r in readings:
+        if target.startswith(part, r.end):
+            new.add(Reading(r.start, r.end + size))
         if rewrite:
-            if target.find(part, start, end) != -1:
-                new.add((start, end))
-            # those that go past the end, the nearest to it first
-            high = end - 1 + size
+            if target.find(part, r.start, r.end) != -1:
+                new.add(r)
+            # written over the end of what is shown, going past it: the nearest to the end first
+            high = r.end - 1 + size
             for _ in range(ECHO_READINGS):
-                at = target.rfind(part, max(start, end - size + 1), high)
+                at = target.rfind(part, max(r.start, r.end - size + 1), high)
                 if at == -1:
                     break
-                new.add((start, at + size))
+                new.add(Reading(r.start, at + size))
                 high = at + size - 1
     if len(new) > ECHO_READINGS:
-        new = set(sorted(new, key=lambda r: r[1])[-ECHO_READINGS:])
+        new = set(sorted(new, key=lambda r: r.end)[-ECHO_READINGS:])
     return new
 
 
@@ -191,40 +222,6 @@ ECHO_HOLD_LINES = 64
 ECHO_HOLD_CHARS = 8192
 
 
-def _classify(text: str, sent: str, cut: bool) -> tuple[str, str | set[int]]:
-    """`_strip`, but it says what it found: ``("done", remainder)`` when the echo of `sent` is at the start
-    of `text` and ends at a line break in it (remainder is what follows), ``("no", text)`` when the start
-    is ruled out as the echo, and ``("maybe", ends)`` when `text` could still be an echo that isn't
-    finished, `ends` being how much of the line it may show so far (`{0}`: nothing yet).
-
-    `text` is whole lines only: the caller holds back the line that has no break yet, so a completion here
-    is always at a line break.
-    """
-    target = _shown(sent, cut)
-    if not target:
-        return "no", text  # the sent line shows nothing: there is no echo to leave out
-    limit = ECHO_PART * len(sent) + 1024
-    lines = text.split("\n")
-    ends = {0}
-    for k, line in enumerate(lines):
-        if not line:
-            continue
-        tail = line.rpartition("\r")[2]
-        inside = False
-        if ends == {0} and len(tail) <= limit:
-            stail = _shown(tail, cut)
-            if len(stail) > 1 and stail[0] == "<":
-                if target.endswith(stail[1:]):
-                    return "done", "\n".join(lines[k + 1 :])
-                inside = _inside(target, stail[1:])
-        ends = _extend(target, ends, line, limit, cut)
-        if len(target) in ends or (inside and not ends):
-            return "done", "\n".join(lines[k + 1 :])
-        if not ends:
-            return "no", text
-    return "maybe", ends
-
-
 def echo_split(buf: str, sent: str) -> tuple[str, bool]:
     """Read the start of `buf` as the echo of the line `sent`, for the operator transcript.
 
@@ -248,12 +245,12 @@ def echo_split(buf: str, sent: str) -> tuple[str, bool]:
     for cut in variants:
         ends: set[int] = {0}
         if complete:
-            status, value = _classify(complete, sent, cut)
-            if status == "done":
-                return str(value) + partial, False
-            if status == "no":
+            read = _read_echo(complete, sent, cut)
+            if read.state is Echo.DONE:
+                return read.rest + partial, False
+            if read.state is Echo.NO:
                 continue
-            ends = value  # type: ignore[assignment]
+            ends = read.ends
         target = _shown(sent, cut)
         if not target:
             continue
