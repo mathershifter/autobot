@@ -174,7 +174,8 @@ def test_p8_24_session_output_with_markup_characters_is_printed_literally(tmp_pa
     res = piped(_write(tmp_path, [{"cmd": f"echo '{MARKUP}'"}]), **extra)
     assert res.returncode == 0, res.stderr
     echoed = res.stdout.replace("\r\n", "\n").split("\n")
-    assert echoed[:3] == [f"PROMPT$ echo '{MARKUP}'", MARKUP, "PROMPT$ echo __AUTOBOT_RC=$?"]
+    # the echo of the command is left out of the transcript; the `>> cmd:` line shows it instead
+    assert echoed[:2] == [f"PROMPT$ {MARKUP}", "PROMPT$ echo __AUTOBOT_RC=$?"]
     assert ESC not in res.stdout
     # the message that shows the command is as literal: no markup, no emoji for `:100:`, no highlighting
     assert f">> cmd: echo '{MARKUP}'" in _plain(res.stderr).splitlines()
@@ -221,6 +222,43 @@ def test_p8_24_control_characters_in_a_message(capsys: pytest.CaptureFixture[str
     rep.say("cmd: a\tb\x07c\x08d\x0be\x0cf\rg")
     rep.say("error ignored: two\nlines", "warn")
     assert capsys.readouterr().err == ">> cmd: a       bcdefg\n>> error ignored: two\nlines\n"
+
+
+def test_p8_62_one_cmd_line_prints_as_before(capsys: pytest.CaptureFixture[str]):
+    """SPEC "Output": a one-line `cmd` prints exactly one `>> cmd: <line>`, as it did per line before."""
+    rep = ConsoleReporter()
+    rep.block("cmd: echo hi")
+    assert capsys.readouterr().err == ">> cmd: echo hi\n"
+
+
+def test_p8_62_multiline_cmd_prints_one_progress_line_with_continuations(capsys: pytest.CaptureFixture[str]):
+    """SPEC "Output": a `cmd` of several lines is one progress line: the first after `cmd: `, each further
+    line under it, the `>> ` marker kept in the first column."""
+    rep = ConsoleReporter()
+    rep.block("cmd: echo a\necho b\necho c")
+    assert capsys.readouterr().err == ">> cmd: echo a\n>>      echo b\n>>      echo c\n"
+
+
+def test_p8_62_multiline_cmd_continuations_are_indented_under_a_block(capsys: pytest.CaptureFixture[str]):
+    """The continuation lines keep the step's nesting indentation and align under the text of the first."""
+    rep = ConsoleReporter()
+    rep.depth = 1
+    rep.block("cmd: echo a\necho b")
+    assert capsys.readouterr().err == ">>   cmd: echo a\n>>        echo b\n"
+
+
+def test_p8_62_a_list_prints_one_progress_line(tmp_path: Path):
+    """End to end: a `cmd` list is one step, so one `>> cmd:` line with every item under it, and the nesting
+    of a multi-line block holds under a `block`."""
+    script = [
+        {"cmd": ["echo a", "echo b"]},
+        {"block": {"name": "b", "script": [{"cmd": "echo n1\necho n2"}]}},
+    ]
+    lines = [line for line in _merged(_write(tmp_path, script), tmp_path, "pipe").split("\n") if line.startswith(">>")]
+    assert ">> cmd: echo a" in lines and ">>      echo b" in lines
+    assert ">>   cmd: echo n1" in lines and ">>        echo n2" in lines
+    # one progress line per step: `echo b` and `echo n2` appear only as continuations, never as their own `>> cmd:`
+    assert ">> cmd: echo b" not in lines and ">> cmd: echo n2" not in lines
 
 
 def test_p8_24_long_line_is_not_wrapped_on_a_narrow_terminal(tmp_path: Path):
@@ -555,9 +593,10 @@ def test_p8_25_message_starts_a_new_line_when_the_streams_are_one(tmp_path: Path
         f"Run failed in {path}: command returned exit code 1",
         "  at script.2 (cmd: false)",
     ]
-    # the session's lines around a message are whole: the prompt it interrupted, then the echo of the command
+    # the session's lines around a message are whole: the prompt it interrupted, then the command's output
+    # (the echo of the command itself is left out of the transcript, since `>> cmd:` already shows it)
     at = lines.index(">> cmd: echo hi")
-    assert lines[at - 1 : at + 3] == ["PROMPT$ ", ">> cmd: echo hi", "echo hi", "hi"]
+    assert lines[at - 1 : at + 2] == ["PROMPT$ ", ">> cmd: echo hi", "hi"]
     # no line break is added where the session's output already ended a line
     assert lines[lines.index(">>   cmd: echo in") - 1] == ">> block enter: b"
     assert "" not in lines[:-1]
@@ -569,7 +608,8 @@ def test_p8_25_nothing_is_added_when_the_streams_differ(tmp_path: Path):
     res = piped(_write(tmp_path, STEPS))
     assert "" not in res.stderr.split("\n")[:-1]
     out = res.stdout.replace("\r\n", "\n")
-    assert out.startswith("PROMPT$ echo hi\nhi\nPROMPT$ echo __AUTOBOT_RC=$?\n__AUTOBOT_RC=0\nPROMPT$ echo in\nin\n")
+    # the echo of each command is left out of the transcript; its output and the `$?` probe stay
+    assert out.startswith("PROMPT$ hi\nPROMPT$ echo __AUTOBOT_RC=$?\n__AUTOBOT_RC=0\nPROMPT$ in\n")
     assert ">> " not in out and "Run failed" not in out
     # a pipe for the messages and a file for the session: the file is the same transcript
     with open(tmp_path / "device.log", "w") as f:

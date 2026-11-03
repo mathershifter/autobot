@@ -410,6 +410,8 @@ Waits for a prompt, sends the command, waits for the next prompt, and checks the
 
 `cmd` accepts a string or list of strings. A string is rendered as a Jinja2 template as a whole, then split into lines on newlines, and blank lines of the result are skipped. A newline is a line feed (`\n`), a carriage return and line feed (`\r\n`), or a carriage return alone (`\r`, which a terminal takes as Return); the newline itself isn't part of either line. No other character ends a line: a form feed, a vertical tab, U+001C to U+001E, U+0085, U+2028 or U+2029 inside a command is sent as part of its line (what the remote terminal does with a control character it receives is up to it). A blank line is one that is empty or has nothing but whitespace (the set of characters listed for [`attach.spawn`](#attach)), so a newline at the end of the string adds no line. Every other line is sent as written, with its leading and trailing whitespace. So a Jinja2 block (e.g. `{% for %}`...`{% endfor %}`) may span lines, and a template that expands to several lines sends each of them. A string that renders to nothing but blank lines sends one empty line (like `cmd: ""`). Each item of a list is rendered on its own and split the same way, and the lines of all items are sent in order; a Jinja2 block can't span items. The whole `cmd` is rendered once, after the step's first prompt wait and before its first line is sent, so a template error sends nothing and no line sees the output of an earlier line of the same step. Each line waits for a prompt before sending.
 
+The step prints one `>> cmd:` progress line for the whole command, as rendered, before its first line is sent: a command of one line as `>> cmd: <line>`, and one of several (a multi-line string, a list, a template that expanded to several) with the first line after `cmd: ` and each further line under it, the `>> ` marker kept in the first column (see [Output](#output)). The echo of each line sent is left out of the operator transcript, since the `>> cmd:` line already shows it; where the echo isn't recognized it stays, as it does in the captured output (see [The echo of a sent line](#the-echo-of-a-sent-line)).
+
 A `cmd` with [`after`](#common-step-properties) waits for the pattern and then for a prompt, in that order: the `after` match is not a prompt, and the command is never sent on the match alone. So a pattern that matches while an earlier command or `line` is still running, before its prompt, doesn't make that prompt the command's own: the step's first prompt wait consumes it, the command is sent at the prompt, and its captured output is only its own. This first prompt wait differs from an ordinary one (see [Prompt Handling](#prompt-handling-get_prompt)) in two ways:
 - It never sends the solicit newline, however long the prompt takes. The `after` match is output, so the console isn't idle, and a Return pressed here would go to whatever is still running: a command, which would answer it with a second prompt, or a question such as `Proceed? [y/N]`, which would take it for an answer. The wait lasts until a shell prompt arrives or the step's `timeout` expires. Then the step fails with `TimeoutError`, `timed out after <timeout>s waiting for a shell prompt ('<name>', ...) after the after pattern matched (a cmd is sent at a shell prompt; use line to send without one)`.
 - It doesn't change `session.before` and `session.match`, so the `cmd` is rendered with what `after` matched, as `when` was (the wait after the command sets them as usual).
@@ -525,6 +527,8 @@ A console echoes each line it is sent, and a line editor (readline, a network CL
 The sent line is read the same way, so a backspace or another control character in it counts for what a terminal shows of it. A device that echoes such a character as text (`^G`) doesn't echo the line in this sense. A U+FFFD in the sent line is a character of three bytes like any other. A byte of the line that isn't UTF-8 goes out as `?` (see [The environment in templates](#the-environment-in-templates)): the echo shows a `?` in its place, which is not what the line has there, and the byte never counts as a character of more than one byte.
 
 The echo ends at the first line break by which all of the sent line is shown, and the output starts after that line break. Lines before the echo that show nothing go with it: empty lines, and lines of only blanks and control characters (`\x07`, a line break, `\x00`, a line break, `ls`, a line break and `out` is captured as `out` for the sent line `ls`). Only the echo is read this way: the output after it is kept as described above, control characters included, and a second line that reads as the sent line is output.
+
+The operator transcript (stdout) leaves out the same echo, for a `cmd` line, by the same recognition: the text read after the line is sent is held back until its echo is recognized and dropped, or ruled out, and the rest is written as it is. The hold is short, since the echo ends at the first line break by which the line is shown and the reading is bounded; where the echo isn't recognized (the forms above), nothing is held back and the output is written unchanged. Only a `cmd` line's echo is left out: a `line`, `return` or `raw` send shows whatever the device echoes, and the `$?` check (`echo __AUTOBOT_RC=$?`) and an embedded script's upload and run lines are written as they are.
 
 The output is left unchanged, echo included, when it doesn't start with the echo: the echo is disabled (`stty -echo`, a password), the device writes something else for the line, text follows the echo on its last line, or the sent line shows nothing (an empty line, only blanks or control characters). Nothing is reported for it. One case is beyond the comparison: with the echo disabled, output whose first line reads as the sent line is taken for the echo.
 
@@ -661,6 +665,8 @@ If `cmd` is a string starting with `#!` (before rendering), it is treated as an 
 ```
 
 Jinja2 templating, `assert`, `ignore_error`, and `timeout` all work normally with embedded scripts. Its exit code is checked whether or not top-level `errors` are defined (see above); `assert` replaces that check as usual. Like any `cmd`, the script is rendered once, after the step's first prompt wait and before anything is sent, so `session.before` and `session.match` in it are what that wait set (or what `after` matched, in a step with `after`), and a template error uploads nothing. Embedded scripts must be a single string, not a list.
+
+The step prints one `>> cmd:` progress line showing the rendered script, as any `cmd` does, and then the `>> script:` detail lines for the upload, the run and the cleanup (see [Output](#output)). The lines of the upload and the run are not left out of the transcript, where an ordinary `cmd` line's echo is.
 
 Upload mechanism:
 - The rendered script (with a trailing newline preserved) is base64-encoded and sent in single-line chunks of at most 512 base64 characters, waiting for the prompt after each, to `/tmp/_autobot_<uuid>.b64`. It is then decoded to `/tmp/_autobot_<uuid>`.
@@ -1320,15 +1326,16 @@ When stdout and stderr are the same terminal, pipe or file (a terminal with noth
 ```
 admin@sonic:~$ 
 >> cmd: show version
-show version
 SONiC Software Version: ...
 ```
+
+The echo of the command (`show version`, which the shell writes back as it is typed) is left out: the `>> cmd:` line already shows it, so the transcript goes straight from it to the command's output (see [The echo of a sent line](#the-echo-of-a-sent-line)).
 
 The line break goes to stderr, never to stdout, and none is written when the two streams are different or the session's output ended its line. So stdout is the same transcript however the streams are set up.
 
 **A write that fails ends the run.** Autobot writes the session's output and its messages for an operator. If either can't be written (the reader of a pipe has exited, the disk is full), the run ends at that write, without its breakouts, and the CLI exits with status 3: see [A run that ends without its breakouts](#a-run-that-ends-without-its-breakouts).
 
-**The session's output is never restyled.** It is written as the device sent it, less the escape sequences: not wrapped, cut, reflowed or highlighted. The one exception is a character that stdout's encoding can't represent, e.g. `→` with `PYTHONIOENCODING=ascii` or a C locale: it is written as its backslash escape (`\u2192`), so the echo never fails the step that was reading. A stdout that can represent the character, such as a UTF-8 one, gets it unchanged. Text in it that looks like markup or an emoji code (`[bold]`, `[/]`, `:warning:`) is printed as it is, and no style is ever added to it.
+**The session's output is never restyled.** It is written as the device sent it, less the escape sequences: not wrapped, cut, reflowed or highlighted. One exception is a character that stdout's encoding can't represent, e.g. `→` with `PYTHONIOENCODING=ascii` or a C locale: it is written as its backslash escape (`\u2192`), so the echo never fails the step that was reading. A stdout that can represent the character, such as a UTF-8 one, gets it unchanged. The other exception is the recognized echo of a `cmd` line: the shell writes the command back as it is typed, and that echo is left out of the transcript, since the `>> cmd:` line already shows the command (see [The echo of a sent line](#the-echo-of-a-sent-line)); an echo that isn't recognized stays, written as it is, like any other output. Text in it that looks like markup or an emoji code (`[bold]`, `[/]`, `:warning:`) is printed as it is, and no style is ever added to it.
 
 **A progress line** starts with the marker `>> `, so the lines are told apart from the device's in a plain log (`grep '^>> '`). After the marker comes a label, which ends at the first `: `, and the rest of the text. These are the progress lines:
 
@@ -1336,7 +1343,7 @@ The line break goes to stderr, never to stdout, and none is written when the two
 |------|------|---------|
 | `>> prepare: running local script`, `>> prepare: running local script (no shebang, using /bin/sh)` | step | before `prepare` runs |
 | `>> attach: <spawn>` | step | before the process is spawned, with the rendered command line |
-| `>> cmd: <line>` | step | for each line a `cmd` sends, as it is sent |
+| `>> cmd: <line>` (one of several lines under it) | step | once per `cmd` step, before its first line is sent, showing the whole command as rendered: `>> cmd: <line>` for one line, and for several (a multi-line string, a list, an embedded script, a template that expanded to several) the first line after `cmd: ` and each further line under it, the marker in the first column |
 | `>> sleep: <seconds>s` | step | by a `sleep` step |
 | `>> control sent: ^<C>` | step | for each character a `control` step sends |
 | `>> raw sent: ^<C>` | step | for each control-key piece a `raw` step sends |

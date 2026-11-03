@@ -945,7 +945,8 @@ def test_p8_46_warning_is_printed_once_and_not_for_ordinary_lines(capsys):
     run([{"cmd": echo(4096)}, {"cmd": echo(9000)}, {"line": "true " + "x" * 5000}, {"cmd": "true"}])
     err = capsys.readouterr().err
     assert err.count(">> long line: ") == 1 and warning(4096) in err
-    assert err.index(warning(4096)) < err.index(">> cmd: echo w0000")
+    # the step's `>> cmd:` line comes first, before the line is sent; the warning is printed by the send
+    assert err.index(">> cmd: echo w0000") < err.index(warning(4096)) < err.index(">> line sent")
 
 
 # -- P8-47: the limit of the platform -----------------------------------------------------------------

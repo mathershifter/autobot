@@ -185,3 +185,63 @@ def mid_echo(read: str, sent: str | None) -> bool:
             return True
     return False
 
+
+def _classify(text: str, sent: str, cut: bool) -> tuple[str, str]:
+    """`_strip`, but it says what it found: ``("done", remainder)`` when the echo of `sent` is at the start
+    of `text` and ends at a line break in it (remainder is what follows), ``("no", text)`` when the start
+    is ruled out as the echo, and ``("maybe", "")`` when `text` could still be an echo that isn't finished.
+
+    `text` is whole lines only: the caller holds back the line that has no break yet, so a completion here
+    is always at a line break.
+    """
+    target = _shown(sent, cut)
+    if not target:
+        return "no", text  # the sent line shows nothing: there is no echo to leave out
+    limit = ECHO_PART * len(sent) + 1024
+    lines = text.split("\n")
+    ends = {0}
+    for k, line in enumerate(lines):
+        if not line:
+            continue
+        tail = line.rpartition("\r")[2]
+        inside = False
+        if ends == {0} and len(tail) <= limit:
+            stail = _shown(tail, cut)
+            if len(stail) > 1 and stail[0] == "<":
+                if target.endswith(stail[1:]):
+                    return "done", "\n".join(lines[k + 1 :])
+                inside = _inside(target, stail[1:])
+        ends = _extend(target, ends, line, limit, cut)
+        if len(target) in ends or (inside and not ends):
+            return "done", "\n".join(lines[k + 1 :])
+        if not ends:
+            return "no", text
+    return "maybe", ""
+
+
+def echo_split(buf: str, sent: str) -> tuple[str, bool]:
+    """Read the start of `buf` as the echo of the line `sent`, for the operator transcript.
+
+    Returns ``(emit, waiting)``. While `buf` may still be an unfinished echo, ``("", True)``: keep it back,
+    nothing is written yet. Once decided, ``(emit, False)``: `emit` is `buf` without the echo when it is
+    recognized (the echo ends at a line break), or `buf` unchanged when the start is no echo (echo disabled,
+    text after it on its line, the forms `strip_echo` doesn't recognize). The caller writes `emit` and stops
+    holding. `buf` is the text read since the line was sent, with escape sequences already removed, as the
+    transcript writes it; `sent` is compared the same way.
+    """
+    if not buf:
+        return "", True
+    variants = (False, True) if ("\ufffd" in buf or "\ufffd" in sent) else (False,)
+    nl = buf.rfind("\n")
+    complete, partial = (buf[: nl + 1], buf[nl + 1 :]) if nl >= 0 else ("", buf)
+    if complete:
+        for cut in variants:
+            status, rest = _classify(complete, sent, cut)
+            if status == "done":
+                return rest + partial, False
+            if status == "no":
+                return buf, False
+        return "", True  # the whole lines so far are a consistent prefix: wait for more
+    # nothing but a partial line yet: hold it while it could still grow into the echo
+    return ("", True) if mid_echo(partial, sent) else (buf, False)
+

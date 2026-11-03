@@ -242,8 +242,10 @@ def test_p6_114_signal_ends_a_run_whose_stderr_nobody_reads(fake_device: FakeDev
     r, w = os.pipe()
     try:
         size = fcntl.fcntl(w, fcntl.F_SETPIPE_SZ, 4096)
-        lines = [f": {n:03d} {'x' * 600}" for n in range(3 * size // 600)]  # each is logged as `>> cmd: ...`
-        doc, device = console(fake_device, [{"cmd": "true"}, {"cmd": lines, "timeout": "60s"}], LOGOUT)
+        # one step each, so each is logged as its own `>> cmd: ...` line: the pipe fills message by message (a
+        # single large write merges only its length modulo the page size into a part-filled page, then blocks)
+        lines = [{"cmd": f": {n:03d} {'x' * 600}", "timeout": "60s"} for n in range(3 * size // 600)]
+        doc, device = console(fake_device, [{"cmd": "true"}, *lines], LOGOUT)
         run = cli_run(doc, stderr=w)
         os.close(w)
         run.wait_for(lambda: FakeDevice.read(device) == IN)
@@ -572,7 +574,13 @@ def test_p6_115_run_raises_output_lost_and_sends_nothing_more(children, monkeypa
             Path(os.fsdecode(left_behind)).unlink(missing_ok=True)
     assert not isinstance(ei.value, Exception) and broken.calls == 1
     assert not any(b"bye" in data or b"never" in data or data.startswith(b"rm -f") or data == b"\x03" for data in written), written
-    assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")) and runner.reporter.lost is None
+    if stream == "stderr" and case != "embedded-script":
+        # the message that fails is the step's `>> cmd:` line, printed before its line is sent: nothing of
+        # the step goes out, and the last write is the `$?` check of the step before it
+        assert written[-1] == b"echo __AUTOBOT_RC=$?\n" and not any(b"N''OW" in data for data in written), written
+    else:
+        assert written[-1].startswith((b"echo N''OW", b"/tmp/_autobot_", b"(umask 077; base64 -d")), written
+    assert runner.reporter.lost is None
     assert len(children) == 1 and not children[0].isalive() and runner.session._cld is None
 
 
@@ -686,7 +694,9 @@ def test_p6_115_interrupt_right_after_the_failed_write_does_not_let_a_breakout_s
         runner.run()
     made = Interrupted.made
     monkeypatch.undo()
-    assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
+    # on stderr the `>> cmd:` line fails before the line is sent: the last write is the `$?` check of `true`
+    last = b"echo N''OW\n" if stream == "stdout" else b"echo __AUTOBOT_RC=$?\n"
+    assert written[-1] == last and b"\x03" not in written, written
     assert made == 2 and isinstance(ei.value.__context__, KeyboardInterrupt)
 
 
@@ -1073,7 +1083,9 @@ def test_p6_115_slow_reader_only_slows_the_run(fake_device: FakeDevice, cli_run,
         assert run.ends(30) == 0, run.err
     finally:
         os.close(r)
-    assert all(f"\n{n}\r\n".encode() in out for n in (1, 9999, 20000)) or all(f"\n{n}\n".encode() in out.replace(b"\r", b"") for n in (1, 9999, 20000))
+    # every line arrives; the first follows the prompt on its line, since the echo of the command is left out
+    text = out.replace(b"\r", b"")
+    assert b"1\n2\n3\n" in text and all(f"\n{n}\n".encode() in text for n in (9999, 20000))
     assert FakeDevice.read(device) == [*IN, "LOGOUT="] and run.err.splitlines()[-1] == ">> run completed"
 
 
@@ -1123,7 +1135,9 @@ def test_p6_115_nothing_is_sent_after_the_output_is_lost_whoever_tries(register_
     with pytest.raises(log.OutputLost, match=f"^cannot write {stream}: ") as ei:
         runner.run()
     monkeypatch.undo()
-    assert written[-1] == b"echo N''OW\n" and b"\x03" not in written, written
+    # on stderr the `>> cmd:` line fails before the line is sent: the last write is the `$?` check of `true`
+    last = b"echo N''OW\n" if stream == "stdout" else b"echo __AUTOBOT_RC=$?\n"
+    assert written[-1] == last and b"\x03" not in written, written
     assert runner.reporter.lost is None and len(children) == 1 and not children[0].isalive()
 
 

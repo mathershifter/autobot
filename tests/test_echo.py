@@ -15,7 +15,7 @@ from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
 from autobot.errors import CommandError, LineTooLong
-from autobot.screen import _inside, _shown, mid_echo, strip_echo
+from autobot.screen import _inside, _shown, echo_split, mid_echo, strip_echo
 from autobot.session import HELD_GRACE, PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
@@ -1068,3 +1068,63 @@ def test_p8_57_sweep_of_lengths():
 def test_p8_57_sweep_of_every_length(units: list[str]):
     """The sweep of the report: 496 lines, each unit 1 to 124 times."""
     assert sweep(units, list(range(1, 125))) == []
+
+
+# -- P8-62: the echo of a cmd line is left out of the operator transcript -----------------------------
+
+
+def test_p8_62_echo_split_holds_until_the_echo_ends_at_a_line_break():
+    """SPEC "The echo of a sent line": the transcript holds back what is read after a cmd line until the
+    echo is recognized (it ends at the first line break by which the line is shown), then drops it."""
+    sent = "show version"
+    assert echo_split("", sent) == ("", True)
+    assert echo_split("show ver", sent) == ("", True)  # part of the echo: keep waiting
+    assert echo_split("show version", sent) == ("", True)  # all shown, but no line break yet
+    assert echo_split("show version\r\n", sent) == ("", False)  # the break completes it; nothing after yet
+    assert echo_split("show version\r\nSON", sent) == ("SON", False)  # the output after it is written
+
+
+def test_p8_62_echo_split_writes_through_what_is_no_echo():
+    """Where the start is no echo it is written as it is: the echo is disabled, or the sent line shows
+    nothing, or text follows the echo on its line (the forms strip_echo doesn't recognize)."""
+    assert echo_split("SONiC 1.2\r\n", "show version") == ("SONiC 1.2\r\n", False)
+    assert echo_split("anything", "") == ("anything", False)  # sent shows nothing: nothing is held
+    # text after the echo on the same line: not recognized, written whole
+    assert echo_split("show version extra\r\n", "show version") == ("show version extra\r\n", False)
+
+
+@pytest.mark.parametrize("wrap", WRAPS)
+def test_p8_62_echo_split_recognizes_a_wrapped_echo(wrap: str):
+    """A wrapped echo spans rows, as it does for the captured output: it is recognized and dropped."""
+    cmd = command(MARGIN + 10)
+    echo = echo_of(cmd, *WRAPS[wrap])
+    emit, waiting = echo_split(f"{echo}\r\nout\r\n", cmd)
+    assert waiting is False and emit.endswith("out\r\n") and "w0" not in emit
+
+
+def test_p8_62_transcript_leaves_out_a_cmd_echo(capsys: pytest.CaptureFixture[str]):
+    """End to end: a `cmd` whose line the shell echoes shows its output on stdout, not its echo; the
+    `>> cmd:` line on stderr shows the command instead."""
+    out = run([{"cmd": "echo marker-out", "register": "out"}])
+    assert out["out"] == "marker-out"
+    captured = capsys.readouterr()
+    assert "marker-out\r\n" in captured.out
+    assert "echo marker-out" not in captured.out  # the echo of the command is left out
+    assert ">> cmd: echo marker-out" in captured.err
+
+
+def test_p8_62_transcript_keeps_an_echo_it_cannot_recognize(capsys: pytest.CaptureFixture[str]):
+    """Where the echo is off (a password read with `stty -echo`) nothing is held back: the device's output
+    is written as it is, and a `cmd` line that the shell doesn't echo loses nothing of what follows."""
+    run([{"cmd": "stty -echo; echo kept-out; stty echo", "register": "out"}])
+    captured = capsys.readouterr()
+    assert "kept-out\r\n" in captured.out
+
+
+def test_p8_62_multiline_block_echo_is_left_out(capsys: pytest.CaptureFixture[str]):
+    """Each line of a multi-line `cmd` is still sent at its own prompt, and each line's echo is left out."""
+    out = run([{"cmd": "echo aa\necho bb", "register": "out"}])
+    assert out["out"] == "aa\nbb"
+    captured = capsys.readouterr()
+    assert "aa\r\n" in captured.out and "bb\r\n" in captured.out
+    assert "echo aa" not in captured.out and "echo bb" not in captured.out

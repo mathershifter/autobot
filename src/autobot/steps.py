@@ -50,12 +50,15 @@ class CmdExecutor:
             self._first_prompt(step, ctx, timeout)
         # render before splitting: a Jinja block may span lines or add lines
         lines = [l for item in items for l in self._lines(ctx.render(item))]
+        if items:
+            # one progress line for the whole step, as rendered, before anything is sent; the echo of each
+            # line is then left out of the transcript (strip_echo), since this line already shows it
+            ctx.reporter.block("cmd: " + "\n".join(lines))
         try:
             for i, cmd in enumerate(lines):
                 if i > 0:
                     output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
-                ctx.session.sendline(cmd, timeout=timeout)
-                ctx.reporter.say(f"cmd: {cmd}")
+                ctx.session.sendline(cmd, timeout=timeout, strip_echo=True)
             if lines:
                 output.append(ctx.session.get_prompt(timeout=timeout, errors=errors))
             self._check(step, ctx, "".join(output), timeout, probe=bool(lines))
@@ -119,6 +122,9 @@ class CmdExecutor:
         script = ctx.render(str(step.cmd))
         if not script.endswith("\n"):
             script += "\n"  # jinja drops the trailing newline
+        # one progress line for the step, showing the script as rendered, like any cmd; the `script:` detail
+        # lines below say what the upload does
+        ctx.reporter.block("cmd: " + script.rstrip("\n"))
         try:
             ctx.reporter.say(f"script: writing to {tmp}", "detail")
             self._upload(ctx, script.encode(), tmp, timeout)

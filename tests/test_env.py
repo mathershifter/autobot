@@ -302,9 +302,9 @@ def test_p5_96_env_option_sets_a_declared_variable(tmp_path: Path, monkeypatch: 
     follows the first `=`; of a key given twice the last value counts; `--env` comes before the environment."""
     monkeypatch.setenv("AB_A", "os")
     status, out, _ = cli(tmp_path, "-e", "AB_B=x=y z", "--env", "AB_A=first", "--env=AB_A=last")
-    assert status == 0 and "\n<last><x=y z>\n" in out
+    assert status == 0 and "PROMPT$ <last><x=y z>\n" in out  # the output follows the prompt: the echo is left out
     status, out, _ = cli(tmp_path, "-e", "AB_B=")
-    assert status == 0 and "\n<os><>\n" in out
+    assert status == 0 and "PROMPT$ <os><>\n" in out
 
 
 @pytest.mark.parametrize("item", ["AB_B", "", "AB_B:x", "=x", "="])

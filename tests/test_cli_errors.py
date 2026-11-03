@@ -15,7 +15,7 @@ import pexpect
 import pydantic
 import pytest
 import yaml
-from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli
+from conftest import BASH, PS1, SHELL_PROMPT, make_config, make_doc, plugin_dist, run_cli, running_under
 
 from autobot import cli
 from autobot.errors import CommandError, RunError, ScriptError, StepFailure
@@ -768,11 +768,12 @@ def _interrupt(tmp_path: Path, *cli_args: str) -> tuple[subprocess.CompletedProc
     with open(echo, "w") as out, open(messages, "w") as err:
         proc = subprocess.Popen([sys.executable, "-m", "autobot.cli", str(path), *cli_args], stdout=out, stderr=err)
         try:
-            # the session echoes the command once the shell has it: from then on `sleep 30` is what runs
+            # once `sleep 30` runs under the CLI's shell, it is what the interrupt lands in (the transcript
+            # leaves the echo of a `cmd` line out, so the echo can't say so)
             deadline = time.monotonic() + 30
-            while "\nsleep 30" not in echo.read_text().replace("PROMPT$ ", "\n") and time.monotonic() < deadline:
+            while not running_under(proc.pid, "sleep 30") and time.monotonic() < deadline:
                 time.sleep(0.05)
-            assert started.exists() and "sleep 30" in echo.read_text(), "the script never got to `sleep 30`"
+            assert started.exists() and running_under(proc.pid, "sleep 30"), "the script never got to `sleep 30`"
             proc.send_signal(signal.SIGINT)
             proc.wait(timeout=60)
         finally:
@@ -898,7 +899,10 @@ def test_p6_88_ctrl_c_stops_a_shell_loop_around_autobot(tmp_path: Path):
     child = pexpect.spawn("bash", ["--norc", "--noprofile", "-c", loop], env=env, encoding="utf-8", timeout=60)
     try:
         child.expect_exact(">> cmd: sleep 30")
-        child.expect_exact("sleep 30")  # the session's echo: the command has reached the shell
+        deadline = time.monotonic() + 30  # the command has reached the shell once `sleep 30` runs under the loop
+        while not running_under(child.pid, "sleep 30") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert running_under(child.pid, "sleep 30"), "the script never got to `sleep 30`"
         child.sendintr()
         seen = child.expect([pexpect.EOF, "ITER-1-rc", "LOOP-DONE"])
         output = child.before

@@ -310,6 +310,7 @@ def test_p8_21_session_echo_strips_color_from_a_real_shell(capsys: pytest.Captur
     out = run([{"cmd": "printf 'A\\033[1;31mB\\033[0mC\\n'", "register": "out"}])
     assert out["out"] == "ABC"
     captured = capsys.readouterr()
-    assert "\nABC\r\n" in captured.out
+    # the echo of the command is left out of the transcript; its output arrives without the color
+    assert "PROMPT$ ABC\r\n" in captured.out
     assert ESC not in captured.out
     assert ">> cmd: printf" in captured.err and ">> " not in captured.out
