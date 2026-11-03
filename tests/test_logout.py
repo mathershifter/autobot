@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 import yaml
-from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli
+from conftest import BASH, SHELL_PROMPT, FakeDevice, default_signals, make_doc, make_runner, plugin_dist, run_cli, running_under
 
 from autobot import cli
 from autobot.errors import BreakoutError, StepFailure
@@ -72,15 +72,16 @@ def wait_for(what: Any, proc: subprocess.Popen, seconds: float = 30) -> None:
 
 
 def interrupted(doc: dict[str, Any], tmp_path: Path, running: str, sig: int = signal.SIGINT) -> tuple[int, str]:
-    """Run the CLI on `doc` and send it `sig`, Ctrl-C by default, once the shell has echoed the command
-    `running`: from then on that command is what runs. Its return code and its messages."""
+    """Run the CLI on `doc` and send it `sig`, Ctrl-C by default, once the command `running` runs under it:
+    from then on that command is what runs (the transcript leaves the echo of a `cmd` line out, so the
+    echo can't say so). Its return code and its messages."""
     path = tmp_path / "script.autobot.yaml"
     path.write_text(yaml.safe_dump(doc))
     echo, messages = tmp_path / "stdout", tmp_path / "stderr"
     with open(echo, "w") as out, open(messages, "w") as err:
         proc = subprocess.Popen([sys.executable, "-W", "ignore", "-m", "autobot.cli", str(path)], stdout=out, stderr=err, preexec_fn=defaults)
         try:
-            wait_for(lambda: f"\n{running}\n" in echo.read_text().replace("PROMPT$ ", "\n"), proc)
+            wait_for(lambda: running_under(proc.pid, running), proc)
             proc.send_signal(sig)
             proc.wait(timeout=60)
         finally:
@@ -125,7 +126,8 @@ def test_p5_84_breakout_that_fails_after_the_script_fails_the_run(fake_device: F
     progress = [line for line in res.stderr.splitlines() if line.startswith(">> ")]
     assert progress[-2:] == [f">> step failed (TimeoutError): {CONFIRM_TIMEOUT}", f">> breakout error (TimeoutError): {CONFIRM_TIMEOUT}"]
     assert ">> run completed" not in progress and "Run failed" not in res.stderr and "Traceback" not in res.stderr
-    assert "\nconfigured\n" in res.stdout and res.stdout.endswith("PROMPT$ cat\nlogout\nlogout\n")  # `cat` took the line
+    # the echo of the `cmd` is left out, so its output follows the prompt; `cat` is a `line`, whose echo stays
+    assert "PROMPT$ configured\n" in res.stdout and res.stdout.endswith("PROMPT$ cat\nlogout\nlogout\n")  # `cat` took the line
     assert FakeDevice.read(log) == ["LOGIN=admin", "PASSWORD=secret"]
 
 

@@ -218,7 +218,7 @@ def test_p6_31_default_with_template_syntax_is_text_and_no_error(tmp_path: Path,
     would be a syntax error or an expression that fails is the variable's text; the run completes."""
     res = run_cli(make_doc([{"cmd": "echo 'got-{{ env.MSG }}'"}], env={"MSG": default}, prepare="true\n"), tmp_path)
     assert res.returncode == 0, res.stderr
-    assert f"\ngot-{default}\n" in res.stdout.replace("\r\n", "\n")
+    assert f"PROMPT$ got-{default}\n" in res.stdout.replace("\r\n", "\n")  # the echo of the command is left out
 
 
 def test_p6_31_cli_env_error_that_depends_on_a_value_is_a_failed_run(tmp_path: Path):
@@ -509,7 +509,7 @@ def test_p6_54_cli_quoted_send_yes_is_sent(tmp_path: Path, fake_device: FakeDevi
     assert res.returncode == 0, res.stderr
     # after the questions the device runs a shell, which logs nothing
     assert FakeDevice.read(log) == ["ASK=yes", "ASK=yes"]
-    assert "\ndone" in res.stdout
+    assert "PROMPT$ done\n" in res.stdout  # the command's output; its echo is left out of the transcript
 
 
 @pytest.mark.parametrize("value", ["yes", "no", "on", "true", "1234"])

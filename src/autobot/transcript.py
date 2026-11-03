@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from .screen import ANSI_ESCAPE_RE
+from .screen import ANSI_ESCAPE_RE, echo_split
 
 if TYPE_CHECKING:
     from .protocols import Reporter
@@ -24,6 +24,27 @@ class CleanWriter:
         self._stream = stream
         self._reporter = reporter
         self._held = ""
+        # the echo of a `cmd` line to leave out of the transcript, and what has been read of it so far
+        self._echo_sent: str | None = None
+        self._echo_buf = ""
+
+    def expect_echo(self, sent: str) -> None:
+        """Leave the echo of the line `sent` out of the transcript: the text read next, up to and including
+        the echo, is held back and dropped once it is recognized (SPEC, The echo of a sent line). Where it is
+        no echo, or where none is recognized, the text is written as it is. Escape sequences are compared
+        removed, as the transcript writes them. Whatever is still held for an earlier line is written first:
+        it was no echo of that line, and belongs before anything read after this one."""
+        self.cancel_echo()
+        self._echo_sent = ANSI_ESCAPE_RE.sub("", sent)
+
+    def cancel_echo(self) -> None:
+        """Stop leaving an echo out and write back what was held for it, in its place in the transcript: at
+        the end of a prompt wait (the echo, if it was one, ended before the prompt), and for a send that
+        failed, whose echo (if any) is the device's to show."""
+        buf, self._echo_buf, self._echo_sent = self._echo_buf, "", None
+        if buf and not self._reporter.lost:
+            self._out(buf)
+            self._reporter.echoed(buf)
 
     def write(self, data):
         data = ANSI_ESCAPE_RE.sub("", self._held + data)
@@ -32,6 +53,12 @@ class CleanWriter:
         m = _PARTIAL_ESCAPE_RE.search(data)
         if m and len(data) - m.start() <= ESCAPE_HOLD:
             data, self._held = data[: m.start()], data[m.start() :]
+        if self._echo_sent is not None and data:
+            self._echo_buf += data
+            data, waiting = echo_split(self._echo_buf, self._echo_sent)
+            if waiting:
+                return
+            self._echo_sent, self._echo_buf = None, ""
         if data:
             self._out(data)
             self._reporter.echoed(data)
@@ -59,8 +86,11 @@ class CleanWriter:
 
     def close(self):
         """Write out what is still held: nothing more will come to complete it. The stream stays open.
-        Nothing is written to a stream that could not be written before: that has ended the run already."""
-        held, self._held = self._held, ""
+        Nothing is written to a stream that could not be written before: that has ended the run already. An
+        echo that never finished is no echo: what was held back for it is written out too."""
+        held = self._echo_buf + self._held
+        self._held = self._echo_buf = ""
+        self._echo_sent = None
         if self._reporter.lost:  # nothing is written after the write that failed
             return
         self._out(held)

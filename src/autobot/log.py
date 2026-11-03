@@ -169,6 +169,25 @@ class ConsoleReporter:
             Text.assemble((MARK, mark), " " + INDENT * min(self.depth, MAX_INDENT), (label + sep, label_style), (rest, rest_style))
         )
 
+    def block(self, text: str, kind: str = "step") -> None:
+        """One progress line whose text may span lines (see the `Reporter` protocol). Continuation lines are
+        aligned under the text of the first, the marker kept in the first column, and styled as its rest."""
+        first, _, _ = text.partition("\n")
+        if first == text:
+            self.say(text, kind)
+            return
+        mark, label_style, rest_style = KINDS[kind]
+        first, *rest = text.split("\n")
+        label, sep, first_rest = first.partition(": ")
+        indent = " " + INDENT * min(self.depth, MAX_INDENT)
+        parts = [(MARK, mark), indent, (label + sep, label_style), (first_rest, rest_style)]
+        pad = " " * (len(indent) + len(label) + len(sep))  # under the text of the first line
+        for line in rest:
+            # an empty line (a blank line of an embedded script) is `>> ` alone: the marker and its blank, so
+            # `grep '^>> '` still finds every line, and no further pad
+            parts += ["\n", (MARK, mark), " "] + ([(pad[1:], rest_style), (line, rest_style)] if line else [])
+        self._print(Text.assemble(*parts))
+
     def error(self, head: str, detail: str | None = None, style: str = ERROR) -> None:
         """Print the CLI's verdict on a run: `head` stands out, `detail` is the message as it is."""
         self._print(Text.assemble((head, style), "" if detail is None else f": {detail}"))

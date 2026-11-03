@@ -511,6 +511,24 @@ def run_cli(
     )
 
 
+def running_under(pid: int, cmdline: str) -> bool:
+    """Whether a process whose command line is exactly `cmdline` runs under `pid` (a child at any depth).
+    For a test that must interrupt a run once a command (`sleep 30`) is what the shell runs: the transcript
+    leaves the echo of a `cmd` line out, so the echo no longer says so. Linux: `pgrep` and `/proc`."""
+    found = subprocess.run(["pgrep", "-x", "-f", cmdline], capture_output=True, text=True, check=False).stdout.split()
+    for candidate in found:
+        p = int(candidate)
+        while p > 1:
+            try:
+                with open(f"/proc/{p}/status") as status:
+                    p = next(int(line.split()[1]) for line in status if line.startswith("PPid:"))
+            except (OSError, StopIteration, ValueError):
+                break
+            if p == pid:
+                return True
+    return False
+
+
 def default_signals() -> None:
     """For a child (`preexec_fn`): the default actions of the signals that end a run, whatever the suite
     was started with (`nohup` ignores SIGHUP; a wrapper may ignore SIGINT). Python then sets its own

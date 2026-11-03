@@ -29,6 +29,12 @@ class Reporter(Protocol):
         means: `step`, `group`, `ok`, `detail`, `warn` or `fail` (see SPEC, Output)."""
         ...
 
+    def block(self, text: str, kind: str = "step") -> None:
+        """Print a progress line whose text may span lines (a multi-line `cmd`): the first line as `say`
+        prints it, and each further line under the text of the first, with the `>> ` marker kept in the
+        first column (see SPEC, Output). One line of `text` prints exactly as `say`."""
+        ...
+
     def check(self) -> None:
         """Raise the run's `OutputLost` again, if there is one: nothing is written or sent after it."""
         ...
@@ -67,7 +73,9 @@ class SessionLike(Protocol):
         self, timeout: float = 300, errors: Sequence[str] | None = None, capture: bool = True, solicit: bool = True
     ) -> str: ...
 
-    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300) -> None: ...
+    def sendline(
+        self, line: str = "", *, solicit: bool = False, timeout: float = 300, strip_echo: bool = False
+    ) -> None: ...
 
     def sendcontrol(self, char: str, *, timeout: float = 300) -> None: ...
 

@@ -505,6 +505,16 @@ class Session:
             raise RuntimeError("not attached")
         if self._prompt.at_prompt:
             return ""
+        try:
+            return self._wait_for_prompt(timeout, errors, capture, solicit)
+        finally:
+            # however the wait ends, the transcript holds nothing back past it: an echo ends before its
+            # prompt, so what is still held was no echo and is written where it belongs
+            if self._echo is not None:
+                self._echo.cancel_echo()
+
+    def _wait_for_prompt(self, timeout: float, errors: Sequence[str] | None, capture: bool, solicit: bool) -> str:
+        assert self._cld
         wait = self._begin_wait(timeout, solicit)
         table = self._table
         while True:
@@ -660,7 +670,11 @@ class Session:
         if not self._cld:
             raise RuntimeError("not attached")
         self._prompt.held = None
-        idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
+        try:
+            idx = self._expect(patterns, timeout, what or " or ".join(f"'{p}'" for p in patterns))
+        finally:
+            if self._echo is not None:
+                self._echo.cancel_echo()  # as at the end of a prompt wait: nothing is held back past a wait
         self._ctx["before"] = str(self._cld.before or "")
         self._ctx["match"] = str(self._cld.after or "")
         # a match that ends at a shell prompt, with nothing read after it, has read that prompt: the
@@ -678,9 +692,11 @@ class Session:
                 self._prompt.held = HeldPrompt(found.read, line, self._ctx["match"], found.handler)
         return idx
 
-    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300):
+    def sendline(self, line: str = "", *, solicit: bool = False, timeout: float = 300, strip_echo: bool = False):
         """Send a line, within `timeout`. `solicit` lets the next prompt wait send its solicit newline: for
-        a raw send (`line`, `return`), not for a command whose prompt the wait is for."""
+        a raw send (`line`, `return`), not for a command whose prompt the wait is for. `strip_echo` leaves
+        the line's echo out of the operator transcript (a `cmd` line, whose text the `>> cmd:` line already
+        shows); where the echo is not recognized it stays, as it does in the captured output."""
         if not self._cld:
             raise RuntimeError("not attached")
         prompt, send = copy.copy(self._prompt), copy.copy(self._send)
@@ -688,9 +704,13 @@ class Session:
         self._prompt.held = None
         self._send.line = line
         self._send.solicit = solicit
+        if strip_echo and self._echo is not None:
+            self._echo.expect_echo(line)
         try:
             self._put_line(line, timeout)
         except BaseException:
+            if strip_echo and self._echo is not None:
+                self._echo.cancel_echo()
             self._restore_if_nothing_sent(prompt, send)
             raise
         self._send.unanswered = False

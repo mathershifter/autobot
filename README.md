@@ -59,7 +59,6 @@ admin@sonic's password:
 
 admin@sonic:~$ 
 >> cmd: show version
-show version
 SONiC Software Version: SONiC.4.2.0
 admin@sonic:~$ 
 >> breakout: detaching
@@ -113,7 +112,7 @@ See [SPEC.md](SPEC.md#checking-scripts-with-validate).
 
 The session's output goes to stdout, with ANSI escape sequences removed. Autobot's `>>` messages and error reports go to stderr. So `autobot script.yaml > device.log` keeps the device's transcript, and `2> run.log` keeps what Autobot did.
 
-Autobot's messages never show what a `line` step or a prompt answer sent, since it may be a password: they say `>> line sent` and `>> prompt answered: <name>`. The text shows only as far as the device echoes it. A `cmd` line is printed as rendered (`>> cmd: ...`), so a secret that a template puts into a `cmd` shows.
+Autobot's messages never show what a `line` step or a prompt answer sent, since it may be a password: they say `>> line sent` and `>> prompt answered: <name>`. The text shows only as far as the device echoes it. A `cmd` step prints one `>> cmd: ...` line for the whole command as rendered (a command of several lines shows them under it), so a secret that a template puts into a `cmd` shows. Because that line shows the command, the shell's echo of each `cmd` line is left out of the transcript on stdout; the command's output stays.
 
 On a terminal the messages are colored. Set `NO_COLOR` to turn that off, or `FORCE_COLOR` to keep it in a pipe. The full list of messages is in [SPEC.md](SPEC.md#output).
 

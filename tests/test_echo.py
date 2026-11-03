@@ -15,7 +15,7 @@ from conftest import BASH, FakeDevice, make_runner
 from conftest import run_vars as run
 
 from autobot.errors import CommandError, LineTooLong
-from autobot.screen import _inside, _shown, mid_echo, strip_echo
+from autobot.screen import _inside, _shown, echo_split, mid_echo, strip_echo
 from autobot.session import HELD_GRACE, PromptHandler, Session
 from autobot.terminal import PTY_COLS, PTY_ROWS
 
@@ -1068,3 +1068,155 @@ def test_p8_57_sweep_of_lengths():
 def test_p8_57_sweep_of_every_length(units: list[str]):
     """The sweep of the report: 496 lines, each unit 1 to 124 times."""
     assert sweep(units, list(range(1, 125))) == []
+
+
+# -- P8-62: the echo of a cmd line is left out of the operator transcript -----------------------------
+
+
+def test_p8_62_echo_split_holds_until_the_echo_ends_at_a_line_break():
+    """SPEC "The echo of a sent line": the transcript holds back what is read after a cmd line until the
+    echo is recognized (it ends at the first line break by which the line is shown), then drops it."""
+    sent = "show version"
+    assert echo_split("", sent) == ("", True)
+    assert echo_split("show ver", sent) == ("", True)  # part of the echo: keep waiting
+    assert echo_split("show version", sent) == ("", True)  # all shown, but no line break yet
+    assert echo_split("show version\r\n", sent) == ("", False)  # the break completes it; nothing after yet
+    assert echo_split("show version\r\nSON", sent) == ("SON", False)  # the output after it is written
+
+
+def test_p8_62_echo_split_writes_through_what_is_no_echo():
+    """Where the start is no echo it is written as it is: the echo is disabled, or the sent line shows
+    nothing, or text follows the echo on its line (the forms strip_echo doesn't recognize)."""
+    assert echo_split("SONiC 1.2\r\n", "show version") == ("SONiC 1.2\r\n", False)
+    assert echo_split("anything", "") == ("anything", False)  # sent shows nothing: nothing is held
+    # text after the echo on the same line: not recognized, written whole
+    assert echo_split("show version extra\r\n", "show version") == ("show version extra\r\n", False)
+
+
+@pytest.mark.parametrize("wrap", WRAPS)
+def test_p8_62_echo_split_recognizes_a_wrapped_echo(wrap: str):
+    """A wrapped echo spans rows, as it does for the captured output: it is recognized and dropped."""
+    cmd = command(MARGIN + 10)
+    echo = echo_of(cmd, *WRAPS[wrap])
+    emit, waiting = echo_split(f"{echo}\r\nout\r\n", cmd)
+    assert waiting is False and emit.endswith("out\r\n") and "w0" not in emit
+
+
+def test_p8_62_transcript_leaves_out_a_cmd_echo(capsys: pytest.CaptureFixture[str]):
+    """End to end: a `cmd` whose line the shell echoes shows its output on stdout, not its echo; the
+    `>> cmd:` line on stderr shows the command instead."""
+    out = run([{"cmd": "echo marker-out", "register": "out"}])
+    assert out["out"] == "marker-out"
+    captured = capsys.readouterr()
+    assert "marker-out\r\n" in captured.out
+    assert "echo marker-out" not in captured.out  # the echo of the command is left out
+    assert ">> cmd: echo marker-out" in captured.err
+
+
+def test_p8_62_transcript_keeps_an_echo_it_cannot_recognize(capsys: pytest.CaptureFixture[str]):
+    """Where the echo is off (a password read with `stty -echo`) nothing is held back: the device's output
+    is written as it is, and a `cmd` line that the shell doesn't echo loses nothing of what follows."""
+    run([{"cmd": "stty -echo; echo kept-out; stty echo", "register": "out"}])
+    captured = capsys.readouterr()
+    assert "kept-out\r\n" in captured.out
+
+
+def test_p8_62_multiline_block_echo_is_left_out(capsys: pytest.CaptureFixture[str]):
+    """Each line of a multi-line `cmd` is still sent at its own prompt, and each line's echo is left out."""
+    out = run([{"cmd": "echo aa\necho bb", "register": "out"}])
+    assert out["out"] == "aa\nbb"
+    captured = capsys.readouterr()
+    assert "aa\r\n" in captured.out and "bb\r\n" in captured.out
+    assert "echo aa" not in captured.out and "echo bb" not in captured.out
+
+
+# -- P8-62, review of PR #101: what the hold does with text that isn't the echo ------------------------
+
+
+def _writer():
+    """A CleanWriter on a StringIO, with a reporter that keeps nothing lost."""
+    from io import StringIO
+
+    from autobot.log import ConsoleReporter
+    from autobot.transcript import CleanWriter
+
+    out = StringIO()
+    return CleanWriter(out, ConsoleReporter()), out
+
+
+def test_p8_62_arming_a_second_line_writes_out_what_the_first_held():
+    """Finding 1: text held for one line (blank lines the echo never followed) is written, in its place,
+    when the next line is armed, not dropped."""
+    w, out = _writer()
+    w.expect_echo("first")
+    w.write("\r\n\r\n")
+    w.expect_echo("second")
+    w.write("second\r\nok\r\n")
+    w.close()
+    assert out.getvalue() == "\r\n\r\nok\r\n"
+
+
+def test_p8_62_a_prompt_on_the_partial_line_ends_the_hold_at_once():
+    """Finding 1: with the whole lines showing nothing, the line that has no break yet is read too: a
+    prompt there is no echo, so everything held is written then, not at the next line."""
+    assert echo_split("\r\n\r\nPROMPT$ ", "printf '\\n\\n'") == ("\r\n\r\nPROMPT$ ", False)
+    assert echo_split("\r\n\r\n", "printf '\\n\\n'") == ("", True)  # nothing shown yet: still possible
+
+
+def test_p8_62_end_to_end_held_prompt_is_written_before_the_next_message(capsys: pytest.CaptureFixture[str]):
+    """Finding 2: echo off, a command that prints blank lines only and no `$?` probe (errors defined): the
+    prompt after it reaches stdout, and nothing of a later step's output goes missing."""
+    out = run(
+        [
+            {"cmd": "stty -echo"},
+            {"cmd": "printf '\\n\\n'"},
+            {"cmd": "echo next", "register": "next"},
+            {"cmd": "stty echo"},
+        ],
+        errors=["NOPE"],
+    )
+    assert out["next"] == "next"
+    text = capsys.readouterr().out.replace("\r\n", "\n")
+    assert text.count("PROMPT$ ") == 5  # the first prompt and one after each of the four commands
+    # printf's two line breaks, the prompt that followed them (held for a while, written in its place), then
+    # the next command's output: nothing dropped, nothing out of order
+    assert "\n\nPROMPT$ next\n" in text
+
+
+def test_p8_62_echo_split_tries_every_variant_as_strip_echo_does():
+    """Finding 3: a character that came in parts (U+FFFD and backspaces) is read again with `cut`, so the
+    echo is recognized where `strip_echo` recognizes it."""
+    text = "ab�\b\b€\r\nout\r\n"
+    assert strip_echo(text, "ab€") == "out\r\n"
+    assert echo_split(text, "ab€") == ("out\r\n", False)
+
+
+def test_p8_62_control_characters_before_the_echo_are_held():
+    """Finding 4: a read that ends after a NUL or a CR shows nothing yet; the hold goes on, as the captured
+    output drops such characters before the echo."""
+    assert echo_split("\x00", "ls") == ("", True)
+    assert echo_split("\r", "ls") == ("", True)
+    assert echo_split("\x00ls\r\nout\r\n", "ls") == ("out\r\n", False)
+    assert strip_echo("\x00ls\nout\n", "ls") == "out\n"
+
+
+def test_p8_62_hold_is_bounded_and_writes_through_past_the_bound():
+    """Finding 5: lines that show nothing are held up to the bound, then everything is written and the
+    hold ends; the work per write stays small."""
+    from autobot.screen import ECHO_HOLD_LINES
+
+    w, out = _writer()
+    w.expect_echo("ls")
+    blank = "\r\n" * 20
+    start = time.monotonic()
+    for _ in range(3000):
+        w.write(blank)
+    assert time.monotonic() - start < 3
+    assert len(out.getvalue()) == 3000 * len(blank)  # all of it written, nothing lost
+    # the bound: one line more than the limit ends the hold with everything written
+    emit, waiting = echo_split("\r\n" * (ECHO_HOLD_LINES + 1), "ls")
+    assert (emit, waiting) == ("\r\n" * (ECHO_HOLD_LINES + 1), False)
+    assert echo_split("\r\n" * ECHO_HOLD_LINES, "ls") == ("", True)
+    assert echo_split("x" * 20000, "ls") == ("x" * 20000, False)  # past the character bound
+    # the bound applies to a hold that is still undecided: a read that completes the echo past it drops the echo
+    assert echo_split("\r\n" * (ECHO_HOLD_LINES + 1) + "ls\r\nout\r\n", "ls") == ("out\r\n", False)
