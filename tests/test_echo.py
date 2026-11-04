@@ -1220,3 +1220,44 @@ def test_p8_62_hold_is_bounded_and_writes_through_past_the_bound():
     assert echo_split("x" * 20000, "ls") == ("x" * 20000, False)  # past the character bound
     # the bound applies to a hold that is still undecided: a read that completes the echo past it drops the echo
     assert echo_split("\r\n" * (ECHO_HOLD_LINES + 1) + "ls\r\nout\r\n", "ls") == ("out\r\n", False)
+
+
+# -- P8-62, found fuzzing: readline's `<` scroll form with a CRLF line end -----------------------------
+
+
+def test_p8_62_echo_split_recognizes_the_scroll_form_with_a_crlf_line_end():
+    """The transcript hands `echo_split` the read as it came, `\\r\\n` intact, where the capture drops the
+    `\\r` before a line break: the CR of the CRLF is none of readline's, and must not hide the `<` that
+    follows the line's last real one."""
+    sent = "show version"
+    assert echo_split("<rsion\r\nout\r\n", sent) == ("out\r\n", False)
+    assert echo_split("<rsion\nout\n", sent) == ("out\n", False)  # a bare line feed, as before
+    assert echo_split("<rsion\r", sent) == ("", True)  # no break yet: held, as before
+    assert echo_split("<rsion\r\n", sent) == ("", False)  # the break completes it
+    # readline's redraws before the last one, the scroll form after a `\r`, then the CRLF
+    assert echo_split("show vers\r<rsion\r\nout\r\n", sent) == ("out\r\n", False)
+    # the reader is shared: the capture, which never sees the CR, reads the same either way
+    assert strip_echo("<rsion\r\nout\n", sent) == "out\n"
+    assert strip_echo("<rsion\nout\n", sent) == "out\n"
+
+
+def test_p8_62_a_trailing_cr_on_a_line_that_is_no_scroll_form_reads_as_before():
+    """A `\\r` at the end of a line that doesn't start with `<` changes nothing: a `\\r` at the margin
+    continues the echo, and a line that is no echo is still none."""
+    sent = "show version"
+    assert echo_split("show version\r\r\nout\r\n", sent) == ("out\r\n", False)
+    assert echo_split("show ver\r\r\nsion\r\nout\r\n", sent) == ("out\r\n", False)
+    assert echo_split("nope\r\nout\r\n", sent) == ("nope\r\nout\r\n", False)
+    assert echo_split("<nope\r\nout\r\n", sent) == ("<nope\r\nout\r\n", False)  # not the line's end after the `<`
+    assert strip_echo("show ver\r\nsion\nout\n", sent) == "out\n"
+
+
+def test_p8_62_transcript_leaves_out_a_scrolled_echo_with_crlf():
+    """Through `CleanWriter`, which gives `echo_split` the raw read with only the escape sequences removed:
+    the `<` form with its `\\r\\n` is dropped, and the output after it is written as it came."""
+    w, out = _writer()
+    w.expect_echo("show version")
+    w.write("\x1b[?2004l<rsion\r\n")
+    w.write("out\r\n")
+    w.close()
+    assert out.getvalue() == "out\r\n"
